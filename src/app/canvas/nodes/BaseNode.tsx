@@ -1,0 +1,177 @@
+import { useCallback, useState, useRef, useEffect } from 'react'
+import { motion } from 'framer-motion'
+import { Handle, Position, type NodeProps } from '@xyflow/react'
+import { useShallow } from 'zustand/react/shallow'
+import type { NodeData } from '../../../lib/nodeConfig'
+import { NODE_CONFIG, GROUPING_TYPES, type NodeType } from '../../../lib/nodeConfig'
+import { CATEGORY_COLORS } from '../../../lib/theme'
+import { useCanvasStore } from '../../store/canvas.store'
+import { useSimulationStore } from '../../store/simulation.store'
+import { useUiStore } from '../../store/ui.store'
+import styles from './BaseNode.module.css'
+
+export function BaseNode({ id, type, data, selected }: NodeProps) {
+  const nodeData = data as NodeData
+  const nodeType = type as NodeType
+
+  if (GROUPING_TYPES.has(nodeType)) return null
+
+  const config = NODE_CONFIG[nodeType]
+  if (!config) return null
+
+  const colors = CATEGORY_COLORS[config.category]
+  const Icon = config.icon
+
+  const [editing, setEditing] = useState(false)
+  const [editValue, setEditValue] = useState(nodeData.label)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const updateNodeData = useCanvasStore(s => s.updateNodeData)
+  const metrics = useSimulationStore(
+    useShallow(s => {
+      const m = s.nodeMetrics.get(id)
+      return m ? { utilization: m.utilization, errorRate: m.errorRate, circuitState: m.circuitState } : null
+    }),
+  )
+  const isBottleneck = useSimulationStore(s => s.bottlenecks.has(id))
+  const running    = useSimulationStore(s => s.running)
+  const isConnectSource = useUiStore(s => s.connectSourceId === id)
+
+  const utilization  = metrics?.utilization ?? 0
+  const circuitState = metrics?.circuitState ?? 'closed'
+  const isCircuitOpen = running && circuitState === 'open'
+  const isCircuitHalf = running && circuitState === 'half-open'
+  const isSaturated  = utilization >= 1.0
+
+  // Hysteresis: enter critical at 82%, exit at 70% — prevents flickering near threshold
+  const critRef = useRef(false)
+  critRef.current = utilization >= 0.82 ? true : utilization <= 0.70 ? false : critRef.current
+  const isCritical = isBottleneck && critRef.current
+
+  useEffect(() => {
+    if (editing && inputRef.current) inputRef.current.focus()
+  }, [editing])
+
+  const commitEdit = useCallback(() => {
+    setEditing(false)
+    if (editValue.trim() && editValue !== nodeData.label) {
+      updateNodeData(id, { label: editValue.trim() })
+    } else {
+      setEditValue(nodeData.label)
+    }
+  }, [editValue, nodeData.label, id, updateNodeData])
+
+  const statusColor = {
+    healthy:  '#22C55E',
+    degraded: '#F59E0B',
+    down:     '#EF4444',
+    idle:     '#475569',
+  }[nodeData.status] ?? '#475569'
+
+  // Saturation border overrides the normal border during simulation
+  const saturationBorderColor = isSaturated
+    ? '#EF4444'
+    : isCritical
+    ? '#F59E0B'
+    : undefined
+
+  // Utilization bar color
+  const utilColor = utilization >= 0.8
+    ? '#EF4444'
+    : utilization >= 0.5
+    ? '#F59E0B'
+    : colors.accent
+
+  return (
+    <motion.div
+      className={[
+        styles.node,
+        selected ? styles.selected : '',
+        isConnectSource ? styles.connectSource : '',
+        isCircuitOpen ? styles.circuitOpen : isCircuitHalf ? styles.circuitHalfOpen : isSaturated ? styles.saturated : isCritical ? styles.critical : '',
+      ].filter(Boolean).join(' ')}
+      style={{
+        '--accent': colors.accent,
+        '--node-bg': colors.bg,
+        '--node-border': colors.border,
+        ...(saturationBorderColor && {
+          '--saturation-border': saturationBorderColor,
+        }),
+      } as React.CSSProperties}
+      initial={{ scale: 0.8, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      exit={{ scale: 0.8, opacity: 0 }}
+      transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+    >
+      <Handle type="target" position={Position.Top}    className={styles.handle} />
+      <Handle type="target" position={Position.Left}   className={styles.handle} />
+      <Handle type="source" position={Position.Bottom} className={styles.handle} />
+      <Handle type="source" position={Position.Right}  className={styles.handle} />
+
+      <div className={styles.iconWrap}>
+        <Icon size={14} strokeWidth={1.5} />
+      </div>
+
+      <div className={styles.body}>
+        {editing ? (
+          <input
+            ref={inputRef}
+            className={styles.labelInput}
+            value={editValue}
+            onChange={e => setEditValue(e.target.value)}
+            onBlur={commitEdit}
+            onKeyDown={e => {
+              if (e.key === 'Enter') commitEdit()
+              if (e.key === 'Escape') { setEditing(false); setEditValue(nodeData.label) }
+            }}
+          />
+        ) : (
+          <div
+            className={styles.label}
+            onDoubleClick={() => { setEditing(true); setEditValue(nodeData.label) }}
+          >
+            {nodeData.label}
+          </div>
+        )}
+        {nodeData.subtitle && <div className={styles.subtitle}>{nodeData.subtitle}</div>}
+
+        {/* Universal utilization bar — shown for all node types during simulation */}
+        {running && utilization > 0 && (
+          <div className={styles.utilBar}>
+            <motion.div
+              className={`${styles.utilFill} ${utilization >= 0.8 ? styles.utilPulse : ''}`}
+              style={{ background: utilColor }}
+              animate={{ width: `${Math.round(Math.min(1, utilization) * 100)}%` }}
+              transition={{ type: 'tween', duration: 0.3 }}
+            />
+          </div>
+        )}
+      </div>
+
+      <div className={styles.right}>
+        {/* Circuit breaker badge */}
+        {isCircuitOpen && (
+          <div className={styles.circuitBadge} title="Circuit open — rejecting all requests">⊘</div>
+        )}
+        {isCircuitHalf && (
+          <div className={styles.circuitHalfBadge} title="Circuit half-open — testing recovery">⊘</div>
+        )}
+        {/* Bottleneck badge — simulation-driven, does not mutate NodeData.status */}
+        {running && isCritical && !isCircuitOpen && !isCircuitHalf && (
+          <div
+            className={styles.bottleneckBadge}
+            title={isSaturated ? 'Saturated — requests being dropped' : 'High utilization — approaching capacity'}
+          >
+            {isSaturated ? '●' : '▲'}
+          </div>
+        )}
+        {nodeData.warnings.length > 0 && (
+          <div className={styles.warnDot} title={nodeData.warnings.join('\n')}>!</div>
+        )}
+        <div
+          className={styles.statusDot}
+          style={{ background: statusColor, boxShadow: `0 0 6px ${statusColor}99` }}
+        />
+      </div>
+    </motion.div>
+  )
+}

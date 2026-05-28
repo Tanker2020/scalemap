@@ -1,0 +1,120 @@
+.wrapper {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: var(--color-canvas);
+}
+
+/* Tool cursor modes */
+.handMode :global(.react-flow__pane) {
+  cursor: grab;
+}
+
+.handMode :global(.react-flow__pane):active {
+  cursor: grabbing;
+}
+
+.connectMode :global(.react-flow__pane) {
+  cursor: crosshair;
+}
+
+/* In connect mode, always show handles */
+.connectMode :global(.react-flow__handle) {
+  opacity: 1 !important;
+  width: 12px !important;
+  height: 12px !important;
+  background: #4A9EFF !important;
+  border: 2px solid #0D0F12 !important;
+  transition: transform 0.1s !important;
+}
+
+.connectMode :global(.react-flow__handle:hover) {
+  transform: scale(1.4) !important;
+}
+
+/* Crosshair cursor on nodes when a connect source is pending */
+.connectPending :global(.react-flow__node) {
+  cursor: crosshair !important;
+}
+
+/* Connect hint overlay */
+.connectHint {
+  position: absolute;
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #161920;
+  border: 1px solid #22C55E44;
+  color: #86EFAC;
+  font-size: 11px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  pointer-events: none;
+  letter-spacing: 0.03em;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  white-space: nowrap;
+  z-index: 20;
+}
+
+.connectHint kbd {
+  background: #22C55E22;
+  border: 1px solid #22C55E44;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: var(--font);
+  font-size: 10px;
+}
+
+/* Override React Flow panel default styles */
+.wrapper :global(.react-flow__minimap) {
+  bottom: 14px;
+  right: 14px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.wrapper :global(.react-flow__controls) {
+  display: none;
+}
+
+.wrapper :global(.react-flow__background) {
+  background: var(--color-canvas);
+}
+
+.wrapper :global(.react-flow__node) {
+  cursor: default;
+}
+
+.wrapper :global(.react-flow__node.selected > div) {
+  /* handled per-component */
+}
+
+.wrapper :global(.react-flow__edge-path) {
+  cursor: pointer;
+}
+
+/* Simulation lock */
+.simLock {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #0D0F12CC;
+  border: 1px solid #A78BFA44;
+  color: #C4B5FD;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 4px 12px;
+  border-radius: 20px;
+  pointer-events: none;
+  z-index: 20;
+  backdrop-filter: blur(4px);
+}
+
+.simulating :global(.react-flow__node) {
+  cursor: default !important;
+}
+
+.simulating :global(.react-flow__node *) {
+  pointer-events: none;
+}

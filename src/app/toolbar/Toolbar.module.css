@@ -1,0 +1,626 @@
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  background: var(--color-toolbar);
+  border-bottom: 1px solid var(--color-toolbar-border);
+  height: 42px;
+  flex-shrink: 0;
+}
+
+.sep {
+  width: 1px;
+  height: 20px;
+  background: var(--color-toolbar-border);
+  margin: 0 6px;
+  flex-shrink: 0;
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* ── Primary buttons (New / Open) ──────────────── */
+
+.btnPrimary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  background: #1E2430;
+  border: 1px solid #3A4255;
+  border-radius: 5px;
+  color: #CBD5E1;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+  cursor: pointer;
+}
+
+.btnPrimary:hover {
+  background: #263044;
+  border-color: #4A9EFF66;
+  color: #F1F5F9;
+}
+
+/* Export dropdown trigger */
+.btnDropdown {
+  gap: 6px;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+  transition: transform 0.15s;
+}
+
+/* ── Tool buttons ───────────────────────────────── */
+
+.btnTool {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #94A3B8;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+  cursor: pointer;
+}
+
+.btnTool:hover {
+  background: #1A1D25;
+  border-color: var(--color-toolbar-border);
+  color: #E2E8F0;
+}
+
+.btnTool.active {
+  background: #152035;
+  border-color: #4A9EFF55;
+  color: #7DC4FF;
+  font-weight: 600;
+}
+
+/* ── Simulate button ────────────────────────────── */
+
+.btnSimulate {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 14px;
+  background: linear-gradient(135deg, #166534, #15803d);
+  border: 1px solid #22C55E66;
+  border-radius: 6px;
+  color: #DCFCE7;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  box-shadow: 0 2px 8px #22C55E22;
+  transition: background 0.1s, box-shadow 0.1s;
+  cursor: pointer;
+}
+
+.btnSimulate:hover {
+  background: linear-gradient(135deg, #15803d, #16a34a);
+  box-shadow: 0 2px 14px #22C55E44;
+}
+
+.btnSimulate.simulating {
+  background: linear-gradient(135deg, #7f1d1d, #991b1b);
+  border-color: #EF444466;
+  color: #FEE2E2;
+  box-shadow: 0 2px 8px #EF444422;
+}
+
+.btnSimulate.simulating:hover {
+  background: linear-gradient(135deg, #991b1b, #b91c1c);
+  box-shadow: 0 2px 14px #EF444444;
+}
+
+.playIcon {
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 8px solid #4ADE80;
+}
+
+.pauseIcon {
+  display: flex;
+  gap: 2px;
+}
+
+.pauseBar {
+  width: 3px;
+  height: 10px;
+  background: #FCA5A5;
+  border-radius: 1px;
+}
+
+/* ── Settings button ────────────────────────────── */
+
+.btnSettings {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  background: #161920;
+  border: 1px solid var(--color-node-border);
+  border-radius: 5px;
+  color: #64748B;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+  cursor: pointer;
+}
+
+.btnSettings:hover,
+.btnSettingsOpen {
+  background: #1A1D25;
+  border-color: #4A9EFF44;
+  color: #CBD5E1;
+}
+
+.settingsBadge {
+  font-size: 9px;
+  color: #7DC4FF;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 1px 5px;
+  background: #0D1F35;
+  border: 1px solid #4A9EFF33;
+  border-radius: 3px;
+}
+
+/* ── Shared dropdown/popover wrapper ────────────── */
+
+.dropdownWrap {
+  position: relative;
+}
+
+/* ── Export dropdown menu ───────────────────────── */
+
+.dropdownMenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 200px;
+  background: #111318;
+  border: 1px solid #2A2E38;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65), 0 2px 8px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  z-index: 1000;
+  animation: dropIn 0.12s ease;
+}
+
+.dropdownItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 13px;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-bottom: 1px solid #1A1D22;
+}
+
+.dropdownItem:last-child {
+  border-bottom: none;
+}
+
+.dropdownItem:hover {
+  background: #161A23;
+}
+
+.dropdownItemIcon {
+  font-size: 14px;
+  color: #4A9EFF;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.dropdownItemLabel {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #E2E8F0;
+  letter-spacing: 0.01em;
+}
+
+.dropdownItemDesc {
+  display: block;
+  font-size: 10px;
+  color: #475569;
+  margin-top: 1px;
+  letter-spacing: 0.01em;
+}
+
+/* ── Simulation settings panel ──────────────────── */
+
+.settingsPanel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 240px;
+  background: #111318;
+  border: 1px solid #2A2E38;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65), 0 2px 8px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  overflow: hidden;
+  animation: dropIn 0.12s ease;
+}
+
+.settingsPanelHeader {
+  padding: 9px 13px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #475569;
+  border-bottom: 1px solid #1A1D22;
+}
+
+.settingsSection {
+  padding: 10px 13px;
+}
+
+.settingsSectionLabel {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #475569;
+  margin-bottom: 7px;
+}
+
+.settingsDivider {
+  height: 1px;
+  background: #1A1D22;
+  margin: 0;
+}
+
+/* Chip row for speed + multiplier */
+.settingsRow {
+  display: flex;
+  gap: 4px;
+}
+
+.settingsChip {
+  flex: 1;
+  padding: 5px 0;
+  background: #161920;
+  border: 1px solid #2A2E38;
+  border-radius: 4px;
+  color: #64748B;
+  font-size: 10px;
+  font-family: var(--font);
+  letter-spacing: 0.04em;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  cursor: pointer;
+  text-align: center;
+}
+
+.settingsChip:hover {
+  background: #1A1D25;
+  color: #CBD5E1;
+}
+
+.settingsChip.settingsChipActive {
+  background: #152035;
+  border-color: #4A9EFF55;
+  color: #7DC4FF;
+  font-weight: 700;
+}
+
+/* Mode buttons (2×2 grid) */
+.settingsModeGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.settingsModeBtn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 7px 9px;
+  background: #161920;
+  border: 1px solid #2A2E38;
+  border-radius: 5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.settingsModeBtn:hover {
+  background: #1A1D25;
+  border-color: #4A9EFF33;
+}
+
+.settingsModeBtn.settingsModeBtnActive {
+  background: #152035;
+  border-color: #4A9EFF55;
+}
+
+.settingsModeName {
+  font-size: 11px;
+  font-weight: 600;
+  color: #CBD5E1;
+  letter-spacing: 0.01em;
+}
+
+.settingsModeBtn.settingsModeBtnActive .settingsModeName {
+  color: #7DC4FF;
+}
+
+/* chaos active — purple tint */
+.settingsModeBtn:last-child.settingsModeBtnActive {
+  background: #1A0F2A;
+  border-color: #A78BFA55;
+}
+
+.settingsModeBtn:last-child.settingsModeBtnActive .settingsModeName {
+  color: #C4B5FD;
+}
+
+.settingsModeDesc {
+  font-size: 9px;
+  color: #475569;
+  margin-top: 2px;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+}
+
+.settingsPanelFooter {
+  padding: 7px 13px;
+  font-size: 9px;
+  color: #2A2E38;
+  border-top: 1px solid #1A1D22;
+  letter-spacing: 0.03em;
+}
+
+.kbd {
+  display: inline-block;
+  padding: 1px 4px;
+  background: #1A1D22;
+  border: 1px solid #2A2E38;
+  border-radius: 3px;
+  font-family: var(--font);
+  font-size: 9px;
+  color: #475569;
+}
+
+/* ── Inspect button ─────────────────────────────── */
+
+.btnInspect {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  background: linear-gradient(135deg, #4C1D95, #6D28D9);
+  border: 1px solid #A78BFA55;
+  border-radius: 5px;
+  color: #DDD6FE;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: background 0.1s, box-shadow 0.1s, border-color 0.1s;
+  box-shadow: 0 2px 8px #7C3AED33;
+}
+
+.btnInspect:hover {
+  background: linear-gradient(135deg, #5B21B6, #7C3AED);
+  border-color: #A78BFA88;
+  box-shadow: 0 2px 14px #7C3AED55;
+}
+
+.btnInspectActive {
+  background: linear-gradient(135deg, #6D28D9, #7C3AED);
+  border-color: #A78BFAaa;
+  box-shadow: 0 0 0 2px #A78BFA33, 0 2px 12px #7C3AED55;
+}
+
+/* ── End simulation button ──────────────────────── */
+
+.btnEnd {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  background: #1A0808;
+  border: 1px solid #EF444455;
+  border-radius: 6px;
+  color: #FCA5A5;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.btnEnd:hover {
+  background: #2D0B0B;
+  border-color: #EF444488;
+}
+
+.stopIcon {
+  width: 8px;
+  height: 8px;
+  background: #FCA5A5;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+
+/* ── Resume button variant ──────────────────────── */
+
+.btnResume {
+  background: linear-gradient(135deg, #0F2B1A, #0D3320) !important;
+  border-color: #22C55E66 !important;
+}
+
+.btnResume:hover {
+  background: linear-gradient(135deg, #14391E, #166534) !important;
+  border-color: #22C55E99 !important;
+}
+
+/* ── Reports button ─────────────────────────────── */
+
+.btnReports {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  background: #161920;
+  border: 1px solid var(--color-node-border);
+  border-radius: 5px;
+  color: #64748B;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+
+.btnReports:hover {
+  background: #1A1D25;
+  border-color: #A78BFA44;
+  color: #C4B5FD;
+}
+
+.btnReportsActive {
+  background: #1A0F2A;
+  border-color: #A78BFA66;
+  color: #C4B5FD;
+}
+
+.reportsBadge {
+  font-size: 8px;
+  font-weight: 700;
+  color: #A78BFA;
+  background: #2E1065;
+  border: 1px solid #A78BFA44;
+  border-radius: 9px;
+  padding: 0 5px;
+  min-width: 16px;
+  text-align: center;
+  line-height: 16px;
+  height: 16px;
+}
+
+/* ── ScaleScript pill ───────────────────────────── */
+
+.scriptPill {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  background: #0D1A2E;
+  border: 1px solid #4A9EFF33;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.scriptName {
+  font-size: 10px;
+  font-weight: 600;
+  color: #7DC4FF;
+  background: none;
+  border: none;
+  padding: 4px 9px;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.1s;
+}
+
+.scriptName:hover {
+  color: #BAE6FF;
+}
+
+.scriptClose {
+  font-size: 12px;
+  color: #475569;
+  background: none;
+  border: none;
+  border-left: 1px solid #4A9EFF22;
+  padding: 4px 7px;
+  cursor: pointer;
+  line-height: 1;
+  transition: color 0.1s;
+}
+
+.scriptClose:hover {
+  color: '#EF4444';
+}
+
+/* Script preview modal */
+.scriptModal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scriptModalBox {
+  width: 500px;
+  max-height: 70vh;
+  background: #111318;
+  border: 1px solid #2A2E38;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 16px 64px rgba(0, 0, 0, 0.8);
+}
+
+.scriptModalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #CBD5E1;
+  border-bottom: 1px solid #1A1D22;
+}
+
+.scriptModalHeader button {
+  background: none;
+  border: none;
+  color: #475569;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.scriptModalBody {
+  padding: 12px 14px;
+  font-size: 10px;
+  color: #64748B;
+  overflow-y: auto;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Drop-in animation ──────────────────────────── */
+
+@keyframes dropIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

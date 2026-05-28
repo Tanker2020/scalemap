@@ -1,0 +1,52 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - button "New" [ref=e5] [cursor=pointer]:
+      - img [ref=e6]
+      - text: New
+    - button "Open" [ref=e9] [cursor=pointer]:
+      - img [ref=e10]
+      - text: Open
+    - button "Export" [ref=e12] [cursor=pointer]:
+      - img [ref=e13]
+      - text: Export
+    - button "Select" [ref=e17] [cursor=pointer]:
+      - img [ref=e18]
+      - text: Select
+    - button "Hand" [ref=e20] [cursor=pointer]:
+      - img [ref=e21]
+      - text: Hand
+    - button "Connect" [ref=e26] [cursor=pointer]:
+      - img [ref=e27]
+      - text: Connect
+    - button "Simulate" [ref=e29] [cursor=pointer]: Simulate
+    - button "0.5×" [ref=e31] [cursor=pointer]
+    - button "1×" [ref=e32] [cursor=pointer]
+    - button "2×" [ref=e33] [cursor=pointer]
+    - button "5×" [ref=e34] [cursor=pointer]
+    - button "Undo" [ref=e36] [cursor=pointer]
+    - button "Redo" [ref=e37] [cursor=pointer]
+  - generic [ref=e40]:
+    - generic [ref=e41]:
+      - generic [ref=e42]: scalemap
+      - generic [ref=e43]: Infrastructure visualization
+    - generic [ref=e44]:
+      - button "New Diagram Start from scratch" [ref=e45] [cursor=pointer]:
+        - img [ref=e46]
+        - generic [ref=e49]: New Diagram
+        - generic [ref=e50]: Start from scratch
+      - button "Import Terraform Coming soon" [disabled] [ref=e51]:
+        - img [ref=e52]
+        - generic [ref=e55]: Import Terraform
+        - generic [ref=e56]: Coming soon
+    - generic [ref=e57]:
+      - generic [ref=e58]:
+        - img [ref=e59]
+        - text: Recent files
+      - button "diagram-1779234060221.scalemap 5/19/2026" [ref=e62] [cursor=pointer]:
+        - generic [ref=e63]: diagram-1779234060221.scalemap
+        - generic [ref=e64]: 5/19/2026
+  - generic [ref=e65]:
+    - generic [ref=e66]: 0 nodes
+    - generic [ref=e68]: 0 edges
+    - button "Grid on" [ref=e69] [cursor=pointer]
+    - generic [ref=e70]: Autosaved not yet saved

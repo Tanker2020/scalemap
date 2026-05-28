@@ -1,0 +1,45 @@
+.menu {
+  position: fixed;
+  background: #1A1D25;
+  border: 1px solid #2A2E38;
+  border-radius: 7px;
+  padding: 4px;
+  min-width: 160px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  z-index: 1000;
+}
+
+.item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #CBD5E1;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: var(--font);
+  transition: background 0.1s, color 0.1s;
+}
+
+.item:hover {
+  background: #2A2E38;
+  color: #F1F5F9;
+}
+
+.item.danger {
+  color: #FCA5A5;
+}
+
+.item.danger:hover {
+  background: #1F0000;
+  color: #EF4444;
+}
+
+.sep {
+  height: 1px;
+  background: #2A2E38;
+  margin: 3px 0;
+}

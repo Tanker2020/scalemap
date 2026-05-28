@@ -1,0 +1,151 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - button "New" [ref=e5] [cursor=pointer]:
+      - img [ref=e6]
+      - text: New
+    - button "Open" [ref=e9] [cursor=pointer]:
+      - img [ref=e10]
+      - text: Open
+    - button "Save" [ref=e12] [cursor=pointer]:
+      - img [ref=e13]
+      - text: Save
+    - button "Select" [ref=e18] [cursor=pointer]:
+      - img [ref=e19]
+      - text: Select
+    - button "Hand" [ref=e21] [cursor=pointer]:
+      - img [ref=e22]
+      - text: Hand
+    - button "Connect" [ref=e27] [cursor=pointer]:
+      - img [ref=e28]
+      - text: Connect
+    - button "Simulate" [ref=e30] [cursor=pointer]: Simulate
+    - button "0.5×" [ref=e32] [cursor=pointer]
+    - button "1×" [ref=e33] [cursor=pointer]
+    - button "2×" [ref=e34] [cursor=pointer]
+    - button "5×" [ref=e35] [cursor=pointer]
+    - button "Undo" [ref=e37] [cursor=pointer]
+    - button "Redo" [ref=e38] [cursor=pointer]
+  - generic [ref=e39]:
+    - complementary [ref=e276]:
+      - generic [ref=e277]:
+        - img [ref=e278]
+        - text: Node Palette
+      - textbox "Search nodes..." [ref=e284]
+      - generic [ref=e285]:
+        - generic [ref=e286]:
+          - generic [ref=e287]: Compute
+          - generic "Drag to add EC2 / VM" [ref=e288]:
+            - img [ref=e290]
+            - generic [ref=e293]: EC2 / VM
+          - generic "Drag to add Lambda" [ref=e294]:
+            - img [ref=e296]
+            - generic [ref=e298]: Lambda
+          - generic "Drag to add Container" [ref=e299]:
+            - img [ref=e301]
+            - generic [ref=e304]: Container
+          - generic "Drag to add Pod" [ref=e305]:
+            - img [ref=e307]
+            - generic [ref=e309]: Pod
+        - generic [ref=e310]:
+          - generic [ref=e311]: Network
+          - generic "Drag to add Load Balancer" [ref=e312]:
+            - img [ref=e314]
+            - generic [ref=e318]: Load Balancer
+          - generic "Drag to add API Gateway" [ref=e319]:
+            - img [ref=e321]
+            - generic [ref=e324]: API Gateway
+          - generic "Drag to add CDN" [ref=e325]:
+            - img [ref=e327]
+            - generic [ref=e331]: CDN
+          - generic "Drag to add DNS" [ref=e332]:
+            - img [ref=e334]
+            - generic [ref=e337]: DNS
+          - generic "Drag to add Firewall" [ref=e338]:
+            - img [ref=e340]
+            - generic [ref=e342]: Firewall
+          - generic "Drag to add VPN" [ref=e343]:
+            - img [ref=e345]
+            - generic [ref=e348]: VPN
+        - generic [ref=e349]:
+          - generic [ref=e350]: Storage
+          - generic "Drag to add Database (SQL)" [ref=e351]:
+            - img [ref=e353]
+            - generic [ref=e357]: Database (SQL)
+          - generic "Drag to add Database (NoSQL)" [ref=e358]:
+            - img [ref=e360]
+            - generic [ref=e364]: Database (NoSQL)
+          - generic "Drag to add Object Storage" [ref=e365]:
+            - img [ref=e367]
+            - generic [ref=e370]: Object Storage
+          - generic "Drag to add File Storage" [ref=e371]:
+            - img [ref=e373]
+            - generic [ref=e375]: File Storage
+        - generic [ref=e376]:
+          - generic [ref=e377]: Messaging
+          - generic "Drag to add Message Queue" [ref=e378]:
+            - img [ref=e380]
+            - generic [ref=e381]: Message Queue
+          - generic "Drag to add Event Bus" [ref=e382]:
+            - img [ref=e384]
+            - generic [ref=e390]: Event Bus
+          - generic "Drag to add Pub/Sub Topic" [ref=e391]:
+            - img [ref=e393]
+            - generic [ref=e399]: Pub/Sub Topic
+          - generic "Drag to add Stream (Kafka)" [ref=e400]:
+            - img [ref=e402]
+            - generic [ref=e404]: Stream (Kafka)
+        - generic [ref=e405]:
+          - generic [ref=e406]: Caching
+          - generic "Drag to add Redis" [ref=e407]:
+            - img [ref=e409]
+            - generic [ref=e413]: Redis
+          - generic "Drag to add Memcached" [ref=e414]:
+            - img [ref=e416]
+            - generic [ref=e420]: Memcached
+          - generic "Drag to add CDN Cache" [ref=e421]:
+            - img [ref=e423]
+            - generic [ref=e427]: CDN Cache
+        - generic [ref=e428]:
+          - generic [ref=e429]: Orchestration
+          - generic "Drag to add K8s Cluster" [ref=e430]:
+            - img [ref=e432]
+            - generic [ref=e435]: K8s Cluster
+          - generic "Drag to add ECS Cluster" [ref=e436]:
+            - img [ref=e438]
+            - generic [ref=e441]: ECS Cluster
+          - generic "Drag to add Docker Compose" [ref=e442]:
+            - img [ref=e444]
+            - generic [ref=e448]: Docker Compose
+        - generic [ref=e449]:
+          - generic [ref=e450]: Grouping
+          - generic "Drag to add VPC" [ref=e451]:
+            - img [ref=e453]
+            - generic [ref=e455]: VPC
+          - generic "Drag to add Subnet" [ref=e456]:
+            - img [ref=e458]
+            - generic [ref=e460]: Subnet
+          - generic "Drag to add Availability Zone" [ref=e461]:
+            - img [ref=e463]
+            - generic [ref=e465]: Availability Zone
+          - generic "Drag to add Region" [ref=e466]:
+            - img [ref=e468]
+            - generic [ref=e470]: Region
+          - generic "Drag to add Namespace" [ref=e471]:
+            - img [ref=e473]
+            - generic [ref=e475]: Namespace
+    - application [ref=e477]:
+      - group [ref=e489]:
+        - generic [ref=e490]:
+          - img [ref=e496]
+          - generic [ref=e500]: EC2 / VM
+      - img
+      - img "Mini Map" [ref=e481]
+    - complementary [ref=e483]:
+      - generic [ref=e484]:
+        - img [ref=e485]
+        - text: Properties
+      - generic [ref=e488]: Select a node or edge to view its properties
+  - generic [ref=e58]:
+    - generic [ref=e59]: 1 node
+    - generic [ref=e61]: 0 edges
+    - button "Grid on" [ref=e62] [cursor=pointer]

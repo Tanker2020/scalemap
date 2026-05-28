@@ -1,0 +1,228 @@
+.node {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  min-width: 148px;
+  background: var(--color-node-base);
+  border: 1px solid var(--color-node-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
+  cursor: default;
+  position: relative;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.node.selected {
+  border-color: var(--accent, #4A9EFF);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #4A9EFF) 12%, transparent),
+              0 4px 18px rgba(0, 0, 0, 0.55);
+}
+
+/* Saturation states — simulation overlay, does NOT change NodeData.status */
+.node.critical {
+  border-color: #F59E0B;
+  box-shadow: 0 0 0 1px #F59E0B33, 0 4px 18px rgba(0,0,0,0.55);
+}
+
+@keyframes saturatedPulse {
+  0%, 100% { border-color: #EF4444; box-shadow: 0 0 0 1px #EF444433, 0 4px 18px rgba(0,0,0,0.55); }
+  50%       { border-color: #F87171; box-shadow: 0 0 0 3px #EF444422, 0 0 14px #EF444444, 0 4px 18px rgba(0,0,0,0.55); }
+}
+
+.node.saturated {
+  animation: saturatedPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes connectPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0px #22C55E44, 0 4px 18px rgba(0,0,0,0.55);
+    border-color: #22C55E;
+  }
+  50% {
+    box-shadow: 0 0 0 5px #22C55E18, 0 0 10px #22C55E33, 0 4px 18px rgba(0,0,0,0.55);
+    border-color: #4ADE80;
+  }
+}
+
+.node.connectSource {
+  cursor: crosshair;
+  animation: connectPulse 1.8s ease-in-out infinite;
+}
+
+.handle {
+  width: 10px;
+  height: 10px;
+  background: var(--accent, #4A9EFF);
+  border: 2px solid #0D0F12;
+  border-radius: 50%;
+  opacity: 0;
+  transition: transform 0.1s;
+}
+
+/* Handles are only made visible via Canvas.module.css connectMode rule */
+
+.iconWrap {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--node-bg, #0D1F35);
+  border: 1px solid var(--node-border, #1A3A5C);
+  color: var(--accent, #4A9EFF);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.body {
+  flex: 1;
+  min-width: 0;
+}
+
+.label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #E2E8F0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: text;
+}
+
+.labelInput {
+  font-size: 12px;
+  font-weight: 600;
+  color: #E2E8F0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--accent, #4A9EFF);
+  width: 100%;
+  padding: 0;
+  outline: none;
+  font-family: var(--font);
+}
+
+.subtitle {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Universal utilization bar — replaces the old messaging-only queueBar */
+.utilBar {
+  margin-top: 5px;
+  height: 3px;
+  background: #1A1D22;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.utilFill {
+  height: 100%;
+  border-radius: 2px;
+}
+
+@keyframes utilPulseAnim {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
+}
+
+.utilPulse {
+  animation: utilPulseAnim 0.9s ease-in-out infinite;
+}
+
+.right {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.statusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.warnDot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #F59E0B22;
+  border: 1px solid #F59E0B66;
+  color: #F59E0B;
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Simulation-driven bottleneck badge */
+.bottleneckBadge {
+  font-size: 8px;
+  font-weight: 700;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #EF444422;
+  border: 1px solid #EF444466;
+  color: #EF4444;
+  cursor: help;
+}
+
+/* Circuit breaker open — amber ⊘ */
+.circuitBadge {
+  font-size: 10px;
+  font-weight: 700;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #F59E0B22;
+  border: 1px solid #F59E0B88;
+  color: #F59E0B;
+  cursor: help;
+}
+
+.circuitHalfBadge {
+  font-size: 10px;
+  font-weight: 700;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #F59E0B11;
+  border: 1px dashed #F59E0B55;
+  color: #F59E0B88;
+  cursor: help;
+}
+
+/* Circuit breaker node states */
+@keyframes circuitOpenPulse {
+  0%, 100% { border-color: #F59E0B; box-shadow: 0 0 0 1px #F59E0B33, 0 4px 18px rgba(0,0,0,0.55); }
+  50%       { border-color: #FCD34D; box-shadow: 0 0 0 3px #F59E0B22, 0 0 12px #F59E0B44, 0 4px 18px rgba(0,0,0,0.55); }
+}
+
+.node.circuitOpen {
+  animation: circuitOpenPulse 1.6s ease-in-out infinite;
+}
+
+.node.circuitHalfOpen {
+  border-color: #F59E0B;
+  border-style: dashed;
+  box-shadow: 0 0 0 1px #F59E0B22, 0 4px 18px rgba(0,0,0,0.55);
+}

@@ -1,0 +1,505 @@
+import { useCallback, useState, useRef, useEffect } from 'react'
+import { FilePlus, FolderOpen, ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, Save, Upload, Download, ClipboardList } from 'lucide-react'
+import { useCanvasStore } from '../store/canvas.store'
+import { useSimulationStore, type TrafficMode } from '../store/simulation.store'
+import { useMetricsHistoryStore } from '../store/metricsHistory.store'
+import { useUiStore } from '../store/ui.store'
+import { useFileStore } from '../store/file.store'
+import { exportTerraform } from '../../lib/terraform/exportTerraform'
+import { serialize } from '../../lib/serializer'
+import { parseScaleScript, applyScaleScript, exportScaleScript } from '../../lib/scalescript'
+import type { NodeData, NodeSlo } from '../../lib/nodeConfig'
+import styles from './Toolbar.module.css'
+
+const SPEEDS: number[]      = [0.5, 1, 2, 5]
+const MULTIPLIERS: number[] = [0.5, 1, 2, 5]
+const TRAFFIC_MODES: { key: TrafficMode; label: string; short: string; desc: string }[] = [
+  { key: 'steady', label: 'Steady Load',            short: 'Steady',  desc: 'Constant traffic at configured volume' },
+  { key: 'ramp',   label: 'Gradual Ramp',           short: 'Ramp',    desc: 'Linear ramp from 0 → 100% over 2 min. Models gradual rollout or morning traffic rise.' },
+  { key: 'spike',  label: 'Flash Crowd',            short: 'Spike',   desc: '8× burst for 10s every 40s. Models flash sales or viral events.' },
+  { key: 'chaos',  label: 'Chaos / Fault Injection', short: 'Chaos',  desc: 'Random node failures (5–20s) + 6× traffic spikes. Models production chaos or game day.' },
+]
+
+// ─── Save button ─────────────────────────────────────────────────────────────
+
+function SaveButton({ fileName }: { fileName: string | null }) {
+  const handleSave = useCallback(() => {
+    const { nodes, edges, viewport } = useCanvasStore.getState()
+    const name    = fileName?.replace('.scalemap', '') || 'diagram'
+    const created = new Date().toISOString()
+    const json    = serialize(nodes, edges, viewport, name, created)
+    downloadBlob(json, `${name}.scalemap`, 'application/json')
+  }, [fileName])
+
+  return (
+    <button className={styles.btnPrimary} onClick={handleSave} title="Save diagram as .scalemap">
+      <Save size={12} /> Save
+    </button>
+  )
+}
+
+// ─── Export menu ──────────────────────────────────────────────────────────────
+
+function ExportMenu({ fileName }: { fileName: string | null }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const { runs } = useSimulationStore()
+
+  useEffect(() => {
+    if (!open) return
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const handleTf = useCallback(() => {
+    setOpen(false)
+    const { nodes, edges } = useCanvasStore.getState()
+    const name = fileName?.replace('.scalemap', '') || 'main'
+    const hcl  = exportTerraform(nodes, edges, name)
+    downloadBlob(hcl, `${name}.tf`, 'text/plain')
+  }, [fileName])
+
+  const handleExportScript = useCallback(() => {
+    setOpen(false)
+    const { nodes } = useCanvasStore.getState()
+    const { nodeConfigs, edgeRps, sloStatus, simulationMode, globalMultiplier, speed } = useSimulationStore.getState()
+    const sloMap = new Map<string, NodeSlo>()
+    for (const [nid] of sloStatus) {
+      const node = nodes.find(n => n.id === nid)
+      const slo = (node?.data as NodeData)?.slo
+      if (slo) sloMap.set(nid, slo)
+    }
+    const name = fileName?.replace('.scalemap', '') || 'script'
+    const json = exportScaleScript(name, nodes, nodeConfigs, edgeRps, sloMap, simulationMode, globalMultiplier, speed)
+    downloadBlob(json, `${name}.scalescript.json`, 'application/json')
+  }, [fileName])
+
+  return (
+    <div ref={ref} className={styles.dropdownWrap}>
+      <button
+        className={`${styles.btnPrimary} ${styles.btnDropdown}`}
+        onClick={() => setOpen(o => !o)}
+        title="Export diagram files"
+      >
+        <Download size={12} /> Export <ChevronDown size={10} className={open ? styles.chevronOpen : ''} />
+      </button>
+      {open && (
+        <div className={styles.dropdownMenu}>
+          <button className={styles.dropdownItem} onClick={handleTf}>
+            <span className={styles.dropdownItemIcon}>⬡</span>
+            <span>
+              <span className={styles.dropdownItemLabel}>Export as Terraform</span>
+              <span className={styles.dropdownItemDesc}>HashiCorp HCL (.tf)</span>
+            </span>
+          </button>
+          <button className={styles.dropdownItem} onClick={handleExportScript}>
+            <span className={styles.dropdownItemIcon}>⚙</span>
+            <span>
+              <span className={styles.dropdownItemLabel}>Export ScaleScript</span>
+              <span className={styles.dropdownItemDesc}>Portable simulation config (.json)</span>
+            </span>
+          </button>
+          {runs.length > 0 && (
+            <button className={styles.dropdownItem} onClick={() => setOpen(false)} disabled title="Coming soon">
+              <span className={styles.dropdownItemIcon} style={{ opacity: 0.4 }}>📊</span>
+              <span>
+                <span className={styles.dropdownItemLabel} style={{ opacity: 0.4 }}>Export Run Report</span>
+                <span className={styles.dropdownItemDesc}>Coming soon — disk export</span>
+              </span>
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Import menu ──────────────────────────────────────────────────────────────
+
+function ImportMenu() {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const handleImportScript = useCallback(() => {
+    setOpen(false)
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.json'
+    input.onchange = async () => {
+      const file = input.files?.[0]
+      if (!file) return
+      try {
+        const text = await file.text()
+        const script = parseScaleScript(text)
+        const { nodes, edges } = useCanvasStore.getState()
+        const applied = applyScaleScript(script, nodes, edges)
+        const simStore = useSimulationStore.getState()
+        for (const { nodeId, simConfig } of applied.nodeConfigs) {
+          simStore.setNodeConfig(nodeId, simConfig)
+        }
+        for (const { edgeId, rps } of applied.edgeRps) {
+          simStore.setEdgeRps(edgeId, rps)
+        }
+        if (applied.simulationOverrides?.mode) simStore.setSimulationMode(applied.simulationOverrides.mode)
+        if (applied.simulationOverrides?.baseMultiplier) simStore.setGlobalMultiplier(applied.simulationOverrides.baseMultiplier)
+        if (applied.simulationOverrides?.speed) simStore.setSpeed(applied.simulationOverrides.speed)
+        simStore.setActiveScript(script)
+      } catch (err) {
+        console.error('Failed to load ScaleScript:', err)
+      }
+    }
+    input.click()
+  }, [])
+
+  return (
+    <div ref={ref} className={styles.dropdownWrap}>
+      <button
+        className={`${styles.btnPrimary} ${styles.btnDropdown}`}
+        onClick={() => setOpen(o => !o)}
+        title="Import files into diagram"
+      >
+        <Upload size={12} /> Import <ChevronDown size={10} className={open ? styles.chevronOpen : ''} />
+      </button>
+      {open && (
+        <div className={styles.dropdownMenu}>
+          <button className={styles.dropdownItem} onClick={handleImportScript}>
+            <span className={styles.dropdownItemIcon}>⚙</span>
+            <span>
+              <span className={styles.dropdownItemLabel}>Import ScaleScript…</span>
+              <span className={styles.dropdownItemDesc}>Load simulation config (.json)</span>
+            </span>
+          </button>
+          <button className={styles.dropdownItem} disabled title="Coming soon" style={{ opacity: 0.5, cursor: 'not-allowed' }}>
+            <span className={styles.dropdownItemIcon}>⬡</span>
+            <span>
+              <span className={styles.dropdownItemLabel}>Import Terraform…</span>
+              <span className={styles.dropdownItemDesc}>Coming soon</span>
+            </span>
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Simulation settings popover ─────────────────────────────────────────────
+
+function SimSettings() {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const { speed, setSpeed, simulationMode, setSimulationMode, globalMultiplier, setGlobalMultiplier } = useSimulationStore()
+
+  useEffect(() => {
+    if (!open) return
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const isNonDefault = simulationMode !== 'steady' || globalMultiplier !== 1
+  const modeLabel = TRAFFIC_MODES.find(m => m.key === simulationMode)?.short ?? 'Steady'
+
+  return (
+    <div ref={ref} className={styles.dropdownWrap}>
+      <button
+        className={`${styles.btnSettings} ${open ? styles.btnSettingsOpen : ''}`}
+        onClick={() => setOpen(o => !o)}
+        title="Simulation settings — speed, traffic mode, volume"
+      >
+        <SlidersHorizontal size={12} />
+        {isNonDefault && (
+          <span className={styles.settingsBadge}>{modeLabel} · {globalMultiplier}×</span>
+        )}
+      </button>
+
+      {open && (
+        <div className={styles.settingsPanel}>
+          <div className={styles.settingsPanelHeader}>Simulation Settings</div>
+
+          <div className={styles.settingsSection}>
+            <div className={styles.settingsSectionLabel}>Playback Speed</div>
+            <div className={styles.settingsRow}>
+              {SPEEDS.map(s => (
+                <button
+                  key={s}
+                  className={`${styles.settingsChip} ${speed === s ? styles.settingsChipActive : ''}`}
+                  onClick={() => setSpeed(s)}
+                  title={`${s}× animation speed`}
+                >
+                  {s}×
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className={styles.settingsDivider} />
+
+          <div className={styles.settingsSection}>
+            <div className={styles.settingsSectionLabel}>Traffic Pattern</div>
+            <div className={styles.settingsModeGrid}>
+              {TRAFFIC_MODES.map(({ key, label, desc }) => (
+                <button
+                  key={key}
+                  className={`${styles.settingsModeBtn} ${simulationMode === key ? styles.settingsModeBtnActive : ''}`}
+                  onClick={() => setSimulationMode(key)}
+                  title={desc}
+                >
+                  <span className={styles.settingsModeName}>{label}</span>
+                  <span className={styles.settingsModeDesc}>{desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className={styles.settingsDivider} />
+
+          <div className={styles.settingsSection}>
+            <div className={styles.settingsSectionLabel}>Traffic Volume</div>
+            <div className={styles.settingsRow}>
+              {MULTIPLIERS.map(m => (
+                <button
+                  key={m}
+                  className={`${styles.settingsChip} ${globalMultiplier === m ? styles.settingsChipActive : ''}`}
+                  onClick={() => setGlobalMultiplier(m)}
+                  title={`${m}× base request volume`}
+                >
+                  {m}×
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className={styles.settingsPanelFooter}>
+            Press <kbd className={styles.kbd}>Esc</kbd> to close
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function downloadBlob(content: string, filename: string, type: string) {
+  const blob = new Blob([content], { type })
+  const url  = URL.createObjectURL(blob)
+  const a    = Object.assign(document.createElement('a'), { href: url, download: filename })
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+// ─── Main toolbar ─────────────────────────────────────────────────────────────
+
+export function Toolbar() {
+  const { undo, redo } = useCanvasStore()
+  const { running, paused, setRunning, setPaused, activeScript, setActiveScript, runs } = useSimulationStore()
+  const { activeTool, setActiveTool, setSimConfigOpen, simConfigOpen, reportsPanelOpen, setReportsPanelOpen } = useUiStore()
+  const { showHome, setShowHome, fileName } = useFileStore()
+  const [scriptPreviewOpen, setScriptPreviewOpen] = useState(false)
+
+  const handleNew = useCallback(() => {
+    useSimulationStore.getState().reset()
+    useMetricsHistoryStore.getState().clearHistory()
+    useCanvasStore.setState({ nodes: [], edges: [], history: [], future: [] })
+    useFileStore.getState().setFilePath(null)
+    useFileStore.getState().setShowHome(false)
+  }, [])
+
+  const handleStartSim = useCallback(() => {
+    setPaused(false)
+    setRunning(true)
+  }, [setRunning, setPaused])
+
+  const handlePause = useCallback(() => setPaused(true), [setPaused])
+  const handleResume = useCallback(() => setPaused(false), [setPaused])
+  const handleEnd = useCallback(() => {
+    setPaused(false)
+    setRunning(false)
+  }, [setRunning, setPaused])
+
+  return (
+    <div className={styles.toolbar}>
+      {/* File */}
+      <button className={styles.btnPrimary} onClick={handleNew} title="New diagram (Cmd+N)">
+        <FilePlus size={12} /> New
+      </button>
+      <button
+        className={styles.btnPrimary}
+        onClick={() => setShowHome(!showHome)}
+        title="Open diagram"
+      >
+        <FolderOpen size={12} /> Open
+      </button>
+      {!showHome && (
+        <>
+          <SaveButton fileName={fileName} />
+          <ExportMenu fileName={fileName} />
+          <ImportMenu />
+        </>
+      )}
+
+      <div className={styles.sep} />
+
+      {/* Tools */}
+      <button
+        className={`${styles.btnTool} ${activeTool === 'select' ? styles.active : ''}`}
+        onClick={() => setActiveTool('select')}
+        title="Select (V)"
+      >
+        <MousePointer2 size={12} /> Select
+      </button>
+      <button
+        className={`${styles.btnTool} ${activeTool === 'hand' ? styles.active : ''}`}
+        onClick={() => setActiveTool('hand')}
+        title="Hand (H)"
+      >
+        <Hand size={12} /> Hand
+      </button>
+      <button
+        className={`${styles.btnTool} ${activeTool === 'connect' ? styles.active : ''}`}
+        onClick={() => setActiveTool('connect')}
+        title="Connect (C)"
+      >
+        <Zap size={12} /> Connect
+      </button>
+
+      {!showHome && (
+        <>
+          <div className={styles.spacer} />
+
+          {/* Inspect button — purple pill */}
+          <button
+            className={`${styles.btnInspect} ${simConfigOpen ? styles.btnInspectActive : ''}`}
+            onClick={() => setSimConfigOpen(!simConfigOpen)}
+            title="Simulation Inspector — configure capacity, latency, SLOs and watch live metrics for every node"
+          >
+            <SlidersHorizontal size={12} />
+            Inspect
+          </button>
+
+          {/* Reports button */}
+          <button
+            className={`${styles.btnReports} ${reportsPanelOpen ? styles.btnReportsActive : ''}`}
+            onClick={() => setReportsPanelOpen(!reportsPanelOpen)}
+            title="View simulation run reports"
+          >
+            <ClipboardList size={12} />
+            Reports
+            {runs.length > 0 && (
+              <span className={styles.reportsBadge}>{runs.length}</span>
+            )}
+          </button>
+
+          {/* Active ScaleScript pill */}
+          {activeScript && (
+            <div className={styles.scriptPill}>
+              <button
+                className={styles.scriptName}
+                onClick={() => setScriptPreviewOpen(o => !o)}
+                title="Click to preview ScaleScript"
+              >
+                ⚙ {activeScript.name}
+              </button>
+              <button
+                className={styles.scriptClose}
+                onClick={() => {
+                  setActiveScript(null)
+                }}
+                title="Clear ScaleScript"
+              >×</button>
+            </div>
+          )}
+
+          {/* Script preview modal */}
+          {scriptPreviewOpen && activeScript && (
+            <div className={styles.scriptModal} onClick={() => setScriptPreviewOpen(false)}>
+              <div className={styles.scriptModalBox} onClick={e => e.stopPropagation()}>
+                <div className={styles.scriptModalHeader}>
+                  <span>{activeScript.name}</span>
+                  <button onClick={() => setScriptPreviewOpen(false)}>×</button>
+                </div>
+                <pre className={styles.scriptModalBody}>{JSON.stringify(activeScript, null, 2)}</pre>
+              </div>
+            </div>
+          )}
+
+          {/* Simulate + settings */}
+          <SimSettings />
+
+          {/* Simulation controls — Run / Pause+End */}
+          {!running ? (
+            <button
+              className={styles.btnSimulate}
+              onClick={handleStartSim}
+              title="Start simulation (Space)"
+            >
+              <span className={styles.playIcon} />
+              Simulate
+            </button>
+          ) : (
+            <>
+              {paused ? (
+                <button
+                  className={`${styles.btnSimulate} ${styles.btnResume}`}
+                  onClick={handleResume}
+                  title="Resume simulation"
+                >
+                  <span className={styles.playIcon} />
+                  Resume
+                </button>
+              ) : (
+                <button
+                  className={`${styles.btnSimulate} ${styles.simulating}`}
+                  onClick={handlePause}
+                  title="Freeze simulation — particles stop, metrics freeze. Click Resume to continue."
+                >
+                  <span className={styles.pauseIcon}>
+                    <span className={styles.pauseBar} />
+                    <span className={styles.pauseBar} />
+                  </span>
+                  Pause
+                </button>
+              )}
+              <button
+                className={styles.btnEnd}
+                onClick={handleEnd}
+                title="End simulation and capture run report"
+              >
+                <span className={styles.stopIcon} />
+                End
+              </button>
+            </>
+          )}
+
+          <div className={styles.sep} />
+
+          <button className={styles.btnTool} onClick={() => undo()} title="Undo (Cmd+Z)">Undo</button>
+          <button className={styles.btnTool} onClick={() => redo()} title="Redo (Cmd+Shift+Z)">Redo</button>
+        </>
+      )}
+    </div>
+  )
+}

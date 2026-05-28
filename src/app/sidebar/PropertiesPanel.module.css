@@ -1,0 +1,474 @@
+.sidebar {
+  width: 260px;
+  min-width: 260px;
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-toolbar-border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  padding: 9px 13px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  border-bottom: 1px solid var(--color-toolbar-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.typeBadge {
+  font-size: 9px;
+  border-radius: 3px;
+  padding: 2px 7px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid;
+}
+
+.empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #2A2E38;
+  font-size: 11px;
+  text-align: center;
+  padding: 20px;
+  line-height: 1.8;
+}
+
+.scroll {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.scroll::-webkit-scrollbar { width: 4px; }
+.scroll::-webkit-scrollbar-track { background: transparent; }
+.scroll::-webkit-scrollbar-thumb { background: #2A2E38; border-radius: 2px; }
+
+.section {
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--color-toolbar-border);
+}
+
+.section:last-child {
+  border-bottom: none;
+}
+
+.sectionLabel {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 7px;
+}
+
+.field {
+  width: 100%;
+  background: var(--color-node-base);
+  border: 1px solid var(--color-node-border);
+  border-radius: 5px;
+  padding: 6px 9px;
+  font-size: 12px;
+  color: #E2E8F0;
+  margin-bottom: 6px;
+  transition: border-color 0.15s;
+}
+
+.field:focus {
+  border-color: #4A9EFF55;
+  outline: none;
+}
+
+.field:last-child {
+  margin-bottom: 0;
+}
+
+textarea.field {
+  height: 70px;
+  resize: none;
+  line-height: 1.5;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.row:last-child {
+  margin-bottom: 0;
+}
+
+.rowLabel {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.rowVal {
+  font-size: 11px;
+  color: #CBD5E1;
+  font-weight: 600;
+}
+
+.statusSelect {
+  background: #0F2A1A;
+  border: 1px solid #22C55E55;
+  border-radius: 4px;
+  color: #4ADE80;
+  font-family: var(--font);
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+.numberInput {
+  width: 70px;
+  background: var(--color-node-base);
+  border: 1px solid var(--color-node-border);
+  border-radius: 4px;
+  padding: 3px 7px;
+  font-size: 11px;
+  color: #CBD5E1;
+  text-align: right;
+}
+
+.numberInput:focus {
+  border-color: #4A9EFF55;
+  outline: none;
+}
+
+.edgeTypeSelect {
+  background: var(--color-node-base);
+  border: 1px solid var(--color-node-border);
+  border-radius: 4px;
+  color: #CBD5E1;
+  font-family: var(--font);
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+/* ── Tab bar ───────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  border-bottom: 1px solid var(--color-toolbar-border);
+  flex-shrink: 0;
+}
+
+.tab {
+  flex: 1;
+  padding: 8px 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font-family: var(--font);
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+
+.tab:hover {
+  color: #CBD5E1;
+}
+
+.tab.activeTab {
+  color: #4A9EFF;
+  border-bottom-color: #4A9EFF;
+}
+
+/* ── Analytics placeholder ─────────────────────── */
+
+.analyticsPane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px 20px;
+  text-align: center;
+  color: #2A2E38;
+}
+
+.analyticsIcon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #161920;
+  border: 1px solid #2A2E38;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #4A9EFF33;
+}
+
+.analyticsTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.analyticsSub {
+  font-size: 10px;
+  color: #2A2E38;
+  line-height: 1.6;
+}
+
+/* ── Live analytics ────────────────────────────── */
+
+.metricRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 5px;
+}
+
+.metricRow:last-child {
+  margin-bottom: 0;
+}
+
+.metricLabel {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.metricVal {
+  font-size: 11px;
+  font-weight: 700;
+  color: #CBD5E1;
+  letter-spacing: 0.02em;
+}
+
+.metricBar {
+  margin-top: 5px;
+  height: 3px;
+  background: #1A1D22;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.metricFill {
+  height: 100%;
+  border-radius: 2px;
+}
+
+.bottleneckAlert {
+  margin: 10px 13px 0;
+  padding: 6px 10px;
+  border-radius: 5px;
+  border: 1px solid;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* ── Simulation config section ──────────────────── */
+
+.simConfigBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.simRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ── SLO section ────────────────────────────────── */
+
+.sloHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+
+.sloBadgePass {
+  font-size: 9px;
+  font-weight: 700;
+  color: #22C55E;
+  letter-spacing: 0.04em;
+}
+
+.sloBadgeFail {
+  font-size: 9px;
+  font-weight: 700;
+  color: #EF4444;
+  letter-spacing: 0.04em;
+}
+
+.sloRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+  font-size: 10px;
+}
+
+.sloLabel {
+  flex: 1;
+  color: var(--color-text-secondary);
+}
+
+.sloTarget {
+  color: #475569;
+  min-width: 60px;
+  text-align: right;
+}
+
+.sloVal {
+  font-weight: 700;
+  min-width: 40px;
+  text-align: right;
+}
+
+.sloInputsHeader {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #2A2E38;
+  margin-top: 8px;
+  margin-bottom: 6px;
+}
+
+/* ── Event log ──────────────────────────────────── */
+
+.eventLogSection {
+  padding: 0;
+}
+
+.eventCards {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+/* ── Status dot row ─────────────────────────────── */
+
+.statusDots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.statusDotBtn {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--dot-color);
+  border: 2px solid transparent;
+  opacity: 0.35;
+  cursor: pointer;
+  transition: opacity 0.1s, border-color 0.1s;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.statusDotBtn:hover {
+  opacity: 0.7;
+}
+
+.statusDotBtn.statusDotBtnActive {
+  opacity: 1;
+  border-color: var(--dot-color);
+  box-shadow: 0 0 6px var(--dot-color);
+}
+
+.statusLabel {
+  font-size: 10px;
+  color: #475569;
+  margin-left: 4px;
+  text-transform: capitalize;
+}
+
+/* ── Add link ────────────────────────────────────── */
+
+.addLink {
+  font-size: 10px;
+  color: #475569;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  letter-spacing: 0.02em;
+  transition: color 0.1s;
+}
+
+.addLink:hover {
+  color: #94A3B8;
+}
+
+/* ── Inspector hint button ───────────────────────────── */
+
+.inspectorHintBtn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: #0D0F12;
+  border: 1px solid #2A2E38;
+  border-radius: 5px;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: #64748B;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+  text-align: left;
+}
+
+.inspectorHintBtn:hover {
+  border-color: #4A9EFF66;
+  color: #94A3B8;
+}
+
+.inspectorHintArrow {
+  font-size: 12px;
+  color: #4A9EFF;
+  flex-shrink: 0;
+}
+
+/* ── Clickable sparkline wrappers ────────────────────── */
+
+.sparkClickable {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 4px 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.sparkClickable:hover {
+  background: #111318;
+  border-color: #2A2E38;
+}
+
+.sparkClickLabel {
+  font-size: 8px;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
