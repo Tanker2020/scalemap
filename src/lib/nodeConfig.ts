@@ -30,6 +30,13 @@ export interface LatencyModel {
   p99Ms: number
 }
 
+export interface RetryConfig {
+  maxRetries: number          // 0 disables retries entirely
+  baseDelayMs: number         // delay before the first retry attempt
+  jitter: 'full' | 'equal'   // full: random(0, cap); equal: cap/2 + random(0, cap/2)
+  maxDelayMs?: number         // cap on exponential growth
+}
+
 export interface NodeSlo {
   maxP90LatencyMs?: number
   maxErrorRate?: number
@@ -52,6 +59,7 @@ export interface NodeSimConfig {
     timeoutMs: number
   }
   timeoutMs?: number
+  retryConfig?: RetryConfig
   coldStart?: {
     p50Ms: number
     p99Ms: number

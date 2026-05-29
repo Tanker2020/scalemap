@@ -1,5 +1,5 @@
 import type { Node, Edge } from '@xyflow/react'
-import type { NodeData, EdgeData, NodeType, NodeSimConfig } from '../../../lib/nodeConfig'
+import type { NodeData, EdgeData, NodeType, NodeSimConfig, RetryConfig } from '../../../lib/nodeConfig'
 import { GROUPING_TYPES } from '../../../lib/nodeConfig'
 import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventType, type CircuitState } from '../../store/simulation.store'
 import { NODE_SIM_DEFAULTS } from '../../simulation/defaults'
@@ -11,6 +11,7 @@ export interface Particle {
   speed: number
   color: string
   edgeId: string
+  retries: number   // 0 on first spawn; incremented on each retry
 }
 
 // ─── Internal state ───────────────────────────────────────────────────────────
@@ -31,6 +32,13 @@ interface CircuitBreakerEntry {
   state: CircuitState
   openedAt: number
   errorWindow: number[]
+}
+
+interface RetryEntry {
+  edgeId: string
+  color: string
+  retries: number   // attempt number this particle is on (1 = first retry)
+  fireAt: number    // performance.now() timestamp when it should re-spawn
 }
 
 interface EngineState {
@@ -54,6 +62,9 @@ const state: EngineState = {
   nodeConcurrency: new Map(),
   errorFlashes: [],
 }
+
+// Retry queue: particles scheduled for re-spawn after backoff delay
+const _retryQueue: RetryEntry[] = []
 
 // Latency sample ring buffers (last 200 samples per node)
 const _latencyWindows = new Map<string, number[]>()
@@ -98,6 +109,19 @@ const EMA_ALPHA = 0.25
 
 function ema(prev: number, next: number): number {
   return prev + EMA_ALPHA * (next - prev)
+}
+
+// ─── Retry delay ─────────────────────────────────────────────────────────────
+
+// attempt is 0-indexed: 0 = first retry, 1 = second, etc.
+// full jitter:  random(0, cap)            — AWS recommended; spreads the herd
+// equal jitter: cap/2 + random(0, cap/2) — guarantees minimum spacing
+function computeRetryDelay(config: RetryConfig, attempt: number): number {
+  const cap = config.maxDelayMs ?? Infinity
+  const exp = Math.min(cap, config.baseDelayMs * Math.pow(2, attempt))
+  return config.jitter === 'full'
+    ? Math.random() * exp
+    : exp / 2 + Math.random() * (exp / 2)
 }
 
 // ─── Latency helpers ──────────────────────────────────────────────────────────
@@ -421,6 +445,7 @@ function spawnParticles(now: number, delta: number) {
         speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.4),
         color: edgeColor(ep.edgeType),
         edgeId: ep.id,
+        retries: 0,
       })
       total++
     }
@@ -429,7 +454,7 @@ function spawnParticles(now: number, delta: number) {
 
 // ─── Particle arrival / node behavior ────────────────────────────────────────
 
-function dropParticle(ep: EdgePath, targetNodeId: string) {
+function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
   spawnErrorFlash(targetNodeId)
 
   const sourceNodeId = _edgesData.find(e => e.id === ep.id)?.source
@@ -453,9 +478,25 @@ function dropParticle(ep: EdgePath, targetNodeId: string) {
       _onEvent('cascade_detected', sourceNodeId, `${srcLabel} → ${tgtLabel} cascade`, 'critical')
     }
   }
+
+  // Schedule retry with exponential backoff + jitter if the target node allows it
+  if (particle) {
+    const targetNode = _nodesMap.get(targetNodeId)
+    const targetType = targetNode?.type as NodeType | undefined
+    const config = targetType ? effectiveConfig(targetNodeId, targetType) : null
+    const rc = config?.retryConfig
+    if (rc && rc.maxRetries > 0 && particle.retries < rc.maxRetries) {
+      _retryQueue.push({
+        edgeId: ep.id,
+        color: particle.color,
+        retries: particle.retries + 1,
+        fireAt: performance.now() + computeRetryDelay(rc, particle.retries) / _speed,
+      })
+    }
+  }
 }
 
-function handleParticleArrival(ep: EdgePath, now: number) {
+function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
   if (!ep.targetNodeType) return
   const targetNodeType = ep.targetNodeType
   const targetNodeId   = _edgesData.find(e => e.id === ep.id)?.target
@@ -474,7 +515,7 @@ function handleParticleArrival(ep: EdgePath, now: number) {
 
   // Skip forwarding if chaos mode has this node failed
   if (_chaosFailures.has(targetNodeId)) {
-    dropParticle(ep, targetNodeId)
+    dropParticle(ep, targetNodeId, particle)
     return
   }
 
@@ -484,7 +525,7 @@ function handleParticleArrival(ep: EdgePath, now: number) {
   if (config.connectionPool) {
     const active = _activeConnections.get(targetNodeId) ?? 0
     if (active >= config.connectionPool.max) {
-      dropParticle(ep, targetNodeId)
+      dropParticle(ep, targetNodeId, particle)
       const label = ((_nodesMap.get(targetNodeId))?.data as NodeData)?.label ?? targetNodeId
       _onEvent('connection_pool_exhausted', targetNodeId, `${label} connection pool exhausted (${active}/${config.connectionPool.max})`, 'critical', { utilization: 1, errorRate: 1 })
       return
@@ -499,12 +540,12 @@ function handleParticleArrival(ep: EdgePath, now: number) {
   // Check circuit breaker state
   const breakerState = checkBreakerTransition(targetNodeId, config, now)
   if (breakerState === 'open') {
-    dropParticle(ep, targetNodeId)
+    dropParticle(ep, targetNodeId, particle)
     recordBreakerResult(targetNodeId, true, config, now)
     return
   }
   if (breakerState === 'half-open' && Math.random() > 0.1) {
-    dropParticle(ep, targetNodeId)
+    dropParticle(ep, targetNodeId, particle)
     return
   }
 
@@ -525,7 +566,7 @@ function handleParticleArrival(ep: EdgePath, now: number) {
       const cur = state.nodeConcurrency.get(targetNodeId) ?? 0
       const maxC = config.maxConcurrency ?? 10
       if (cur >= maxC) {
-        dropParticle(ep, targetNodeId)
+        dropParticle(ep, targetNodeId, particle)
         recordBreakerResult(targetNodeId, true, config, now)
         return
       }
@@ -557,7 +598,7 @@ function handleParticleArrival(ep: EdgePath, now: number) {
 
     // Other non-queue nodes: drop if at capacity
     if (utilization >= 1.0 + config.errorRate) {
-      dropParticle(ep, targetNodeId)
+      dropParticle(ep, targetNodeId, particle)
       recordBreakerResult(targetNodeId, true, config, now)
       return
     }
@@ -576,7 +617,7 @@ function handleParticleArrival(ep: EdgePath, now: number) {
       state.roundRobinIndex.set(targetNodeId, idx + 1)
       if (!state.particles.has(outEp.id)) state.particles.set(outEp.id, [])
       state.particles.get(outEp.id)!.push({
-        t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(outEp.edgeType), edgeId: outEp.id,
+        t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(outEp.edgeType), edgeId: outEp.id, retries: 0,
       })
     }
     return
@@ -597,7 +638,7 @@ function forwardToOutbound(nodeId: string, _nodeType: NodeType) {
   const outEp = outEdges[Math.floor(Math.random() * outEdges.length)]
   if (!state.particles.has(outEp.id)) state.particles.set(outEp.id, [])
   state.particles.get(outEp.id)!.push({
-    t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(outEp.edgeType), edgeId: outEp.id,
+    t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(outEp.edgeType), edgeId: outEp.id, retries: 0,
   })
 }
 
@@ -816,6 +857,52 @@ function updateAllNodeMetrics(now: number, delta: number) {
   if (metricsBatch.size > 0) _onNodeMetrics(metricsBatch)
 }
 
+// ─── Retry queue processing ───────────────────────────────────────────────────
+
+const RETRY_STORM_THRESHOLD = 5  // simultaneous retries to the same node in one frame
+
+function processRetryQueue(now: number) {
+  if (_retryQueue.length === 0) return
+
+  // Partition into ready and still-pending without allocating two arrays each frame
+  const ready: RetryEntry[] = []
+  let i = _retryQueue.length
+  while (i--) {
+    if (_retryQueue[i].fireAt <= now) ready.push(..._retryQueue.splice(i, 1))
+  }
+  if (ready.length === 0) return
+
+  // Retry storm detection: count simultaneous retries arriving at each target node
+  const targetHits = new Map<string, number>()
+  for (const r of ready) {
+    const targetId = _edgesData.find(e => e.id === r.edgeId)?.target
+    if (targetId) targetHits.set(targetId, (targetHits.get(targetId) ?? 0) + 1)
+  }
+  for (const [nodeId, count] of targetHits) {
+    if (count >= RETRY_STORM_THRESHOLD) {
+      const node = _nodesMap.get(nodeId)
+      const label = (node?.data as NodeData)?.label ?? nodeId
+      _onEvent('retry_storm', nodeId, `${label} retry storm — ${count} retries in one burst`, 'critical')
+    }
+  }
+
+  // Re-spawn ready retries as particles, subject to the global cap
+  for (const r of ready) {
+    let total = 0
+    for (const arr of state.particles.values()) total += arr.length
+    if (total >= MAX_PARTICLES) break
+
+    if (!state.particles.has(r.edgeId)) state.particles.set(r.edgeId, [])
+    state.particles.get(r.edgeId)!.push({
+      t: 0,
+      speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.4),
+      color: r.color,
+      edgeId: r.edgeId,
+      retries: r.retries,
+    })
+  }
+}
+
 // ─── Main draw loop ───────────────────────────────────────────────────────────
 
 const GLOW_LINGER = 2200
@@ -899,7 +986,7 @@ function advanceAndDraw(canvas: HTMLCanvasElement, now: number, delta: number) {
       p.t += p.speed * dt
 
       if (p.t >= 1) {
-        handleParticleArrival(ep, now)
+        handleParticleArrival(ep, now, p)
         continue
       }
 
@@ -958,6 +1045,7 @@ function loop(now: number) {
 
     if (!_canvas) { state.rafId = requestAnimationFrame(loop); return }
 
+    processRetryQueue(now)
     spawnParticles(now, delta)
     advanceAndDraw(_canvas, now, delta)
     updateAllNodeMetrics(now, delta)
@@ -1020,6 +1108,7 @@ export function startSimulation(
   _scaleInCooldown.clear()
   _restartCounts.clear()
   _restartCooldown.clear()
+  _retryQueue.length = 0
 
   state.lastTime = _simStartTime
   state.rafId    = requestAnimationFrame(loop)
@@ -1045,6 +1134,7 @@ export function stopSimulation() {
   _scaleInCooldown.clear()
   _restartCounts.clear()
   _restartCooldown.clear()
+  _retryQueue.length = 0
   _smoothedMetrics.clear()
   if (_canvas) {
     _canvas.getContext('2d')?.clearRect(0, 0, _canvas.width, _canvas.height)
@@ -1077,7 +1167,7 @@ export function injectBurst(nodeId: string, edges: Edge<EdgeData>[]) {
     if (!state.particles.has(edge.id)) state.particles.set(edge.id, [])
     const arr = state.particles.get(edge.id)!
     for (let i = 0; i < 20; i++) {
-      arr.push({ t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.8), color: edgeColor(ep.edgeType), edgeId: edge.id })
+      arr.push({ t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.8), color: edgeColor(ep.edgeType), edgeId: edge.id, retries: 0 })
     }
   }
 }

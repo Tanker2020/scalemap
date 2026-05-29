@@ -196,105 +196,71 @@ function ImportMenu() {
 
 // ─── Simulation settings popover ─────────────────────────────────────────────
 
-function SimSettings() {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+function SimSettings({ open }: { open: boolean }) {
   const { speed, setSpeed, simulationMode, setSimulationMode, globalMultiplier, setGlobalMultiplier } = useSimulationStore()
 
-  useEffect(() => {
-    if (!open) return
-    function onDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
-  const isNonDefault = simulationMode !== 'steady' || globalMultiplier !== 1
-  const modeLabel = TRAFFIC_MODES.find(m => m.key === simulationMode)?.short ?? 'Steady'
+  if (!open) return null
 
   return (
-    <div ref={ref} className={styles.dropdownWrap}>
-      <button
-        className={`${styles.btnSettings} ${open ? styles.btnSettingsOpen : ''}`}
-        onClick={() => setOpen(o => !o)}
-        title="Simulation settings — speed, traffic mode, volume"
-      >
-        <SlidersHorizontal size={12} />
-        {isNonDefault && (
-          <span className={styles.settingsBadge}>{modeLabel} · {globalMultiplier}×</span>
-        )}
-      </button>
+    <div className={styles.settingsPanel}>
+      <div className={styles.settingsPanelHeader}>Simulation Settings</div>
 
-      {open && (
-        <div className={styles.settingsPanel}>
-          <div className={styles.settingsPanelHeader}>Simulation Settings</div>
-
-          <div className={styles.settingsSection}>
-            <div className={styles.settingsSectionLabel}>Playback Speed</div>
-            <div className={styles.settingsRow}>
-              {SPEEDS.map(s => (
-                <button
-                  key={s}
-                  className={`${styles.settingsChip} ${speed === s ? styles.settingsChipActive : ''}`}
-                  onClick={() => setSpeed(s)}
-                  title={`${s}× animation speed`}
-                >
-                  {s}×
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className={styles.settingsDivider} />
-
-          <div className={styles.settingsSection}>
-            <div className={styles.settingsSectionLabel}>Traffic Pattern</div>
-            <div className={styles.settingsModeGrid}>
-              {TRAFFIC_MODES.map(({ key, label, desc }) => (
-                <button
-                  key={key}
-                  className={`${styles.settingsModeBtn} ${simulationMode === key ? styles.settingsModeBtnActive : ''}`}
-                  onClick={() => setSimulationMode(key)}
-                  title={desc}
-                >
-                  <span className={styles.settingsModeName}>{label}</span>
-                  <span className={styles.settingsModeDesc}>{desc}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className={styles.settingsDivider} />
-
-          <div className={styles.settingsSection}>
-            <div className={styles.settingsSectionLabel}>Traffic Volume</div>
-            <div className={styles.settingsRow}>
-              {MULTIPLIERS.map(m => (
-                <button
-                  key={m}
-                  className={`${styles.settingsChip} ${globalMultiplier === m ? styles.settingsChipActive : ''}`}
-                  onClick={() => setGlobalMultiplier(m)}
-                  title={`${m}× base request volume`}
-                >
-                  {m}×
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className={styles.settingsPanelFooter}>
-            Press <kbd className={styles.kbd}>Esc</kbd> to close
-          </div>
+      <div className={styles.settingsSection}>
+        <div className={styles.settingsSectionLabel}>Playback Speed</div>
+        <div className={styles.settingsRow}>
+          {SPEEDS.map(s => (
+            <button
+              key={s}
+              className={`${styles.settingsChip} ${speed === s ? styles.settingsChipActive : ''}`}
+              onClick={() => setSpeed(s)}
+              title={`${s}× animation speed`}
+            >
+              {s}×
+            </button>
+          ))}
         </div>
-      )}
+      </div>
+
+      <div className={styles.settingsDivider} />
+
+      <div className={styles.settingsSection}>
+        <div className={styles.settingsSectionLabel}>Traffic Pattern</div>
+        <div className={styles.settingsModeGrid}>
+          {TRAFFIC_MODES.map(({ key, label, desc }) => (
+            <button
+              key={key}
+              className={`${styles.settingsModeBtn} ${simulationMode === key ? styles.settingsModeBtnActive : ''}`}
+              onClick={() => setSimulationMode(key)}
+              title={desc}
+            >
+              <span className={styles.settingsModeName}>{label}</span>
+              <span className={styles.settingsModeDesc}>{desc}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={styles.settingsDivider} />
+
+      <div className={styles.settingsSection}>
+        <div className={styles.settingsSectionLabel}>Traffic Volume</div>
+        <div className={styles.settingsRow}>
+          {MULTIPLIERS.map(m => (
+            <button
+              key={m}
+              className={`${styles.settingsChip} ${globalMultiplier === m ? styles.settingsChipActive : ''}`}
+              onClick={() => setGlobalMultiplier(m)}
+              title={`${m}× base request volume`}
+            >
+              {m}×
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={styles.settingsPanelFooter}>
+        Press <kbd className={styles.kbd}>Esc</kbd> to close
+      </div>
     </div>
   )
 }
@@ -315,10 +281,14 @@ function downloadBlob(content: string, filename: string, type: string) {
 
 export function Toolbar() {
   const { undo, redo } = useCanvasStore()
-  const { running, paused, setRunning, setPaused, activeScript, setActiveScript, runs } = useSimulationStore()
+  const { running, paused, setRunning, setPaused, activeScript, setActiveScript, runs, simulationMode, globalMultiplier } = useSimulationStore()
   const { activeTool, setActiveTool, setSimConfigOpen, simConfigOpen, reportsPanelOpen, setReportsPanelOpen } = useUiStore()
   const { showHome, setShowHome, fileName } = useFileStore()
   const [scriptPreviewOpen, setScriptPreviewOpen] = useState(false)
+  const [simSettingsOpen, setSimSettingsOpen] = useState(false)
+  const simWrapRef = useRef<HTMLDivElement>(null)
+  const isNonDefault = simulationMode !== 'steady' || globalMultiplier !== 1
+  const modeLabel = TRAFFIC_MODES.find(m => m.key === simulationMode)?.short ?? 'Steady'
 
   const handleNew = useCallback(() => {
     useSimulationStore.getState().reset()
@@ -339,6 +309,22 @@ export function Toolbar() {
     setPaused(false)
     setRunning(false)
   }, [setRunning, setPaused])
+
+  useEffect(() => {
+    if (!simSettingsOpen) return
+    function onDown(e: MouseEvent) {
+      if (simWrapRef.current && !simWrapRef.current.contains(e.target as Node)) setSimSettingsOpen(false)
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setSimSettingsOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [simSettingsOpen])
 
   return (
     <div className={styles.toolbar}>
@@ -388,6 +374,10 @@ export function Toolbar() {
 
       {!showHome && (
         <>
+          <div className={styles.sep} />
+          <button className={styles.btnTool} onClick={() => undo()} title="Undo (Cmd+Z)">Undo</button>
+          <button className={styles.btnTool} onClick={() => redo()} title="Redo (Cmd+Shift+Z)">Redo</button>
+
           <div className={styles.spacer} />
 
           {/* Inspect button — purple pill */}
@@ -446,24 +436,21 @@ export function Toolbar() {
             </div>
           )}
 
-          {/* Simulate + settings */}
-          <SimSettings />
-
-          {/* Simulation controls — Run / Pause+End */}
-          {!running ? (
-            <button
-              className={styles.btnSimulate}
-              onClick={handleStartSim}
-              title="Start simulation (Space)"
-            >
-              <span className={styles.playIcon} />
-              Simulate
-            </button>
-          ) : (
-            <>
-              {paused ? (
+          {/* Simulation split button group */}
+          <div ref={simWrapRef} className={styles.simSplitGroup}>
+            <div className={styles.simSplitBtn}>
+              {!running ? (
                 <button
-                  className={`${styles.btnSimulate} ${styles.btnResume}`}
+                  className={`${styles.btnSimulate} ${styles.btnSimMain}`}
+                  onClick={handleStartSim}
+                  title="Start simulation (Space)"
+                >
+                  <span className={styles.playIcon} />
+                  Simulate
+                </button>
+              ) : paused ? (
+                <button
+                  className={`${styles.btnSimulate} ${styles.btnResume} ${styles.btnSimMain}`}
                   onClick={handleResume}
                   title="Resume simulation"
                 >
@@ -472,7 +459,7 @@ export function Toolbar() {
                 </button>
               ) : (
                 <button
-                  className={`${styles.btnSimulate} ${styles.simulating}`}
+                  className={`${styles.btnSimulate} ${styles.simulating} ${styles.btnSimMain}`}
                   onClick={handlePause}
                   title="Freeze simulation — particles stop, metrics freeze. Click Resume to continue."
                 >
@@ -484,6 +471,24 @@ export function Toolbar() {
                 </button>
               )}
               <button
+                className={[
+                  styles.btnSimChevron,
+                  running && !paused ? styles.btnSimChevronSimulating : '',
+                  running && paused ? styles.btnSimChevronResume : '',
+                  simSettingsOpen ? styles.btnSimChevronOpen : '',
+                ].filter(Boolean).join(' ')}
+                onClick={() => setSimSettingsOpen(o => !o)}
+                title="Simulation settings — speed, traffic mode, volume"
+              >
+                {isNonDefault && (
+                  <span className={styles.settingsBadge}>{modeLabel} · {globalMultiplier}×</span>
+                )}
+                <ChevronDown size={11} className={simSettingsOpen ? styles.chevronOpen : ''} />
+              </button>
+            </div>
+
+            {running && (
+              <button
                 className={styles.btnEnd}
                 onClick={handleEnd}
                 title="End simulation and capture run report"
@@ -491,13 +496,10 @@ export function Toolbar() {
                 <span className={styles.stopIcon} />
                 End
               </button>
-            </>
-          )}
+            )}
 
-          <div className={styles.sep} />
-
-          <button className={styles.btnTool} onClick={() => undo()} title="Undo (Cmd+Z)">Undo</button>
-          <button className={styles.btnTool} onClick={() => redo()} title="Redo (Cmd+Shift+Z)">Redo</button>
+            <SimSettings open={simSettingsOpen} />
+          </div>
         </>
       )}
     </div>

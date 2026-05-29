@@ -12,9 +12,10 @@
   "app": {
     "windows": [
       {
-        "title": "inframap",
+        "title": "scalemap",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "dragDropEnabled": false
       }
     ],
     "security": {

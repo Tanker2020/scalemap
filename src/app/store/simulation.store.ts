@@ -34,6 +34,7 @@ export type SimEventType =
   | 'autoscale_complete'
   | 'autoscale_scaledin'
   | 'crash_loop_detected'
+  | 'retry_storm'
 
 export interface SimEvent {
   id: string

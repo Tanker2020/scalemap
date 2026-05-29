@@ -2,30 +2,30 @@ import type { NodeType, NodeSimConfig, NodeSlo } from '../../lib/nodeConfig'
 
 export const NODE_SIM_DEFAULTS: Record<NodeType, NodeSimConfig> = {
   // Compute — fixed capacity, no auto-scale, no self-healing
-  ec2:          { maxRps: 1000,  processingMs: 10,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000 },
-  lambda:       { maxRps: 1000,  processingMs: 50,  errorRate: 0, maxConcurrency: 10, latencyModel: { p50Ms: 80,  p99Ms: 800  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 29_000, coldStart: { p50Ms: 400, p99Ms: 2500 }, maxWarmInstances: 5 },
-  container:    { maxRps: 500,   processingMs: 15,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000 },
-  pod:          { maxRps: 300,   processingMs: 20,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000 },
+  ec2:          { maxRps: 1000,  processingMs: 10,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 } },
+  lambda:       { maxRps: 1000,  processingMs: 50,  errorRate: 0, maxConcurrency: 10, latencyModel: { p50Ms: 80,  p99Ms: 800  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 29_000, coldStart: { p50Ms: 400, p99Ms: 2500 }, maxWarmInstances: 5, retryConfig: { maxRetries: 2, baseDelayMs: 200,  jitter: 'full',  maxDelayMs: 3000 } },
+  container:    { maxRps: 500,   processingMs: 15,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 } },
+  pod:          { maxRps: 300,   processingMs: 20,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 } },
   // Network
-  loadBalancer: { maxRps: 10000, processingMs: 2,   errorRate: 0, latencyModel: { p50Ms: 3,   p99Ms: 20   }, timeoutMs: 60_000 },
-  apiGateway:   { maxRps: 5000,  processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 10,  p99Ms: 100  }, timeoutMs: 30_000 },
+  loadBalancer: { maxRps: 10000, processingMs: 2,   errorRate: 0, latencyModel: { p50Ms: 3,   p99Ms: 20   }, timeoutMs: 60_000, retryConfig: { maxRetries: 2, baseDelayMs: 50,   jitter: 'full',  maxDelayMs: 1000 } },
+  apiGateway:   { maxRps: 5000,  processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 10,  p99Ms: 100  }, timeoutMs: 30_000, retryConfig: { maxRetries: 2, baseDelayMs: 100,  jitter: 'equal', maxDelayMs: 2000 } },
   cdn:          { maxRps: 20000, processingMs: 1,   errorRate: 0, latencyModel: { p50Ms: 5,   p99Ms: 50   } },
   dns:          { maxRps: 50000, processingMs: 1,   errorRate: 0, latencyModel: { p50Ms: 1,   p99Ms: 10   } },
   firewall:     { maxRps: 5000,  processingMs: 2,   errorRate: 0, latencyModel: { p50Ms: 2,   p99Ms: 15   } },
   vpn:          { maxRps: 1000,  processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 10,  p99Ms: 80   } },
   // Storage — connection pool limits
-  dbSql:        { maxRps: 500,   processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 8,   p99Ms: 200  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 10_000, connectionPool: { max: 100,    timeoutMs: 5_000 } },
-  dbNoSql:      { maxRps: 5000,  processingMs: 2,   errorRate: 0, latencyModel: { p50Ms: 2,   p99Ms: 30   }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 5_000,  connectionPool: { max: 500,    timeoutMs: 2_000 } },
+  dbSql:        { maxRps: 500,   processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 8,   p99Ms: 200  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 10_000, connectionPool: { max: 100,    timeoutMs: 5_000 }, retryConfig: { maxRetries: 2, baseDelayMs: 50,   jitter: 'equal', maxDelayMs: 500  } },
+  dbNoSql:      { maxRps: 5000,  processingMs: 2,   errorRate: 0, latencyModel: { p50Ms: 2,   p99Ms: 30   }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 5_000,  connectionPool: { max: 500,    timeoutMs: 2_000 }, retryConfig: { maxRetries: 3, baseDelayMs: 20,   jitter: 'full',  maxDelayMs: 200  } },
   objectStorage:{ maxRps: 2000,  processingMs: 50,  errorRate: 0, latencyModel: { p50Ms: 30,  p99Ms: 300  }, connectionPool: { max: 1_000,  timeoutMs: 10_000 } },
   fileStorage:  { maxRps: 500,   processingMs: 20,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 200  } },
-  // Messaging
+  // Messaging — no retries; queues have their own requeue semantics
   queue:        { maxRps: 10000, processingMs: 0,   errorRate: 0, queueCapacity: 1000, latencyModel: { p50Ms: 1, p99Ms: 10 } },
   eventBus:     { maxRps: 10000, processingMs: 0,   errorRate: 0, queueCapacity: 1000, latencyModel: { p50Ms: 1, p99Ms: 10 } },
   pubsub:       { maxRps: 10000, processingMs: 0,   errorRate: 0, queueCapacity: 1000, latencyModel: { p50Ms: 1, p99Ms: 10 } },
   stream:       { maxRps: 50000, processingMs: 0,   errorRate: 0, queueCapacity: 10000, latencyModel: { p50Ms: 2, p99Ms: 20 } },
-  // Caching — high connection limits
-  redis:        { maxRps: 50000, processingMs: 1,   errorRate: 0, latencyModel: { p50Ms: 0.5, p99Ms: 5   }, connectionPool: { max: 10_000, timeoutMs: 200 } },
-  memcached:    { maxRps: 50000, processingMs: 1,   errorRate: 0, latencyModel: { p50Ms: 0.5, p99Ms: 5   }, connectionPool: { max: 10_000, timeoutMs: 200 } },
+  // Caching — high connection limits, short retries (fail fast, fall back to source)
+  redis:        { maxRps: 50000, processingMs: 1,   errorRate: 0, latencyModel: { p50Ms: 0.5, p99Ms: 5   }, connectionPool: { max: 10_000, timeoutMs: 200 }, retryConfig: { maxRetries: 1, baseDelayMs: 10,   jitter: 'full',  maxDelayMs: 50   } },
+  memcached:    { maxRps: 50000, processingMs: 1,   errorRate: 0, latencyModel: { p50Ms: 0.5, p99Ms: 5   }, connectionPool: { max: 10_000, timeoutMs: 200 }, retryConfig: { maxRetries: 1, baseDelayMs: 10,   jitter: 'full',  maxDelayMs: 50   } },
   cdnCache:     { maxRps: 20000, processingMs: 1,   errorRate: 0, latencyModel: { p50Ms: 3,   p99Ms: 30  } },
   // Orchestration — K8s/ECS have auto-scaling + self-healing
   k8sCluster:   { maxRps: 2000,  processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 5,   p99Ms: 50  }, autoScale: { minCapacityRps: 300, maxCapacityRps: 3000, scaleOutThreshold: 0.70, scaleOutDelayMs: 30_000, scaleInThreshold: 0.30, scaleInCooldownMs: 300_000 }, selfHealing: { restartDelayMs: 20_000, maxRestarts: 3, crashLoopBackoffMs: 60_000 } },

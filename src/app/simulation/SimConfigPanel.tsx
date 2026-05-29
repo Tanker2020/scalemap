@@ -93,6 +93,7 @@ const EVENT_META: Record<SimEventType, { label: string; icon: string }> = {
   autoscale_complete:        { label: 'Scale Complete',     icon: '✓' },
   autoscale_scaledin:        { label: 'Scaled In',          icon: '⬇' },
   crash_loop_detected:       { label: 'Crash Loop',         icon: '⚡' },
+  retry_storm:               { label: 'Retry Storm',         icon: '↺' },
 }
 
 type SimEvent = import('../store/simulation.store').SimEvent
@@ -459,6 +460,63 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
               </>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Retry Strategy — shown for nodes that have a retryConfig */}
+      {eff.retryConfig && (
+        <div className={styles.configBlock}>
+          <div className={styles.configBlockTitle}>Retry Strategy</div>
+          <div className={styles.configGrid}>
+            <div className={styles.configField}>
+              <span className={styles.configLabel}>Max Retries</span>
+              <NumericStepper
+                value={eff.retryConfig.maxRetries}
+                onChange={v => setNodeConfig(nodeId, { retryConfig: { ...eff.retryConfig!, maxRetries: v } })}
+                min={0}
+                max={10}
+                step={1}
+              />
+            </div>
+            <div className={styles.configField}>
+              <span className={styles.configLabel}>Base Delay (ms)</span>
+              <NumericStepper
+                value={eff.retryConfig.baseDelayMs}
+                onChange={v => setNodeConfig(nodeId, { retryConfig: { ...eff.retryConfig!, baseDelayMs: v } })}
+                min={10}
+                step={50}
+              />
+            </div>
+            <div className={styles.configField}>
+              <span className={styles.configLabel}>Max Delay (ms)</span>
+              <NumericStepper
+                value={eff.retryConfig.maxDelayMs ?? 0}
+                onChange={v => setNodeConfig(nodeId, { retryConfig: { ...eff.retryConfig!, maxDelayMs: v || undefined } })}
+                min={0}
+                step={500}
+              />
+            </div>
+            <div className={styles.configField}>
+              <span className={styles.configLabel}>Jitter</span>
+              <select
+                value={eff.retryConfig.jitter}
+                onChange={e => setNodeConfig(nodeId, { retryConfig: { ...eff.retryConfig!, jitter: e.target.value as 'full' | 'equal' } })}
+                style={{
+                  background: '#0D0F12', color: '#F1F5F9', border: '1px solid #2A2E38',
+                  borderRadius: 4, padding: '2px 6px', fontSize: 11, fontFamily: 'inherit',
+                  cursor: 'pointer', width: '100%',
+                }}
+              >
+                <option value="full">Full (AWS-recommended)</option>
+                <option value="equal">Equal (min spacing)</option>
+              </select>
+            </div>
+          </div>
+          {eff.retryConfig.maxRetries === 0 && (
+            <div style={{ fontSize: 10, color: '#475569', marginTop: 4, paddingLeft: 2 }}>
+              Retries disabled — dropped requests are permanently lost
+            </div>
+          )}
         </div>
       )}
 
