@@ -398,7 +398,103 @@ Alpha of 0.25 means the current frame contributes 25% of the new value; the prev
 
 ---
 
-## 14. Client retries and retry storms
+## 14. Node health states and fault injection
+
+Every non-grouping, non-queue node carries a continuously computed `healthScore` (0–1) and a discrete `healthState` (`'healthy'`, `'degraded'`, `'down'`). These are pushed to `NodeMetrics` each metrics cycle and drive both the visual status dot on `BaseNode` and real engine behavior — they are not cosmetic.
+
+### Health score formula
+
+```
+baselineP50    = latencyModel.p50Ms  (or processingMs if no latency model)
+latencyRatio   = p90LatencyMs / max(baselineP50, 1)
+
+errorContrib   = min(0.4,  errorRate × 0.4)
+utilPenalty    = utilization > 0.8 ? min(0.4, (utilization − 0.8) / 0.2 × 0.4) : 0
+latencyPenalty = min(0.2,  max(0, (latencyRatio − 2) / 10) × 0.2)
+
+healthScore    = max(0, 1 − errorContrib − utilPenalty − latencyPenalty)
+```
+
+| Component | Max weight | Trigger |
+|---|---|---|
+| Error rate | 40% | Any errors present |
+| Utilization | 40% | Above 80% only |
+| Latency amplification | 20% | p90 > 2× baseline p50 |
+
+### Discrete state thresholds
+
+| healthState | Score range | Entry condition |
+|---|---|---|
+| `healthy` | ≥ 0.85 | Normal |
+| `degraded` | 0.50 – 0.84 | Partial impairment |
+| `down` | < 0.50 | Severe impairment |
+
+### Proportional degraded depth
+
+The transition into `degraded` is not binary — the deeper the score falls within the range, the more severe the penalties:
+
+```
+degradedDepth = (0.84 − healthScore) / (0.84 − 0.50)   // 0.0 at entry, 1.0 at bottom
+```
+
+### Behavioral consequences
+
+**Healthy** — functions normally. No engine modifications.
+
+**Degraded:**
+- **Proportional processing slowdown:** all `setTimeout`-based release timers (connection pool, Lambda concurrency, LAC counter) run `1× + degradedDepth×` longer — 1.0× at entry, 2.0× deep in degraded. Models CPU throttling slowing every operation at increasing severity.
+- **Proportional random drops:** on each particle arrival, a random drop fires with probability `0.02 + degradedDepth × 0.13` — 2% at entry, 15% at the bottom. Models resource starvation causing partial request shedding.
+- **Reduced effective capacity:** the node's `effectiveMaxRps` shrinks by `degradedDepth × 50%` — 100% at entry, 50% capacity at the bottom. This pushes utilization higher on the same inRps, which feeds back into the health score and creates a self-reinforcing degradation spiral that mirrors real resource exhaustion.
+
+**Down:**
+- The node's circuit breaker is **immediately tripped** to `open` state.
+- `checkBreakerTransition` is blocked from advancing to `half-open` while the node remains `down` — the CB cannot self-heal until health improves.
+- All inbound particles fail at the circuit breaker check (dropping with normal upstream/stall pressure).
+- **Amplified stall pressure:** drops from a `down` node add `0.15` stall pressure to the upstream caller vs `0.06` for ordinary drops — 2.5× higher. Models TCP timeout behavior: a completely dead node holds upstream threads open for the full timeout duration rather than returning a fast rejection.
+
+### Recovery hysteresis
+
+After exiting `down`, a node is locked to `degraded` for **8 seconds** (`HEALTH_RECOVERY_LOCK_MS`) even if the score would qualify as `healthy`. This models realistic warm-up time — a restarted pod, a GC-recovered JVM, a cache refilling — and prevents oscillation between `down` and `healthy` during flapping conditions.
+
+```
+if (prevState === 'down' && newState !== 'down'):
+    _recoveryUntil[nodeId] = now + 8000ms
+
+if (computedState === 'healthy' && _recoveryUntil[nodeId] > now):
+    healthState = 'degraded'   // still warming up
+```
+
+### Fault injection (`forcedHealthState`)
+
+`forcedHealthState` in `NodeSimConfig` bypasses the score entirely and locks the node to a fixed state for the duration of the simulation:
+
+| Value | Effect |
+|---|---|
+| `'auto'` | Score-based (default) |
+| `'healthy'` | Locks state to healthy regardless of load |
+| `'degraded'` | Immediately applies proportional slowdown and drop rate at depth=0 entry level |
+| `'down'` | Immediately trips the circuit breaker; CB reset is blocked until the override is removed |
+
+Set via the **Fault Inject** dropdown in the Simulation Inspector's Capacity block. Forced states bypass the recovery hysteresis lock.
+
+### Visual feedback
+
+`BaseNode.tsx` reads `metrics.healthState` from the store when the simulation is running and uses it to colour the status dot (green / yellow / red). When the simulation is stopped, the dot reverts to `nodeData.status` — the static canvas label set in the Properties Panel. The status dot is therefore a live simulation indicator, not just a display property.
+
+### Feedback loop between capacity and health score
+
+The degraded capacity reduction and the health score form a deliberate feedback loop:
+
+1. Load increases → utilization rises → health score drops → enters `degraded`
+2. `effectiveMaxRps` shrinks (by up to 50%) → same inRps now looks like higher utilization
+3. Higher apparent utilization feeds back into the health score → score drops further
+4. Deeper degradation → more slowdown, more drops, more stall pressure upstream
+5. Upstream nodes receive stall pressure → their utilization rises → they may also degrade
+6. Eventually reaches an equilibrium or cascades to `down`
+
+This creates realistic degradation spirals without requiring explicit failure injection — sustained overload alone can cascade a node from healthy to down through the scoring system.
+
+## 15. Client retries and retry storms
 
 When a particle is dropped — due to saturation, an open circuit breaker, a chaos failure, connection pool exhaustion, or Lambda concurrency cap — nodes with a `retryConfig` schedule the particle for re-spawning after an exponential backoff delay.
 
@@ -543,4 +639,11 @@ All events are emitted via the `_onEvent` callback and stored in the simulation 
 | Retry jitter (full) | `random(0, cap)` — uniform; maximally spreads retry bursts |
 | Retry jitter (equal) | `cap/2 + random(0, cap/2)` — guarantees minimum wait |
 | Retry storm detection | Count-based threshold (≥5 simultaneous retries per target per frame) |
-| Load balancing | Strict round-robin |
+| Load balancing | Round-robin or Least Active Connections |
+| Health score | Weighted sum: error (40%) + util-above-80% (40%) + latency amplification (20%) |
+| Degraded depth | Linear: `(0.84 − score) / 0.34`, 0.0 at entry, 1.0 at bottom |
+| Degraded slowdown | Proportional: `processingMs × (1 + depth)`, 1×–2× |
+| Degraded drop rate | Proportional: `0.02 + depth × 0.13`, 2%–15% |
+| Degraded capacity | Proportional: `maxRps × (1 − depth × 0.5)`, 100%–50% |
+| Stall pressure ('down') | 0.15 per drop vs 0.06 normal (2.5× — models TCP timeout) |
+| Recovery hysteresis | 8s lock in 'degraded' after exiting 'down' |

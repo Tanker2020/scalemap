@@ -61,6 +61,7 @@ export interface NodeSimConfig {
   timeoutMs?: number
   retryConfig?: RetryConfig
   lbRouting?: 'round-robin' | 'least-connections'
+  forcedHealthState?: 'auto' | 'healthy' | 'degraded' | 'down'
   coldStart?: {
     p50Ms: number
     p99Ms: number

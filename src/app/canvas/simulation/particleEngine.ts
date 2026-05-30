@@ -206,6 +206,12 @@ const _activeConnections = new Map<string, number>()
 // In-flight request counter used by LAC load balancer routing
 const _lbActiveRequests = new Map<string, number>()
 
+// Node health state — written each metrics cycle, read by particle arrival handler
+const _nodeHealthStates = new Map<string, 'healthy' | 'degraded' | 'down'>()
+// Recovery hysteresis: timestamp before which a 'down' node cannot jump straight to 'healthy'
+const _recoveryUntil    = new Map<string, number>()
+const HEALTH_RECOVERY_LOCK_MS = 8_000  // 8s minimum in 'degraded' after exiting 'down'
+
 // Lambda warm instance tracking (7b)
 const _warmInstances    = new Map<string, number>()  // nodeId → warm count
 const _warmLastActivity = new Map<string, number>()  // nodeId → last request ts
@@ -393,13 +399,29 @@ function checkBreakerTransition(nodeId: string, config: NodeSimConfig, now: numb
   const cb = config.circuitBreaker
   if (!cb) return 'closed'
 
-  if (b.state === 'open' && now - b.openedAt > cb.resetMs) {
+  // Don't allow reset while node health is 'down' — CB must stay open
+  if (b.state === 'open' && _nodeHealthStates.get(nodeId) !== 'down' && now - b.openedAt > cb.resetMs) {
     b.state = 'half-open'
     const node = _nodesMap.get(nodeId)
     const label = node ? (node.data as NodeData).label ?? nodeId : nodeId
     _onEvent('circuit_half_open', nodeId, `${label} circuit half-open (testing)`, 'warn')
   }
   return b.state
+}
+
+// ─── Health helpers ───────────────────────────────────────────────────────────
+
+// 0.0 at the healthy/degraded boundary (score=0.84), 1.0 at the degraded/down boundary (score=0.50)
+function degradedDepth(score: number): number {
+  return Math.max(0, Math.min(1, (0.84 - score) / (0.84 - 0.50)))
+}
+
+// processingMs multiplier for degraded nodes — 1.0× at entry, 2.0× at the bottom of degraded
+function effectiveProcessingMs(nodeId: string, config: NodeSimConfig): number {
+  const base = Math.max(1, config.processingMs)
+  if (_nodeHealthStates.get(nodeId) !== 'degraded') return base
+  const prevScore = _smoothedMetrics.get(nodeId)?.healthScore ?? 0.67
+  return base * (1 + degradedDepth(prevScore))  // 1×–2× proportional to depth
 }
 
 // ─── LAC in-flight tracking ──────────────────────────────────────────────────
@@ -412,7 +434,7 @@ function trackRequest(nodeId: string, nodeType: NodeType, config: NodeSimConfig)
   _lbActiveRequests.set(nodeId, (_lbActiveRequests.get(nodeId) ?? 0) + 1)
   setTimeout(() => {
     _lbActiveRequests.set(nodeId, Math.max(0, (_lbActiveRequests.get(nodeId) ?? 1) - 1))
-  }, Math.max(50, config.processingMs) / _speed)
+  }, Math.max(50, effectiveProcessingMs(nodeId, config)) / _speed)
 }
 
 // ─── Spawning ────────────────────────────────────────────────────────────────
@@ -481,9 +503,10 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
     _upstreamPressure.set(sourceNodeId, newPressure)
 
     // Stall pressure → raises source's effective utilization (threads blocked waiting)
-    // Models: open connections to a failed downstream node consume concurrency upstream
+    // 'down' nodes cause 2.5× more stall — models TCP timeout vs fast 503 rejection
+    const stallIncrement = _nodeHealthStates.get(targetNodeId) === 'down' ? 0.15 : 0.06
     const existingStall = _downstreamStallPressure.get(sourceNodeId) ?? 0
-    _downstreamStallPressure.set(sourceNodeId, Math.min(1, existingStall + 0.06))
+    _downstreamStallPressure.set(sourceNodeId, Math.min(1, existingStall + stallIncrement))
 
     // Emit cascade event once pressure is significant
     if (newPressure > 0.2 && _saturatedNodes.has(targetNodeId)) {
@@ -502,8 +525,27 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
     const config = targetType ? effectiveConfig(targetNodeId, targetType) : null
     const rc = config?.retryConfig
     if (rc && rc.maxRetries > 0 && particle.retries < rc.maxRetries) {
+      // If the source of this edge is a LB/gateway, re-route the retry through the LB pool
+      // instead of blindly retrying on the same failing edge — avoids hammering dead backends
+      let retryEdgeId = ep.id
+      const sourceType = sourceNodeId ? (_nodesMap.get(sourceNodeId)?.type as string | undefined) : undefined
+      if (sourceNodeId && (sourceType === 'loadBalancer' || sourceType === 'apiGateway')) {
+        const lbOutEdges = _edgePaths.filter(e =>
+          _edgesData.find(d => d.id === e.id)?.source === sourceNodeId,
+        )
+        const healthyEdges = lbOutEdges.filter(e => {
+          const tgtId = _edgesData.find(d => d.id === e.id)?.target
+          return tgtId
+            ? _circuitBreakers.get(tgtId)?.state !== 'open' && _nodeHealthStates.get(tgtId) !== 'down'
+            : true
+        })
+        const pool = healthyEdges.length > 0 ? healthyEdges : lbOutEdges
+        if (pool.length > 0) {
+          retryEdgeId = pool[Math.floor(Math.random() * pool.length)].id
+        }
+      }
       _retryQueue.push({
-        edgeId: ep.id,
+        edgeId: retryEdgeId,
         color: particle.color,
         retries: particle.retries + 1,
         fireAt: performance.now() + computeRetryDelay(rc, particle.retries) / _speed,
@@ -537,6 +579,18 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
 
   const config = effectiveConfig(targetNodeId, targetNodeType)
 
+  // Degraded health: proportional random drop — 2% at threshold entry, 15% deep in degraded
+  // Models CPU throttling / resource starvation causing partial request shedding
+  if (_nodeHealthStates.get(targetNodeId) === 'degraded') {
+    const prevScore = _smoothedMetrics.get(targetNodeId)?.healthScore ?? 0.67
+    const depth     = degradedDepth(prevScore)
+    const dropRate  = 0.02 + depth * 0.13
+    if (Math.random() < dropRate) {
+      dropParticle(ep, targetNodeId, particle)
+      return
+    }
+  }
+
   // Connection pool check (7a) — databases and caches
   if (config.connectionPool) {
     const active = _activeConnections.get(targetNodeId) ?? 0
@@ -547,7 +601,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       return
     }
     _activeConnections.set(targetNodeId, active + 1)
-    const releaseDelay = Math.max(50, (config.processingMs || 5)) / _speed
+    const releaseDelay = Math.max(50, effectiveProcessingMs(targetNodeId, config)) / _speed
     setTimeout(() => {
       _activeConnections.set(targetNodeId, Math.max(0, (_activeConnections.get(targetNodeId) ?? 1) - 1))
     }, releaseDelay)
@@ -601,7 +655,10 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       _warmInstances.set(targetNodeId, Math.min(maxWarm, warm + 1))
       _warmLastActivity.set(targetNodeId, now)
       state.nodeConcurrency.set(targetNodeId, cur + 1)
-      const delay = Math.max(50, effectiveLatency) / _speed
+      const healthMult = _nodeHealthStates.get(targetNodeId) === 'degraded'
+        ? (1 + degradedDepth(_smoothedMetrics.get(targetNodeId)?.healthScore ?? 0.67))
+        : 1
+      const delay = Math.max(50, effectiveLatency * healthMult) / _speed
       recordLatency(targetNodeId, effectiveLatency)
       setTimeout(() => {
         const c = state.nodeConcurrency.get(targetNodeId) ?? 0
@@ -633,9 +690,20 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       const lbConfig = effectiveConfig(targetNodeId, targetNodeType)
       let chosenEp: EdgePath
 
-      if (lbConfig.lbRouting === 'least-connections' && outEdges.length > 1) {
+      // Exclude backends whose circuit breaker is open or whose health state is 'down'.
+      // Falls back to the full pool only if ALL backends are unavailable — ensures the LB
+      // never silently blackholes traffic when there is no healthy option.
+      const availableEdges = outEdges.filter(e => {
+        const tgtId = _edgesData.find(d => d.id === e.id)?.target
+        if (!tgtId) return true
+        return _circuitBreakers.get(tgtId)?.state !== 'open'
+          && _nodeHealthStates.get(tgtId) !== 'down'
+      })
+      const routingEdges = availableEdges.length > 0 ? availableEdges : outEdges
+
+      if (lbConfig.lbRouting === 'least-connections' && routingEdges.length > 1) {
         // Route to the backend with the fewest in-flight requests
-        chosenEp = outEdges.reduce((best, ep) => {
+        chosenEp = routingEdges.reduce((best, ep) => {
           const tgtId      = _edgesData.find(e => e.id === ep.id)?.target
           const active     = tgtId ? (_lbActiveRequests.get(tgtId) ?? 0) : Infinity
           const bestTgtId  = _edgesData.find(e => e.id === best.id)?.target
@@ -643,9 +711,9 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
           return active < bestActive ? ep : best
         })
       } else {
-        // Round-robin (default)
+        // Round-robin over available backends only
         const idx = state.roundRobinIndex.get(targetNodeId) ?? 0
-        chosenEp  = outEdges[idx % outEdges.length]
+        chosenEp  = routingEdges[idx % routingEdges.length]
         state.roundRobinIndex.set(targetNodeId, idx + 1)
       }
 
@@ -798,6 +866,13 @@ function updateAllNodeMetrics(now: number, delta: number) {
         }
         effectiveMaxRps = _currentCapacity.get(nodeId) ?? config.autoScale.minCapacityRps
       }
+      // Degraded capacity reduction — uses previous frame's health score (one-frame lag is fine)
+      // As a node degrades, its effective capacity shrinks, pushing utilization higher,
+      // which feeds back into the health score creating a realistic degradation spiral
+      if (_nodeHealthStates.get(nodeId) === 'degraded') {
+        const prevScore = _smoothedMetrics.get(nodeId)?.healthScore ?? 0.67
+        effectiveMaxRps = effectiveMaxRps * (1 - degradedDepth(prevScore) * 0.5)
+      }
       utilization = Math.min(1, inRps / effectiveMaxRps)
     }
 
@@ -848,20 +923,78 @@ function updateAllNodeMetrics(now: number, delta: number) {
       ? Math.min(1, (utilization - errorOnset) / (1.0 - errorOnset) * 0.15)
       : 0
 
+    const rawErrorRate = Math.min(1, baseErrorRate + cascadePressure * 0.15)
+
+    const activeRequests = _lbActiveRequests.get(nodeId)
+
     const rawMetrics: NodeMetrics = {
       inRps,
       outRps,
       utilization,
-      // Cascade pressure contributes a smaller fraction so tight SLO error thresholds
-      // don't trip from background noise; real saturation still drives errorRate up via baseErrorRate
-      errorRate: Math.min(1, baseErrorRate + cascadePressure * 0.15),
+      errorRate: rawErrorRate,
       p50LatencyMs: rawP50,
       p75LatencyMs: rawP75,
       p90LatencyMs: rawP90,
       p99LatencyMs: rawP99,
-      ...(queueDepth !== undefined && { queueDepth }),
-      ...(concurrency !== undefined && { concurrency }),
+      ...(queueDepth     !== undefined && { queueDepth }),
+      ...(concurrency    !== undefined && { concurrency }),
+      ...(activeRequests !== undefined && { activeRequests }),
       circuitState,
+    }
+
+    // ─── Health scoring ───────────────────────────────────────────────────────
+    const nodeConfig = effectiveConfig(nodeId, nodeType)
+    const forced     = nodeConfig.forcedHealthState ?? 'auto'
+    let healthState: 'healthy' | 'degraded' | 'down'
+    let healthScore: number | undefined
+
+    if (forced !== 'auto') {
+      healthState = forced
+    } else {
+      // Score formula: error (40%) + utilization above 80% (40%) + latency amplification (20%)
+      const baselineP50    = nodeConfig.latencyModel?.p50Ms ?? Math.max(1, nodeConfig.processingMs)
+      const latencyRatio   = rawP90 > 0 ? rawP90 / Math.max(baselineP50, 1) : 1
+      const errorContrib   = Math.min(0.4, rawErrorRate * 0.4)
+      const utilPenalty    = rawUtilization > 0.8
+        ? Math.min(0.4, ((rawUtilization - 0.8) / 0.2) * 0.4)
+        : 0
+      const latencyPenalty = Math.min(0.2, Math.max(0, (latencyRatio - 2) / 10) * 0.2)
+      healthScore = Math.max(0, 1 - errorContrib - utilPenalty - latencyPenalty)
+
+      const rawState = healthScore >= 0.85 ? 'healthy' : healthScore >= 0.50 ? 'degraded' : 'down'
+
+      // Recovery hysteresis: after exiting 'down', can't jump straight to 'healthy'
+      const prevState = _nodeHealthStates.get(nodeId)
+      if (prevState === 'down' && rawState !== 'down') {
+        _recoveryUntil.set(nodeId, now + HEALTH_RECOVERY_LOCK_MS)
+      }
+      healthState = (rawState === 'healthy' && (_recoveryUntil.get(nodeId) ?? 0) > now)
+        ? 'degraded'  // still warming up after 'down'
+        : rawState
+    }
+
+    const prevHealthState = _nodeHealthStates.get(nodeId)
+    _nodeHealthStates.set(nodeId, healthState)
+    rawMetrics.healthScore = healthScore
+    rawMetrics.healthState = healthState
+
+    // 'down' → immediately trip circuit breaker and hold it open
+    if (healthState === 'down') {
+      const breaker = getBreaker(nodeId)
+      if (breaker.state !== 'open') {
+        breaker.state    = 'open'
+        breaker.openedAt = now
+        const label = (node.data as NodeData).label ?? nodeId
+        _onEvent('circuit_open', nodeId, `${label} circuit opened (health: down)`, 'critical')
+      }
+    }
+
+    // Emit health state transition events (distinct from saturation events)
+    if (prevHealthState !== undefined && prevHealthState !== healthState) {
+      const label = (node.data as NodeData).label ?? nodeId
+      if (healthState === 'healthy') {
+        _onEvent('saturation_end', nodeId, `${label} health recovered`, 'info')
+      }
     }
 
     // EMA smoothing for numeric fields — prevents visual jitter without losing trends
@@ -876,9 +1009,12 @@ function updateAllNodeMetrics(now: number, delta: number) {
       p90LatencyMs:  ema(prev.p90LatencyMs, rawMetrics.p90LatencyMs),
       p99LatencyMs:  ema(prev.p99LatencyMs, rawMetrics.p99LatencyMs),
       // Discrete fields — no smoothing
-      queueDepth:    rawMetrics.queueDepth,
-      concurrency:   rawMetrics.concurrency,
-      circuitState:  rawMetrics.circuitState,
+      queueDepth:      rawMetrics.queueDepth,
+      concurrency:     rawMetrics.concurrency,
+      activeRequests:  rawMetrics.activeRequests,
+      circuitState:    rawMetrics.circuitState,
+      healthScore:     rawMetrics.healthScore,
+      healthState:     rawMetrics.healthState,
     } : rawMetrics
     _smoothedMetrics.set(nodeId, metrics)
 
@@ -1136,6 +1272,8 @@ export function startSimulation(
   _smoothedMetrics.clear()
   _activeConnections.clear()
   _lbActiveRequests.clear()
+  _nodeHealthStates.clear()
+  _recoveryUntil.clear()
   _warmInstances.clear()
   _warmLastActivity.clear()
   _currentCapacity.clear()
@@ -1163,6 +1301,8 @@ export function stopSimulation() {
   _circuitBreakers.clear()
   _activeConnections.clear()
   _lbActiveRequests.clear()
+  _nodeHealthStates.clear()
+  _recoveryUntil.clear()
   _warmInstances.clear()
   _warmLastActivity.clear()
   _currentCapacity.clear()

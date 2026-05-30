@@ -29,7 +29,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
   const metrics = useSimulationStore(
     useShallow(s => {
       const m = s.nodeMetrics.get(id)
-      return m ? { utilization: m.utilization, errorRate: m.errorRate, circuitState: m.circuitState } : null
+      return m ? { utilization: m.utilization, errorRate: m.errorRate, circuitState: m.circuitState, healthState: m.healthState } : null
     }),
   )
   const isBottleneck = useSimulationStore(s => s.bottlenecks.has(id))
@@ -60,12 +60,14 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
     }
   }, [editValue, nodeData.label, id, updateNodeData])
 
+  // Live health state from simulation overrides the static canvas status while running
+  const displayStatus = (running && metrics?.healthState) ? metrics.healthState : nodeData.status
   const statusColor = {
     healthy:  '#22C55E',
     degraded: '#F59E0B',
     down:     '#EF4444',
     idle:     '#475569',
-  }[nodeData.status] ?? '#475569'
+  }[displayStatus] ?? '#475569'
 
   // Saturation border overrides the normal border during simulation
   const saturationBorderColor = isSaturated

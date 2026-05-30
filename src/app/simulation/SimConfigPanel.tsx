@@ -344,6 +344,25 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
               step={1}
             />
           </div>
+          {!isQueue && !GROUPING_TYPES.has(nodeType) && (
+            <div className={styles.configField}>
+              <span className={styles.configLabel}>Fault Inject</span>
+              <select
+                value={eff.forcedHealthState ?? 'auto'}
+                onChange={e => setNodeConfig(nodeId, { forcedHealthState: e.target.value as 'auto' | 'healthy' | 'degraded' | 'down' })}
+                style={{
+                  background: '#0D0F12', color: '#F1F5F9', border: '1px solid #2A2E38',
+                  borderRadius: 4, padding: '2px 6px', fontSize: 11, fontFamily: 'inherit',
+                  cursor: 'pointer', width: '100%',
+                }}
+              >
+                <option value="auto">Auto (score-based)</option>
+                <option value="healthy">Force Healthy</option>
+                <option value="degraded">Force Degraded</option>
+                <option value="down">Force Down</option>
+              </select>
+            </div>
+          )}
           {(nodeType === 'loadBalancer' || nodeType === 'apiGateway') && (
             <div className={styles.configField}>
               <span className={styles.configLabel}>Routing</span>
@@ -682,6 +701,13 @@ function LiveSection({ nodeId }: { nodeId: string }) {
             <span className={styles.liveStatVal} style={{ color: '#EF4444' }}>{(metrics.errorRate * 100).toFixed(1)}</span>
             <span className={styles.liveStatUnit}>%</span>
           </button>
+        )}
+        {metrics.activeRequests !== undefined && !isQueue && (
+          <div className={styles.liveStat}>
+            <span className={styles.liveStatLabel}>Active</span>
+            <span className={styles.liveStatVal}>{metrics.activeRequests}</span>
+            <span className={styles.liveStatUnit}>req</span>
+          </div>
         )}
         {isLambda && metrics.concurrency !== undefined && (
           <div className={styles.liveStat}>
