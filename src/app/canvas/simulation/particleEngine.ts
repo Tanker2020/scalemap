@@ -203,6 +203,9 @@ let _chaosNextFailAt = 0
 // Connection pool tracking (7a)
 const _activeConnections = new Map<string, number>()
 
+// In-flight request counter used by LAC load balancer routing
+const _lbActiveRequests = new Map<string, number>()
+
 // Lambda warm instance tracking (7b)
 const _warmInstances    = new Map<string, number>()  // nodeId → warm count
 const _warmLastActivity = new Map<string, number>()  // nodeId → last request ts
@@ -399,6 +402,19 @@ function checkBreakerTransition(nodeId: string, config: NodeSimConfig, now: numb
   return b.state
 }
 
+// ─── LAC in-flight tracking ──────────────────────────────────────────────────
+
+// Routers and accumulators: not counted as backends for LAC routing
+const _LB_SKIP_TYPES = new Set<string>(['loadBalancer', 'apiGateway', 'queue', 'eventBus', 'pubsub', 'stream'])
+
+function trackRequest(nodeId: string, nodeType: NodeType, config: NodeSimConfig) {
+  if (_LB_SKIP_TYPES.has(nodeType) || GROUPING_TYPES.has(nodeType)) return
+  _lbActiveRequests.set(nodeId, (_lbActiveRequests.get(nodeId) ?? 0) + 1)
+  setTimeout(() => {
+    _lbActiveRequests.set(nodeId, Math.max(0, (_lbActiveRequests.get(nodeId) ?? 1) - 1))
+  }, Math.max(50, config.processingMs) / _speed)
+}
+
 // ─── Spawning ────────────────────────────────────────────────────────────────
 
 const PARTICLE_SPEED_BASE = 0.0006
@@ -592,6 +608,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
         state.nodeConcurrency.set(targetNodeId, Math.max(0, c - 1))
       }, delay)
       recordBreakerResult(targetNodeId, false, config, now)
+      trackRequest(targetNodeId, targetNodeType, config)
       forwardToOutbound(targetNodeId, targetNodeType)
       return
     }
@@ -605,19 +622,36 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
   }
 
   recordBreakerResult(targetNodeId, false, config, now)
+  trackRequest(targetNodeId, targetNodeType, config)
 
-  // Load balancer / API gateway: round-robin to outbound
+  // Load balancer / API gateway: round-robin or least-connections routing
   if (targetNodeType === 'loadBalancer' || targetNodeType === 'apiGateway') {
     const outEdges = _edgePaths.filter(e =>
       _edgesData.find(d => d.id === e.id)?.source === targetNodeId,
     )
     if (outEdges.length > 0) {
-      const idx    = state.roundRobinIndex.get(targetNodeId) ?? 0
-      const outEp  = outEdges[idx % outEdges.length]
-      state.roundRobinIndex.set(targetNodeId, idx + 1)
-      if (!state.particles.has(outEp.id)) state.particles.set(outEp.id, [])
-      state.particles.get(outEp.id)!.push({
-        t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(outEp.edgeType), edgeId: outEp.id, retries: 0,
+      const lbConfig = effectiveConfig(targetNodeId, targetNodeType)
+      let chosenEp: EdgePath
+
+      if (lbConfig.lbRouting === 'least-connections' && outEdges.length > 1) {
+        // Route to the backend with the fewest in-flight requests
+        chosenEp = outEdges.reduce((best, ep) => {
+          const tgtId      = _edgesData.find(e => e.id === ep.id)?.target
+          const active     = tgtId ? (_lbActiveRequests.get(tgtId) ?? 0) : Infinity
+          const bestTgtId  = _edgesData.find(e => e.id === best.id)?.target
+          const bestActive = bestTgtId ? (_lbActiveRequests.get(bestTgtId) ?? 0) : Infinity
+          return active < bestActive ? ep : best
+        })
+      } else {
+        // Round-robin (default)
+        const idx = state.roundRobinIndex.get(targetNodeId) ?? 0
+        chosenEp  = outEdges[idx % outEdges.length]
+        state.roundRobinIndex.set(targetNodeId, idx + 1)
+      }
+
+      if (!state.particles.has(chosenEp.id)) state.particles.set(chosenEp.id, [])
+      state.particles.get(chosenEp.id)!.push({
+        t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(chosenEp.edgeType), edgeId: chosenEp.id, retries: 0,
       })
     }
     return
@@ -1101,6 +1135,7 @@ export function startSimulation(
   _circuitBreakers.clear()
   _smoothedMetrics.clear()
   _activeConnections.clear()
+  _lbActiveRequests.clear()
   _warmInstances.clear()
   _warmLastActivity.clear()
   _currentCapacity.clear()
@@ -1127,6 +1162,7 @@ export function stopSimulation() {
   _downstreamStallPressure.clear()
   _circuitBreakers.clear()
   _activeConnections.clear()
+  _lbActiveRequests.clear()
   _warmInstances.clear()
   _warmLastActivity.clear()
   _currentCapacity.clear()

@@ -353,16 +353,31 @@ The connection is "held" for `processingMs` milliseconds (scaled by playback spe
 
 ---
 
-## 12. Load balancer and API gateway — round-robin forwarding
+## 12. Load balancer and API gateway — routing strategies
 
-When a particle arrives at a `loadBalancer` or `apiGateway` node, rather than consuming it, the node immediately re-emits a new particle on one of its outbound edges in round-robin order:
+When a particle arrives at a `loadBalancer` or `apiGateway` node, rather than consuming it, the node immediately re-emits a new particle on one of its outbound edges. Two routing strategies are available, configured via `lbRouting` in `NodeSimConfig`:
+
+### Round-robin (default)
 ```
 outEdges = all edges where source == this node
 idx      = roundRobinIndex[nodeId] % outEdges.length
 roundRobinIndex[nodeId]++
 emit new particle on outEdges[idx]
 ```
-This makes traffic distribution across backends visible — if one backend saturates and its circuit breaker opens, the round-robin still tries to route to it (and those particles get dropped), modeling a real LB that hasn't yet gotten health-check feedback.
+Every backend receives an equal share of traffic regardless of how busy it is. If one backend is saturated and its circuit breaker opens, round-robin still tries to route to it — modeling a real LB that hasn't yet received health-check feedback.
+
+### Least Active Connections (LAC)
+```
+for each outbound edge:
+    tgtId  = edge.target
+    active = _lbActiveRequests[tgtId] ?? 0
+emit on the edge with the minimum active count
+```
+`_lbActiveRequests` is a per-node counter incremented whenever any backend node accepts a request, and decremented after `processingMs / speed` milliseconds (via `setTimeout`, mirroring the connection pool release pattern). This counter is separate from `_activeConnections` (which enforces connection pool limits) — it exists solely for routing decisions.
+
+When all backends are tied (typically at startup), the `reduce` picks the first candidate, producing a natural left-to-right fallback.
+
+**Why LAC matters:** when one backend degrades (GC pause, cold start, hardware fault), round-robin keeps sending it 1/N of all traffic while it backlogged. LAC sees its rising active count and immediately diverts traffic to the healthier backends, naturally load-shedding the degraded node without requiring explicit health checks.
 
 Orchestration nodes (K8s, ECS, Docker Compose) use broadcast forwarding instead — a random outbound edge is chosen each time, not round-robin.
 

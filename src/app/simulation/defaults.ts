@@ -7,8 +7,8 @@ export const NODE_SIM_DEFAULTS: Record<NodeType, NodeSimConfig> = {
   container:    { maxRps: 500,   processingMs: 15,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 } },
   pod:          { maxRps: 300,   processingMs: 20,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 } },
   // Network
-  loadBalancer: { maxRps: 10000, processingMs: 2,   errorRate: 0, latencyModel: { p50Ms: 3,   p99Ms: 20   }, timeoutMs: 60_000, retryConfig: { maxRetries: 2, baseDelayMs: 50,   jitter: 'full',  maxDelayMs: 1000 } },
-  apiGateway:   { maxRps: 5000,  processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 10,  p99Ms: 100  }, timeoutMs: 30_000, retryConfig: { maxRetries: 2, baseDelayMs: 100,  jitter: 'equal', maxDelayMs: 2000 } },
+  loadBalancer: { maxRps: 10000, processingMs: 2,   errorRate: 0, latencyModel: { p50Ms: 3,   p99Ms: 20   }, timeoutMs: 60_000, retryConfig: { maxRetries: 2, baseDelayMs: 50,   jitter: 'full',  maxDelayMs: 1000 }, lbRouting: 'round-robin' },
+  apiGateway:   { maxRps: 5000,  processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 10,  p99Ms: 100  }, timeoutMs: 30_000, retryConfig: { maxRetries: 2, baseDelayMs: 100,  jitter: 'equal', maxDelayMs: 2000 }, lbRouting: 'round-robin' },
   cdn:          { maxRps: 20000, processingMs: 1,   errorRate: 0, latencyModel: { p50Ms: 5,   p99Ms: 50   } },
   dns:          { maxRps: 50000, processingMs: 1,   errorRate: 0, latencyModel: { p50Ms: 1,   p99Ms: 10   } },
   firewall:     { maxRps: 5000,  processingMs: 2,   errorRate: 0, latencyModel: { p50Ms: 2,   p99Ms: 15   } },

@@ -344,6 +344,23 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
               step={1}
             />
           </div>
+          {(nodeType === 'loadBalancer' || nodeType === 'apiGateway') && (
+            <div className={styles.configField}>
+              <span className={styles.configLabel}>Routing</span>
+              <select
+                value={eff.lbRouting ?? 'round-robin'}
+                onChange={e => setNodeConfig(nodeId, { lbRouting: e.target.value as 'round-robin' | 'least-connections' })}
+                style={{
+                  background: '#0D0F12', color: '#F1F5F9', border: '1px solid #2A2E38',
+                  borderRadius: 4, padding: '2px 6px', fontSize: 11, fontFamily: 'inherit',
+                  cursor: 'pointer', width: '100%',
+                }}
+              >
+                <option value="round-robin">Round Robin</option>
+                <option value="least-connections">Least Active Connections</option>
+              </select>
+            </div>
+          )}
           {isLambda && (
             <div className={styles.configField}>
               <span className={styles.configLabel}>Max Concurrency</span>
