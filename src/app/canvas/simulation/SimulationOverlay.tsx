@@ -13,6 +13,7 @@ import {
   updateGlobalMultiplier,
   setNodeConfigs,
   setCallbacks,
+  pickParticleAtPoint,
 } from './particleEngine'
 
 function getTopoKey(ns: Node[], es: Edge[]): string {
@@ -36,8 +37,10 @@ export function SimulationOverlay({ width, height }: Props) {
     setAllNodeMetrics, markBottleneck, addEvent,
   } = useSimulationStore()
 
-  const simStartRef = useRef<number>(0)
-  const prevSloRef  = useRef<Map<string, boolean>>(new Map())
+  const simStartRef    = useRef<number>(0)
+  const prevSloRef     = useRef<Map<string, boolean>>(new Map())
+  const mouseDownRef   = useRef<{ x: number; y: number } | null>(null)
+  const setInspectedRequest = useSimulationStore(s => s.setInspectedRequest)
 
   // Peak metric tracking for SimulationRun summary
   const peakRpsRef  = useRef(0)
@@ -56,9 +59,9 @@ export function SimulationOverlay({ width, height }: Props) {
   )
 
   const onEvent = useCallback(
-    (type: SimEventType, nodeId: string | undefined, message: string, severity: 'info' | 'warn' | 'critical', snapshot?: Partial<NodeMetrics>) => {
+    (type: SimEventType, nodeId: string | undefined, message: string, severity: 'info' | 'warn' | 'critical', snapshot?: Partial<NodeMetrics>, causedByNodeId?: string) => {
       const elapsedS = Math.round((Date.now() - simStartRef.current) / 1000)
-      addEvent({ type, nodeId, at: Date.now(), elapsedS, message, severity, metricsSnapshot: snapshot })
+      addEvent({ type, nodeId, at: Date.now(), elapsedS, message, severity, metricsSnapshot: snapshot, causedByNodeId })
     },
     [addEvent],
   )
@@ -220,7 +223,23 @@ export function SimulationOverlay({ width, height }: Props) {
       ref={canvasRef}
       width={width}
       height={height}
-      style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none', zIndex: 10 }}
+      style={{
+        position: 'absolute', top: 0, left: 0, zIndex: 10,
+        pointerEvents: running ? 'auto' : 'none',
+        cursor: running ? 'crosshair' : 'default',
+      }}
+      onMouseDown={e => { mouseDownRef.current = { x: e.clientX, y: e.clientY } }}
+      onMouseUp={e => {
+        const down = mouseDownRef.current
+        mouseDownRef.current = null
+        if (!down || !canvasRef.current) return
+        const dx = e.clientX - down.x
+        const dy = e.clientY - down.y
+        if (Math.sqrt(dx * dx + dy * dy) >= 5) return  // was a drag, not a click
+        const rect = canvasRef.current.getBoundingClientRect()
+        const snap = pickParticleAtPoint(e.clientX, e.clientY, rect)
+        setInspectedRequest(snap)  // null clears the panel on a miss
+      }}
     />
   )
 }

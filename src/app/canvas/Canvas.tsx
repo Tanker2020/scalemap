@@ -22,6 +22,7 @@ import { BaseNode } from './nodes/BaseNode'
 import { GroupNode } from './nodes/GroupNode'
 import { ScalemapEdge } from './edges/BaseEdge'
 import { SimulationOverlay } from './simulation/SimulationOverlay'
+import { RequestInspector } from './simulation/RequestInspector'
 import { ContextMenu } from '../sidebar/ContextMenu'
 import { injectBurst } from './simulation/particleEngine'
 import { GROUPING_TYPES, type NodeType } from '../../lib/nodeConfig'
@@ -418,6 +419,7 @@ function CanvasInner() {
       {dimensions.width > 0 && (
         <SimulationOverlay width={dimensions.width} height={dimensions.height} />
       )}
+      <RequestInspector />
 
       {connectSourceId && (
         <div className={styles.connectHint}>

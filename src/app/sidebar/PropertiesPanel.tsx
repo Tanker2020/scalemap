@@ -5,6 +5,7 @@ import { useUiStore } from '../store/ui.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
 import { NODE_CONFIG, type NodeStatus, type EdgeType, type NodeType } from '../../lib/nodeConfig'
+import { REGIONS_BY_ZONE } from '../../lib/regionConfig'
 import { CATEGORY_COLORS } from '../../lib/theme'
 import { Sparkline } from './Sparkline'
 import { EventCard } from '../simulation/SimConfigPanel'
@@ -222,6 +223,43 @@ function NodePanel({ nodeId }: { nodeId: string }) {
             <span className={styles.statusLabel}>{data.status}</span>
           </div>
         </div>
+
+        {nodeType === 'region' && (
+          <div className={styles.section}>
+            <div className={styles.sectionLabel}>Geographic Region</div>
+            <select
+              value={data.regionId ?? ''}
+              onChange={e => updateNodeData(selectedNode.id, { regionId: e.target.value || undefined })}
+              style={{
+                width: '100%', background: '#0D0F12', color: '#F1F5F9',
+                border: '1px solid #2A2E38', borderRadius: 4,
+                padding: '6px 8px', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer',
+              }}
+            >
+              <option value="">None (no geographic latency)</option>
+              <optgroup label="── AMER ──">
+                {REGIONS_BY_ZONE.AMER.map(r => (
+                  <option key={r.id} value={r.id}>{r.label} (+{r.baseLatencyMs}ms)</option>
+                ))}
+              </optgroup>
+              <optgroup label="── EMEA ──">
+                {REGIONS_BY_ZONE.EMEA.map(r => (
+                  <option key={r.id} value={r.id}>{r.label} (+{r.baseLatencyMs}ms)</option>
+                ))}
+              </optgroup>
+              <optgroup label="── APAC ──">
+                {REGIONS_BY_ZONE.APAC.map(r => (
+                  <option key={r.id} value={r.id}>{r.label} (+{r.baseLatencyMs}ms)</option>
+                ))}
+              </optgroup>
+            </select>
+            {data.regionId && (
+              <div style={{ fontSize: 10, color: '#475569', marginTop: 4 }}>
+                Nodes inside this region container will incur inter-region latency on cross-region edges.
+              </div>
+            )}
+          </div>
+        )}
 
         {showNotes ? (
           <div className={styles.section}>

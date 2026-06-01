@@ -30,6 +30,12 @@ export interface LatencyModel {
   p99Ms: number
 }
 
+export interface TrafficOrigin {
+  regionId: string      // must match a WorldRegion.id from regionConfig.ts
+  weight: number        // 0.0–1.0; weights should sum to ~1.0
+  baseLatencyMs: number // auto-filled from WORLD_REGIONS.baseLatencyMs, user-overridable
+}
+
 export interface RetryConfig {
   maxRetries: number          // 0 disables retries entirely
   baseDelayMs: number         // delay before the first retry attempt
@@ -62,6 +68,7 @@ export interface NodeSimConfig {
   retryConfig?: RetryConfig
   lbRouting?: 'round-robin' | 'least-connections'
   forcedHealthState?: 'auto' | 'healthy' | 'degraded' | 'down'
+  trafficOrigins?: TrafficOrigin[]  // CDN, loadBalancer, apiGateway only
   coldStart?: {
     p50Ms: number
     p99Ms: number
@@ -90,6 +97,7 @@ export interface NodeData extends Record<string, unknown> {
   warnings: string[]
   simConfig?: Partial<NodeSimConfig>
   slo?: NodeSlo
+  regionId?: string  // set on 'region' grouping nodes; links to WorldRegion.id
 }
 
 export interface EdgeData extends Record<string, unknown> {

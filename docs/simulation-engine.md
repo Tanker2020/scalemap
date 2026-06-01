@@ -398,7 +398,73 @@ Alpha of 0.25 means the current frame contributes 25% of the new value; the prev
 
 ---
 
-## 14. Node health states and fault injection
+## 14. Geographic latency — traffic origins and inter-region hops
+
+The engine models two distinct sources of geographic latency:
+
+1. **Traffic origin latency** — where client requests come from before they reach your infrastructure
+2. **Inter-region hop latency** — the network penalty when internal services call each other across geographic regions
+
+Both are additive to the node's `latencyModel`-sampled latency and feed directly into the latency ring buffer → p90/p99 → health score → SLO checks.
+
+### Traffic origin distribution (entry-point nodes)
+
+CDN, Load Balancer, and API Gateway nodes can be configured with a `trafficOrigins` array in `NodeSimConfig`. Each entry specifies a world region, a weight (fraction of traffic), and the base latency from that region:
+
+```ts
+trafficOrigins: [
+  { regionId: 'us-east-1', weight: 0.60, baseLatencyMs: 15  },
+  { regionId: 'eu-west-1', weight: 0.25, baseLatencyMs: 75  },
+  { regionId: 'ap-northeast-1', weight: 0.15, baseLatencyMs: 175 },
+]
+```
+
+On every particle spawn from an entry-point node, the engine performs a weighted-random draw from this distribution and tags the particle with `originLatencyMs`. When the particle first arrives at a node, `originLatencyMs` is added to the sampled latency and then zeroed out — it is consumed once at the first hop and does not compound on subsequent internal service calls.
+
+**Effect:** with a 15% APAC tail, p99 latency at the entry node will spike into the 175ms+ range even if the node's own `latencyModel.p99Ms` is only 50ms. This cascades through the health score and can trigger SLO violations on real-world shaped traffic mixes.
+
+### Inter-region hop latency (region container nodes)
+
+The `region` grouping node type now supports a `regionId` property (set via the Properties Panel's "Geographic Region" dropdown). When a `region` container is assigned a world region (e.g., `us-east-1`), all nodes placed inside it are implicitly tagged with that region.
+
+At `startSimulation`, for each edge the engine resolves the source and target nodes' parent `region` containers and looks up the inter-region latency:
+
+```
+geoLatencyMs = interRegionLatencyMs(srcRegionId, tgtRegionId)
+```
+
+This value is stored on the `EdgePath` and added to every particle's sampled latency at arrival. Unlike `originLatencyMs`, `geoLatencyMs` applies on every hop that crosses a region boundary — a request that passes through US-East → EU-West → APAC accumulates the penalty at each crossing.
+
+**Zone-to-zone latency matrix:**
+
+| From \ To | AMER | EMEA | APAC |
+|---|---|---|---|
+| AMER | 40ms (intra) | 80ms | 170ms |
+| EMEA | 80ms | 25ms (intra) | 140ms |
+| APAC | 170ms | 140ms | 35ms (intra) |
+
+Within-zone latency uses the absolute difference of the two regions' `baseLatencyMs` values plus a 10ms floor (models same-zone but different-AZ routing).
+
+### World regions available
+
+21 regions across 3 zones:
+
+**AMER:** US East (N. Virginia / Ohio), US West (N. California / Oregon), Canada (Central), South America (São Paulo)
+
+**EMEA:** Europe (Ireland / London / Paris / Frankfurt / Milan / Stockholm), Middle East (Bahrain), Africa (Cape Town)
+
+**APAC:** Mumbai, Singapore, Sydney, Tokyo, Seoul, Osaka, Hong Kong
+
+### Configuration
+
+- **Traffic origins:** Simulation Inspector → select CDN/LB/API Gateway → "Traffic Origins" block → "+ Add origin". Weights are displayed with a warning if they don't sum to 100%.
+- **Region assignment:** Properties Panel → select a `region` grouping node → "Geographic Region" dropdown.
+
+### No-config default
+
+If no `trafficOrigins` are set, `originLatencyMs = 0` for all particles (current behavior unchanged). If region containers have no `regionId`, `geoLatencyMs = 0` for all edges (current behavior unchanged). The feature is entirely opt-in.
+
+## 15. Node health states and fault injection
 
 Every non-grouping, non-queue node carries a continuously computed `healthScore` (0–1) and a discrete `healthState` (`'healthy'`, `'degraded'`, `'down'`). These are pushed to `NodeMetrics` each metrics cycle and drive both the visual status dot on `BaseNode` and real engine behavior — they are not cosmetic.
 

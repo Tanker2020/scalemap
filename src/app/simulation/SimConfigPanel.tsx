@@ -6,7 +6,8 @@ import { useCanvasStore } from '../store/canvas.store'
 import { useUiStore } from '../store/ui.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
-import { NODE_CONFIG, GROUPING_TYPES, type NodeType } from '../../lib/nodeConfig'
+import { NODE_CONFIG, GROUPING_TYPES, type NodeType, type TrafficOrigin } from '../../lib/nodeConfig'
+import { WORLD_REGIONS, REGIONS_BY_ZONE } from '../../lib/regionConfig'
 import { NODE_SIM_DEFAULTS, DEFAULT_SLO } from './defaults'
 import { CATEGORY_COLORS } from '../../lib/theme'
 import { Sparkline } from '../sidebar/Sparkline'
@@ -304,9 +305,10 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
   const override = nodeConfigs.get(nodeId)
   const eff      = { ...defaults, ...override }
 
-  const isQueue     = ['queue', 'pubsub', 'stream', 'eventBus'].includes(nodeType)
-  const isLambda    = nodeType === 'lambda'
-  const isAutoScale = nodeType === 'k8sCluster' || nodeType === 'ecsCluster'
+  const isQueue      = ['queue', 'pubsub', 'stream', 'eventBus'].includes(nodeType)
+  const isLambda     = nodeType === 'lambda'
+  const isAutoScale  = nodeType === 'k8sCluster' || nodeType === 'ecsCluster'
+  const isEntryPoint = nodeType === 'cdn' || nodeType === 'loadBalancer' || nodeType === 'apiGateway'
   const hasConnPool = eff.connectionPool !== undefined
   const hasTimeout  = eff.timeoutMs !== undefined
   const slo: NodeSlo | undefined = data.slo ?? DEFAULT_SLO[nodeType]
@@ -612,6 +614,75 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
           </div>
         </div>
       )}
+
+      {/* Traffic Origins — CDN / LB / API Gateway only */}
+      {isEntryPoint && (() => {
+        const origins: TrafficOrigin[] = eff.trafficOrigins ?? []
+        const totalWeight = Math.round(origins.reduce((s, o) => s + o.weight, 0) * 100)
+        const selectStyle: React.CSSProperties = {
+          background: '#0D0F12', color: '#F1F5F9', border: '1px solid #2A2E38',
+          borderRadius: 4, padding: '2px 4px', fontSize: 10, fontFamily: 'inherit',
+          cursor: 'pointer', flex: 1, minWidth: 0,
+        }
+        const updateOrigins = (next: TrafficOrigin[]) => setNodeConfig(nodeId, { trafficOrigins: next })
+        return (
+          <div className={styles.configBlock}>
+            <div className={styles.configBlockTitle}>Traffic Origins</div>
+            {origins.map((origin, i) => (
+              <div key={i} style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 4 }}>
+                <select
+                  value={origin.regionId}
+                  style={selectStyle}
+                  onChange={e => {
+                    const region = WORLD_REGIONS.find(r => r.id === e.target.value)
+                    const next = origins.map((o, j) => j === i
+                      ? { ...o, regionId: e.target.value, baseLatencyMs: region?.baseLatencyMs ?? o.baseLatencyMs }
+                      : o)
+                    updateOrigins(next)
+                  }}
+                >
+                  <optgroup label="AMER">
+                    {REGIONS_BY_ZONE.AMER.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+                  </optgroup>
+                  <optgroup label="EMEA">
+                    {REGIONS_BY_ZONE.EMEA.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+                  </optgroup>
+                  <optgroup label="APAC">
+                    {REGIONS_BY_ZONE.APAC.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+                  </optgroup>
+                </select>
+                <NumericStepper
+                  value={Math.round(origin.weight * 100)}
+                  onChange={v => updateOrigins(origins.map((o, j) => j === i ? { ...o, weight: v / 100 } : o))}
+                  min={1} max={100} step={5}
+                />
+                <span style={{ fontSize: 10, color: '#94A3B8' }}>%</span>
+                <NumericStepper
+                  value={origin.baseLatencyMs}
+                  onChange={v => updateOrigins(origins.map((o, j) => j === i ? { ...o, baseLatencyMs: v } : o))}
+                  min={0} step={5}
+                />
+                <span style={{ fontSize: 10, color: '#94A3B8' }}>ms</span>
+                <button
+                  onClick={() => updateOrigins(origins.filter((_, j) => j !== i))}
+                  style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', padding: '0 2px', fontSize: 13, lineHeight: 1 }}
+                >×</button>
+              </div>
+            ))}
+            {totalWeight !== 100 && origins.length > 0 && (
+              <div style={{ fontSize: 10, color: '#F59E0B', marginBottom: 4 }}>
+                Weights sum to {totalWeight}% — should be 100%
+              </div>
+            )}
+            <button
+              onClick={() => updateOrigins([...origins, { regionId: 'us-east-1', weight: 0.5, baseLatencyMs: 15 }])}
+              style={{ fontSize: 10, color: '#4A9EFF', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0' }}
+            >
+              + Add origin
+            </button>
+          </div>
+        )
+      })()}
     </>
   )
 }

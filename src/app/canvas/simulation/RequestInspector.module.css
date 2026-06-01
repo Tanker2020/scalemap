@@ -1,0 +1,193 @@
+.panel {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 320px;
+  background: #111318;
+  border: 1px solid #2A2E38;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(74, 158, 255, 0.06);
+  z-index: 9999;
+  overflow: hidden;
+  font-size: 11px;
+  color: #F1F5F9;
+}
+
+/* ── Header ─────────────────────────────────────── */
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-bottom: 1px solid #1E2230;
+  background: #0D0F12;
+}
+
+.headerTitle {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748B;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.closeBtn {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: #475569;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.1s, color 0.1s;
+}
+
+.closeBtn:hover {
+  background: #1A1D25;
+  color: #EF4444;
+}
+
+/* ── Route ──────────────────────────────────────── */
+
+.route {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px 6px;
+  flex-wrap: wrap;
+}
+
+.routeNode {
+  font-size: 12px;
+  font-weight: 600;
+  color: #E2E8F0;
+}
+
+.routeArrow {
+  color: #475569;
+  font-size: 12px;
+}
+
+.edgeTypeBadge {
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #1A1D25;
+  border: 1px solid #2A2E38;
+  color: #64748B;
+  margin-left: auto;
+}
+
+/* ── Method row ─────────────────────────────────── */
+
+.methodRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 10px;
+  border-bottom: 1px solid #1A1D22;
+}
+
+.methodBadge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 3px;
+  border: 1px solid;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.path {
+  font-size: 10px;
+  color: #94A3B8;
+  font-family: 'JetBrains Mono', monospace;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusBadge {
+  font-size: 8px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #1A2A1A;
+  border: 1px solid #22C55E33;
+  color: #4ADE80;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+
+/* ── Metadata ────────────────────────────────────── */
+
+.meta {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border-bottom: 1px solid #1A1D22;
+}
+
+.metaRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.metaLabel {
+  font-size: 10px;
+  color: #475569;
+}
+
+.metaVal {
+  font-size: 10px;
+  color: #94A3B8;
+}
+
+/* ── Progress ────────────────────────────────────── */
+
+.progressSection {
+  padding: 10px 12px 12px;
+}
+
+.progressLabel {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: #475569;
+  margin-bottom: 5px;
+}
+
+.progressTrack {
+  height: 3px;
+  background: #1E2230;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background: linear-gradient(90deg, #4A9EFF, #A78BFA);
+  border-radius: 2px;
+  transition: width 0.2s ease;
+}
+
+.progressEndpoints {
+  display: flex;
+  justify-content: space-between;
+  font-size: 8px;
+  color: #334155;
+  margin-top: 4px;
+}

@@ -243,3 +243,180 @@
 .footerFiltered {
   color: #475569;
 }
+
+/* ── Tab bar ─────────────────────────────────────── */
+
+.tabBar {
+  display: flex;
+  border-bottom: 1px solid #1A1D22;
+  background: #0B0D12;
+  flex-shrink: 0;
+}
+
+.tabBtn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 0;
+  font-size: 10px;
+  font-weight: 600;
+  color: #475569;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.tabBtn:hover {
+  color: #94A3B8;
+}
+
+.tabBtnActive {
+  color: #C4B5FD;
+  border-bottom-color: #A78BFA;
+}
+
+.tabCount {
+  font-size: 8px;
+  background: #1A1D25;
+  border-radius: 8px;
+  padding: 1px 5px;
+  color: #64748B;
+}
+
+.tabCountCritical {
+  font-size: 8px;
+  background: #EF444422;
+  border-radius: 8px;
+  padding: 1px 5px;
+  color: #FCA5A5;
+}
+
+/* ── Summary tab ─────────────────────────────────── */
+
+.summarySection {
+  margin-bottom: 12px;
+}
+
+.summarySectionLabel {
+  font-size: 9px;
+  font-weight: 700;
+  color: #334155;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 6px 8px 4px;
+  border-bottom: 1px solid #1A1D22;
+  margin-bottom: 4px;
+}
+
+/* ── Incident card ───────────────────────────────── */
+
+.incidentCard {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  padding: 8px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 4px;
+  transition: background 0.1s;
+}
+
+.incidentCard:hover {
+  background: #111318 !important;
+}
+
+.incidentHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.incidentDot {
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.incidentTitle {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  flex: 1;
+  text-align: left;
+}
+
+.incidentStatus {
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.incidentTime {
+  font-size: 9px;
+  color: #475569;
+  flex-shrink: 0;
+}
+
+.incidentChevron {
+  font-size: 8px;
+  color: #475569;
+  flex-shrink: 0;
+}
+
+.incidentChain {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding-left: 2px;
+}
+
+.incidentRoot {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.incidentArrow {
+  font-size: 9px;
+  color: #475569;
+}
+
+.incidentChainNode {
+  font-size: 10px;
+  color: #94A3B8;
+}
+
+.incidentDetail {
+  margin-top: 4px;
+  border-top: 1px solid #1A1D22;
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.incidentDetailRow {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.incidentDetailLabel {
+  font-size: 9px;
+  color: #475569;
+  flex-shrink: 0;
+  width: 70px;
+}
+
+.incidentDetailVal {
+  font-size: 10px;
+  color: #94A3B8;
+}

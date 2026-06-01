@@ -43,6 +43,7 @@ export interface SimEvent {
   id: string
   type: SimEventType
   nodeId?: string
+  causedByNodeId?: string  // provably caused by this node failing (not inferred from time proximity)
   at: number
   elapsedS: number
   message: string
@@ -71,6 +72,19 @@ export interface SloStatus {
   violations: string[]
 }
 
+export interface RequestSnapshot {
+  particleId: number
+  edgeId: string
+  sourceLabel: string
+  targetLabel: string
+  edgeType: string
+  retries: number
+  progress: number       // t value 0–1, position along edge
+  httpMethod: string
+  httpPath: string
+  payloadBytes: number
+}
+
 import type { ScaleScript } from '../../lib/scalescript'
 
 interface SimulationStore {
@@ -86,6 +100,7 @@ interface SimulationStore {
   events: SimEvent[]
   sloStatus: Map<string, SloStatus>
   activeScript: ScaleScript | null
+  inspectedRequest: RequestSnapshot | null
 
   setRunning: (running: boolean) => void
   toggleRunning: () => void
@@ -107,6 +122,7 @@ interface SimulationStore {
   setSloStatus: (nodeId: string, status: SloStatus) => void
   setActiveScript: (script: ScaleScript | null) => void
   pushRun: (run: SimulationRun) => void
+  setInspectedRequest: (r: RequestSnapshot | null) => void
   reset: () => void
 }
 
@@ -127,6 +143,7 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
   events: [],
   sloStatus: new Map(),
   activeScript: null,
+  inspectedRequest: null,
   runs: [],
   activeRunStart: null,
 
@@ -189,6 +206,7 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
   setActiveScript: (script) => set({ activeScript: script }),
 
   pushRun: (run) => set(s => ({ runs: [run, ...s.runs].slice(0, 10) })),
+  setInspectedRequest: (r) => set({ inspectedRequest: r }),
 
   reset: () =>
     set({

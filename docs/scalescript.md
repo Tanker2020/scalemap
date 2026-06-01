@@ -154,6 +154,7 @@ All fields are optional. Unspecified fields fall back to the node's default valu
 | `selfHealing.restartDelayMs` | number | Milliseconds to restart a crashed pod/container (K8s, ECS) |
 | `lbRouting` | `"round-robin"` \| `"least-connections"` | Routing strategy for `loadBalancer` and `apiGateway` nodes. Default: `"round-robin"` |
 | `forcedHealthState` | `"auto"` \| `"healthy"` \| `"degraded"` \| `"down"` | Override the score-based health state. `"auto"` = compute from metrics. Forced states bypass recovery hysteresis. |
+| `trafficOrigins` | `TrafficOrigin[]` | CDN/LB/apiGateway only. Each entry: `{ regionId, weight, baseLatencyMs }`. Weights should sum to 1.0. `regionId` must match a world region ID (e.g. `"us-east-1"`, `"ap-northeast-1"`). |
 | `retryConfig.maxRetries` | number | Max retry attempts after a drop. `0` = disabled (drop-and-forget) |
 | `retryConfig.baseDelayMs` | number | Base delay in ms before the first retry |
 | `retryConfig.jitter` | `"full"` \| `"equal"` | `full`: `random(0, cap)` — AWS-recommended; `equal`: `cap/2 + random(0, cap/2)` |

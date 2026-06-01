@@ -1,17 +1,20 @@
 import type { Node, Edge } from '@xyflow/react'
 import type { NodeData, EdgeData, NodeType, NodeSimConfig, RetryConfig } from '../../../lib/nodeConfig'
 import { GROUPING_TYPES } from '../../../lib/nodeConfig'
-import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventType, type CircuitState } from '../../store/simulation.store'
+import { interRegionLatencyMs } from '../../../lib/regionConfig'
+import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventType, type CircuitState, type RequestSnapshot } from '../../store/simulation.store'
 import { NODE_SIM_DEFAULTS } from '../../simulation/defaults'
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
 export interface Particle {
+  id: number              // stable unique ID for color-buffer click picking
   t: number
   speed: number
   color: string
   edgeId: string
-  retries: number   // 0 on first spawn; incremented on each retry
+  retries: number         // 0 on first spawn; incremented on each retry
+  originLatencyMs: number // geographic client→server delay; consumed at first node arrival
 }
 
 // ─── Internal state ───────────────────────────────────────────────────────────
@@ -66,6 +69,10 @@ const state: EngineState = {
 // Retry queue: particles scheduled for re-spawn after backoff delay
 const _retryQueue: RetryEntry[] = []
 
+// Color-buffer picking: each particle gets a unique integer ID
+let _particleIdCounter = 0
+const _particleById = new Map<number, Particle>()
+
 // Latency sample ring buffers (last 200 samples per node)
 const _latencyWindows = new Map<string, number[]>()
 
@@ -79,14 +86,14 @@ const _downstreamStallPressure = new Map<string, number>()
 // Which nodes were already saturated (for start/end events)
 const _saturatedNodes = new Set<string>()
 
-// Circuit breakers per node
+// Circuit breakers per edge (client-side: each directed edge owns its own breaker)
 const _circuitBreakers = new Map<string, CircuitBreakerEntry>()
 
 // ─── Callbacks ────────────────────────────────────────────────────────────────
 
 type OnNodeMetricsBatch = (batch: Map<string, NodeMetrics>) => void
 type OnBottleneck  = (nodeId: string, isSaturated: boolean) => void
-type OnEvent       = (type: SimEventType, nodeId: string | undefined, message: string, severity: 'info' | 'warn' | 'critical', snapshot?: Partial<NodeMetrics>) => void
+type OnEvent       = (type: SimEventType, nodeId: string | undefined, message: string, severity: 'info' | 'warn' | 'critical', snapshot?: Partial<NodeMetrics>, causedByNodeId?: string) => void
 
 let _onNodeMetrics: OnNodeMetricsBatch = () => {}
 let _onBottleneck:  OnBottleneck  = () => {}
@@ -181,6 +188,7 @@ interface EdgePath {
   sourceNodeType?: NodeType
   targetNodeType?: NodeType
   rps: number
+  geoLatencyMs: number  // inter-region hop penalty; 0 for same-region or no region tags
 }
 
 let _edgePaths: EdgePath[] = []
@@ -205,6 +213,10 @@ const _activeConnections = new Map<string, number>()
 
 // In-flight request counter used by LAC load balancer routing
 const _lbActiveRequests = new Map<string, number>()
+
+// Tracks which downstream node is the proven cause of each upstream node's stall pressure
+// Used to attach definitive causedByNodeId to saturation and circuit-open events
+const _stallSources = new Map<string, string>()  // upstreamNodeId → downstreamNodeId
 
 // Node health state — written each metrics cycle, read by particle arrival handler
 const _nodeHealthStates = new Map<string, 'healthy' | 'degraded' | 'down'>()
@@ -291,6 +303,26 @@ function effectiveConfig(nodeId: string, nodeType: NodeType): NodeSimConfig {
   return override ? { ...defaults, ...override } : defaults
 }
 
+// ─── Geographic origin latency sampling ───────────────────────────────────────
+
+// Weighted-random sample from a node's trafficOrigins distribution
+// Returns the latency offset to tag the spawned particle with
+const ENTRY_POINT_TYPES = new Set<string>(['cdn', 'loadBalancer', 'apiGateway'])
+
+function sampleOriginLatency(sourceNodeId: string, sourceNodeType: NodeType): number {
+  if (!ENTRY_POINT_TYPES.has(sourceNodeType)) return 0
+  const config  = effectiveConfig(sourceNodeId, sourceNodeType)
+  const origins = config.trafficOrigins
+  if (!origins || origins.length === 0) return 0
+  let cumulative = 0
+  const r = Math.random()
+  for (const origin of origins) {
+    cumulative += origin.weight
+    if (r <= cumulative) return origin.baseLatencyMs
+  }
+  return origins[origins.length - 1].baseLatencyMs
+}
+
 // ─── Traffic mode: effective spawn multiplier ─────────────────────────────────
 
 function effectiveMultiplier(now: number): number {
@@ -354,57 +386,68 @@ function effectiveMultiplier(now: number): number {
 
 // ─── Circuit breaker helpers ──────────────────────────────────────────────────
 
-function getBreaker(nodeId: string): CircuitBreakerEntry {
-  let b = _circuitBreakers.get(nodeId)
+function getBreaker(edgeId: string): CircuitBreakerEntry {
+  let b = _circuitBreakers.get(edgeId)
   if (!b) {
     b = { state: 'closed', openedAt: 0, errorWindow: [] }
-    _circuitBreakers.set(nodeId, b)
+    _circuitBreakers.set(edgeId, b)
   }
   return b
 }
 
-function recordBreakerResult(nodeId: string, isError: boolean, config: NodeSimConfig, now: number) {
-  const b = getBreaker(nodeId)
+function recordBreakerResult(edgeId: string, isError: boolean, config: NodeSimConfig, now: number) {
+  const b = getBreaker(edgeId)
   const cb = config.circuitBreaker
   if (!cb) return
 
   b.errorWindow.push(isError ? 1 : 0)
   if (b.errorWindow.length > 20) b.errorWindow.splice(0, b.errorWindow.length - 20)
 
+  const edgeData     = _edgesData.find(e => e.id === edgeId)
+  const targetNodeId = edgeData?.target
+  const srcLabel     = edgeData?.source ? ((_nodesMap.get(edgeData.source)?.data as NodeData)?.label ?? edgeData.source) : edgeId
+  const tgtLabel     = targetNodeId    ? ((_nodesMap.get(targetNodeId)?.data    as NodeData)?.label ?? targetNodeId)    : edgeId
+
   if (b.state === 'closed') {
     const errRate = b.errorWindow.reduce((s, v) => s + v, 0) / b.errorWindow.length
     if (errRate >= cb.errorThreshold && b.errorWindow.length >= 10) {
-      b.state = 'open'
+      b.state    = 'open'
       b.openedAt = now
-      const node = _nodesMap.get(nodeId)
-      const label = node ? (node.data as NodeData).label ?? nodeId : nodeId
-      _onEvent('circuit_open', nodeId, `${label} circuit opened`, 'critical')
+      const cbCausedBy = targetNodeId && (_upstreamPressure.get(targetNodeId) ?? 0) > 0.2
+        ? _stallSources.get(targetNodeId)
+        : undefined
+      _onEvent('circuit_open', targetNodeId, `Circuit open: ${srcLabel} → ${tgtLabel}`, 'critical', undefined, cbCausedBy)
     }
   } else if (b.state === 'half-open') {
     if (!isError) {
-      b.state = 'closed'
+      b.state       = 'closed'
       b.errorWindow = []
-      const node = _nodesMap.get(nodeId)
-      const label = node ? (node.data as NodeData).label ?? nodeId : nodeId
-      _onEvent('circuit_close', nodeId, `${label} circuit closed`, 'info')
+      _onEvent('circuit_close', targetNodeId, `Circuit closed: ${srcLabel} → ${tgtLabel}`, 'info')
     } else {
-      b.state = 'open'
+      b.state    = 'open'
       b.openedAt = now
     }
   }
 }
 
-function checkBreakerTransition(nodeId: string, config: NodeSimConfig, now: number): CircuitState {
-  const b = getBreaker(nodeId)
+function checkBreakerTransition(edgeId: string, config: NodeSimConfig, now: number): CircuitState {
+  const b = getBreaker(edgeId)
   const cb = config.circuitBreaker
   if (!cb) return 'closed'
 
-  // Don't allow reset while node health is 'down' — CB must stay open
-  if (b.state === 'open' && _nodeHealthStates.get(nodeId) !== 'down' && now - b.openedAt > cb.resetMs) {
+  const edgeData     = _edgesData.find(e => e.id === edgeId)
+  const targetNodeId = edgeData?.target
+
+  // Don't allow reset while the target node's health is 'down' — CB must stay open
+  if (
+    b.state === 'open' &&
+    (targetNodeId === undefined || _nodeHealthStates.get(targetNodeId) !== 'down') &&
+    now - b.openedAt > cb.resetMs
+  ) {
     b.state = 'half-open'
-    const node = _nodesMap.get(nodeId)
-    const label = node ? (node.data as NodeData).label ?? nodeId : nodeId
-    _onEvent('circuit_half_open', nodeId, `${label} circuit half-open (testing)`, 'warn')
+    const srcLabel = edgeData?.source ? ((_nodesMap.get(edgeData.source)?.data as NodeData)?.label ?? edgeData.source) : edgeId
+    const tgtLabel = targetNodeId    ? ((_nodesMap.get(targetNodeId)?.data    as NodeData)?.label ?? targetNodeId)    : edgeId
+    _onEvent('circuit_half_open', targetNodeId, `Circuit half-open: ${srcLabel} → ${tgtLabel} (testing)`, 'warn')
   }
   return b.state
 }
@@ -458,9 +501,9 @@ function spawnParticles(now: number, delta: number) {
       if (_chaosFailures.has(sourceNodeId)) {
         downstreamFactor = 0  // complete failure: no forwarding
       } else {
-        const breaker = _circuitBreakers.get(sourceNodeId)
+        const breaker = _circuitBreakers.get(ep.id)
         if (breaker?.state === 'open') {
-          downstreamFactor = 0.05  // circuit open: almost no traffic passes
+          downstreamFactor = 0.05  // this edge's circuit is open: suppress its spawn rate
         } else if (_saturatedNodes.has(sourceNodeId)) {
           // Partial degradation: saturated node forwards at reduced rate
           const stall = _downstreamStallPressure.get(sourceNodeId) ?? 0
@@ -477,14 +520,27 @@ function spawnParticles(now: number, delta: number) {
 
     if (!state.particles.has(ep.id)) state.particles.set(ep.id, [])
     const arr = state.particles.get(ep.id)!
+    // Sample geographic origin latency for entry-point source nodes
+    const originLatencyMs = sourceNodeId && ep.sourceNodeType
+      ? sampleOriginLatency(sourceNodeId, ep.sourceNodeType)
+      : 0
+    // Slow particles visually based on geographic latency:
+    //   0ms → 1.0× (full speed)  |  80ms → ~0.56×  |  175ms → ~0.36×  |  500ms+ → 0.1× (floor)
+    // Both origin latency (client distance) and edge geo latency (inter-region hop) contribute.
+    const geoSpeedFactor = Math.max(0.1, 1 / (1 + (originLatencyMs + ep.geoLatencyMs) / 100))
     for (let i = 0; i < n && total < MAX_PARTICLES; i++) {
-      arr.push({
+      const pid = ++_particleIdCounter
+      const p: Particle = {
+        id: pid,
         t: 0,
-        speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.4),
+        speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.4) * geoSpeedFactor,
         color: edgeColor(ep.edgeType),
         edgeId: ep.id,
         retries: 0,
-      })
+        originLatencyMs,
+      }
+      arr.push(p)
+      _particleById.set(pid, p)
       total++
     }
   }
@@ -507,14 +563,17 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
     const stallIncrement = _nodeHealthStates.get(targetNodeId) === 'down' ? 0.15 : 0.06
     const existingStall = _downstreamStallPressure.get(sourceNodeId) ?? 0
     _downstreamStallPressure.set(sourceNodeId, Math.min(1, existingStall + stallIncrement))
+    // Record proven stall source: targetNodeId is definitively causing sourceNodeId's stall
+    _stallSources.set(sourceNodeId, targetNodeId)
 
     // Emit cascade event once pressure is significant
+    // causedByNodeId = targetNodeId is provably correct: the drop on this edge IS the cascade
     if (newPressure > 0.2 && _saturatedNodes.has(targetNodeId)) {
       const srcNode  = _nodesMap.get(sourceNodeId)
       const tgtNode  = _nodesMap.get(targetNodeId)
       const srcLabel = srcNode ? (srcNode.data as NodeData).label ?? sourceNodeId : sourceNodeId
       const tgtLabel = tgtNode ? (tgtNode.data as NodeData).label ?? targetNodeId : targetNodeId
-      _onEvent('cascade_detected', sourceNodeId, `${srcLabel} → ${tgtLabel} cascade`, 'critical')
+      _onEvent('cascade_detected', sourceNodeId, `${srcLabel} → ${tgtLabel} cascade`, 'critical', undefined, targetNodeId)
     }
   }
 
@@ -535,9 +594,8 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
         )
         const healthyEdges = lbOutEdges.filter(e => {
           const tgtId = _edgesData.find(d => d.id === e.id)?.target
-          return tgtId
-            ? _circuitBreakers.get(tgtId)?.state !== 'open' && _nodeHealthStates.get(tgtId) !== 'down'
-            : true
+          return _circuitBreakers.get(e.id)?.state !== 'open'
+            && (tgtId === undefined || _nodeHealthStates.get(tgtId) !== 'down')
         })
         const pool = healthyEdges.length > 0 ? healthyEdges : lbOutEdges
         if (pool.length > 0) {
@@ -607,11 +665,11 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
     }, releaseDelay)
   }
 
-  // Check circuit breaker state
-  const breakerState = checkBreakerTransition(targetNodeId, config, now)
+  // Check circuit breaker state (keyed on edge — client-side breaker)
+  const breakerState = checkBreakerTransition(ep.id, config, now)
   if (breakerState === 'open') {
     dropParticle(ep, targetNodeId, particle)
-    recordBreakerResult(targetNodeId, true, config, now)
+    recordBreakerResult(ep.id, true, config, now)
     return
   }
   if (breakerState === 'half-open' && Math.random() > 0.1) {
@@ -621,9 +679,13 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
 
   const isQueue = ['queue', 'pubsub', 'stream', 'eventBus'].includes(targetNodeType)
 
-  // Sample latency
+  // Sample server-side processing latency only.
+  // Neither originLatencyMs (client geographic transit) nor geoLatencyMs (inter-region network hop)
+  // belong here — both are network costs external to the node, not its processing time.
+  // Including them would inflate p90/p99 and falsely degrade health scores on healthy nodes.
   const lm = config.latencyModel
   const sampledLatency = lm ? sampleLatencyMs(lm.p50Ms, lm.p99Ms) : (config.processingMs || 5)
+  particle.originLatencyMs = 0  // consume — zeroed so it doesn't compound on subsequent hops
   recordLatency(targetNodeId, sampledLatency)
 
   // Capacity check for non-queue nodes
@@ -637,14 +699,14 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       const maxC = config.maxConcurrency ?? 10
       if (cur >= maxC) {
         dropParticle(ep, targetNodeId, particle)
-        recordBreakerResult(targetNodeId, true, config, now)
+        recordBreakerResult(ep.id, true, config, now)
         return
       }
       // Cold start: warm instances expire after 5 min idle
       const lastAct  = _warmLastActivity.get(targetNodeId) ?? 0
       const maxWarm  = config.maxWarmInstances ?? 5
       const warm     = now - lastAct > LAMBDA_WARM_IDLE_MS ? 0 : (_warmInstances.get(targetNodeId) ?? 0)
-      let effectiveLatency = sampledLatency
+      let effectiveLatency = sampledLatency  // already includes origin + geo offsets
       if (cur >= warm && config.coldStart) {
         // Pay cold-start penalty
         const cs = config.coldStart
@@ -664,7 +726,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
         const c = state.nodeConcurrency.get(targetNodeId) ?? 0
         state.nodeConcurrency.set(targetNodeId, Math.max(0, c - 1))
       }, delay)
-      recordBreakerResult(targetNodeId, false, config, now)
+      recordBreakerResult(ep.id, false, config, now)
       trackRequest(targetNodeId, targetNodeType, config)
       forwardToOutbound(targetNodeId, targetNodeType)
       return
@@ -673,12 +735,12 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
     // Other non-queue nodes: drop if at capacity
     if (utilization >= 1.0 + config.errorRate) {
       dropParticle(ep, targetNodeId, particle)
-      recordBreakerResult(targetNodeId, true, config, now)
+      recordBreakerResult(ep.id, true, config, now)
       return
     }
   }
 
-  recordBreakerResult(targetNodeId, false, config, now)
+  recordBreakerResult(ep.id, false, config, now)
   trackRequest(targetNodeId, targetNodeType, config)
 
   // Load balancer / API gateway: round-robin or least-connections routing
@@ -695,9 +757,8 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       // never silently blackholes traffic when there is no healthy option.
       const availableEdges = outEdges.filter(e => {
         const tgtId = _edgesData.find(d => d.id === e.id)?.target
-        if (!tgtId) return true
-        return _circuitBreakers.get(tgtId)?.state !== 'open'
-          && _nodeHealthStates.get(tgtId) !== 'down'
+        return _circuitBreakers.get(e.id)?.state !== 'open'
+          && (tgtId === undefined || _nodeHealthStates.get(tgtId) !== 'down')
       })
       const routingEdges = availableEdges.length > 0 ? availableEdges : outEdges
 
@@ -718,9 +779,9 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       }
 
       if (!state.particles.has(chosenEp.id)) state.particles.set(chosenEp.id, [])
-      state.particles.get(chosenEp.id)!.push({
-        t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(chosenEp.edgeType), edgeId: chosenEp.id, retries: 0,
-      })
+      const _lbp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(chosenEp.edgeType), edgeId: chosenEp.id, retries: 0, originLatencyMs: 0 }
+      state.particles.get(chosenEp.id)!.push(_lbp)
+      _particleById.set(_lbp.id, _lbp)
     }
     return
   }
@@ -739,9 +800,9 @@ function forwardToOutbound(nodeId: string, _nodeType: NodeType) {
   if (outEdges.length === 0) return
   const outEp = outEdges[Math.floor(Math.random() * outEdges.length)]
   if (!state.particles.has(outEp.id)) state.particles.set(outEp.id, [])
-  state.particles.get(outEp.id)!.push({
-    t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(outEp.edgeType), edgeId: outEp.id, retries: 0,
-  })
+  const _fwdp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(outEp.edgeType), edgeId: outEp.id, retries: 0, originLatencyMs: 0 }
+  state.particles.get(outEp.id)!.push(_fwdp)
+  _particleById.set(_fwdp.id, _fwdp)
 }
 
 function spawnErrorFlash(nodeId: string) {
@@ -900,9 +961,15 @@ function updateAllNodeMetrics(now: number, delta: number) {
     const rawP90 = computePercentile(latencySamples, 90) * cpuFactor
     const rawP99 = computePercentile(latencySamples, 99) * cpuFactor
 
-    // Circuit breaker state
-    const breaker = _circuitBreakers.get(nodeId)
-    const circuitState = breaker?.state ?? 'closed'
+    // Circuit state: worst state across all inbound edges (open > half-open > closed)
+    const inboundEdgeStates = _edgesData
+      .filter(e => e.target === nodeId)
+      .map(e => _circuitBreakers.get(e.id)?.state ?? 'closed')
+    const circuitState: CircuitState = inboundEdgeStates.includes('open')
+      ? 'open'
+      : inboundEdgeStates.includes('half-open')
+        ? 'half-open'
+        : 'closed'
 
     // Saturation events
     const wasSaturated = _saturatedNodes.has(nodeId)
@@ -910,7 +977,9 @@ function updateAllNodeMetrics(now: number, delta: number) {
     if (nowSaturated && !wasSaturated) {
       _saturatedNodes.add(nodeId)
       const label = (node.data as NodeData).label ?? nodeId
-      _onEvent('saturation_start', nodeId, `${label} saturated (${Math.round(utilization * 100)}%)`, 'critical')
+      // If stall pressure is significant, saturation is downstream-induced — causal link is proven
+      const satCausedBy = stallPressure > 0.1 ? _stallSources.get(nodeId) : undefined
+      _onEvent('saturation_start', nodeId, `${label} saturated (${Math.round(utilization * 100)}%)`, 'critical', undefined, satCausedBy)
     } else if (!nowSaturated && wasSaturated) {
       _saturatedNodes.delete(nodeId)
       const label = (node.data as NodeData).label ?? nodeId
@@ -978,14 +1047,17 @@ function updateAllNodeMetrics(now: number, delta: number) {
     rawMetrics.healthScore = healthScore
     rawMetrics.healthState = healthState
 
-    // 'down' → immediately trip circuit breaker and hold it open
+    // 'down' → immediately trip all inbound edge circuit breakers
     if (healthState === 'down') {
-      const breaker = getBreaker(nodeId)
-      if (breaker.state !== 'open') {
-        breaker.state    = 'open'
-        breaker.openedAt = now
-        const label = (node.data as NodeData).label ?? nodeId
-        _onEvent('circuit_open', nodeId, `${label} circuit opened (health: down)`, 'critical')
+      const label = (node.data as NodeData).label ?? nodeId
+      for (const e of _edgesData.filter(ed => ed.target === nodeId)) {
+        const breaker = getBreaker(e.id)
+        if (breaker.state !== 'open') {
+          breaker.state    = 'open'
+          breaker.openedAt = now
+          const srcLabel = (_nodesMap.get(e.source)?.data as NodeData)?.label ?? e.source
+          _onEvent('circuit_open', nodeId, `Circuit open: ${srcLabel} → ${label} (health: down)`, 'critical')
+        }
       }
     }
 
@@ -1063,13 +1135,9 @@ function processRetryQueue(now: number) {
     if (total >= MAX_PARTICLES) break
 
     if (!state.particles.has(r.edgeId)) state.particles.set(r.edgeId, [])
-    state.particles.get(r.edgeId)!.push({
-      t: 0,
-      speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.4),
-      color: r.color,
-      edgeId: r.edgeId,
-      retries: r.retries,
-    })
+    const _rp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.4), color: r.color, edgeId: r.edgeId, retries: r.retries, originLatencyMs: 0 }
+    state.particles.get(r.edgeId)!.push(_rp)
+    _particleById.set(_rp.id, _rp)
   }
 }
 
@@ -1156,6 +1224,7 @@ function advanceAndDraw(canvas: HTMLCanvasElement, now: number, delta: number) {
       p.t += p.speed * dt
 
       if (p.t >= 1) {
+        _particleById.delete(p.id)
         handleParticleArrival(ep, now, p)
         continue
       }
@@ -1226,6 +1295,77 @@ function loop(now: number) {
   state.rafId = requestAnimationFrame(loop)
 }
 
+// ─── Color-buffer particle picking ───────────────────────────────────────────
+
+function buildSnapshot(p: Particle): RequestSnapshot {
+  const edge    = _edgesData.find(e => e.id === p.edgeId)
+  const srcNode = edge ? _nodesMap.get(edge.source) : undefined
+  const tgtNode = edge ? _nodesMap.get(edge.target) : undefined
+  const edgeType = (edge?.data as EdgeData | undefined)?.edgeType ?? 'request'
+
+  const seed = p.id % 97
+  const METHODS     = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH']
+  const PATHS       = ['/api/v1/data', '/api/v1/users', '/api/v1/orders', '/health', '/api/v1/events', '/api/v1/records']
+  const STREAM_OPS  = ['PUBLISH', 'CONSUME', 'EMIT', 'SUBSCRIBE']
+
+  const isStream = edgeType === 'stream' || edgeType === 'event'
+  const method   = isStream ? STREAM_OPS[seed % STREAM_OPS.length] : METHODS[seed % METHODS.length]
+  const path     = PATHS[(seed * 3) % PATHS.length]
+
+  return {
+    particleId:   p.id,
+    edgeId:       p.edgeId,
+    sourceLabel:  (srcNode?.data as NodeData | undefined)?.label ?? 'Unknown',
+    targetLabel:  (tgtNode?.data as NodeData | undefined)?.label ?? 'Unknown',
+    edgeType,
+    retries:      p.retries,
+    progress:     p.t,
+    httpMethod:   method,
+    httpPath:     path,
+    payloadBytes: 64 + ((seed * 41) % 8192),
+  }
+}
+
+export function pickParticleAtPoint(
+  clickX: number,
+  clickY: number,
+  canvasRect: DOMRect,
+): RequestSnapshot | null {
+  if (!_canvas) return null
+
+  // Build an off-screen pick canvas on-demand at click time — never maintained per-frame
+  const pick = document.createElement('canvas')
+  pick.width  = _canvas.width
+  pick.height = _canvas.height
+  const ctx = pick.getContext('2d')
+  if (!ctx) return null
+
+  for (const [, arr] of state.particles) {
+    for (const p of arr) {
+      const pos = getEdgePoint(p.edgeId, p.t)
+      if (!pos) continue
+      const [px, py] = pos
+      // Encode particle ID into RGB channels (supports up to 16.7M unique IDs)
+      ctx.fillStyle = `rgb(${(p.id >> 16) & 0xFF},${(p.id >> 8) & 0xFF},${p.id & 0xFF})`
+      ctx.beginPath()
+      ctx.arc(px, py, 10, 0, Math.PI * 2)  // 10px radius — generous hit area
+      ctx.fill()
+    }
+  }
+
+  const x = Math.round(clickX - canvasRect.left)
+  const y = Math.round(clickY - canvasRect.top)
+  const pixel = ctx.getImageData(x, y, 1, 1).data
+  if (pixel[3] === 0) return null  // transparent → miss
+
+  const id = (pixel[0] << 16) | (pixel[1] << 8) | pixel[2]
+  if (id === 0) return null
+  const particle = _particleById.get(id)
+  if (!particle) return null
+
+  return buildSnapshot(particle)
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 let _canvas: HTMLCanvasElement | null = null
@@ -1246,12 +1386,22 @@ export function startSimulation(
     const tgt = _nodesMap.get(edge.target)
     if (!src || !tgt) return null
 
+    // Resolve parent region grouping node for each endpoint, then look up inter-region latency
+    const srcRegionNode = src.parentId ? _nodesMap.get(src.parentId) : undefined
+    const tgtRegionNode = tgt.parentId ? _nodesMap.get(tgt.parentId) : undefined
+    const srcRegionId   = (srcRegionNode?.data as NodeData | undefined)?.regionId
+    const tgtRegionId   = (tgtRegionNode?.data as NodeData | undefined)?.regionId
+    const geoLatencyMs  = srcRegionId && tgtRegionId && srcRegionId !== tgtRegionId
+      ? interRegionLatencyMs(srcRegionId, tgtRegionId)
+      : 0
+
     return {
       id: edge.id,
       edgeType: edge.data?.edgeType ?? 'request',
       sourceNodeType: src.type as NodeType | undefined,
       targetNodeType: tgt.type as NodeType | undefined,
       rps: useSimulationStore.getState().getEdgeRps(edge.id),
+      geoLatencyMs,
     }
   }).filter(Boolean) as EdgePath[]
 
@@ -1274,6 +1424,9 @@ export function startSimulation(
   _lbActiveRequests.clear()
   _nodeHealthStates.clear()
   _recoveryUntil.clear()
+  _stallSources.clear()
+  _particleById.clear()
+  _particleIdCounter = 0
   _warmInstances.clear()
   _warmLastActivity.clear()
   _currentCapacity.clear()
@@ -1303,6 +1456,9 @@ export function stopSimulation() {
   _lbActiveRequests.clear()
   _nodeHealthStates.clear()
   _recoveryUntil.clear()
+  _stallSources.clear()
+  _particleById.clear()
+  _particleIdCounter = 0
   _warmInstances.clear()
   _warmLastActivity.clear()
   _currentCapacity.clear()
@@ -1343,7 +1499,9 @@ export function injectBurst(nodeId: string, edges: Edge<EdgeData>[]) {
     if (!state.particles.has(edge.id)) state.particles.set(edge.id, [])
     const arr = state.particles.get(edge.id)!
     for (let i = 0; i < 20; i++) {
-      arr.push({ t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.8), color: edgeColor(ep.edgeType), edgeId: edge.id, retries: 0 })
+      const _bp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.8), color: edgeColor(ep.edgeType), edgeId: edge.id, retries: 0, originLatencyMs: 0 }
+      arr.push(_bp)
+      _particleById.set(_bp.id, _bp)
     }
   }
 }
