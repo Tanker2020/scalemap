@@ -6,6 +6,168 @@ import { useUiStore } from '../store/ui.store'
 import { NODE_CONFIG, type NodeType, type NodeData } from '../../lib/nodeConfig'
 import { EventCard } from '../simulation/SimConfigPanel'
 import styles from './ReportsPanel.module.css'
+import type { Node } from '@xyflow/react'
+
+// ─── PDF export ───────────────────────────────────────────────────────────────
+
+function severityColor(s: string) {
+  return s === 'critical' ? '#EF4444' : s === 'warn' ? '#F59E0B' : '#22C55E'
+}
+
+function exportRunAsPdf(run: SimulationRun, runIndex: number, nodes: Node<NodeData>[]) {
+  const getLabel = (id: string) => (nodes.find(n => n.id === id)?.data as NodeData)?.label ?? id
+  const getType  = (id: string) => nodes.find(n => n.id === id)?.type ?? ''
+
+  const durationLabel = run.durationS >= 60
+    ? `${Math.floor(run.durationS / 60)}m ${run.durationS % 60}s`
+    : `${run.durationS}s`
+
+  const startLabel = new Date(run.startedAt).toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
+
+  const modeLabel: Record<string, string> = {
+    steady: 'Steady Load', ramp: 'Gradual Ramp', spike: 'Flash Crowd', chaos: 'Chaos',
+  }
+
+  const topNodes = Array.from(run.nodeSnapshots.entries())
+    .sort(([, a], [, b]) => b.utilization - a.utilization)
+    .slice(0, 10)
+
+  const sloViolationEvents = run.events.filter(e => e.type === 'slo_violation')
+  const violatedNodeIds = [...new Set(sloViolationEvents.map(e => e.nodeId).filter(Boolean))] as string[]
+
+  const topNodesRows = topNodes.map(([id, m]) => {
+    const pct   = Math.min(100, Math.round(m.utilization * 100))
+    const color = pct >= 85 ? '#EF4444' : pct >= 60 ? '#F59E0B' : '#22C55E'
+    return `<tr>
+      <td>${getLabel(id)}</td>
+      <td style="color:#94A3B8;font-size:10px">${getType(id)}</td>
+      <td><div style="height:6px;background:#1E2230;border-radius:3px;width:120px">
+        <div style="width:${pct}%;height:100%;background:${color};border-radius:3px"></div>
+      </div></td>
+      <td style="text-align:right;color:${color}">${pct}%</td>
+      <td style="text-align:right">${Math.round(m.inRps)}</td>
+      <td style="text-align:right;color:${m.errorRate > 0.01 ? '#EF4444' : '#94A3B8'}">${(m.errorRate * 100).toFixed(1)}%</td>
+      <td style="text-align:right">${Math.round(m.p90LatencyMs)}ms</td>
+    </tr>`
+  }).join('')
+
+  const sloHtml = violatedNodeIds.length === 0
+    ? `<tr><td colspan="3" style="color:#22C55E">✓ All SLOs passed</td></tr>`
+    : violatedNodeIds.map(id => {
+        const snap = run.nodeSnapshots.get(id)
+        const msg  = sloViolationEvents.find(e => e.nodeId === id)?.message ?? ''
+        return `<tr>
+          <td>${getLabel(id)}</td>
+          <td style="color:#94A3B8;font-size:10px">${getType(id)}</td>
+          <td style="color:#F87171">${msg}${snap ? ` — Util ${Math.round(snap.utilization * 100)}% · P90 ${Math.round(snap.p90LatencyMs)}ms` : ''}</td>
+        </tr>`
+      }).join('')
+
+  const eventsHtml = run.events.map(ev => {
+    const color   = severityColor(ev.severity)
+    const elapsed = ev.elapsedS != null ? `+${ev.elapsedS.toFixed(1)}s` : ''
+    return `<tr>
+      <td style="color:${color};white-space:nowrap">${elapsed}</td>
+      <td style="color:${color};text-transform:uppercase;font-size:10px;white-space:nowrap">${ev.type.replace(/_/g, ' ')}</td>
+      <td style="color:#94A3B8">${ev.message}</td>
+    </tr>`
+  }).join('')
+
+  const allNodesRows = Array.from(run.nodeSnapshots.entries()).map(([id, m]) => `<tr>
+    <td>${getLabel(id)}</td>
+    <td style="color:#94A3B8;font-size:10px">${getType(id)}</td>
+    <td style="text-align:right">${Math.round(m.inRps)}</td>
+    <td style="text-align:right;color:${m.utilization > 0.85 ? '#EF4444' : '#F1F5F9'}">${Math.round(m.utilization * 100)}%</td>
+    <td style="text-align:right;color:${m.errorRate > 0.01 ? '#EF4444' : '#F1F5F9'}">${(m.errorRate * 100).toFixed(2)}%</td>
+    <td style="text-align:right">${Math.round(m.p50LatencyMs)}ms</td>
+    <td style="text-align:right">${Math.round(m.p90LatencyMs)}ms</td>
+    <td style="text-align:right">${Math.round(m.p99LatencyMs)}ms</td>
+  </tr>`).join('')
+
+  const css = `
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Courier New',monospace;font-size:12px;background:#0D0F12;color:#F1F5F9;padding:32px}
+    h1{font-size:20px;font-weight:700;margin-bottom:4px}
+    h2{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:#475569;margin:24px 0 8px;padding-bottom:4px;border-bottom:1px solid #1E2230}
+    table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:4px}
+    th{text-align:left;color:#475569;text-transform:uppercase;letter-spacing:.05em;font-size:9px;padding:4px 8px;border-bottom:1px solid #1E2230}
+    td{padding:5px 8px;border-bottom:1px solid #0D0F12}
+    .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:4px}
+    .s{background:#161920;border:1px solid #2A2E38;border-radius:6px;padding:10px 12px}
+    .sl{font-size:9px;color:#475569;text-transform:uppercase;letter-spacing:.06em}
+    .sv{font-size:20px;font-weight:700;margin-top:2px}
+    .red{color:#EF4444}.grn{color:#22C55E}
+  `
+
+  const body = `
+    <h1>Scalemap Simulation Report</h1>
+    <p style="color:#475569;font-size:11px;margin-top:4px;margin-bottom:20px">
+      Run #${runIndex + 1} &nbsp;·&nbsp; ${startLabel} &nbsp;·&nbsp;
+      ${modeLabel[run.trafficMode] ?? run.trafficMode} &nbsp;·&nbsp;
+      ${run.globalMultiplier}× &nbsp;·&nbsp; ${durationLabel}
+    </p>
+
+    <h2>Summary</h2>
+    <div class="stats">
+      <div class="s"><div class="sl">Duration</div><div class="sv">${durationLabel}</div></div>
+      <div class="s"><div class="sl">Peak RPS</div><div class="sv">${run.peakRps >= 1000 ? `${(run.peakRps / 1000).toFixed(1)}k` : Math.round(run.peakRps)}</div></div>
+      <div class="s"><div class="sl">Peak Util</div><div class="sv ${run.peakUtilization > 0.85 ? 'red' : 'grn'}">${Math.round(run.peakUtilization * 100)}%</div></div>
+      <div class="s"><div class="sl">Avg Error</div><div class="sv ${run.avgErrorRate > 0.01 ? 'red' : 'grn'}">${(run.avgErrorRate * 100).toFixed(2)}%</div></div>
+      <div class="s"><div class="sl">SLO Failures</div><div class="sv ${run.sloViolations > 0 ? 'red' : 'grn'}">${run.sloViolations}</div></div>
+      <div class="s"><div class="sl">Nodes</div><div class="sv">${run.nodeSnapshots.size}</div></div>
+      <div class="s"><div class="sl">Events</div><div class="sv">${run.events.length}</div></div>
+      <div class="s"><div class="sl">Traffic Mode</div><div class="sv" style="font-size:13px">${modeLabel[run.trafficMode] ?? run.trafficMode}</div></div>
+    </div>
+
+    <h2>SLO Status</h2>
+    <table><thead><tr><th>Node</th><th>Type</th><th>Violation</th></tr></thead><tbody>${sloHtml}</tbody></table>
+
+    <h2>Top Nodes by Utilization</h2>
+    <table>
+      <thead><tr><th>Node</th><th>Type</th><th colspan="2">Utilization</th><th style="text-align:right">RPS In</th><th style="text-align:right">Error</th><th style="text-align:right">P90</th></tr></thead>
+      <tbody>${topNodesRows}</tbody>
+    </table>
+
+    <h2>All Node Snapshots</h2>
+    <table>
+      <thead><tr><th>Node</th><th>Type</th><th style="text-align:right">RPS In</th><th style="text-align:right">Util</th><th style="text-align:right">Error</th><th style="text-align:right">P50</th><th style="text-align:right">P90</th><th style="text-align:right">P99</th></tr></thead>
+      <tbody>${allNodesRows}</tbody>
+    </table>
+
+    <h2>Event Timeline (${run.events.length} events)</h2>
+    <table><thead><tr><th>Time</th><th>Type</th><th>Message</th></tr></thead><tbody>${eventsHtml}</tbody></table>
+  `
+
+  // Inject report into current document and use window.print()
+  // (window.open() is blocked by Tauri's webview security policy)
+  const styleEl = document.createElement('style')
+  styleEl.id = 'smp-print-style'
+  styleEl.textContent = css + `
+    #smp-print-root { display: none }
+    @media print {
+      #smp-print-root { display: block !important }
+      body > *:not(#smp-print-root) { display: none !important }
+    }
+  `
+
+  const rootEl = document.createElement('div')
+  rootEl.id = 'smp-print-root'
+  rootEl.innerHTML = body
+
+  document.head.appendChild(styleEl)
+  document.body.appendChild(rootEl)
+
+  function cleanup() {
+    styleEl.remove()
+    rootEl.remove()
+    window.removeEventListener('afterprint', cleanup)
+  }
+  window.addEventListener('afterprint', cleanup)
+
+  window.print()
+}
 
 // ─── RunDetailOverlay ─────────────────────────────────────────────────────────
 
@@ -163,12 +325,15 @@ function RunDetailOverlay({ run, runIndex, onClose }: { run: SimulationRun; runI
             </div>
           )}
 
-          {/* Share stub */}
+          {/* PDF export */}
           <div className={styles.shareRow}>
-            <button className={styles.shareBtn} disabled title="Coming soon — disk export in next release">
-              Share Report
+            <button
+              className={styles.shareBtn}
+              onClick={() => exportRunAsPdf(run, runIndex, nodes)}
+            >
+              Export PDF
             </button>
-            <span className={styles.shareHint}>Disk export coming soon</span>
+            <span className={styles.shareHint}>Opens print dialog — save as PDF</span>
           </div>
         </div>
       </div>

@@ -68,6 +68,14 @@
   margin-bottom: 7px;
 }
 
+.lockHint {
+  font-size: 9px;
+  color: #475569;
+  text-transform: none;
+  letter-spacing: 0;
+  font-style: italic;
+}
+
 .field {
   width: 100%;
   background: var(--color-node-base);

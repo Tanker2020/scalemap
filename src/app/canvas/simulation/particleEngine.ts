@@ -204,8 +204,13 @@ let _simStartTime = 0
 let _spikeNextAt = 0
 let _spikeEndAt  = 0
 
-// Chaos mode: nodeIds whose outbound is temporarily "failed"
-const _chaosFailures = new Map<string, number>() // nodeId → expiry timestamp
+// Chaos mode failure entry — mode determines how the failure manifests
+interface ChaosEntry {
+  expiry: number
+  mode: 'crash' | 'latency' | 'partial'
+  dropRate: number  // fraction of arriving requests that fail (1.0 = crash, 0.9 = latency, 0.5–0.8 = partial)
+}
+const _chaosFailures = new Map<string, ChaosEntry>()
 let _chaosNextFailAt = 0
 
 // Connection pool tracking (7a)
@@ -356,17 +361,21 @@ function effectiveMultiplier(now: number): number {
           const victim = nonGroupNodes[Math.floor(Math.random() * nonGroupNodes.length)]
           const failDuration = 5_000 + Math.random() * 15_000  // 5–20s failures
           const wasAlreadyFailed = _chaosFailures.has(victim.id)
-          _chaosFailures.set(victim.id, now + failDuration)
+          const modeRoll = Math.random()
+          const mode: ChaosEntry['mode'] = modeRoll < 0.4 ? 'crash' : modeRoll < 0.7 ? 'latency' : 'partial'
+          const dropRate = mode === 'crash' ? 1.0 : mode === 'latency' ? 0.9 : 0.5 + Math.random() * 0.3
+          _chaosFailures.set(victim.id, { expiry: now + failDuration, mode, dropRate })
           if (!wasAlreadyFailed) {
             const label = (victim.data as NodeData).label ?? victim.id
-            _onEvent('chaos_failure', victim.id, `${label} failed (chaos)`, 'warn')
+            const modeLabel = mode === 'crash' ? 'crash' : mode === 'latency' ? 'latency spike' : 'partial failure'
+            _onEvent('chaos_failure', victim.id, `${label} ${modeLabel} (chaos)`, 'warn')
           }
         }
         _chaosNextFailAt = now + 5_000 + Math.random() * 10_000
       }
       // Emit recovery events for expired failures
-      for (const [id, expiry] of _chaosFailures) {
-        if (now > expiry) {
+      for (const [id, entry] of _chaosFailures) {
+        if (now > entry.expiry) {
           const node = _nodesMap.get(id)
           const label = node ? (node.data as NodeData).label ?? id : id
           _chaosFailures.delete(id)
@@ -498,17 +507,44 @@ function spawnParticles(now: number, delta: number) {
     const sourceNodeId = _edgesData.find(e => e.id === ep.id)?.source
     let downstreamFactor = 1.0
     if (sourceNodeId) {
-      if (_chaosFailures.has(sourceNodeId)) {
-        downstreamFactor = 0  // complete failure: no forwarding
+      const chaosEntry = _chaosFailures.get(sourceNodeId)
+      if (_nodeHealthStates.get(sourceNodeId) === 'down') {
+        downstreamFactor = 0
+      } else if (chaosEntry) {
+        // crash: completely dark; latency: near-zero forwarding; partial: reduced proportionally
+        downstreamFactor = chaosEntry.mode === 'crash' ? 0
+          : chaosEntry.mode === 'latency' ? 0.05
+          : Math.max(0, 1 - chaosEntry.dropRate)
+        // Stall pressure compounds on top of chaos for partial/latency modes
+        if (downstreamFactor > 0 && _saturatedNodes.has(sourceNodeId)) {
+          const stall = _downstreamStallPressure.get(sourceNodeId) ?? 0
+          downstreamFactor = Math.max(0, downstreamFactor * Math.max(0.1, 1 - stall * 0.8))
+        }
       } else {
         const breaker = _circuitBreakers.get(ep.id)
         if (breaker?.state === 'open') {
-          downstreamFactor = 0.05  // this edge's circuit is open: suppress its spawn rate
+          downstreamFactor = 0         // circuit open: no traffic; periodic scan handles probing
+        } else if (breaker?.state === 'half-open') {
+          downstreamFactor = 0.1       // probe rate: small trickle tests recovery
         } else if (_saturatedNodes.has(sourceNodeId)) {
           // Partial degradation: saturated node forwards at reduced rate
           const stall = _downstreamStallPressure.get(sourceNodeId) ?? 0
           downstreamFactor = Math.max(0.1, 1 - stall * 0.8)
         }
+      }
+    }
+
+    // Queue backpressure: reduce spawn rate exponentially once queue depth exceeds 80% capacity.
+    // Models TCP flow control / Kafka producer throttling — producer is slowed before overflow.
+    if (downstreamFactor > 0 && ep.targetNodeType &&
+        ['queue', 'pubsub', 'stream', 'eventBus'].includes(ep.targetNodeType)) {
+      const tgtId  = _edgesData.find(e => e.id === ep.id)?.target
+      const tgtCap = tgtId ? (effectiveConfig(tgtId, ep.targetNodeType as NodeType).queueCapacity ?? 1000) : 1000
+      const depth  = tgtId ? (state.queueDepths.get(tgtId) ?? 0) : 0
+      const ratio  = depth / tgtCap
+      if (ratio > 0.8) {
+        const backpressure = Math.pow((ratio - 0.8) / 0.2, 2)
+        downstreamFactor *= Math.max(0, 1 - backpressure)
       }
     }
 
@@ -553,14 +589,21 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
 
   const sourceNodeId = _edgesData.find(e => e.id === ep.id)?.source
   if (sourceNodeId) {
+    // Normalize increments by the source node's capacity so a 10k-RPS node doesn't spike
+    // in a single frame the same way a 100-RPS node does. Each dropped particle represents
+    // 10 RPS worth of blocked capacity; dividing by maxRps gives the fractional load impact.
+    const srcType   = _nodesMap.get(sourceNodeId)?.type as NodeType | undefined
+    const srcMaxRps = srcType ? effectiveConfig(sourceNodeId, srcType).maxRps : 1000
+    const perParticle = Math.max(0.002, 10 / Math.max(10, srcMaxRps))
+
     // Error pressure → raises source's error rate
     const existing = _upstreamPressure.get(sourceNodeId) ?? 0
-    const newPressure = Math.min(1, existing + 0.05)
+    const newPressure = Math.min(1, existing + perParticle)
     _upstreamPressure.set(sourceNodeId, newPressure)
 
     // Stall pressure → raises source's effective utilization (threads blocked waiting)
     // 'down' nodes cause 2.5× more stall — models TCP timeout vs fast 503 rejection
-    const stallIncrement = _nodeHealthStates.get(targetNodeId) === 'down' ? 0.15 : 0.06
+    const stallIncrement = perParticle * (_nodeHealthStates.get(targetNodeId) === 'down' ? 2.5 : 1.0)
     const existingStall = _downstreamStallPressure.get(sourceNodeId) ?? 0
     _downstreamStallPressure.set(sourceNodeId, Math.min(1, existingStall + stallIncrement))
     // Record proven stall source: targetNodeId is definitively causing sourceNodeId's stall
@@ -629,13 +672,21 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
     rps: totalInRps,
   })
 
-  // Skip forwarding if chaos mode has this node failed
-  if (_chaosFailures.has(targetNodeId)) {
+  // Hard gate: down nodes reject everything — bypasses circuit breaker timing windows
+  if (_nodeHealthStates.get(targetNodeId) === 'down') {
     dropParticle(ep, targetNodeId, particle)
     return
   }
 
   const config = effectiveConfig(targetNodeId, targetNodeType)
+
+  // Chaos failure: mode-specific drop rate, feeds circuit breakers so they trip naturally
+  const chaosEntry = _chaosFailures.get(targetNodeId)
+  if (chaosEntry && Math.random() < chaosEntry.dropRate) {
+    recordBreakerResult(ep.id, true, config, now)
+    dropParticle(ep, targetNodeId, particle)
+    return
+  }
 
   // Degraded health: proportional random drop — 2% at threshold entry, 15% deep in degraded
   // Models CPU throttling / resource starvation causing partial request shedding
@@ -678,6 +729,22 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
   }
 
   const isQueue = ['queue', 'pubsub', 'stream', 'eventBus'].includes(targetNodeType)
+
+  // Queue overflow: hard-drop when depth >= capacity, recording an error so the producer's
+  // inbound circuit accumulates failures and backpressure propagates upstream.
+  if (isQueue) {
+    const cap   = config.queueCapacity ?? 1000
+    const depth = state.queueDepths.get(targetNodeId) ?? 0
+    if (depth >= cap) {
+      const label = (_nodesMap.get(targetNodeId)?.data as NodeData)?.label ?? targetNodeId
+      _onEvent('connection_pool_exhausted', targetNodeId,
+        `${label} queue full (${Math.round(depth)}/${cap}) — dropping`, 'critical',
+        { utilization: 1, errorRate: 1 })
+      recordBreakerResult(ep.id, true, config, now)
+      dropParticle(ep, targetNodeId, particle)
+      return
+    }
+  }
 
   // Sample server-side processing latency only.
   // Neither originLatencyMs (client geographic transit) nor geoLatencyMs (inter-region network hop)
@@ -736,6 +803,19 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
     if (utilization >= 1.0 + config.errorRate) {
       dropParticle(ep, targetNodeId, particle)
       recordBreakerResult(ep.id, true, config, now)
+      return
+    }
+  }
+
+  // Regular compute nodes: if every outbound dependency is circuit-open, this request cannot
+  // be fulfilled — fail it so the inbound circuit (LB→server) accumulates errors naturally.
+  if (!isQueue && targetNodeType !== 'loadBalancer' && targetNodeType !== 'apiGateway'
+      && !['k8sCluster', 'ecsCluster', 'dockerCompose'].includes(targetNodeType)
+      && targetNodeType !== 'lambda') {
+    const outEdges = _edgePaths.filter(e => _edgesData.find(d => d.id === e.id)?.source === targetNodeId)
+    if (outEdges.length > 0 && outEdges.every(e => _circuitBreakers.get(e.id)?.state === 'open')) {
+      recordBreakerResult(ep.id, true, config, now)
+      dropParticle(ep, targetNodeId, particle)
       return
     }
   }
@@ -907,7 +987,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
         }
         // Self-healing: auto-recover from chaos failures (7g)
         if (config.selfHealing && _chaosFailures.has(nodeId)) {
-          const expiry = _chaosFailures.get(nodeId) ?? 0
+          const expiry = _chaosFailures.get(nodeId)?.expiry ?? 0
           if (now > expiry) {
             const restarts  = _restartCounts.get(nodeId) ?? 0
             const cooldown  = _restartCooldown.get(nodeId) ?? 0
@@ -1097,6 +1177,26 @@ function updateAllNodeMetrics(now: number, delta: number) {
   }
 
   if (metricsBatch.size > 0) _onNodeMetrics(metricsBatch)
+
+  // Proactively transition open circuits to half-open once resetMs has elapsed.
+  // checkBreakerTransition only fires on particle arrival, but spawnParticles emits 0 particles
+  // on open circuits — creating a deadlock where the circuit can never self-recover.
+  // This periodic scan breaks that deadlock without relying on incoming traffic.
+  for (const [edgeId, breaker] of _circuitBreakers) {
+    if (breaker.state !== 'open') continue
+    const edgeData    = _edgesData.find(e => e.id === edgeId)
+    if (!edgeData) continue
+    const targetId    = edgeData.target
+    if (_nodeHealthStates.get(targetId) === 'down') continue
+    const tgtType     = _nodesMap.get(targetId)?.type as NodeType | undefined
+    if (!tgtType) continue
+    const cb          = effectiveConfig(targetId, tgtType).circuitBreaker
+    if (!cb || now - breaker.openedAt <= cb.resetMs) continue
+    breaker.state     = 'half-open'
+    const srcLabel    = (_nodesMap.get(edgeData.source)?.data as NodeData)?.label ?? edgeData.source
+    const tgtLabel    = (_nodesMap.get(targetId)?.data    as NodeData)?.label ?? targetId
+    _onEvent('circuit_half_open', targetId, `Circuit half-open: ${srcLabel} → ${tgtLabel} (testing)`, 'warn')
+  }
 }
 
 // ─── Retry queue processing ───────────────────────────────────────────────────
@@ -1386,14 +1486,24 @@ export function startSimulation(
     const tgt = _nodesMap.get(edge.target)
     if (!src || !tgt) return null
 
-    // Resolve parent region grouping node for each endpoint, then look up inter-region latency
-    const srcRegionNode = src.parentId ? _nodesMap.get(src.parentId) : undefined
-    const tgtRegionNode = tgt.parentId ? _nodesMap.get(tgt.parentId) : undefined
-    const srcRegionId   = (srcRegionNode?.data as NodeData | undefined)?.regionId
-    const tgtRegionId   = (tgtRegionNode?.data as NodeData | undefined)?.regionId
-    const geoLatencyMs  = srcRegionId && tgtRegionId && srcRegionId !== tgtRegionId
+    // Traverse the ancestor chain to find the nearest regionId, so nodes nested inside
+    // vpc → az → region containers are correctly resolved (not just direct-parent lookup).
+    const resolveRegionId = (nodeId: string): string | undefined => {
+      let cur = _nodesMap.get(nodeId)
+      while (cur) {
+        const rid = (cur.data as NodeData | undefined)?.regionId
+        if (rid) return rid
+        cur = cur.parentId ? _nodesMap.get(cur.parentId) : undefined
+      }
+      return undefined
+    }
+    const srcRegionId  = resolveRegionId(edge.source)
+    const tgtRegionId  = resolveRegionId(edge.target)
+    const geoLatencyMs = srcRegionId && tgtRegionId && srcRegionId !== tgtRegionId
       ? interRegionLatencyMs(srcRegionId, tgtRegionId)
-      : 0
+      // One side has a region, the other doesn't — apply a conservative default so
+      // the latency cost of leaving/entering a defined region is not silently ignored.
+      : (srcRegionId || tgtRegionId) && !(srcRegionId && tgtRegionId) ? 50 : 0
 
     return {
       id: edge.id,

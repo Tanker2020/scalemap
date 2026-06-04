@@ -293,8 +293,9 @@ function NodeRow({
 
 function ConfigSection({ nodeId }: { nodeId: string }) {
   const { nodes, updateNodeData } = useCanvasStore()
-  const nodeConfigs  = useSimulationStore(s => s.nodeConfigs)
+  const nodeConfigs   = useSimulationStore(s => s.nodeConfigs)
   const setNodeConfig = useSimulationStore(s => s.setNodeConfig)
+  const running       = useSimulationStore(s => s.running)
 
   const node = nodes.find(n => n.id === nodeId)
   if (!node) return null
@@ -315,6 +316,13 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
 
   return (
     <>
+      {running && (
+        <div className={styles.configLockNotice}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M18 10V7A6 6 0 0 0 6 7v3H4v12h16V10h-2zm-8-3a4 4 0 0 1 8 0v3h-8V7zm10 13H4V12h16v8z"/></svg>
+          Stop simulation to edit configuration
+        </div>
+      )}
+      <fieldset disabled={running} className={styles.configFieldset}>
       <div className={styles.configBlock}>
         <div className={styles.configBlockTitle}>Capacity</div>
         <div className={styles.configGrid}>
@@ -683,6 +691,7 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
           </div>
         )
       })()}
+      </fieldset>
     </>
   )
 }

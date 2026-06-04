@@ -4,8 +4,8 @@ import { useCanvasStore } from '../store/canvas.store'
 import { useUiStore } from '../store/ui.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
-import { NODE_CONFIG, type NodeStatus, type EdgeType, type NodeType } from '../../lib/nodeConfig'
-import { REGIONS_BY_ZONE } from '../../lib/regionConfig'
+import { NODE_CONFIG, GROUPING_TYPES, type NodeStatus, type EdgeType, type NodeType, type NodeData as ND } from '../../lib/nodeConfig'
+import { REGIONS_BY_ZONE, WORLD_REGIONS } from '../../lib/regionConfig'
 import { CATEGORY_COLORS } from '../../lib/theme'
 import { Sparkline } from './Sparkline'
 import { EventCard } from '../simulation/SimConfigPanel'
@@ -224,7 +224,8 @@ function NodePanel({ nodeId }: { nodeId: string }) {
           </div>
         </div>
 
-        {nodeType === 'region' && (
+        {/* Group containers: configure which geographic region they represent */}
+        {GROUPING_TYPES.has(nodeType) && (
           <div className={styles.section}>
             <div className={styles.sectionLabel}>Geographic Region</div>
             <select
@@ -236,30 +237,65 @@ function NodePanel({ nodeId }: { nodeId: string }) {
                 padding: '6px 8px', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer',
               }}
             >
-              <option value="">None (no geographic latency)</option>
+              <option value="">None</option>
               <optgroup label="── AMER ──">
                 {REGIONS_BY_ZONE.AMER.map(r => (
-                  <option key={r.id} value={r.id}>{r.label} (+{r.baseLatencyMs}ms)</option>
+                  <option key={r.id} value={r.id}>{r.label}</option>
                 ))}
               </optgroup>
               <optgroup label="── EMEA ──">
                 {REGIONS_BY_ZONE.EMEA.map(r => (
-                  <option key={r.id} value={r.id}>{r.label} (+{r.baseLatencyMs}ms)</option>
+                  <option key={r.id} value={r.id}>{r.label}</option>
                 ))}
               </optgroup>
               <optgroup label="── APAC ──">
                 {REGIONS_BY_ZONE.APAC.map(r => (
-                  <option key={r.id} value={r.id}>{r.label} (+{r.baseLatencyMs}ms)</option>
+                  <option key={r.id} value={r.id}>{r.label}</option>
                 ))}
               </optgroup>
             </select>
             {data.regionId && (
-              <div style={{ fontSize: 10, color: '#475569', marginTop: 4 }}>
-                Nodes inside this region container will incur inter-region latency on cross-region edges.
+              <div style={{ fontSize: 10, color: '#475569', marginTop: 6, lineHeight: 1.6 }}>
+                Cross-region edge latency is determined by the zone pair, not the region itself:
+                <div style={{ marginTop: 4, display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1px 8px', fontFamily: 'inherit' }}>
+                  <span style={{ color: '#4A9EFF' }}>AMER ↔ EMEA</span><span>~80ms</span>
+                  <span style={{ color: '#4A9EFF' }}>AMER ↔ APAC</span><span>~170ms</span>
+                  <span style={{ color: '#4A9EFF' }}>EMEA ↔ APAC</span><span>~140ms</span>
+                  <span style={{ color: '#4A9EFF' }}>Same zone</span><span>~25–45ms</span>
+                </div>
               </div>
             )}
           </div>
         )}
+
+        {/* Compute nodes: show inherited region if inside a group container */}
+        {!GROUPING_TYPES.has(nodeType) && (() => {
+          // Walk ancestor chain to find nearest container with a regionId
+          const nodeMap = new Map(nodes.map(n => [n.id, n]))
+          let cur = nodeMap.get(selectedNode.parentId ?? '')
+          while (cur) {
+            const rid = (cur.data as ND)?.regionId
+            if (rid) {
+              const region = WORLD_REGIONS.find(r => r.id === rid)
+              return region ? (
+                <div className={styles.section}>
+                  <div className={styles.sectionLabel}>Geographic Region</div>
+                  <div style={{ fontSize: 11, color: '#94A3B8', padding: '4px 0' }}>
+                    {region.label}
+                    <span style={{ color: '#475569', fontSize: 10, marginLeft: 6 }}>
+                      +{region.baseLatencyMs}ms base latency
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
+                    Inherited from <span style={{ color: '#64748B' }}>{(cur.data as ND)?.label ?? cur.id}</span>
+                  </div>
+                </div>
+              ) : null
+            }
+            cur = cur.parentId ? nodeMap.get(cur.parentId) : undefined
+          }
+          return null
+        })()}
 
         {showNotes ? (
           <div className={styles.section}>
@@ -355,6 +391,21 @@ export function PropertiesPanel() {
     const data = selectedEdge.data as import('../../lib/nodeConfig').EdgeData
     const rps = getEdgeRps(selectedEdge.id)
 
+    // Resolve the effective regionId for a node by walking its ancestor chain
+    const nodeMap = new Map(nodes.map(n => [n.id, n]))
+    const resolveEdgeRegion = (nodeId: string) => {
+      let cur = nodeMap.get(nodeId)
+      while (cur) {
+        const rid = (cur.data as ND)?.regionId
+        if (rid) return { regionId: rid, label: (cur.data as ND)?.label ?? cur.id }
+        cur = cur.parentId ? nodeMap.get(cur.parentId) : undefined
+      }
+      return null
+    }
+    const srcRegion = resolveEdgeRegion(selectedEdge.source)
+    const tgtRegion = resolveEdgeRegion(selectedEdge.target)
+    const hasPartialRegion = (!!srcRegion) !== (!!tgtRegion)
+
     return (
       <aside className={styles.sidebar}>
         <TabBar />
@@ -372,6 +423,26 @@ export function PropertiesPanel() {
           exit={{ opacity: 0, x: 8 }}
           transition={{ duration: 0.18 }}
         >
+          {hasPartialRegion && (
+            <div style={{
+              margin: '0 0 2px', padding: '8px 12px',
+              background: '#1C1500', border: '1px solid #F59E0B44', borderRadius: 5,
+            }}>
+              <div style={{ fontSize: 10, color: '#FCD34D', fontWeight: 600, marginBottom: 3 }}>
+                ⚠ Partial region coverage
+              </div>
+              <div style={{ fontSize: 10, color: '#94A3B8', lineHeight: 1.6 }}>
+                {srcRegion
+                  ? <>Source is in <span style={{ color: '#F1F5F9' }}>{srcRegion.label}</span> ({srcRegion.regionId}) but the target has no region assigned.</>
+                  : <>Target is in <span style={{ color: '#F1F5F9' }}>{tgtRegion!.label}</span> ({tgtRegion!.regionId}) but the source has no region assigned.</>
+                }
+              </div>
+              <div style={{ fontSize: 10, color: '#64748B', marginTop: 4 }}>
+                Assign the other node to a region container for accurate inter-region latency. A default +50ms is applied for now.
+              </div>
+            </div>
+          )}
+
           <div className={styles.section}>
             <div className={styles.sectionLabel}>Type</div>
             <div className={styles.row}>
@@ -379,6 +450,7 @@ export function PropertiesPanel() {
               <select
                 className={styles.edgeTypeSelect}
                 value={data?.edgeType ?? 'request'}
+                disabled={running}
                 onChange={e => changeEdgeType(selectedEdge.id, e.target.value as EdgeType)}
               >
                 <option value="request">Request/Response</option>
@@ -400,7 +472,11 @@ export function PropertiesPanel() {
           </div>
 
           <div className={styles.section}>
-            <div className={styles.sectionLabel}>Simulation</div>
+            <div className={styles.sectionLabel}>
+              Simulation
+              {running && <span className={styles.lockHint}> · stop sim to edit</span>}
+            </div>
+            <fieldset disabled={running} style={{ border: 'none', padding: 0, margin: 0, opacity: running ? 0.45 : 1 }}>
             <div className={styles.row}>
               <span className={styles.rowLabel}>Throughput (RPS)</span>
               <input
@@ -422,6 +498,7 @@ export function PropertiesPanel() {
                 onChange={e => updateEdgeData(selectedEdge.id, { latency: Number(e.target.value) })}
               />
             </div>
+            </fieldset>
           </div>
         </motion.div>
         </AnimatePresence>

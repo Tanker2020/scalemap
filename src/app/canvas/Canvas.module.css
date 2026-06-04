@@ -118,3 +118,11 @@
 .simulating :global(.react-flow__node *) {
   pointer-events: none;
 }
+
+/* In hand mode during simulation, make nodes fully transparent to pointer events so
+   all clicks reach the pane and trigger panning instead of being swallowed by nodes. */
+.simulating.handMode :global(.react-flow__node),
+.simulating.handMode :global(.react-flow__node *) {
+  pointer-events: none !important;
+  cursor: grab !important;
+}
