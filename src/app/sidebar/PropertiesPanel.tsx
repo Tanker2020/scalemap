@@ -164,6 +164,7 @@ function NodePanel({ nodeId }: { nodeId: string }) {
   const [graphOverlay, setGraphOverlay] = useState<GraphMetric | null>(null)
   const running = useSimulationStore(s => s.running)
   const nodeHistory = useMetricsHistoryStore(s => s.history.get(nodeId))
+  const consumerLagMs = useSimulationStore(s => s.nodeMetrics.get(nodeId)?.consumerLagMs)
 
   return (
     <>
@@ -328,6 +329,17 @@ function NodePanel({ nodeId }: { nodeId: string }) {
               <span className={styles.sparkClickLabel}>Errors</span>
               <Sparkline data={nodeHistory.map(s => s.errorRate)} color="#EF4444" height={26} />
             </button>
+            {consumerLagMs !== undefined && (
+              <div className={styles.metricRow} title="Time to drain the current backlog at the consumer's current rate">
+                <span className={styles.metricLabel}>Consumer Lag</span>
+                <span className={styles.metricVal} style={{ color: consumerLagMs > 5000 ? '#EF4444' : consumerLagMs > 1000 ? '#F59E0B' : '#22C55E' }}>
+                  {consumerLagMs === Infinity ? '∞'
+                    : consumerLagMs >= 60000 ? `${(consumerLagMs / 60000).toFixed(1)}m`
+                    : consumerLagMs >= 1000  ? `${(consumerLagMs / 1000).toFixed(1)}s`
+                    : `${Math.round(consumerLagMs)}ms`}
+                </span>
+              </div>
+            )}
           </div>
         )}
 

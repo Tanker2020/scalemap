@@ -83,6 +83,12 @@ const _upstreamPressure = new Map<string, number>()
 // → upstream node's effective utilization increases, causing it to saturate and cascade
 const _downstreamStallPressure = new Map<string, number>()
 
+// Cumulative drop counts per node since simulation start
+const _droppedCounts = new Map<string, number>()
+
+// In-flight synchronous request threads held at source nodes (request-edge thread pool model)
+const _activeWorkers = new Map<string, number>()
+
 // Which nodes were already saturated (for start/end events)
 const _saturatedNodes = new Set<string>()
 
@@ -481,6 +487,9 @@ function effectiveProcessingMs(nodeId: string, config: NodeSimConfig): number {
 // Routers and accumulators: not counted as backends for LAC routing
 const _LB_SKIP_TYPES = new Set<string>(['loadBalancer', 'apiGateway', 'queue', 'eventBus', 'pubsub', 'stream'])
 
+// Node types that model a traditional thread pool: slow downstream holds a thread, blocking new requests
+const THREAD_POOL_TYPES = new Set<string>(['ec2', 'container', 'pod', 'k8sCluster', 'ecsCluster'])
+
 function trackRequest(nodeId: string, nodeType: NodeType, config: NodeSimConfig) {
   if (_LB_SKIP_TYPES.has(nodeType) || GROUPING_TYPES.has(nodeType)) return
   _lbActiveRequests.set(nodeId, (_lbActiveRequests.get(nodeId) ?? 0) + 1)
@@ -515,8 +524,9 @@ function spawnParticles(now: number, delta: number) {
         downstreamFactor = chaosEntry.mode === 'crash' ? 0
           : chaosEntry.mode === 'latency' ? 0.05
           : Math.max(0, 1 - chaosEntry.dropRate)
-        // Stall pressure compounds on top of chaos for partial/latency modes
-        if (downstreamFactor > 0 && _saturatedNodes.has(sourceNodeId)) {
+        // Stall pressure compounds on top of chaos for non-request edges only;
+        // request-edge backpressure is handled by the thread pool gate below.
+        if (downstreamFactor > 0 && ep.edgeType !== 'request' && _saturatedNodes.has(sourceNodeId)) {
           const stall = _downstreamStallPressure.get(sourceNodeId) ?? 0
           downstreamFactor = Math.max(0, downstreamFactor * Math.max(0.1, 1 - stall * 0.8))
         }
@@ -526,8 +536,8 @@ function spawnParticles(now: number, delta: number) {
           downstreamFactor = 0         // circuit open: no traffic; periodic scan handles probing
         } else if (breaker?.state === 'half-open') {
           downstreamFactor = 0.1       // probe rate: small trickle tests recovery
-        } else if (_saturatedNodes.has(sourceNodeId)) {
-          // Partial degradation: saturated node forwards at reduced rate
+        } else if (ep.edgeType !== 'request' && _saturatedNodes.has(sourceNodeId)) {
+          // Partial degradation: saturated node forwards at reduced rate (stream/event edges only)
           const stall = _downstreamStallPressure.get(sourceNodeId) ?? 0
           downstreamFactor = Math.max(0.1, 1 - stall * 0.8)
         }
@@ -535,9 +545,10 @@ function spawnParticles(now: number, delta: number) {
     }
 
     // Queue backpressure: reduce spawn rate exponentially once queue depth exceeds 80% capacity.
-    // Models TCP flow control / Kafka producer throttling — producer is slowed before overflow.
-    if (downstreamFactor > 0 && ep.targetNodeType &&
-        ['queue', 'pubsub', 'stream', 'eventBus'].includes(ep.targetNodeType)) {
+    // Models TCP flow control for traditional queues — NOT applied to stream edges (Kafka/Kinesis)
+    // because those brokers accept producer data immediately; consumer lag is tracked separately.
+    if (downstreamFactor > 0 && ep.targetNodeType && ep.edgeType !== 'stream' &&
+        ['queue', 'pubsub', 'eventBus'].includes(ep.targetNodeType)) {
       const tgtId  = _edgesData.find(e => e.id === ep.id)?.target
       const tgtCap = tgtId ? (effectiveConfig(tgtId, ep.targetNodeType as NodeType).queueCapacity ?? 1000) : 1000
       const depth  = tgtId ? (state.queueDepths.get(tgtId) ?? 0) : 0
@@ -553,6 +564,20 @@ function spawnParticles(now: number, delta: number) {
     const spawnChance = particlesPerSec * (delta / 1000) * _speed
     const n = Math.floor(spawnChance) + (Math.random() < (spawnChance % 1) ? 1 : 0)
     if (n === 0) continue
+
+    // Thread pool gate: request edges on compute source nodes must acquire a worker thread.
+    // A slow downstream holds threads until its response arrives; exhaustion causes local 503s
+    // at the source (CPU stays low, I/O blocks the pool) — no scalar stall pressure needed.
+    if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
+      const active = _activeWorkers.get(sourceNodeId) ?? 0
+      const maxThreads = effectiveConfig(sourceNodeId, ep.sourceNodeType as NodeType).maxConcurrency ?? 200
+      if (active >= maxThreads) {
+        spawnErrorFlash(sourceNodeId)
+        _droppedCounts.set(sourceNodeId, (_droppedCounts.get(sourceNodeId) ?? 0) + n)
+        continue
+      }
+      _activeWorkers.set(sourceNodeId, Math.min(maxThreads, active + n))
+    }
 
     if (!state.particles.has(ep.id)) state.particles.set(ep.id, [])
     const arr = state.particles.get(ep.id)!
@@ -586,6 +611,7 @@ function spawnParticles(now: number, delta: number) {
 
 function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
   spawnErrorFlash(targetNodeId)
+  _droppedCounts.set(targetNodeId, (_droppedCounts.get(targetNodeId) ?? 0) + 1)
 
   const sourceNodeId = _edgesData.find(e => e.id === ep.id)?.source
   if (sourceNodeId) {
@@ -601,13 +627,21 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
     const newPressure = Math.min(1, existing + perParticle)
     _upstreamPressure.set(sourceNodeId, newPressure)
 
-    // Stall pressure → raises source's effective utilization (threads blocked waiting)
-    // 'down' nodes cause 2.5× more stall — models TCP timeout vs fast 503 rejection
-    const stallIncrement = perParticle * (_nodeHealthStates.get(targetNodeId) === 'down' ? 2.5 : 1.0)
-    const existingStall = _downstreamStallPressure.get(sourceNodeId) ?? 0
-    _downstreamStallPressure.set(sourceNodeId, Math.min(1, existingStall + stallIncrement))
-    // Record proven stall source: targetNodeId is definitively causing sourceNodeId's stall
-    _stallSources.set(sourceNodeId, targetNodeId)
+    // Stall pressure → raises source's effective utilization for stream/event edges only.
+    // Request edges use the thread pool model: the worker is released immediately on drop
+    // (fast-fail 503), so no scalar pressure is needed — cascade happens via thread exhaustion.
+    if (ep.edgeType !== 'request') {
+      const stallIncrement = perParticle * (_nodeHealthStates.get(targetNodeId) === 'down' ? 2.5 : 1.0)
+      const existingStall = _downstreamStallPressure.get(sourceNodeId) ?? 0
+      _downstreamStallPressure.set(sourceNodeId, Math.min(1, existingStall + stallIncrement))
+      _stallSources.set(sourceNodeId, targetNodeId)
+    }
+
+    // Release the source's worker thread immediately — a 503/rejection is a fast response,
+    // so the thread is freed right away (unlike a slow success that holds it for latency ms).
+    if (ep.edgeType === 'request' && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
+      _activeWorkers.set(sourceNodeId, Math.max(0, (_activeWorkers.get(sourceNodeId) ?? 1) - 1))
+    }
 
     // Emit cascade event once pressure is significant
     // causedByNodeId = targetNodeId is provably correct: the drop on this edge IS the cascade
@@ -658,7 +692,9 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
 function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
   if (!ep.targetNodeType) return
   const targetNodeType = ep.targetNodeType
-  const targetNodeId   = _edgesData.find(e => e.id === ep.id)?.target
+  const edgeData       = _edgesData.find(e => e.id === ep.id)
+  const targetNodeId   = edgeData?.target
+  const sourceNodeId   = edgeData?.source
   if (!targetNodeId) return
 
   // Update ambient glow
@@ -795,6 +831,12 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       }, delay)
       recordBreakerResult(ep.id, false, config, now)
       trackRequest(targetNodeId, targetNodeType, config)
+      // Release source thread: blocked for the full lambda execution time + response transit
+      if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
+        setTimeout(() => {
+          _activeWorkers.set(sourceNodeId, Math.max(0, (_activeWorkers.get(sourceNodeId) ?? 1) - 1))
+        }, (effectiveLatency + ep.geoLatencyMs) / _speed)
+      }
       forwardToOutbound(targetNodeId, targetNodeType)
       return
     }
@@ -822,6 +864,15 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
 
   recordBreakerResult(ep.id, false, config, now)
   trackRequest(targetNodeId, targetNodeType, config)
+
+  // Release source thread after target finishes processing and response transits back.
+  // This is what causes thread-pool exhaustion: a slow target holds threads at the source
+  // until the response arrives, not until the request is sent.
+  if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
+    setTimeout(() => {
+      _activeWorkers.set(sourceNodeId, Math.max(0, (_activeWorkers.get(sourceNodeId) ?? 1) - 1))
+    }, (sampledLatency + ep.geoLatencyMs) / _speed)
+  }
 
   // Load balancer / API gateway: round-robin or least-connections routing
   if (targetNodeType === 'loadBalancer' || targetNodeType === 'apiGateway') {
@@ -941,6 +992,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
     let queueDepth: number | undefined
     let concurrency: number | undefined
 
+    let consumerLagMs: number | undefined
     if (isQueue) {
       const cap = config.queueCapacity ?? 1000
       const prev = state.queueDepths.get(nodeId) ?? 0
@@ -949,6 +1001,12 @@ function updateAllNodeMetrics(now: number, delta: number) {
       state.queueDepths.set(nodeId, next)
       queueDepth  = next
       utilization = Math.min(1, next / cap)
+      // Consumer lag: how long at the current drain rate to empty the backlog.
+      // Only meaningful for stream nodes (Kafka/Kinesis semantics); starts as soon
+      // as inRps > outRps and the queue has any depth.
+      if (nodeType === 'stream' && next > 0) {
+        consumerLagMs = outRps > 0 ? (next / outRps) * 1000 : Infinity
+      }
     } else if (nodeType === 'lambda') {
       const cur = state.nodeConcurrency.get(nodeId) ?? 0
       const maxC = config.maxConcurrency ?? 10
@@ -1086,9 +1144,11 @@ function updateAllNodeMetrics(now: number, delta: number) {
       p90LatencyMs: rawP90,
       p99LatencyMs: rawP99,
       ...(queueDepth     !== undefined && { queueDepth }),
+      ...(consumerLagMs  !== undefined && { consumerLagMs }),
       ...(concurrency    !== undefined && { concurrency }),
       ...(activeRequests !== undefined && { activeRequests }),
       circuitState,
+      droppedRequests: _droppedCounts.get(nodeId) ?? 0,
     }
 
     // ─── Health scoring ───────────────────────────────────────────────────────
@@ -1161,12 +1221,14 @@ function updateAllNodeMetrics(now: number, delta: number) {
       p90LatencyMs:  ema(prev.p90LatencyMs, rawMetrics.p90LatencyMs),
       p99LatencyMs:  ema(prev.p99LatencyMs, rawMetrics.p99LatencyMs),
       // Discrete fields — no smoothing
-      queueDepth:      rawMetrics.queueDepth,
-      concurrency:     rawMetrics.concurrency,
-      activeRequests:  rawMetrics.activeRequests,
-      circuitState:    rawMetrics.circuitState,
-      healthScore:     rawMetrics.healthScore,
-      healthState:     rawMetrics.healthState,
+      queueDepth:       rawMetrics.queueDepth,
+      consumerLagMs:    rawMetrics.consumerLagMs,
+      concurrency:      rawMetrics.concurrency,
+      activeRequests:   rawMetrics.activeRequests,
+      circuitState:     rawMetrics.circuitState,
+      healthScore:      rawMetrics.healthScore,
+      healthState:      rawMetrics.healthState,
+      droppedRequests:  rawMetrics.droppedRequests,
     } : rawMetrics
     _smoothedMetrics.set(nodeId, metrics)
 
@@ -1319,9 +1381,25 @@ function advanceAndDraw(canvas: HTMLCanvasElement, now: number, delta: number) {
     const arr = state.particles.get(ep.id)
     if (!arr || arr.length === 0) continue
 
+    // For outbound stream edges, slow particles as the source broker fills up.
+    // This creates a visual "traffic jam" on the consumer edge — particles pile up
+    // when the consumer can't drain the queue fast enough. Inbound (producer→broker)
+    // edges run at full speed since Kafka/Kinesis brokers accept without backpressure.
+    let streamLagFactor = 1.0
+    if (ep.edgeType === 'stream') {
+      const srcId = _edgesData.find(e => e.id === ep.id)?.source
+      const srcType = ep.sourceNodeType as string | undefined
+      if (srcId && srcType && ['queue', 'pubsub', 'stream', 'eventBus'].includes(srcType)) {
+        const cap = effectiveConfig(srcId, srcType as NodeType).queueCapacity ?? 1000
+        const depth = state.queueDepths.get(srcId) ?? 0
+        const depthRatio = Math.min(1, depth / cap)
+        streamLagFactor = Math.max(0.1, 1.0 - Math.pow(depthRatio, 2))
+      }
+    }
+
     const surviving: Particle[] = []
     for (const p of arr) {
-      p.t += p.speed * dt
+      p.t += p.speed * streamLagFactor * dt
 
       if (p.t >= 1) {
         _particleById.delete(p.id)
@@ -1532,6 +1610,7 @@ export function startSimulation(
   _smoothedMetrics.clear()
   _activeConnections.clear()
   _lbActiveRequests.clear()
+  _activeWorkers.clear()
   _nodeHealthStates.clear()
   _recoveryUntil.clear()
   _stallSources.clear()
@@ -1577,6 +1656,8 @@ export function stopSimulation() {
   _restartCounts.clear()
   _restartCooldown.clear()
   _retryQueue.length = 0
+  _droppedCounts.clear()
+  _activeWorkers.clear()
   _smoothedMetrics.clear()
   if (_canvas) {
     _canvas.getContext('2d')?.clearRect(0, 0, _canvas.width, _canvas.height)

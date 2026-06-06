@@ -15,11 +15,13 @@ export interface NodeMetrics {
   p90LatencyMs: number
   p99LatencyMs: number
   queueDepth?: number
+  consumerLagMs?: number                      // stream nodes only: time-to-drain at current outRps
   concurrency?: number
   circuitState?: CircuitState
   activeRequests?: number                         // in-flight requests currently being processed
   healthScore?: number                            // 0.0 (critical) – 1.0 (perfect)
   healthState?: 'healthy' | 'degraded' | 'down'  // computed or forced
+  droppedRequests?: number                        // cumulative drops at this node since sim start
 }
 
 export type SimEventType =

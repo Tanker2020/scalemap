@@ -135,6 +135,13 @@
   animation: utilPulseAnim 0.9s ease-in-out infinite;
 }
 
+.droppedCount {
+  font-size: 9px;
+  color: #EF444488;
+  margin-top: 3px;
+  letter-spacing: 0.01em;
+}
+
 .right {
   display: flex;
   flex-direction: column;

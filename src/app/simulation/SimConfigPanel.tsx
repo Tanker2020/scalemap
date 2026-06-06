@@ -803,6 +803,31 @@ function LiveSection({ nodeId }: { nodeId: string }) {
             <span className={styles.liveStatUnit}>msgs</span>
           </div>
         )}
+        {metrics.consumerLagMs !== undefined && (
+          <div className={styles.liveStat} title="Time to drain the current backlog at the consumer's current rate">
+            <span className={styles.liveStatLabel}>Lag</span>
+            <span className={styles.liveStatVal} style={{ color: metrics.consumerLagMs > 5000 ? '#EF4444' : metrics.consumerLagMs > 1000 ? '#F59E0B' : '#22C55E' }}>
+              {metrics.consumerLagMs === Infinity ? '∞'
+                : metrics.consumerLagMs >= 60000 ? `${(metrics.consumerLagMs / 60000).toFixed(1)}m`
+                : metrics.consumerLagMs >= 1000  ? `${(metrics.consumerLagMs / 1000).toFixed(1)}s`
+                : `${Math.round(metrics.consumerLagMs)}`}
+            </span>
+            <span className={styles.liveStatUnit}>
+              {metrics.consumerLagMs === Infinity ? '' : metrics.consumerLagMs >= 1000 ? '' : 'ms'}
+            </span>
+          </div>
+        )}
+        {(metrics.droppedRequests ?? 0) > 0 && (
+          <div className={styles.liveStat}>
+            <span className={styles.liveStatLabel}>Dropped</span>
+            <span className={styles.liveStatVal} style={{ color: '#EF4444' }}>
+              {metrics.droppedRequests! >= 1000
+                ? `${(metrics.droppedRequests! / 1000).toFixed(1)}k`
+                : metrics.droppedRequests}
+            </span>
+            <span className={styles.liveStatUnit}>req</span>
+          </div>
+        )}
       </div>
 
       {metrics.p90LatencyMs > 0 && (

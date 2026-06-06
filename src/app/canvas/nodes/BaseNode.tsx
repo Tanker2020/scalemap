@@ -29,7 +29,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
   const metrics = useSimulationStore(
     useShallow(s => {
       const m = s.nodeMetrics.get(id)
-      return m ? { utilization: m.utilization, errorRate: m.errorRate, circuitState: m.circuitState, healthState: m.healthState } : null
+      return m ? { utilization: m.utilization, errorRate: m.errorRate, circuitState: m.circuitState, healthState: m.healthState, droppedRequests: m.droppedRequests } : null
     }),
   )
   const isBottleneck = useSimulationStore(s => s.bottlenecks.has(id))
@@ -145,6 +145,13 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
               animate={{ width: `${Math.round(Math.min(1, utilization) * 100)}%` }}
               transition={{ type: 'tween', duration: 0.3 }}
             />
+          </div>
+        )}
+        {running && (metrics?.droppedRequests ?? 0) > 0 && (
+          <div className={styles.droppedCount} title="Requests dropped at this node since simulation start">
+            ↓ {(metrics!.droppedRequests! >= 1000
+              ? `${(metrics!.droppedRequests! / 1000).toFixed(1)}k`
+              : metrics!.droppedRequests)} dropped
           </div>
         )}
       </div>
