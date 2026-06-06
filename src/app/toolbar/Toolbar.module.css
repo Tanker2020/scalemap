@@ -518,6 +518,43 @@
   height: 16px;
 }
 
+/* ── Diagnostics (architectural linter) ───────────── */
+
+.btnDiagnostics {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  background: #161920;
+  border: 1px solid var(--color-node-border);
+  border-radius: 5px;
+  color: #64748B;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+
+.btnDiagnostics:hover {
+  background: #1A1D25;
+  border-color: #2DD4BF44;
+  color: #5EEAD4;
+}
+
+.diagnosticsBadge {
+  font-size: 8px;
+  font-weight: 700;
+  color: #F59E0B;
+  background: #2A1A00;
+  border: 1px solid #F59E0B66;
+  border-radius: 9px;
+  padding: 0 5px;
+  min-width: 16px;
+  text-align: center;
+  line-height: 16px;
+  height: 16px;
+}
+
 /* ── ScaleScript pill ───────────────────────────── */
 
 .scriptPill {

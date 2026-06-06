@@ -1,10 +1,12 @@
 import { useCallback, useState, useRef, useEffect } from 'react'
-import { FilePlus, FolderOpen, ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, Save, Upload, Download, ClipboardList } from 'lucide-react'
+import { FilePlus, FolderOpen, ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, Save, Upload, Download, ClipboardList, ShieldCheck } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
 import { useSimulationStore, type TrafficMode } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
 import { useUiStore } from '../store/ui.store'
+import { useDiagnosticsStore } from '../store/diagnostics.store'
 import { useFileStore } from '../store/file.store'
+import { lintGraph } from '../../lib/lint/lintGraph'
 import { exportTerraform } from '../../lib/terraform/exportTerraform'
 import { serialize } from '../../lib/serializer'
 import { parseScaleScript, applyScaleScript, exportScaleScript } from '../../lib/scalescript'
@@ -282,8 +284,15 @@ function downloadBlob(content: string, filename: string, type: string) {
 export function Toolbar() {
   const { undo, redo } = useCanvasStore()
   const { running, paused, setRunning, setPaused, activeScript, setActiveScript, runs, simulationMode, globalMultiplier } = useSimulationStore()
-  const { activeTool, setActiveTool, setSimConfigOpen, simConfigOpen, reportsPanelOpen, setReportsPanelOpen } = useUiStore()
+  const { activeTool, setActiveTool, setSimConfigOpen, simConfigOpen, reportsPanelOpen, setReportsPanelOpen, setDiagnosticsOpen } = useUiStore()
+  const diagnosticsCount = useDiagnosticsStore(s => s.diagnostics.length)
   const { showHome, setShowHome, fileName } = useFileStore()
+
+  const runDiagnostics = useCallback(() => {
+    const { nodes, edges } = useCanvasStore.getState()
+    useDiagnosticsStore.getState().setDiagnostics(lintGraph(nodes, edges))
+    setDiagnosticsOpen(true)
+  }, [setDiagnosticsOpen])
   const [scriptPreviewOpen, setScriptPreviewOpen] = useState(false)
   const [simSettingsOpen, setSimSettingsOpen] = useState(false)
   const simWrapRef = useRef<HTMLDivElement>(null)
@@ -400,6 +409,19 @@ export function Toolbar() {
             Reports
             {runs.length > 0 && (
               <span className={styles.reportsBadge}>{runs.length}</span>
+            )}
+          </button>
+
+          {/* Run Diagnostics button — on-demand architectural linter */}
+          <button
+            className={styles.btnDiagnostics}
+            onClick={runDiagnostics}
+            title="Run architectural diagnostics — detect anti-patterns in the current design"
+          >
+            <ShieldCheck size={12} />
+            Diagnostics
+            {diagnosticsCount > 0 && (
+              <span className={styles.diagnosticsBadge}>{diagnosticsCount}</span>
             )}
           </button>
 

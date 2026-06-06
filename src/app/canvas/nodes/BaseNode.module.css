@@ -171,6 +171,22 @@
   justify-content: center;
 }
 
+/* Architectural lint badge — colour set inline via --lint-color (error red / warn amber) */
+.lintBadge {
+  font-size: 8px;
+  font-weight: 700;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--lint-color, #F59E0B) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lint-color, #F59E0B) 55%, transparent);
+  color: var(--lint-color, #F59E0B);
+  cursor: help;
+}
+
 /* Simulation-driven bottleneck badge */
 .bottleneckBadge {
   font-size: 8px;

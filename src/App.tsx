@@ -9,10 +9,12 @@ import { HomeScreen } from './app/home/HomeScreen'
 import { MetricsDrawer } from './app/analytics/MetricsDrawer'
 import { SimConfigPanel } from './app/simulation/SimConfigPanel'
 import { ReportsPanel } from './app/reports/ReportsPanel'
+import { DiagnosticsPanel } from './app/diagnostics/DiagnosticsPanel'
 import { useFileStore } from './app/store/file.store'
 import { useCanvasStore } from './app/store/canvas.store'
 import { useSimulationStore } from './app/store/simulation.store'
 import { useMetricsHistoryStore } from './app/store/metricsHistory.store'
+import { useDiagnosticsStore } from './app/store/diagnostics.store'
 import { useUiStore } from './app/store/ui.store'
 import { serialize } from './lib/serializer'
 import styles from './App.module.css'
@@ -24,6 +26,7 @@ export default function App() {
   const running = useSimulationStore(s => s.running)
   const simConfigOpen = useUiStore(s => s.simConfigOpen)
   const reportsPanelOpen = useUiStore(s => s.reportsPanelOpen)
+  const diagnosticsOpen = useUiStore(s => s.diagnosticsOpen)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   useEffect(() => {
@@ -37,6 +40,7 @@ export default function App() {
         e.preventDefault()
         useSimulationStore.getState().reset()
         useMetricsHistoryStore.getState().clearHistory()
+        useDiagnosticsStore.getState().clearDiagnostics()
         useCanvasStore.setState({ nodes: [], edges: [], history: [], future: [] })
         useFileStore.getState().setShowHome(false)
       }
@@ -107,6 +111,7 @@ export default function App() {
       </div>
       <StatusBar onToggleDrawer={() => setDrawerOpen(o => !o)} drawerOpen={drawerOpen} />
       {reportsPanelOpen && <ReportsPanel />}
+      {diagnosticsOpen && <DiagnosticsPanel />}
     </div>
   )
 }

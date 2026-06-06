@@ -6,6 +6,7 @@ import { NODE_CONFIG, GROUPING_TYPES, type NodeType } from '../../../lib/nodeCon
 import { CATEGORY_COLORS } from '../../../lib/theme'
 import { useCanvasStore } from '../../store/canvas.store'
 import { useSimulationStore } from '../../store/simulation.store'
+import { useDiagnosticsStore } from '../../store/diagnostics.store'
 import { useDisplayMetrics } from '../simulation/useDisplayMetrics'
 import { useUiStore } from '../../store/ui.store'
 import styles from './BaseNode.module.css'
@@ -34,6 +35,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
   const isBottleneck = useSimulationStore(s => s.bottlenecks.has(id))
   const running    = useSimulationStore(s => s.running)
   const isConnectSource = useUiStore(s => s.connectSourceId === id)
+  const lintIssues = useDiagnosticsStore(s => s.byNodeId.get(id))
 
   const utilization  = metrics?.utilization ?? 0
   const circuitState = metrics?.circuitState ?? 'closed'
@@ -81,6 +83,13 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
     : utilization >= 0.5
     ? '#F59E0B'
     : colors.accent
+
+  // Lint diagnostics: colour by the most severe issue on this node, tooltip lists them all.
+  const hasLintError = !!lintIssues?.some(i => i.severity === 'error')
+  const lintColor = hasLintError ? '#EF4444' : '#F59E0B'
+  const lintTitle = lintIssues
+    ?.map(i => `${i.severity === 'error' ? '✕' : '⚠'} ${i.message} — ${i.recommendation}`)
+    .join('\n')
 
   return (
     <motion.div
@@ -156,6 +165,16 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
       </div>
 
       <div className={styles.right}>
+        {/* Architectural lint badge — from on-demand diagnostics, severity-coloured */}
+        {lintIssues && lintIssues.length > 0 && (
+          <div
+            className={styles.lintBadge}
+            style={{ '--lint-color': lintColor } as React.CSSProperties}
+            title={lintTitle}
+          >
+            {lintIssues.length > 9 ? '9+' : lintIssues.length}
+          </div>
+        )}
         {/* Circuit breaker badge */}
         {isCircuitOpen && (
           <div className={styles.circuitBadge} title="Circuit open — rejecting all requests">⊘</div>

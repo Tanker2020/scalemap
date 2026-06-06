@@ -16,6 +16,7 @@ interface UiStore {
   simConfigOpen: boolean
   simConfigPanelNodeId: string | null
   reportsPanelOpen: boolean
+  diagnosticsOpen: boolean
 
   setActiveTool: (tool: ActiveTool) => void
   setSelectedNode: (id: string | null) => void
@@ -28,6 +29,7 @@ interface UiStore {
   setSimConfigOpen: (open: boolean) => void
   setSimConfigPanelNode: (id: string | null) => void
   setReportsPanelOpen: (open: boolean) => void
+  setDiagnosticsOpen: (open: boolean) => void
 }
 
 export const useUiStore = create<UiStore>((set) => ({
@@ -43,6 +45,7 @@ export const useUiStore = create<UiStore>((set) => ({
   simConfigOpen: false,
   simConfigPanelNodeId: null,
   reportsPanelOpen: false,
+  diagnosticsOpen: false,
 
   setActiveTool: (tool) => set({ activeTool: tool, connectSourceId: null }),
   setSelectedNode: (id) => set({ selectedNodeId: id, selectedEdgeId: null }),
@@ -55,4 +58,5 @@ export const useUiStore = create<UiStore>((set) => ({
   setSimConfigOpen: (open) => set({ simConfigOpen: open }),
   setSimConfigPanelNode: (id) => set({ simConfigPanelNodeId: id }),
   setReportsPanelOpen: (open) => set({ reportsPanelOpen: open }),
+  setDiagnosticsOpen: (open) => set({ diagnosticsOpen: open }),
 }))
