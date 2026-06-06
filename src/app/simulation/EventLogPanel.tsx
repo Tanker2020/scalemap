@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Search, X } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
 import { useSimulationStore } from '../store/simulation.store'
+import { useReplayStore } from '../store/replay.store'
 import { EventCard } from './SimConfigPanel'
 import type { SimEvent, SimEventType } from '../store/simulation.store'
 import type { NodeData } from '../../lib/nodeConfig'
@@ -265,10 +266,18 @@ export function EventLogPanel({ onClose }: Props) {
     return (nodes.find(n => n.id === id)?.data as NodeData)?.label ?? id
   }, [nodes])
 
-  const incidents = useMemo(() => buildIncidents(events, nodeLabel), [events, nodeLabel])
+  // Replay-aware: while scrubbing, only show events up to the replay cursor time T.
+  const isReplaying = useReplayStore(s => s.isReplaying)
+  const replayT = useReplayStore(s => (s.isReplaying ? s.frameTimes[s.replayIndex] ?? Infinity : Infinity))
+  const visibleEvents = useMemo(
+    () => (isReplaying ? events.filter(e => e.elapsedS <= replayT) : events),
+    [events, isReplaying, replayT],
+  )
+
+  const incidents = useMemo(() => buildIncidents(visibleEvents, nodeLabel), [visibleEvents, nodeLabel])
 
   const filtered = useMemo(() => {
-    let result = events
+    let result = visibleEvents
     if (severityFilter !== 'all') result = result.filter(e => e.severity === severityFilter)
     if (search.trim()) {
       const q = search.trim().toLowerCase()
@@ -279,7 +288,7 @@ export function EventLogPanel({ onClose }: Props) {
       })
     }
     return result
-  }, [events, severityFilter, search, nodeLabel])
+  }, [visibleEvents, severityFilter, search, nodeLabel])
 
   const grouped = useMemo(() => {
     const groups: { label: string; events: SimEvent[] }[] = []

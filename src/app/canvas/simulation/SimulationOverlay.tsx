@@ -3,6 +3,7 @@ import type { Node, Edge } from '@xyflow/react'
 import { useCanvasStore } from '../../store/canvas.store'
 import { useSimulationStore, type SimEventType, type NodeMetrics, type SimulationRun } from '../../store/simulation.store'
 import { useMetricsHistoryStore } from '../../store/metricsHistory.store'
+import { useReplayStore } from '../../store/replay.store'
 import { DEFAULT_SLO } from '../../simulation/defaults'
 import type { NodeData, NodeType } from '../../../lib/nodeConfig'
 import {
@@ -14,6 +15,7 @@ import {
   setNodeConfigs,
   setCallbacks,
   pickParticleAtPoint,
+  enterReplay,
 } from './particleEngine'
 
 function getTopoKey(ns: Node[], es: Edge[]): string {
@@ -82,6 +84,7 @@ export function SimulationOverlay({ width, height }: Props) {
       peakUtilRef.current = 0
       sumErrRef.current   = 0
       errTicksRef.current = 0
+      useReplayStore.getState().clearAll()
       startSimulation(canvasRef.current, nodes, edges, speed)
       addEvent({
         type: 'simulation_start',
@@ -93,6 +96,7 @@ export function SimulationOverlay({ width, height }: Props) {
       })
     } else {
       stopSimulation()
+      useReplayStore.getState().clearAll()
       // Build SimulationRun summary (only for meaningful runs > 2s)
       const endedAt  = Date.now()
       const durationS = Math.round((endedAt - simStartRef.current) / 1000)
@@ -137,6 +141,14 @@ export function SimulationOverlay({ width, height }: Props) {
   useEffect(() => { updateGlobalMultiplier(globalMultiplier) }, [globalMultiplier])
   useEffect(() => { setNodeConfigs(nodeConfigs) }, [nodeConfigs])
 
+  // Enter/exit outage-replay on pause/resume. On pause the engine publishes its recorded
+  // particle timeline to the replay store (scrubber appears); on resume we return to live.
+  const paused = useSimulationStore(s => s.paused)
+  useEffect(() => {
+    if (paused) enterReplay()
+    else useReplayStore.getState().stopReplay()
+  }, [paused])
+
   // 1s interval: record history + check SLOs + update peak trackers
   useEffect(() => {
     if (!running) return
@@ -147,6 +159,8 @@ export function SimulationOverlay({ width, height }: Props) {
       // Don't record history or fire SLO events while paused — analytics must be frozen
       if (paused) return
       const elapsedS = Math.round((Date.now() - simStartRef.current) / 1000)
+      // Outage playback: snapshot the full per-node metrics map (1 Hz health timeline)
+      useReplayStore.getState().recordHealthFrame(elapsedS, nodeMetrics)
       let totalRps  = 0
       let totalUtil = 0
       let totalErr  = 0

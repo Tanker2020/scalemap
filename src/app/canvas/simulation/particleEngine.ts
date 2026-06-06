@@ -3,6 +3,7 @@ import type { NodeData, EdgeData, NodeType, NodeSimConfig, RetryConfig } from '.
 import { GROUPING_TYPES } from '../../../lib/nodeConfig'
 import { interRegionLatencyMs } from '../../../lib/regionConfig'
 import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventType, type CircuitState, type RequestSnapshot } from '../../store/simulation.store'
+import { useReplayStore } from '../../store/replay.store'
 import { NODE_SIM_DEFAULTS } from '../../simulation/defaults'
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -88,6 +89,17 @@ const _droppedCounts = new Map<string, number>()
 
 // In-flight synchronous request threads held at source nodes (request-edge thread pool model)
 const _activeWorkers = new Map<string, number>()
+
+// ─── Outage playback: particle keyframe buffer ───────────────────────────────
+// Records live particle positions as packed Float32Array [edgeIdx, t, edgeIdx, t, …] at the
+// metrics cadence (~15fps). The engine owns this heavy buffer (not zustand) to avoid per-tick
+// store churn; the 1 Hz health timeline lives in replay.store. Frames are rendered back during
+// scrub via the same getEdgePoint() used live, so no separate draw path is needed.
+interface ParticleFrame { elapsedS: number; packed: Float32Array }
+const _particleFrames: ParticleFrame[] = []
+const _edgeIndexMap = new Map<string, number>()   // edgeId → index into _edgePaths
+const MAX_PARTICLE_FRAMES = 15 * 300              // ~5 min at 15fps
+let _lastReplayIndexDrawn = -1                    // guards redundant replay redraws
 
 // Which nodes were already saturated (for start/end events)
 const _saturatedNodes = new Set<string>()
@@ -532,14 +544,30 @@ function spawnParticles(now: number, delta: number) {
         }
       } else {
         const breaker = _circuitBreakers.get(ep.id)
-        if (breaker?.state === 'open') {
+        if (breaker?.state === 'open' && ep.edgeType !== 'event' && ep.edgeType !== 'stream') {
           downstreamFactor = 0         // circuit open: no traffic; periodic scan handles probing
-        } else if (breaker?.state === 'half-open') {
+        } else if (breaker?.state === 'half-open' && ep.edgeType !== 'event' && ep.edgeType !== 'stream') {
           downstreamFactor = 0.1       // probe rate: small trickle tests recovery
         } else if (ep.edgeType !== 'request' && _saturatedNodes.has(sourceNodeId)) {
           // Partial degradation: saturated node forwards at reduced rate (stream/event edges only)
           const stall = _downstreamStallPressure.get(sourceNodeId) ?? 0
           downstreamFactor = Math.max(0.1, 1 - stall * 0.8)
+        }
+      }
+    }
+
+    // Inbound-driven gating: transit nodes only produce outbound proportional to what they receive.
+    // A server getting zero requests makes zero DB calls. Excluded: pure source nodes (no inbound
+    // edges), LBs/gateways/queues (separate traffic models), and nodes not yet in smoothed metrics.
+    if (downstreamFactor > 0 && sourceNodeId && ep.sourceNodeType
+        && !_LB_SKIP_TYPES.has(ep.sourceNodeType)) {
+      const hasInbound = _edgesData.some(e => e.target === sourceNodeId)
+      if (hasInbound) {
+        const srcMetrics = _smoothedMetrics.get(sourceNodeId)
+        if (srcMetrics) {
+          const srcConfig = effectiveConfig(sourceNodeId, ep.sourceNodeType as NodeType)
+          const inboundRatio = Math.min(1, srcMetrics.inRps / Math.max(1, srcConfig.maxRps))
+          downstreamFactor *= inboundRatio
         }
       }
     }
@@ -946,6 +974,54 @@ function spawnErrorFlash(nodeId: string) {
   })
 }
 
+// ─── Outage playback: record / render particle keyframes ─────────────────────
+
+function recordParticleFrame(now: number) {
+  // Pack [edgeIdx, t] for every live particle on a mappable edge (exact-sized typed array).
+  const pairs: number[] = []
+  for (const [edgeId, arr] of state.particles) {
+    const idx = _edgeIndexMap.get(edgeId)
+    if (idx === undefined) continue
+    for (const p of arr) { pairs.push(idx, p.t) }
+  }
+  const elapsedS = (now - _simStartTime) / 1000
+  _particleFrames.push({ elapsedS, packed: Float32Array.from(pairs) })
+  if (_particleFrames.length > MAX_PARTICLE_FRAMES) {
+    _particleFrames.splice(0, _particleFrames.length - MAX_PARTICLE_FRAMES)
+  }
+}
+
+function drawReplayFrame(canvas: HTMLCanvasElement, index: number) {
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  _canvasRect = canvas.getBoundingClientRect()
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  const frame = _particleFrames[index]
+  if (!frame) return
+  const packed = frame.packed
+  for (let i = 0; i < packed.length; i += 2) {
+    const ep = _edgePaths[packed[i]]
+    if (!ep) continue
+    const pos = getEdgePoint(ep.id, packed[i + 1])
+    if (!pos) continue
+    const color = edgeColor(ep.edgeType)
+    ctx.beginPath()
+    ctx.arc(pos[0], pos[1], 2.5, 0, Math.PI * 2)
+    ctx.fillStyle  = color
+    ctx.shadowBlur = 6
+    ctx.shadowColor = color
+    ctx.fill()
+    ctx.shadowBlur = 0
+  }
+}
+
+// Publish the recorded particle timeline to the replay store so the scrubber can index it.
+// Called on pause; cheap one-time copy of frame timestamps (not the heavy packed buffers).
+export function enterReplay() {
+  _lastReplayIndexDrawn = -1
+  useReplayStore.getState().startReplay(_particleFrames.map(f => f.elapsedS))
+}
+
 // ─── Per-frame metrics update ────────────────────────────────────────────────
 
 const METRICS_THROTTLE = 4
@@ -954,6 +1030,9 @@ let _frameCount = 0
 function updateAllNodeMetrics(now: number, delta: number) {
   _frameCount++
   if (_frameCount % METRICS_THROTTLE !== 0) return
+
+  // Record a particle keyframe at the metrics cadence (~15fps) for outage playback.
+  recordParticleFrame(now)
 
   const mult = effectiveMultiplier(now)
   const metricsBatch = new Map<string, NodeMetrics>()
@@ -1187,10 +1266,15 @@ function updateAllNodeMetrics(now: number, delta: number) {
     rawMetrics.healthScore = healthScore
     rawMetrics.healthState = healthState
 
-    // 'down' → immediately trip all inbound edge circuit breakers
+    // 'down' → immediately trip circuit breakers on inbound request edges only.
+    // Event/stream edges are async and fire-and-forget — the sender has no feedback loop
+    // telling it the target is unreachable, so those edges stay visually active and
+    // particles are dropped on arrival instead of being suppressed at the source.
     if (healthState === 'down') {
       const label = (node.data as NodeData).label ?? nodeId
       for (const e of _edgesData.filter(ed => ed.target === nodeId)) {
+        const edgePath = _edgePaths.find(ep => ep.id === e.id)
+        if (edgePath?.edgeType === 'event' || edgePath?.edgeType === 'stream') continue
         const breaker = getBreaker(e.id)
         if (breaker.state !== 'open') {
           breaker.state    = 'open'
@@ -1468,6 +1552,13 @@ function loop(now: number) {
     updateAllNodeMetrics(now, delta)
   } else {
     state.lastTime = now
+    // While paused and scrubbing, redraw the recorded particle frame at the cursor.
+    // Guarded so we only repaint when the cursor actually moves (getEdgePoint hits the DOM).
+    const replay = useReplayStore.getState()
+    if (replay.isReplaying && _canvas && replay.replayIndex !== _lastReplayIndexDrawn) {
+      drawReplayFrame(_canvas, replay.replayIndex)
+      _lastReplayIndexDrawn = replay.replayIndex
+    }
   }
 
   state.rafId = requestAnimationFrame(loop)
@@ -1593,6 +1684,12 @@ export function startSimulation(
     }
   }).filter(Boolean) as EdgePath[]
 
+  // Stable edgeId → index map for packing/unpacking particle keyframes during replay.
+  _edgeIndexMap.clear()
+  _edgePaths.forEach((ep, i) => _edgeIndexMap.set(ep.id, i))
+  _particleFrames.length = 0
+  _lastReplayIndexDrawn = -1
+
   clearCaches()
   if (state.rafId !== null) cancelAnimationFrame(state.rafId)
 
@@ -1659,6 +1756,9 @@ export function stopSimulation() {
   _droppedCounts.clear()
   _activeWorkers.clear()
   _smoothedMetrics.clear()
+  _particleFrames.length = 0
+  _edgeIndexMap.clear()
+  _lastReplayIndexDrawn = -1
   if (_canvas) {
     _canvas.getContext('2d')?.clearRect(0, 0, _canvas.width, _canvas.height)
   }

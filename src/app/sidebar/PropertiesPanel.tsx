@@ -4,6 +4,7 @@ import { useCanvasStore } from '../store/canvas.store'
 import { useUiStore } from '../store/ui.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
+import { useDisplayMetrics, useDisplayMetricsMap } from '../canvas/simulation/useDisplayMetrics'
 import { NODE_CONFIG, GROUPING_TYPES, type NodeStatus, type EdgeType, type NodeType, type NodeData as ND } from '../../lib/nodeConfig'
 import { REGIONS_BY_ZONE, WORLD_REGIONS } from '../../lib/regionConfig'
 import { CATEGORY_COLORS } from '../../lib/theme'
@@ -39,7 +40,7 @@ function TabBar() {
 function AnalyticsPane() {
   const running     = useSimulationStore(s => s.running)
   const bottlenecks = useSimulationStore(s => s.bottlenecks)
-  const nodeMetrics = useSimulationStore(s => s.nodeMetrics)
+  const nodeMetrics = useDisplayMetricsMap()
   const events      = useSimulationStore(s => s.events)
   const sloStatus   = useSimulationStore(s => s.sloStatus)
   const systemHistory = useMetricsHistoryStore(s => s.systemHistory)
@@ -164,7 +165,7 @@ function NodePanel({ nodeId }: { nodeId: string }) {
   const [graphOverlay, setGraphOverlay] = useState<GraphMetric | null>(null)
   const running = useSimulationStore(s => s.running)
   const nodeHistory = useMetricsHistoryStore(s => s.history.get(nodeId))
-  const consumerLagMs = useSimulationStore(s => s.nodeMetrics.get(nodeId)?.consumerLagMs)
+  const consumerLagMs = useDisplayMetrics(nodeId)?.consumerLagMs
 
   return (
     <>

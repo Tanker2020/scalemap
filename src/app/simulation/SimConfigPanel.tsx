@@ -1,11 +1,11 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import { useShallow } from 'zustand/react/shallow'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Search, SlidersHorizontal, ChevronUp, ChevronDown, Activity, Bell } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
 import { useUiStore } from '../store/ui.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
+import { useDisplayMetrics } from '../canvas/simulation/useDisplayMetrics'
 import { NODE_CONFIG, GROUPING_TYPES, type NodeType, type TrafficOrigin } from '../../lib/nodeConfig'
 import { WORLD_REGIONS, REGIONS_BY_ZONE } from '../../lib/regionConfig'
 import { NODE_SIM_DEFAULTS, DEFAULT_SLO } from './defaults'
@@ -244,9 +244,8 @@ function NodeRow({
 }) {
   const { nodes } = useCanvasStore()
   const running     = useSimulationStore(s => s.running)
-  const metrics     = useSimulationStore(
-    useShallow(s => { const m = s.nodeMetrics.get(nodeId); return m ? { utilization: m.utilization } : null }),
-  )
+  const dm          = useDisplayMetrics(nodeId)
+  const metrics     = dm ? { utilization: dm.utilization } : null
   const bottlenecks = useSimulationStore(s => s.bottlenecks)
   const sloStatus   = useSimulationStore(s => s.sloStatus.get(nodeId))
 
@@ -700,7 +699,8 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
 
 function LiveSection({ nodeId }: { nodeId: string }) {
   const running     = useSimulationStore(s => s.running)
-  const metrics     = useSimulationStore(useShallow(s => s.nodeMetrics.get(nodeId)))
+  // Replay-aware: resolves to recorded metrics at the scrub cursor while replaying.
+  const metrics     = useDisplayMetrics(nodeId) ?? undefined
   const bottlenecks = useSimulationStore(s => s.bottlenecks)
   const sloStatus  = useSimulationStore(s => s.sloStatus.get(nodeId))
   const historyMap = useMetricsHistoryStore(s => s.history)

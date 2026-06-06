@@ -1,12 +1,12 @@
 import { useCallback, useState, useRef, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { useShallow } from 'zustand/react/shallow'
 import type { NodeData } from '../../../lib/nodeConfig'
 import { NODE_CONFIG, GROUPING_TYPES, type NodeType } from '../../../lib/nodeConfig'
 import { CATEGORY_COLORS } from '../../../lib/theme'
 import { useCanvasStore } from '../../store/canvas.store'
 import { useSimulationStore } from '../../store/simulation.store'
+import { useDisplayMetrics } from '../simulation/useDisplayMetrics'
 import { useUiStore } from '../../store/ui.store'
 import styles from './BaseNode.module.css'
 
@@ -26,12 +26,11 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
   const [editValue, setEditValue] = useState(nodeData.label)
   const inputRef = useRef<HTMLInputElement>(null)
   const updateNodeData = useCanvasStore(s => s.updateNodeData)
-  const metrics = useSimulationStore(
-    useShallow(s => {
-      const m = s.nodeMetrics.get(id)
-      return m ? { utilization: m.utilization, errorRate: m.errorRate, circuitState: m.circuitState, healthState: m.healthState, droppedRequests: m.droppedRequests } : null
-    }),
-  )
+  // Replay-aware: while scrubbing this resolves to the recorded metrics at the cursor.
+  const m = useDisplayMetrics(id)
+  const metrics = m
+    ? { utilization: m.utilization, errorRate: m.errorRate, circuitState: m.circuitState, healthState: m.healthState, droppedRequests: m.droppedRequests }
+    : null
   const isBottleneck = useSimulationStore(s => s.bottlenecks.has(id))
   const running    = useSimulationStore(s => s.running)
   const isConnectSource = useUiStore(s => s.connectSourceId === id)
