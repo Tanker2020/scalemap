@@ -5,7 +5,7 @@ export const NODE_SIM_DEFAULTS: Record<NodeType, NodeSimConfig> = {
   ec2:          { maxRps: 1000,  processingMs: 10,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 } },
   lambda:       { maxRps: 1000,  processingMs: 50,  errorRate: 0, maxConcurrency: 10, latencyModel: { p50Ms: 80,  p99Ms: 800  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 29_000, coldStart: { p50Ms: 400, p99Ms: 2500 }, maxWarmInstances: 5, retryConfig: { maxRetries: 2, baseDelayMs: 200,  jitter: 'full',  maxDelayMs: 3000 } },
   container:    { maxRps: 500,   processingMs: 15,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 } },
-  pod:          { maxRps: 300,   processingMs: 20,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 } },
+  pod:          { maxRps: 300,   processingMs: 20,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 }, k8sPod: { replicas: 3, baseCapacityRps: 300, hpa: { minReplicas: 1, maxReplicas: 10, targetCpuUtilization: 0.7 } } },
   // Network
   loadBalancer: { maxRps: 10000, processingMs: 2,   errorRate: 0, latencyModel: { p50Ms: 3,   p99Ms: 20   }, timeoutMs: 60_000, retryConfig: { maxRetries: 2, baseDelayMs: 50,   jitter: 'full',  maxDelayMs: 1000 }, lbRouting: 'round-robin' },
   apiGateway:   { maxRps: 5000,  processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 10,  p99Ms: 100  }, timeoutMs: 30_000, retryConfig: { maxRetries: 2, baseDelayMs: 100,  jitter: 'equal', maxDelayMs: 2000 }, lbRouting: 'round-robin' },
@@ -27,16 +27,16 @@ export const NODE_SIM_DEFAULTS: Record<NodeType, NodeSimConfig> = {
   redis:        { maxRps: 50000, processingMs: 1,   errorRate: 0, latencyModel: { p50Ms: 0.5, p99Ms: 5   }, connectionPool: { max: 10_000, timeoutMs: 200 }, retryConfig: { maxRetries: 1, baseDelayMs: 10,   jitter: 'full',  maxDelayMs: 50   } },
   memcached:    { maxRps: 50000, processingMs: 1,   errorRate: 0, latencyModel: { p50Ms: 0.5, p99Ms: 5   }, connectionPool: { max: 10_000, timeoutMs: 200 }, retryConfig: { maxRetries: 1, baseDelayMs: 10,   jitter: 'full',  maxDelayMs: 50   } },
   cdnCache:     { maxRps: 20000, processingMs: 1,   errorRate: 0, latencyModel: { p50Ms: 3,   p99Ms: 30  } },
-  // Orchestration — K8s/ECS have auto-scaling + self-healing
-  k8sCluster:   { maxRps: 2000,  processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 5,   p99Ms: 50  }, autoScale: { minCapacityRps: 300, maxCapacityRps: 3000, scaleOutThreshold: 0.70, scaleOutDelayMs: 30_000, scaleInThreshold: 0.30, scaleInCooldownMs: 300_000 }, selfHealing: { restartDelayMs: 20_000, maxRestarts: 3, crashLoopBackoffMs: 60_000 } },
-  ecsCluster:   { maxRps: 2000,  processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 5,   p99Ms: 50  }, autoScale: { minCapacityRps: 500, maxCapacityRps: 5000, scaleOutThreshold: 0.70, scaleOutDelayMs: 45_000, scaleInThreshold: 0.30, scaleInCooldownMs: 300_000 }, selfHealing: { restartDelayMs: 25_000, maxRestarts: 3, crashLoopBackoffMs: 60_000 } },
-  dockerCompose:{ maxRps: 500,   processingMs: 15,  errorRate: 0, latencyModel: { p50Ms: 10,  p99Ms: 100 } },
+  // Orchestration — clusters are grouping containers; capacity is enforced per-pod via k8sCluster config
+  k8sCluster:   { maxRps: 999999, processingMs: 0, errorRate: 0, k8sCluster: { nodePoolCapacityRps: 5000, hasServiceMesh: false, cniLatencyMs: 0.5 } },
+  ecsCluster:   { maxRps: 999999, processingMs: 0, errorRate: 0, k8sCluster: { nodePoolCapacityRps: 5000, hasServiceMesh: false, cniLatencyMs: 0.5 } },
+  dockerCompose:{ maxRps: 999999, processingMs: 0, errorRate: 0, k8sCluster: { nodePoolCapacityRps: 2000, hasServiceMesh: false, cniLatencyMs: 0 } },
   // Grouping — passthrough, not used in capacity checks
   vpc:          { maxRps: 999999, processingMs: 0,  errorRate: 0 },
   subnet:       { maxRps: 999999, processingMs: 0,  errorRate: 0 },
   az:           { maxRps: 999999, processingMs: 0,  errorRate: 0 },
   region:       { maxRps: 999999, processingMs: 0,  errorRate: 0 },
-  namespace:    { maxRps: 999999, processingMs: 0,  errorRate: 0 },
+  namespace:    { maxRps: 999999, processingMs: 0,  errorRate: 0, k8sNamespace: { resourceQuotaRps: 10000, networkPolicy: 'open' } },
 }
 
 // Default SLOs per node type category (P90-based, production-realistic)

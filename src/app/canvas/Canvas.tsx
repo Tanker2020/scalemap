@@ -53,11 +53,11 @@ const nodeTypes: NodeTypes = Object.fromEntries([
   'dbSql','dbNoSql','objectStorage','fileStorage',
   'queue','eventBus','pubsub','stream',
   'redis','memcached','cdnCache',
-  'k8sCluster','ecsCluster','dockerCompose',
 ].map(t => [t, BaseNode])) as NodeTypes
 
 const groupTypes: NodeTypes = Object.fromEntries(
-  ['vpc','subnet','az','region','namespace'].map(t => [t, GroupNode])
+  ['vpc','subnet','az','region','namespace',
+   'k8sCluster','ecsCluster','dockerCompose'].map(t => [t, GroupNode])
 ) as NodeTypes
 
 const allNodeTypes: NodeTypes = { ...nodeTypes, ...groupTypes }

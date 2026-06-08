@@ -95,6 +95,9 @@ const EVENT_META: Record<SimEventType, { label: string; icon: string }> = {
   autoscale_scaledin:        { label: 'Scaled In',          icon: '⬇' },
   crash_loop_detected:       { label: 'Crash Loop',         icon: '⚡' },
   retry_storm:               { label: 'Retry Storm',         icon: '↺' },
+  quota_constrained:         { label: 'Quota Capped',        icon: '⊠' },
+  cluster_exhausted:         { label: 'Cluster Exhausted',   icon: '⊠' },
+  hpa_blocked:               { label: 'HPA Blocked',         icon: '⛔' },
 }
 
 type SimEvent = import('../store/simulation.store').SimEvent
@@ -307,7 +310,6 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
 
   const isQueue      = ['queue', 'pubsub', 'stream', 'eventBus'].includes(nodeType)
   const isLambda     = nodeType === 'lambda'
-  const isAutoScale  = nodeType === 'k8sCluster' || nodeType === 'ecsCluster'
   const isEntryPoint = nodeType === 'cdn' || nodeType === 'loadBalancer' || nodeType === 'apiGateway'
   const hasConnPool = eff.connectionPool !== undefined
   const hasTimeout  = eff.timeoutMs !== undefined
@@ -565,60 +567,65 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
         </div>
       )}
 
-      {/* Auto-Scaling — K8s / ECS only */}
-      {isAutoScale && eff.autoScale && (
+      {/* K8s Pod (Deployment) — replicas, per-replica capacity, HPA */}
+      {nodeType === 'pod' && eff.k8sPod && (
         <div className={styles.configBlock}>
-          <div className={styles.configBlockTitle}>Auto-Scaling</div>
+          <div className={styles.configBlockTitle}>K8s Pod (Deployment)</div>
           <div className={styles.configGrid}>
             <div className={styles.configField}>
-              <span className={styles.configLabel}>Min Capacity (RPS)</span>
+              <span className={styles.configLabel}>Replicas</span>
               <NumericStepper
-                value={eff.autoScale.minCapacityRps}
-                onChange={v => setNodeConfig(nodeId, { autoScale: { ...eff.autoScale!, minCapacityRps: v } })}
+                value={eff.k8sPod.replicas}
+                onChange={v => setNodeConfig(nodeId, { k8sPod: { ...eff.k8sPod!, replicas: v } })}
                 min={1}
-                step={100}
+                step={1}
               />
             </div>
             <div className={styles.configField}>
-              <span className={styles.configLabel}>Max Capacity (RPS)</span>
+              <span className={styles.configLabel}>Capacity / Replica (RPS)</span>
               <NumericStepper
-                value={eff.autoScale.maxCapacityRps}
-                onChange={v => setNodeConfig(nodeId, { autoScale: { ...eff.autoScale!, maxCapacityRps: v } })}
+                value={eff.k8sPod.baseCapacityRps}
+                onChange={v => setNodeConfig(nodeId, { k8sPod: { ...eff.k8sPod!, baseCapacityRps: v } })}
                 min={1}
-                step={500}
+                step={50}
               />
             </div>
-            <div className={styles.configField}>
-              <span className={styles.configLabel}>Scale-out Threshold (%)</span>
-              <NumericStepper
-                value={Math.round(eff.autoScale.scaleOutThreshold * 100)}
-                onChange={v => setNodeConfig(nodeId, { autoScale: { ...eff.autoScale!, scaleOutThreshold: v / 100 } })}
-                min={1}
-                max={100}
-                step={5}
-              />
-            </div>
-            <div className={styles.configField}>
-              <span className={styles.configLabel}>Scale-out Delay (s)</span>
-              <NumericStepper
-                value={eff.autoScale.scaleOutDelayMs / 1000}
-                onChange={v => setNodeConfig(nodeId, { autoScale: { ...eff.autoScale!, scaleOutDelayMs: v * 1000 } })}
-                min={1}
-                step={5}
-              />
-            </div>
-            {eff.selfHealing && (
-              <div className={styles.configField}>
-                <span className={styles.configLabel}>Restart Delay (s)</span>
-                <NumericStepper
-                  value={eff.selfHealing.restartDelayMs / 1000}
-                  onChange={v => setNodeConfig(nodeId, { selfHealing: { ...eff.selfHealing!, restartDelayMs: v * 1000 } })}
-                  min={1}
-                  step={5}
-                />
-              </div>
-            )}
           </div>
+          {eff.k8sPod.hpa && (
+            <>
+              <div className={styles.configBlockTitle} style={{ marginTop: 8 }}>HPA</div>
+              <div className={styles.configGrid}>
+                <div className={styles.configField}>
+                  <span className={styles.configLabel}>Min Replicas</span>
+                  <NumericStepper
+                    value={eff.k8sPod.hpa.minReplicas}
+                    onChange={v => setNodeConfig(nodeId, { k8sPod: { ...eff.k8sPod!, hpa: { ...eff.k8sPod!.hpa!, minReplicas: v } } })}
+                    min={1}
+                    step={1}
+                  />
+                </div>
+                <div className={styles.configField}>
+                  <span className={styles.configLabel}>Max Replicas</span>
+                  <NumericStepper
+                    value={eff.k8sPod.hpa.maxReplicas}
+                    onChange={v => setNodeConfig(nodeId, { k8sPod: { ...eff.k8sPod!, hpa: { ...eff.k8sPod!.hpa!, maxReplicas: v } } })}
+                    min={1}
+                    step={1}
+                  />
+                </div>
+                <div className={styles.configField}>
+                  <span className={styles.configLabel}>Target CPU (%)</span>
+                  <NumericStepper
+                    value={Math.round(eff.k8sPod.hpa.targetCpuUtilization * 100)}
+                    onChange={v => setNodeConfig(nodeId, { k8sPod: { ...eff.k8sPod!, hpa: { ...eff.k8sPod!.hpa!, targetCpuUtilization: v / 100 } } })}
+                    min={1}
+                    max={100}
+                    step={5}
+                  />
+                </div>
+              </div>
+            </>
+          )}
         </div>
       )}
 

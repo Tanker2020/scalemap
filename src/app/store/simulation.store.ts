@@ -40,6 +40,9 @@ export type SimEventType =
   | 'autoscale_scaledin'
   | 'crash_loop_detected'
   | 'retry_storm'
+  | 'quota_constrained'
+  | 'cluster_exhausted'
+  | 'hpa_blocked'
 
 export interface SimEvent {
   id: string

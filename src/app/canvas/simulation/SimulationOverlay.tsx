@@ -36,7 +36,7 @@ export function SimulationOverlay({ width, height }: Props) {
   const {
     running, speed,
     simulationMode, globalMultiplier, nodeConfigs,
-    setAllNodeMetrics, markBottleneck, addEvent,
+    setAllNodeMetrics, markBottleneck, addEvent, setNodeConfig,
   } = useSimulationStore()
 
   const simStartRef    = useRef<number>(0)
@@ -85,6 +85,12 @@ export function SimulationOverlay({ width, height }: Props) {
       sumErrRef.current   = 0
       errTicksRef.current = 0
       useReplayStore.getState().clearAll()
+      // Seed runtime nodeConfigs from persisted NodeData.simConfig so k8sPod replicas,
+      // namespace quotas, and cluster capacities set in PropertiesPanel are active.
+      for (const n of nodes) {
+        const sc = (n.data as NodeData).simConfig
+        if (sc && Object.keys(sc).length > 0) setNodeConfig(n.id, sc)
+      }
       startSimulation(canvasRef.current, nodes, edges, speed)
       addEvent({
         type: 'simulation_start',
@@ -97,10 +103,12 @@ export function SimulationOverlay({ width, height }: Props) {
     } else {
       stopSimulation()
       useReplayStore.getState().clearAll()
-      // Build SimulationRun summary (only for meaningful runs > 2s)
+      // Build SimulationRun summary (only for meaningful runs > 2s).
+      // Guard simStartRef > 0: on first mount running=false fires this else branch with
+      // simStartRef still at 0, making durationS = Date.now()/1000 (huge) — creating junk runs.
       const endedAt  = Date.now()
       const durationS = Math.round((endedAt - simStartRef.current) / 1000)
-      if (durationS > 2) {
+      if (simStartRef.current > 0 && durationS > 2) {
         const { events, nodeMetrics, bottlenecks, sloStatus, pushRun } = useSimulationStore.getState()
         const sloViolations = [...sloStatus.values()].filter(s => !s.passing).length
         const avgErrorRate  = errTicksRef.current > 0 ? sumErrRef.current / errTicksRef.current : 0

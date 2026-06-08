@@ -87,6 +87,30 @@ export interface NodeSimConfig {
     maxRestarts: number
     crashLoopBackoffMs: number
   }
+
+  // ─── Kubernetes / container-orchestration configs ─────────────────────────
+  // k8sPod: per-pod Deployment config with HPA. effectiveMaxRps = replicas × baseCapacityRps,
+  //         further constrained by the enclosing namespace quota and cluster node-pool capacity.
+  k8sPod?: {
+    replicas: number
+    baseCapacityRps: number     // capacity of a SINGLE replica
+    hpa?: {
+      minReplicas: number
+      maxReplicas: number
+      targetCpuUtilization: number  // 0–1, e.g. 0.7
+    }
+  }
+  // k8sNamespace: resource quotas and network policy for a namespace grouping node.
+  k8sNamespace?: {
+    resourceQuotaRps: number    // max combined RPS for all pods in this namespace
+    networkPolicy: 'open' | 'strict'  // strict drops inbound from outside the namespace
+  }
+  // k8sCluster: node-pool limits and service-mesh config for a cluster grouping node.
+  k8sCluster?: {
+    nodePoolCapacityRps: number // max combined RPS for ALL pods in the cluster
+    hasServiceMesh: boolean     // e.g. Istio/Linkerd — adds Envoy sidecar overhead
+    cniLatencyMs: number        // per-hop intra-cluster network overhead
+  }
 }
 
 export interface NodeData extends Record<string, unknown> {
@@ -141,10 +165,10 @@ export const NODE_CONFIG: Record<NodeType, NodeConfig> = {
   redis:        { label: 'Redis',              icon: Layers,    category: 'caching' },
   memcached:    { label: 'Memcached',          icon: Layers,    category: 'caching' },
   cdnCache:     { label: 'CDN Cache',          icon: Wifi,      category: 'caching' },
-  // Orchestration
-  k8sCluster:   { label: 'K8s Cluster',        icon: Cpu,       category: 'orchestration' },
-  ecsCluster:   { label: 'ECS Cluster',        icon: Cpu,       category: 'orchestration' },
-  dockerCompose:{ label: 'Docker Compose',     icon: Package,   category: 'orchestration' },
+  // Orchestration — clusters and compose are grouping containers (capacity boundaries)
+  k8sCluster:   { label: 'K8s Cluster',        icon: Cpu,       category: 'orchestration', isGroup: true },
+  ecsCluster:   { label: 'ECS Cluster',        icon: Cpu,       category: 'orchestration', isGroup: true },
+  dockerCompose:{ label: 'Docker Compose',     icon: Package,   category: 'orchestration', isGroup: true },
   // Grouping
   vpc:          { label: 'VPC',                icon: Layout,    category: 'grouping', isGroup: true },
   subnet:       { label: 'Subnet',             icon: Layout,    category: 'grouping', isGroup: true },
@@ -153,10 +177,14 @@ export const NODE_CONFIG: Record<NodeType, NodeConfig> = {
   namespace:    { label: 'Namespace',          icon: Layout,    category: 'grouping', isGroup: true },
 }
 
-export const GROUPING_TYPES = new Set<NodeType>(['vpc', 'subnet', 'az', 'region', 'namespace'])
+// Orchestration clusters + namespace + infra containers — visual bounding boxes, not traffic targets.
+export const GROUPING_TYPES = new Set<NodeType>([
+  'vpc', 'subnet', 'az', 'region', 'namespace',
+  'k8sCluster', 'ecsCluster', 'dockerCompose',
+])
 
 export const PALETTE_CATEGORIES: { label: string; category: NodeCategory; types: NodeType[] }[] = [
-  { label: 'Compute',       category: 'compute',       types: ['ec2', 'lambda', 'container', 'pod'] },
+  { label: 'Compute',       category: 'compute',       types: ['ec2', 'lambda', 'pod'] },
   { label: 'Network',       category: 'network',       types: ['loadBalancer', 'apiGateway', 'cdn', 'dns', 'firewall', 'vpn'] },
   { label: 'Storage',       category: 'storage',       types: ['dbSql', 'dbNoSql', 'objectStorage', 'fileStorage'] },
   { label: 'Messaging',     category: 'messaging',     types: ['queue', 'eventBus', 'pubsub', 'stream'] },

@@ -226,8 +226,75 @@ function NodePanel({ nodeId }: { nodeId: string }) {
           </div>
         </div>
 
-        {/* Group containers: configure which geographic region they represent */}
-        {GROUPING_TYPES.has(nodeType) && (
+        {/* K8s cluster config — node pool, service mesh, CNI latency */}
+        {(nodeType === 'k8sCluster' || nodeType === 'ecsCluster' || nodeType === 'dockerCompose') && (() => {
+          const simCfg = data.simConfig ?? {}
+          const kc = simCfg.k8sCluster ?? { nodePoolCapacityRps: 5000, hasServiceMesh: false, cniLatencyMs: 0.5 }
+          const upd = (patch: Partial<typeof kc>) =>
+            updateNodeData(selectedNode.id, { simConfig: { ...simCfg, k8sCluster: { ...kc, ...patch } } })
+          return (
+            <div className={styles.section}>
+              <div className={styles.sectionLabel}>Cluster Config</div>
+              <div className={styles.row}>
+                <span className={styles.rowLabel}>Node Pool Capacity (RPS)</span>
+                <input className={styles.numberInput} type="number" min={100} step={500}
+                  value={kc.nodePoolCapacityRps}
+                  onChange={e => upd({ nodePoolCapacityRps: Number(e.target.value) })} />
+              </div>
+              <div className={styles.row}>
+                <span className={styles.rowLabel}>CNI Latency (ms)</span>
+                <input className={styles.numberInput} type="number" min={0} step={0.5}
+                  value={kc.cniLatencyMs}
+                  onChange={e => upd({ cniLatencyMs: Number(e.target.value) })} />
+              </div>
+              <div className={styles.row}>
+                <span className={styles.rowLabel}>Service Mesh (Istio/Linkerd)</span>
+                <input type="checkbox" checked={kc.hasServiceMesh}
+                  onChange={e => upd({ hasServiceMesh: e.target.checked })} />
+              </div>
+              {kc.hasServiceMesh && (
+                <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 4, lineHeight: 1.6 }}>
+                  +2ms Envoy sidecar overhead on intra-cluster pod-to-pod hops.
+                </div>
+              )}
+            </div>
+          )
+        })()}
+
+        {/* Namespace config — resource quota + network policy */}
+        {nodeType === 'namespace' && (() => {
+          const simCfg = data.simConfig ?? {}
+          const kn = simCfg.k8sNamespace ?? { resourceQuotaRps: 10000, networkPolicy: 'open' as const }
+          const upd = (patch: Partial<typeof kn>) =>
+            updateNodeData(selectedNode.id, { simConfig: { ...simCfg, k8sNamespace: { ...kn, ...patch } } })
+          return (
+            <div className={styles.section}>
+              <div className={styles.sectionLabel}>Namespace Config</div>
+              <div className={styles.row}>
+                <span className={styles.rowLabel}>Resource Quota (RPS)</span>
+                <input className={styles.numberInput} type="number" min={100} step={1000}
+                  value={kn.resourceQuotaRps}
+                  onChange={e => upd({ resourceQuotaRps: Number(e.target.value) })} />
+              </div>
+              <div className={styles.row}>
+                <span className={styles.rowLabel}>Network Policy</span>
+                <select
+                  style={{ background: '#0D0F12', color: '#F1F5F9', border: '1px solid #2A2E38',
+                    borderRadius: 4, padding: '3px 6px', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer' }}
+                  value={kn.networkPolicy}
+                  onChange={e => upd({ networkPolicy: e.target.value as 'open' | 'strict' })}>
+                  <option value="open">Open — allow all inbound</option>
+                  <option value="strict">Strict — drop cross-namespace traffic</option>
+                </select>
+              </div>
+            </div>
+          )
+        })()}
+
+        {/* Group containers: configure which geographic region they represent (vpc/subnet/az/region only) */}
+        {GROUPING_TYPES.has(nodeType)
+          && nodeType !== 'k8sCluster' && nodeType !== 'ecsCluster'
+          && nodeType !== 'dockerCompose' && nodeType !== 'namespace' && (
           <div className={styles.section}>
             <div className={styles.sectionLabel}>Geographic Region</div>
             <select

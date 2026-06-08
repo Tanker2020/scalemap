@@ -259,12 +259,39 @@ const _scaleInCooldown  = new Map<string, number>()  // nodeId → earliest scal
 const _restartCounts    = new Map<string, number>()  // nodeId → crash-loop restart count
 const _restartCooldown  = new Map<string, number>()  // nodeId → next allowed restart time
 
+// ─── K8s hierarchy state ──────────────────────────────────────────────────────
+// Per-pod HPA replica state — starts at k8sPod.replicas, modified by HPA logic.
+const _podReplicas          = new Map<string, number>()
+// Real-time RPS consumed by pods per namespace/cluster (updated end of each metrics tick).
+const _namespaceConsumedRps = new Map<string, number>()
+const _clusterConsumedRps   = new Map<string, number>()
+// Throttle events — only emit once until the condition clears.
+const _quotaConstrainedNodes  = new Set<string>()
+const _clusterExhaustedNodes  = new Set<string>()
+const _hpaBlockedNodes        = new Set<string>()
+
 // Cache DOM elements per frame
 const _pathElCache  = new Map<string, SVGPathElement | null>()
 const _nodeElCache  = new Map<string, Element | null>()
 let _canvasRect: DOMRect | null = null
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
+
+// Walk the parentId ancestor chain to find the nearest namespace and cluster containers.
+// Used for K8s quota enforcement, CNI latency, and blast-radius cascades.
+function resolveK8sParents(nodeId: string): { namespaceId?: string; clusterId?: string } {
+  let namespaceId: string | undefined
+  let clusterId: string | undefined
+  let cur = _nodesMap.get(nodeId)
+  while (cur?.parentId) {
+    cur = _nodesMap.get(cur.parentId)
+    if (!cur) break
+    const t = cur.type as NodeType
+    if (t === 'namespace' && !namespaceId) namespaceId = cur.id
+    if ((t === 'k8sCluster' || t === 'ecsCluster' || t === 'dockerCompose') && !clusterId) clusterId = cur.id
+  }
+  return { namespaceId, clusterId }
+}
 
 function clearCaches() {
   _pathElCache.clear()
@@ -556,19 +583,22 @@ function spawnParticles(now: number, delta: number) {
       }
     }
 
-    // Inbound-driven gating: transit nodes only produce outbound proportional to what they receive.
-    // A server getting zero requests makes zero DB calls. Excluded: pure source nodes (no inbound
-    // edges), LBs/gateways/queues (separate traffic models), and nodes not yet in smoothed metrics.
+    // Inbound-driven gating: suppress outbound only when a transit node is genuinely receiving
+    // zero (or near-zero) traffic. A server getting no requests makes no DB calls.
+    // Uses a small fixed RPS threshold so the gate fully opens at any meaningful traffic level —
+    // NOT a utilization ratio (which would wrongly starve outbound on low-util but active nodes).
+    // Excluded: pure source nodes (no inbound edges), LBs/gateways/queues, nodes not yet in metrics.
+    const IDLE_RPS_THRESHOLD = 5  // below this the node is considered effectively idle
     if (downstreamFactor > 0 && sourceNodeId && ep.sourceNodeType
         && !_LB_SKIP_TYPES.has(ep.sourceNodeType)) {
       const hasInbound = _edgesData.some(e => e.target === sourceNodeId)
       if (hasInbound) {
         const srcMetrics = _smoothedMetrics.get(sourceNodeId)
-        if (srcMetrics) {
-          const srcConfig = effectiveConfig(sourceNodeId, ep.sourceNodeType as NodeType)
-          const inboundRatio = Math.min(1, srcMetrics.inRps / Math.max(1, srcConfig.maxRps))
-          downstreamFactor *= inboundRatio
+        if (srcMetrics && srcMetrics.inRps < IDLE_RPS_THRESHOLD) {
+          // Soft fade: 0 RPS → 0%, 5 RPS → 100%. Saturates immediately above the threshold.
+          downstreamFactor *= srcMetrics.inRps / IDLE_RPS_THRESHOLD
         }
+        // Above the threshold: no scaling — configured outbound flows freely.
       }
     }
 
@@ -742,6 +772,21 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
     return
   }
 
+  // K8s namespace network policy: 'strict' drops traffic originating outside this namespace.
+  if (targetNodeType === 'pod' && sourceNodeId) {
+    const tgtParents = resolveK8sParents(targetNodeId)
+    if (tgtParents.namespaceId) {
+      const nsConfig = effectiveConfig(tgtParents.namespaceId, 'namespace')
+      if (nsConfig.k8sNamespace?.networkPolicy === 'strict') {
+        const srcParents = resolveK8sParents(sourceNodeId)
+        if (srcParents.namespaceId !== tgtParents.namespaceId) {
+          dropParticle(ep, targetNodeId, particle)
+          return
+        }
+      }
+    }
+  }
+
   const config = effectiveConfig(targetNodeId, targetNodeType)
 
   // Chaos failure: mode-specific drop rate, feeds circuit breakers so they trip naturally
@@ -815,7 +860,24 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
   // belong here — both are network costs external to the node, not its processing time.
   // Including them would inflate p90/p99 and falsely degrade health scores on healthy nodes.
   const lm = config.latencyModel
-  const sampledLatency = lm ? sampleLatencyMs(lm.p50Ms, lm.p99Ms) : (config.processingMs || 5)
+  let sampledLatency = lm ? sampleLatencyMs(lm.p50Ms, lm.p99Ms) : (config.processingMs || 5)
+
+  // K8s service mesh + CNI tax: intra-cluster pod-to-pod hops pay additional latency.
+  // CNI = container network interface overhead; service mesh = Envoy sidecar (e.g. Istio).
+  // Only applied when source AND target are pods within the SAME cluster.
+  if (targetNodeType === 'pod' && ep.sourceNodeType === 'pod' && sourceNodeId) {
+    const srcParents = resolveK8sParents(sourceNodeId)
+    const tgtParents = resolveK8sParents(targetNodeId)
+    if (srcParents.clusterId && srcParents.clusterId === tgtParents.clusterId) {
+      const clType = _nodesMap.get(srcParents.clusterId)?.type as NodeType | undefined
+      const clConfig = clType ? effectiveConfig(srcParents.clusterId, clType) : null
+      if (clConfig?.k8sCluster) {
+        sampledLatency += clConfig.k8sCluster.cniLatencyMs
+        if (clConfig.k8sCluster.hasServiceMesh) sampledLatency += 2  // Envoy sidecar overhead
+      }
+    }
+  }
+
   particle.originLatencyMs = 0  // consume — zeroed so it doesn't compound on subsequent hops
   recordLatency(targetNodeId, sampledLatency)
 
@@ -1092,19 +1154,131 @@ function updateAllNodeMetrics(now: number, delta: number) {
       concurrency = cur
       utilization = Math.min(1, cur / maxC)
     } else {
-      // K8s / ECS: use dynamic auto-scale capacity (7g)
       let effectiveMaxRps = config.maxRps
-      if (config.autoScale) {
+
+      // ── Pod: K8s HPA + three-tier capacity constraint ─────────────────────
+      if (nodeType === 'pod' && config.k8sPod) {
+        const kp = config.k8sPod
+        const currentReplicas = _podReplicas.get(nodeId) ?? kp.replicas
+
+        // Tier 1: pod-level capacity = replicas × per-replica capacity
+        effectiveMaxRps = currentReplicas * kp.baseCapacityRps
+
+        const parents = resolveK8sParents(nodeId)
+        const prevInRps = _smoothedMetrics.get(nodeId)?.inRps ?? 0
+
+        // Tier 2: namespace resource quota
+        if (parents.namespaceId) {
+          const nsConfig = effectiveConfig(parents.namespaceId, 'namespace')
+          if (nsConfig.k8sNamespace) {
+            const quota = nsConfig.k8sNamespace.resourceQuotaRps
+            const nsTotal = _namespaceConsumedRps.get(parents.namespaceId) ?? 0
+            const othersInNs = Math.max(0, nsTotal - prevInRps)
+            const nsAvailable = Math.max(100, quota - othersInNs)
+            if (nsAvailable < effectiveMaxRps) {
+              effectiveMaxRps = nsAvailable
+              if (inRps / Math.max(1, nsAvailable) > 0.9 && !_quotaConstrainedNodes.has(nodeId)) {
+                _quotaConstrainedNodes.add(nodeId)
+                const label = (node.data as NodeData).label ?? nodeId
+                const nsLabel = (_nodesMap.get(parents.namespaceId)?.data as NodeData)?.label ?? 'namespace'
+                _onEvent('quota_constrained', nodeId, `${label} capped by ${nsLabel} quota (${Math.round(nsAvailable)} RPS available)`, 'warn')
+              }
+            } else { _quotaConstrainedNodes.delete(nodeId) }
+          }
+        }
+
+        // Tier 3: cluster node-pool capacity
+        if (parents.clusterId) {
+          const clType = _nodesMap.get(parents.clusterId)?.type as NodeType | undefined
+          const clConfig = clType ? effectiveConfig(parents.clusterId, clType) : null
+          if (clConfig?.k8sCluster) {
+            const poolCap = clConfig.k8sCluster.nodePoolCapacityRps
+            const clTotal = _clusterConsumedRps.get(parents.clusterId) ?? 0
+            const othersInCluster = Math.max(0, clTotal - prevInRps)
+            const clAvailable = Math.max(100, poolCap - othersInCluster)
+            if (clAvailable < effectiveMaxRps) {
+              effectiveMaxRps = clAvailable
+              if (inRps / Math.max(1, clAvailable) > 0.9 && !_clusterExhaustedNodes.has(nodeId)) {
+                _clusterExhaustedNodes.add(nodeId)
+                const label = (node.data as NodeData).label ?? nodeId
+                const clLabel = (_nodesMap.get(parents.clusterId)?.data as NodeData)?.label ?? 'cluster'
+                _onEvent('cluster_exhausted', nodeId, `${label} capped by ${clLabel} node pool (${Math.round(clAvailable)} RPS available)`, 'warn')
+              }
+            } else { _clusterExhaustedNodes.delete(nodeId) }
+          }
+        }
+
+        // HPA: scale out/in based on utilization vs targetCpuUtilization
+        if (kp.hpa) {
+          const hpa = kp.hpa
+          const podUtil = inRps / Math.max(1, currentReplicas * kp.baseCapacityRps)
+
+          if (podUtil > hpa.targetCpuUtilization && currentReplicas < hpa.maxReplicas) {
+            const wantReplicas = Math.min(hpa.maxReplicas, currentReplicas + 1)
+            const additionalCap = (wantReplicas - currentReplicas) * kp.baseCapacityRps
+            let blockedBy: string | null = null
+            const parents2 = resolveK8sParents(nodeId)
+            if (!blockedBy && parents2.namespaceId) {
+              const nsConfig = effectiveConfig(parents2.namespaceId, 'namespace')
+              if (nsConfig.k8sNamespace) {
+                const nsTotal = _namespaceConsumedRps.get(parents2.namespaceId) ?? 0
+                if (nsTotal + additionalCap > nsConfig.k8sNamespace.resourceQuotaRps) blockedBy = 'namespace quota'
+              }
+            }
+            if (!blockedBy && parents2.clusterId) {
+              const clType2 = _nodesMap.get(parents2.clusterId)?.type as NodeType | undefined
+              const clConfig2 = clType2 ? effectiveConfig(parents2.clusterId, clType2) : null
+              if (clConfig2?.k8sCluster) {
+                const clTotal = _clusterConsumedRps.get(parents2.clusterId) ?? 0
+                if (clTotal + additionalCap > clConfig2.k8sCluster.nodePoolCapacityRps) blockedBy = 'cluster node pool'
+              }
+            }
+            if (blockedBy) {
+              if (!_hpaBlockedNodes.has(nodeId)) {
+                _hpaBlockedNodes.add(nodeId)
+                const label = (node.data as NodeData).label ?? nodeId
+                _onEvent('hpa_blocked', nodeId, `HPA for ${label} blocked by ${blockedBy} — stuck at ${currentReplicas} replicas`, 'warn')
+              }
+            } else {
+              _hpaBlockedNodes.delete(nodeId)
+              if (!_scaleOutPending.has(nodeId)) {
+                _scaleOutPending.set(nodeId, now + 30_000)
+                const label = (node.data as NodeData).label ?? nodeId
+                _onEvent('autoscale_triggered', nodeId, `${label} HPA scaling out → ${wantReplicas} replicas`, 'info')
+              }
+              const pendingAt = _scaleOutPending.get(nodeId)
+              if (pendingAt && now >= pendingAt) {
+                _podReplicas.set(nodeId, wantReplicas)
+                _scaleOutPending.delete(nodeId)
+                const label = (node.data as NodeData).label ?? nodeId
+                _onEvent('autoscale_complete', nodeId, `${label} HPA → ${wantReplicas} replicas`, 'info')
+              }
+            }
+          } else if (podUtil < hpa.targetCpuUtilization * 0.5 && currentReplicas > hpa.minReplicas) {
+            const cooldownEnd = _scaleInCooldown.get(nodeId) ?? 0
+            if (now > cooldownEnd) {
+              const newReplicas = Math.max(hpa.minReplicas, currentReplicas - 1)
+              _podReplicas.set(nodeId, newReplicas)
+              _scaleInCooldown.set(nodeId, now + 300_000)
+              _hpaBlockedNodes.delete(nodeId)
+              const label = (node.data as NodeData).label ?? nodeId
+              _onEvent('autoscale_scaledin', nodeId, `${label} HPA scaled in → ${newReplicas} replicas`, 'info')
+            }
+          } else {
+            _hpaBlockedNodes.delete(nodeId)
+          }
+        }
+
+      } else if (config.autoScale) {
+        // Legacy autoScale path (ec2/container nodes with explicit autoScale config)
         const current = _currentCapacity.get(nodeId) ?? config.autoScale.minCapacityRps
         effectiveMaxRps = current
-        // Scale-out: when util > threshold, schedule capacity increase
         const utilForScale = Math.min(1, inRps / effectiveMaxRps)
         if (utilForScale > config.autoScale.scaleOutThreshold && !_scaleOutPending.has(nodeId)) {
           _scaleOutPending.set(nodeId, now + config.autoScale.scaleOutDelayMs)
           const label = (node.data as NodeData).label ?? nodeId
           _onEvent('autoscale_triggered', nodeId, `${label} scaling out — utilization ${Math.round(utilForScale * 100)}%`, 'info')
         }
-        // Apply scale-out when delay has elapsed
         const pendingAt = _scaleOutPending.get(nodeId)
         if (pendingAt && now >= pendingAt) {
           const newCap = Math.min(config.autoScale.maxCapacityRps, current * 2)
@@ -1113,7 +1287,6 @@ function updateAllNodeMetrics(now: number, delta: number) {
           const label = (node.data as NodeData).label ?? nodeId
           _onEvent('autoscale_complete', nodeId, `${label} capacity → ${newCap} RPS`, 'info')
         }
-        // Scale-in: when util < threshold and cooldown elapsed
         const cooldownEnd = _scaleInCooldown.get(nodeId) ?? 0
         if (utilForScale < config.autoScale.scaleInThreshold && now > cooldownEnd && current > config.autoScale.minCapacityRps) {
           const newCap = Math.max(config.autoScale.minCapacityRps, Math.floor(current * 0.5))
@@ -1122,12 +1295,11 @@ function updateAllNodeMetrics(now: number, delta: number) {
           const label = (node.data as NodeData).label ?? nodeId
           _onEvent('autoscale_scaledin', nodeId, `${label} scaled in → ${newCap} RPS`, 'info')
         }
-        // Self-healing: auto-recover from chaos failures (7g)
         if (config.selfHealing && _chaosFailures.has(nodeId)) {
           const expiry = _chaosFailures.get(nodeId)?.expiry ?? 0
           if (now > expiry) {
-            const restarts  = _restartCounts.get(nodeId) ?? 0
-            const cooldown  = _restartCooldown.get(nodeId) ?? 0
+            const restarts = _restartCounts.get(nodeId) ?? 0
+            const cooldown = _restartCooldown.get(nodeId) ?? 0
             if (now > cooldown) {
               const maxRestarts = config.selfHealing.maxRestarts
               if (restarts < maxRestarts) {
@@ -1144,9 +1316,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
         }
         effectiveMaxRps = _currentCapacity.get(nodeId) ?? config.autoScale.minCapacityRps
       }
-      // Degraded capacity reduction — uses previous frame's health score (one-frame lag is fine)
-      // As a node degrades, its effective capacity shrinks, pushing utilization higher,
-      // which feeds back into the health score creating a realistic degradation spiral
+
       if (_nodeHealthStates.get(nodeId) === 'degraded') {
         const prevScore = _smoothedMetrics.get(nodeId)?.healthScore ?? 0.67
         effectiveMaxRps = effectiveMaxRps * (1 - degradedDepth(prevScore) * 0.5)
@@ -1166,7 +1336,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
     const cascadePressure = _upstreamPressure.get(nodeId) ?? 0
 
     // CPU saturation → non-linear latency amplification for compute nodes (7d)
-    const isCompute = ['ec2', 'container', 'pod', 'lambda', 'k8sCluster', 'ecsCluster'].includes(nodeType)
+    const isCompute = ['ec2', 'container', 'pod', 'lambda'].includes(nodeType)
     const cpuFactor = (isCompute && utilization > 0.7)
       ? 1 + Math.pow((Math.min(utilization, 1) - 0.7) / 0.3, 2) * 3  // up to 4× at 100% util
       : 1
@@ -1323,6 +1493,38 @@ function updateAllNodeMetrics(now: number, delta: number) {
   }
 
   if (metricsBatch.size > 0) _onNodeMetrics(metricsBatch)
+
+  // ── K8s: update namespace/cluster consumed-RPS totals for next tick ─────────
+  // Uses current-tick metricsBatch so the quotas are immediately reactive.
+  _namespaceConsumedRps.clear()
+  _clusterConsumedRps.clear()
+  for (const [nId, m] of metricsBatch) {
+    const n = _nodesMap.get(nId)
+    if (!n || n.type !== 'pod') continue
+    const parents = resolveK8sParents(nId)
+    if (parents.namespaceId) _namespaceConsumedRps.set(parents.namespaceId, (_namespaceConsumedRps.get(parents.namespaceId) ?? 0) + m.inRps)
+    if (parents.clusterId)   _clusterConsumedRps.set(parents.clusterId,   (_clusterConsumedRps.get(parents.clusterId)   ?? 0) + m.inRps)
+  }
+
+  // ── K8s blast radius: cascade "down" state from cluster/namespace to children ─
+  // Traverses the full descendant subtree so deeply nested pods are also reached.
+  for (const [gId, gNode] of _nodesMap) {
+    const gType = gNode.type as NodeType
+    if (!['k8sCluster', 'ecsCluster', 'dockerCompose', 'namespace'].includes(gType)) continue
+    const gConfig = effectiveConfig(gId, gType)
+    if (gConfig.forcedHealthState !== 'down') continue
+    const queue = [gId]
+    const seen  = new Set<string>()
+    while (queue.length > 0) {
+      const pid = queue.shift()!
+      for (const [cId, cNode] of _nodesMap) {
+        if (cNode.parentId !== pid || seen.has(cId)) continue
+        seen.add(cId)
+        _nodeHealthStates.set(cId, 'down')
+        queue.push(cId)
+      }
+    }
+  }
 
   // Proactively transition open circuits to half-open once resetMs has elapsed.
   // checkBreakerTransition only fires on particle arrival, but spawnParticles emits 0 particles
@@ -1690,6 +1892,19 @@ export function startSimulation(
   _particleFrames.length = 0
   _lastReplayIndexDrawn = -1
 
+  // Seed HPA replicas from each pod's k8sPod.replicas config
+  _podReplicas.clear()
+  for (const n of nodes) {
+    if (n.type !== 'pod') continue
+    const cfg = effectiveConfig(n.id, 'pod')
+    if (cfg.k8sPod) _podReplicas.set(n.id, cfg.k8sPod.replicas)
+  }
+  _namespaceConsumedRps.clear()
+  _clusterConsumedRps.clear()
+  _quotaConstrainedNodes.clear()
+  _clusterExhaustedNodes.clear()
+  _hpaBlockedNodes.clear()
+
   clearCaches()
   if (state.rafId !== null) cancelAnimationFrame(state.rafId)
 
@@ -1759,6 +1974,12 @@ export function stopSimulation() {
   _particleFrames.length = 0
   _edgeIndexMap.clear()
   _lastReplayIndexDrawn = -1
+  _podReplicas.clear()
+  _namespaceConsumedRps.clear()
+  _clusterConsumedRps.clear()
+  _quotaConstrainedNodes.clear()
+  _clusterExhaustedNodes.clear()
+  _hpaBlockedNodes.clear()
   if (_canvas) {
     _canvas.getContext('2d')?.clearRect(0, 0, _canvas.width, _canvas.height)
   }
