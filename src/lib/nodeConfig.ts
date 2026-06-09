@@ -111,6 +111,16 @@ export interface NodeSimConfig {
     hasServiceMesh: boolean     // e.g. Istio/Linkerd — adds Envoy sidecar overhead
     cniLatencyMs: number        // per-hop intra-cluster network overhead
   }
+
+  // dbConfig: separate read/write capacity limits for database nodes (dbSql, dbNoSql).
+  // Reads are cheap (RAM/cache); writes are expensive (disk, WAL, locking).
+  // SQL nodes also apply a locking penalty to reads when write utilization is high.
+  dbConfig?: {
+    maxReadRps: number      // e.g. dbSql: 5000,  dbNoSql: 20000
+    maxWriteRps: number     // e.g. dbSql: 500,   dbNoSql: 5000
+    readLatencyMs: number   // e.g. dbSql: 2ms,   dbNoSql: 1ms
+    writeLatencyMs: number  // e.g. dbSql: 15ms,  dbNoSql: 5ms
+  }
 }
 
 export interface NodeData extends Record<string, unknown> {
@@ -129,6 +139,7 @@ export interface EdgeData extends Record<string, unknown> {
   edgeType: EdgeType
   throughput: number
   latency: number
+  readPercentage?: number  // 0.0–1.0; writePercentage = 1 − readPercentage (DB edges only)
 }
 
 export interface NodeConfig {

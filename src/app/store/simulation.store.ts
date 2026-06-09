@@ -22,6 +22,7 @@ export interface NodeMetrics {
   healthScore?: number                            // 0.0 (critical) – 1.0 (perfect)
   healthState?: 'healthy' | 'degraded' | 'down'  // computed or forced
   droppedRequests?: number                        // cumulative drops at this node since sim start
+  dbSaturation?: 'read' | 'write'                // DB nodes: which capacity limit was the bottleneck
 }
 
 export type SimEventType =

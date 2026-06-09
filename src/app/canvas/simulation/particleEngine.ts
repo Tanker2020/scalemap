@@ -259,6 +259,9 @@ const _scaleInCooldown  = new Map<string, number>()  // nodeId → earliest scal
 const _restartCounts    = new Map<string, number>()  // nodeId → crash-loop restart count
 const _restartCooldown  = new Map<string, number>()  // nodeId → next allowed restart time
 
+// ─── Database read/write saturation tracking ─────────────────────────────────
+const _dbSaturationReason = new Map<string, 'read' | 'write'>()
+
 // ─── K8s hierarchy state ──────────────────────────────────────────────────────
 // Per-pod HPA replica state — starts at k8sPod.replicas, modified by HPA logic.
 const _podReplicas          = new Map<string, number>()
@@ -276,6 +279,12 @@ const _nodeElCache  = new Map<string, Element | null>()
 let _canvasRect: DOMRect | null = null
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
+
+// Determines whether a particle represents a DB read (vs write) using its stable ID modulo.
+// Mirrors the `seed = p.id % 97` pattern in buildSnapshot for consistent method labelling.
+function isReadParticle(particleId: number, edgeReadPct: number): boolean {
+  return (particleId % 100) < Math.round(edgeReadPct * 100)
+}
 
 // Walk the parentId ancestor chain to find the nearest namespace and cluster containers.
 // Used for K8s quota enforcement, CNI latency, and blast-radius cascades.
@@ -931,6 +940,42 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       return
     }
 
+    // Database nodes: separate read/write capacity limits + SQL locking penalty
+    if (config.dbConfig && (targetNodeType === 'dbSql' || targetNodeType === 'dbNoSql')) {
+      const edgeReadPct = ((_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.readPercentage ?? 0.8)
+      const readRps   = totalInRps * edgeReadPct
+      const writeRps  = totalInRps * (1 - edgeReadPct)
+      const readUtil  = readRps  / config.dbConfig.maxReadRps
+      const writeUtil = writeRps / config.dbConfig.maxWriteRps
+
+      if (Math.max(readUtil, writeUtil) >= 1.0 + config.errorRate) {
+        _dbSaturationReason.set(targetNodeId, writeUtil >= readUtil ? 'write' : 'read')
+        dropParticle(ep, targetNodeId, particle)
+        recordBreakerResult(ep.id, true, config, now)
+        return
+      }
+
+      // Per-particle latency: read or write lane based on particle ID modulo.
+      // SQL locking: heavy write utilization increases read latency exponentially (row/table locks).
+      const isRead = isReadParticle(particle.id, edgeReadPct)
+      let dbLatency = isRead ? config.dbConfig.readLatencyMs : config.dbConfig.writeLatencyMs
+      if (targetNodeType === 'dbSql') {
+        const lockingPenalty = Math.pow(writeUtil, 2) * 50  // up to +50ms at 100% write util
+        dbLatency += lockingPenalty  // applies to both reads AND writes under SQL contention
+      }
+      particle.originLatencyMs = 0
+      recordLatency(targetNodeId, dbLatency)
+      recordBreakerResult(ep.id, false, config, now)
+      trackRequest(targetNodeId, targetNodeType, config)
+      if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
+        setTimeout(() => {
+          _activeWorkers.set(sourceNodeId, Math.max(0, (_activeWorkers.get(sourceNodeId) ?? 1) - 1))
+        }, (dbLatency + ep.geoLatencyMs) / _speed)
+      }
+      forwardToOutbound(targetNodeId, targetNodeType)
+      return
+    }
+
     // Other non-queue nodes: drop if at capacity
     if (utilization >= 1.0 + config.errorRate) {
       dropParticle(ep, targetNodeId, particle)
@@ -1372,6 +1417,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
       const label = (node.data as NodeData).label ?? nodeId
       _onEvent('saturation_end', nodeId, `${label} recovered`, 'info')
     }
+    if (!nowSaturated) _dbSaturationReason.delete(nodeId)
 
     // Soft error onset at 85% utilization (real services start erroring before full saturation)
     const errorOnset = 0.85
@@ -1383,6 +1429,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
 
     const activeRequests = _lbActiveRequests.get(nodeId)
 
+    const dbSaturation = _dbSaturationReason.get(nodeId)
     const rawMetrics: NodeMetrics = {
       inRps,
       outRps,
@@ -1398,6 +1445,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
       ...(activeRequests !== undefined && { activeRequests }),
       circuitState,
       droppedRequests: _droppedCounts.get(nodeId) ?? 0,
+      ...(dbSaturation !== undefined && { dbSaturation }),
     }
 
     // ─── Health scoring ───────────────────────────────────────────────────────
@@ -1483,6 +1531,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
       healthScore:      rawMetrics.healthScore,
       healthState:      rawMetrics.healthState,
       droppedRequests:  rawMetrics.droppedRequests,
+      dbSaturation:     rawMetrics.dbSaturation,
     } : rawMetrics
     _smoothedMetrics.set(nodeId, metrics)
 

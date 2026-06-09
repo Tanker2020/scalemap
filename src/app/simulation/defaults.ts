@@ -14,8 +14,8 @@ export const NODE_SIM_DEFAULTS: Record<NodeType, NodeSimConfig> = {
   firewall:     { maxRps: 5000,  processingMs: 2,   errorRate: 0, latencyModel: { p50Ms: 2,   p99Ms: 15   } },
   vpn:          { maxRps: 1000,  processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 10,  p99Ms: 80   } },
   // Storage — connection pool limits
-  dbSql:        { maxRps: 500,   processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 8,   p99Ms: 200  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 10_000, connectionPool: { max: 100,    timeoutMs: 5_000 }, retryConfig: { maxRetries: 2, baseDelayMs: 50,   jitter: 'equal', maxDelayMs: 500  } },
-  dbNoSql:      { maxRps: 5000,  processingMs: 2,   errorRate: 0, latencyModel: { p50Ms: 2,   p99Ms: 30   }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 5_000,  connectionPool: { max: 500,    timeoutMs: 2_000 }, retryConfig: { maxRetries: 3, baseDelayMs: 20,   jitter: 'full',  maxDelayMs: 200  } },
+  dbSql:        { maxRps: 500,   processingMs: 5,   errorRate: 0, latencyModel: { p50Ms: 8,   p99Ms: 200  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 10_000, connectionPool: { max: 100,    timeoutMs: 5_000 }, retryConfig: { maxRetries: 2, baseDelayMs: 50,   jitter: 'equal', maxDelayMs: 500  }, dbConfig: { maxReadRps: 5000,  maxWriteRps: 500,  readLatencyMs: 2,  writeLatencyMs: 15 } },
+  dbNoSql:      { maxRps: 5000,  processingMs: 2,   errorRate: 0, latencyModel: { p50Ms: 2,   p99Ms: 30   }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 5_000,  connectionPool: { max: 500,    timeoutMs: 2_000 }, retryConfig: { maxRetries: 3, baseDelayMs: 20,   jitter: 'full',  maxDelayMs: 200  }, dbConfig: { maxReadRps: 20000, maxWriteRps: 5000, readLatencyMs: 1,  writeLatencyMs: 5  } },
   objectStorage:{ maxRps: 2000,  processingMs: 50,  errorRate: 0, latencyModel: { p50Ms: 30,  p99Ms: 300  }, connectionPool: { max: 1_000,  timeoutMs: 10_000 } },
   fileStorage:  { maxRps: 500,   processingMs: 20,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 200  } },
   // Messaging — no retries; queues have their own requeue semantics

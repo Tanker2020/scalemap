@@ -578,6 +578,30 @@ export function PropertiesPanel() {
                 onChange={e => updateEdgeData(selectedEdge.id, { latency: Number(e.target.value) })}
               />
             </div>
+            {(() => {
+              const targetNode = nodes.find(n => n.id === selectedEdge.target)
+              const isDbEdge = targetNode?.type === 'dbSql' || targetNode?.type === 'dbNoSql'
+              if (!isDbEdge) return null
+              const readPct = data?.readPercentage ?? 0.8
+              return (
+                <div className={styles.row}>
+                  <span className={styles.rowLabel}>Read/Write ratio</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={Math.round(readPct * 100)}
+                      onChange={e => updateEdgeData(selectedEdge.id, { readPercentage: Number(e.target.value) / 100 })}
+                      style={{ flex: 1, accentColor: '#4A9EFF' }}
+                    />
+                    <span style={{ fontSize: 11, color: '#94A3B8', whiteSpace: 'nowrap' }}>
+                      {Math.round(readPct * 100)}% R / {100 - Math.round(readPct * 100)}% W
+                    </span>
+                  </div>
+                </div>
+              )
+            })()}
             </fieldset>
           </div>
         </motion.div>

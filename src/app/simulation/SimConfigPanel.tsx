@@ -510,6 +510,56 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
         </div>
       )}
 
+      {/* Database Capacity — dbSql / dbNoSql only */}
+      {(nodeType === 'dbSql' || nodeType === 'dbNoSql') && eff.dbConfig && (
+        <div className={styles.configBlock}>
+          <div className={styles.configBlockTitle}>Database Capacity</div>
+          <div className={styles.configGrid}>
+            <div className={styles.configField}>
+              <span className={styles.configLabel}>Max Read RPS</span>
+              <NumericStepper
+                value={eff.dbConfig.maxReadRps}
+                onChange={v => setNodeConfig(nodeId, { dbConfig: { ...eff.dbConfig!, maxReadRps: v } })}
+                min={1}
+                step={500}
+              />
+            </div>
+            <div className={styles.configField}>
+              <span className={styles.configLabel}>Max Write RPS</span>
+              <NumericStepper
+                value={eff.dbConfig.maxWriteRps}
+                onChange={v => setNodeConfig(nodeId, { dbConfig: { ...eff.dbConfig!, maxWriteRps: v } })}
+                min={1}
+                step={100}
+              />
+            </div>
+            <div className={styles.configField}>
+              <span className={styles.configLabel}>Read Latency (ms)</span>
+              <NumericStepper
+                value={eff.dbConfig.readLatencyMs}
+                onChange={v => setNodeConfig(nodeId, { dbConfig: { ...eff.dbConfig!, readLatencyMs: v } })}
+                min={0}
+                step={1}
+              />
+            </div>
+            <div className={styles.configField}>
+              <span className={styles.configLabel}>Write Latency (ms)</span>
+              <NumericStepper
+                value={eff.dbConfig.writeLatencyMs}
+                onChange={v => setNodeConfig(nodeId, { dbConfig: { ...eff.dbConfig!, writeLatencyMs: v } })}
+                min={0}
+                step={5}
+              />
+            </div>
+          </div>
+          {nodeType === 'dbSql' && (
+            <div style={{ fontSize: 10, color: '#475569', marginTop: 4, paddingLeft: 2 }}>
+              SQL locking: high write utilization adds up to +50ms to read latency
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Retry Strategy — shown for nodes that have a retryConfig */}
       {eff.retryConfig && (
         <div className={styles.configBlock}>
@@ -763,6 +813,11 @@ function LiveSection({ nodeId }: { nodeId: string }) {
       {metrics.circuitState === 'open' && (
         <div className={styles.liveAlert} style={{ borderColor: '#F59E0B66', color: '#FCD34D' }}>
           ⊘ Circuit open — rejecting requests
+        </div>
+      )}
+      {metrics.dbSaturation && (
+        <div className={styles.liveAlert} style={{ borderColor: '#EF444466', color: '#FCA5A5' }}>
+          ● {metrics.dbSaturation === 'write' ? 'Write' : 'Read'} capacity exhausted
         </div>
       )}
 
