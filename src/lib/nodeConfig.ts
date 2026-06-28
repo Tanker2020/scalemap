@@ -9,6 +9,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { CATEGORY_COLORS } from './theme'
+import type { CloudProvider } from './cloudRegistry'
 
 export type NodeStatus = 'healthy' | 'degraded' | 'down' | 'idle'
 
@@ -123,6 +124,17 @@ export interface NodeSimConfig {
   }
 }
 
+// User-entered pricing parameters. Rates live in cloudRegistry.ts; this holds only the
+// "things you should know" — the numbers a user must supply for an accurate cost estimate.
+export interface NodeCostConfig {
+  instanceCount?: number       // compute / cache / stream — how many instances/shards
+  instanceRateUsdHr?: number   // $/hr per instance (UI may collect per-minute, store as $/hr)
+  storageTierId?: string       // selects which registry StorageTier rate applies
+  storageGb?: number           // provisioned/stored capacity for storageGbMonth pricing
+  avgRequestKb?: number        // avg inbound request size — reserved for future ingress pricing
+  avgResponseKb?: number       // avg outbound response size — drives dynamic egress bandwidth/cost
+}
+
 export interface NodeData extends Record<string, unknown> {
   label: string
   subtitle: string
@@ -132,6 +144,74 @@ export interface NodeData extends Record<string, unknown> {
   simConfig?: Partial<NodeSimConfig>
   slo?: NodeSlo
   regionId?: string  // set on 'region' grouping nodes; links to WorldRegion.id
+  provider?: CloudProvider  // cloud provider mapping; undefined ≡ 'generic'
+  cost?: NodeCostConfig     // user-entered pricing parameters
+}
+
+// ─── Per-edge-type configuration ───────────────────────────────────────────────
+
+export interface RequestEdgeConfig {
+  methodDistribution: {
+    GET: number     // weights, need not sum to 100 — normalized at use
+    POST: number
+    PUT: number
+    DELETE: number
+  }
+  timeoutMs: number
+  retryConfig: RetryConfig
+}
+
+export interface StreamEdgeConfig {
+  throughputRate: number              // particles/sec
+  streamType: 'lossful_udp' | 'lossless_tcp'
+  maxConsumerLag: number              // queue-depth threshold before edge enters backpressure
+}
+
+export interface EventEdgeConfig {
+  retryConfig: RetryConfig
+  retryBackoff: 'immediate' | 'linear' | 'exponential'
+  deadLetterRouting: boolean
+  deadLetterTargetId?: string  // node ID of the DLQ (queue/stream) to reroute dead letters to
+}
+
+export interface DependencyEdgeConfig {
+  isCritical: boolean       // if the target is down, does the source degrade?
+  healthPropagation: number // 0.0–1.0 impact on source health score when target is down
+}
+
+export type EdgeConfig = RequestEdgeConfig | StreamEdgeConfig | EventEdgeConfig | DependencyEdgeConfig
+
+export const DEFAULT_REQUEST_EDGE_CONFIG: RequestEdgeConfig = {
+  methodDistribution: { GET: 80, POST: 15, PUT: 4, DELETE: 1 },
+  timeoutMs: 5000,
+  retryConfig: { maxRetries: 0, baseDelayMs: 200, jitter: 'full', maxDelayMs: 2000 },
+}
+
+export const DEFAULT_STREAM_EDGE_CONFIG: StreamEdgeConfig = {
+  throughputRate: 100,
+  streamType: 'lossless_tcp',
+  maxConsumerLag: 500,
+}
+
+export const DEFAULT_EVENT_EDGE_CONFIG: EventEdgeConfig = {
+  retryConfig: { maxRetries: 3, baseDelayMs: 200, jitter: 'full', maxDelayMs: 5000 },
+  retryBackoff: 'exponential',
+  deadLetterRouting: false,
+  deadLetterTargetId: undefined,
+}
+
+export const DEFAULT_DEPENDENCY_EDGE_CONFIG: DependencyEdgeConfig = {
+  isCritical: false,
+  healthPropagation: 0.5,
+}
+
+export function defaultEdgeConfig(edgeType: EdgeType): EdgeConfig {
+  switch (edgeType) {
+    case 'request':    return { ...DEFAULT_REQUEST_EDGE_CONFIG, methodDistribution: { ...DEFAULT_REQUEST_EDGE_CONFIG.methodDistribution }, retryConfig: { ...DEFAULT_REQUEST_EDGE_CONFIG.retryConfig } }
+    case 'stream':     return { ...DEFAULT_STREAM_EDGE_CONFIG }
+    case 'event':      return { ...DEFAULT_EVENT_EDGE_CONFIG, retryConfig: { ...DEFAULT_EVENT_EDGE_CONFIG.retryConfig } }
+    case 'dependency': return { ...DEFAULT_DEPENDENCY_EDGE_CONFIG }
+  }
 }
 
 export interface EdgeData extends Record<string, unknown> {
@@ -140,6 +220,7 @@ export interface EdgeData extends Record<string, unknown> {
   throughput: number
   latency: number
   readPercentage?: number  // 0.0–1.0; writePercentage = 1 − readPercentage (DB edges only)
+  config?: EdgeConfig
 }
 
 export interface NodeConfig {

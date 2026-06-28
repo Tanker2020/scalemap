@@ -1,10 +1,14 @@
 import type { Node, Edge } from '@xyflow/react'
-import type { NodeData, EdgeData, NodeType, NodeSimConfig, RetryConfig } from '../../../lib/nodeConfig'
-import { GROUPING_TYPES } from '../../../lib/nodeConfig'
+import type {
+  NodeData, EdgeData, NodeType, NodeSimConfig, RetryConfig,
+  RequestEdgeConfig, StreamEdgeConfig, EventEdgeConfig, DependencyEdgeConfig,
+} from '../../../lib/nodeConfig'
+import { GROUPING_TYPES, DEFAULT_EVENT_EDGE_CONFIG } from '../../../lib/nodeConfig'
 import { interRegionLatencyMs } from '../../../lib/regionConfig'
 import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventType, type CircuitState, type RequestSnapshot } from '../../store/simulation.store'
 import { useReplayStore } from '../../store/replay.store'
 import { NODE_SIM_DEFAULTS } from '../../simulation/defaults'
+import { CLOUD_REGISTRY, type CloudProvider } from '../../../lib/cloudRegistry'
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -16,6 +20,10 @@ export interface Particle {
   edgeId: string
   retries: number         // 0 on first spawn; incremented on each retry
   originLatencyMs: number // geographic client→server delay; consumed at first node arrival
+  spawnTime: number       // performance.now() at spawn — used for request-edge timeout detection
+  payloadBytes: number    // sampled response size this hop carries (log-normal) — egress + inspector
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE'  // request edges only — sampled from methodDistribution
+  deadLetter?: boolean    // event edges only — true once routed to a DLQ after exhausting retries
 }
 
 // ─── Internal state ───────────────────────────────────────────────────────────
@@ -43,6 +51,7 @@ interface RetryEntry {
   color: string
   retries: number   // attempt number this particle is on (1 = first retry)
   fireAt: number    // performance.now() timestamp when it should re-spawn
+  deadLetter?: boolean  // event edges: true once rerouted to a DLQ after exhausting retries
 }
 
 interface EngineState {
@@ -87,8 +96,20 @@ const _downstreamStallPressure = new Map<string, number>()
 // Cumulative drop counts per node since simulation start
 const _droppedCounts = new Map<string, number>()
 
+// Cumulative dead-lettered message counts per node (event edges, retries exhausted)
+const _deadLetterCounts = new Map<string, number>()
+
 // In-flight synchronous request threads held at source nodes (request-edge thread pool model)
 const _activeWorkers = new Map<string, number>()
+
+// ─── Live egress bandwidth accounting ────────────────────────────────────────
+// Per-node bytes egressed (response payloads) since the last metrics flush. The primary spawn
+// loop attributes each particle's sampled payload to its TARGET node — the node that responds.
+// Each visual particle stands in for PARTICLE_REQUEST_RATIO real requests (spawn rate = rps /
+// ratio), so the measured byte rate is scaled back up by that factor to recover true bandwidth.
+const _egressBytesAccum = new Map<string, number>()
+let _lastEgressFlushAt = 0
+const PARTICLE_REQUEST_RATIO = 10
 
 // ─── Outage playback: particle keyframe buffer ───────────────────────────────
 // Records live particle positions as packed Float32Array [edgeIdx, t, edgeIdx, t, …] at the
@@ -103,6 +124,10 @@ let _lastReplayIndexDrawn = -1                    // guards redundant replay red
 
 // Which nodes were already saturated (for start/end events)
 const _saturatedNodes = new Set<string>()
+
+// Stream edges currently in lossless-TCP backpressure (consumer lag exceeded) — tracked
+// so the edge_backpressure event only fires once per onset, not every frame.
+const _streamBackpressureEdges = new Set<string>()
 
 // Circuit breakers per edge (client-side: each directed edge owns its own breaker)
 const _circuitBreakers = new Map<string, CircuitBreakerEntry>()
@@ -149,6 +174,24 @@ function computeRetryDelay(config: RetryConfig, attempt: number): number {
     : exp / 2 + Math.random() * (exp / 2)
 }
 
+// ─── Request method sampling ──────────────────────────────────────────────────
+
+// Weighted-random pick from a request edge's method distribution. Falls back to GET
+// if all weights are zero/invalid.
+function pickMethod(dist: RequestEdgeConfig['methodDistribution']): 'GET' | 'POST' | 'PUT' | 'DELETE' {
+  const entries: ['GET' | 'POST' | 'PUT' | 'DELETE', number][] = [
+    ['GET', dist.GET], ['POST', dist.POST], ['PUT', dist.PUT], ['DELETE', dist.DELETE],
+  ]
+  const total = entries.reduce((s, [, w]) => s + Math.max(0, w), 0)
+  if (total <= 0) return 'GET'
+  let r = Math.random() * total
+  for (const [method, weight] of entries) {
+    r -= Math.max(0, weight)
+    if (r <= 0) return method
+  }
+  return 'GET'
+}
+
 // ─── Latency helpers ──────────────────────────────────────────────────────────
 
 function sampleLatencyMs(p50: number, p99: number): number {
@@ -158,6 +201,38 @@ function sampleLatencyMs(p50: number, p99: number): number {
   const u2    = Math.random()
   const z     = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2)
   return Math.exp(mu + sigma * z)
+}
+
+// ─── Payload sizing ───────────────────────────────────────────────────────────
+
+// Sample a single request's payload size (bytes) from a log-normal distribution centred on
+// `meanKb`. Log-normal is used because real traffic clusters around a small mean but has a
+// long tail of occasionally huge payloads, and it can never go negative. Returns 0 when the
+// node has no configured response size (so unconfigured nodes egress — and cost — nothing).
+const PAYLOAD_SIGMA = 0.6  // shape: ~moderate tail (std-dev of the underlying normal, in log space)
+
+function sampleLogNormalPayload(meanKb: number): number {
+  if (!(meanKb > 0)) return 0
+  const meanBytes = meanKb * 1024
+  // For a log-normal, E[X] = exp(mu + sigma^2/2). Solve mu so the mean lands on meanBytes.
+  const mu = Math.log(meanBytes) - (PAYLOAD_SIGMA * PAYLOAD_SIGMA) / 2
+  const u1 = Math.max(1e-10, Math.random())
+  const u2 = Math.random()
+  const z  = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2)
+  return Math.max(1, Math.round(Math.exp(mu + PAYLOAD_SIGMA * z)))
+}
+
+// The response payload a request to `edgeId`'s TARGET node will return — sized by the target's
+// configured avgResponseKb (the data it egresses), falling back to the source's. This is what
+// the inspector shows and what feeds the target node's egress bandwidth.
+function sampleEdgeResponsePayload(edgeId: string): number {
+  const edge = _edgesData.find(e => e.id === edgeId)
+  const tgt  = edge ? _nodesMap.get(edge.target) : undefined
+  const src  = edge ? _nodesMap.get(edge.source) : undefined
+  const meanKb = (tgt?.data as NodeData | undefined)?.cost?.avgResponseKb
+    ?? (src?.data as NodeData | undefined)?.cost?.avgResponseKb
+    ?? 0
+  return sampleLogNormalPayload(meanKb)
 }
 
 function recordLatency(nodeId: string, ms: number) {
@@ -214,6 +289,7 @@ let _speed = 1
 let _trafficMode: TrafficMode = 'steady'
 let _globalMultiplier = 1
 let _nodeConfigs: Map<string, NodeSimConfig> = new Map()
+let _nodeProviders: Map<string, CloudProvider> = new Map()
 let _nodesMap: Map<string, Node<NodeData>> = new Map()
 let _edgesData: Edge<EdgeData>[] = []
 let _simStartTime = 0
@@ -357,9 +433,15 @@ function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: n
 // ─── Config helpers ───────────────────────────────────────────────────────────
 
 function effectiveConfig(nodeId: string, nodeType: NodeType): NodeSimConfig {
-  const override = _nodeConfigs.get(nodeId)
   const defaults = NODE_SIM_DEFAULTS[nodeType] ?? { maxRps: 1000, processingMs: 10, errorRate: 0 }
-  return override ? { ...defaults, ...override } : defaults
+  // 3-way merge: generic defaults < cloud-provider presets < explicit user override.
+  const provider = _nodeProviders.get(nodeId)
+  const cloud = provider && provider !== 'generic'
+    ? CLOUD_REGISTRY[nodeType]?.[provider]?.simDefaults
+    : undefined
+  const override = _nodeConfigs.get(nodeId)
+  if (!cloud && !override) return defaults
+  return { ...defaults, ...cloud, ...override }
 }
 
 // ─── Geographic origin latency sampling ───────────────────────────────────────
@@ -559,6 +641,9 @@ function spawnParticles(now: number, delta: number) {
   const mult = effectiveMultiplier(now)
 
   for (const ep of _edgePaths) {
+    // Dependency edges are static health links — they never carry traffic.
+    if (ep.edgeType === 'dependency') continue
+
     // Suppress downstream spawning when the source node has failed or tripped its circuit breaker.
     // Models: a dead or circuit-open node can't forward traffic, so its outbound edges go dark.
     const sourceNodeId = _edgesData.find(e => e.id === ep.id)?.source
@@ -626,8 +711,36 @@ function spawnParticles(now: number, delta: number) {
       }
     }
 
+    // Lossless (TCP-style) data stream edges: once the target's queue depth exceeds the
+    // configured consumer lag threshold, the edge enters backpressure — spawning halts
+    // entirely, which causes the source to saturate its own worker threads (cascading
+    // upstream just like a stalled downstream dependency).
+    if (downstreamFactor > 0 && ep.edgeType === 'stream' && ep.targetNodeType
+        && ['queue', 'pubsub', 'eventBus', 'stream'].includes(ep.targetNodeType)) {
+      const streamConfig = (_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.config as StreamEdgeConfig | undefined
+      if (streamConfig?.streamType === 'lossless_tcp') {
+        const tgtId = _edgesData.find(e => e.id === ep.id)?.target
+        const depth = tgtId ? (state.queueDepths.get(tgtId) ?? 0) : 0
+        if (depth > streamConfig.maxConsumerLag) {
+          downstreamFactor = 0
+          if (!_streamBackpressureEdges.has(ep.id)) {
+            _streamBackpressureEdges.add(ep.id)
+            const tgtLabel = tgtId ? ((_nodesMap.get(tgtId)?.data as NodeData)?.label ?? tgtId) : ep.id
+            _onEvent('edge_backpressure', tgtId, `${tgtLabel} consumer lag exceeded — stream backpressure engaged`, 'warn')
+          }
+          if (sourceNodeId) {
+            const existing = _downstreamStallPressure.get(sourceNodeId) ?? 0
+            _downstreamStallPressure.set(sourceNodeId, Math.min(1, existing + 0.05))
+            _stallSources.set(sourceNodeId, tgtId ?? ep.id)
+          }
+        } else if (_streamBackpressureEdges.has(ep.id)) {
+          _streamBackpressureEdges.delete(ep.id)
+        }
+      }
+    }
+
     const rps = ep.rps * mult * downstreamFactor
-    const particlesPerSec = rps / 10
+    const particlesPerSec = rps / PARTICLE_REQUEST_RATIO
     const spawnChance = particlesPerSec * (delta / 1000) * _speed
     const n = Math.floor(spawnChance) + (Math.random() < (spawnChance % 1) ? 1 : 0)
     if (n === 0) continue
@@ -656,8 +769,13 @@ function spawnParticles(now: number, delta: number) {
     //   0ms → 1.0× (full speed)  |  80ms → ~0.56×  |  175ms → ~0.36×  |  500ms+ → 0.1× (floor)
     // Both origin latency (client distance) and edge geo latency (inter-region hop) contribute.
     const geoSpeedFactor = Math.max(0.1, 1 / (1 + (originLatencyMs + ep.geoLatencyMs) / 100))
+    const reqConfig = ep.edgeType === 'request'
+      ? (_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.config as RequestEdgeConfig | undefined
+      : undefined
+    const targetNodeId = _edgesData.find(e => e.id === ep.id)?.target
     for (let i = 0; i < n && total < MAX_PARTICLES; i++) {
       const pid = ++_particleIdCounter
+      const payloadBytes = sampleEdgeResponsePayload(ep.id)
       const p: Particle = {
         id: pid,
         t: 0,
@@ -666,11 +784,50 @@ function spawnParticles(now: number, delta: number) {
         edgeId: ep.id,
         retries: 0,
         originLatencyMs,
+        spawnTime: now,
+        payloadBytes,
+        method: reqConfig ? pickMethod(reqConfig.methodDistribution) : undefined,
       }
       arr.push(p)
       _particleById.set(pid, p)
+      // Attribute this hop's response bytes to the node that serves it (its egress).
+      if (targetNodeId) _egressBytesAccum.set(targetNodeId, (_egressBytesAccum.get(targetNodeId) ?? 0) + payloadBytes)
       total++
     }
+  }
+}
+
+// Request edge timeout handler — fired when a request particle exceeds the edge's
+// configured timeoutMs before reaching its target. Treated as a client-side 504:
+// the source's worker thread is freed, error pressure rises, and the edge's circuit
+// breaker records the failure (same as a hard drop).
+function handleRequestTimeout(ep: EdgePath, now: number, _particle: Particle) {
+  const edgeData    = _edgesData.find(e => e.id === ep.id)
+  const sourceNodeId = edgeData?.source
+  const targetNodeId = edgeData?.target
+
+  if (sourceNodeId) {
+    spawnErrorFlash(sourceNodeId)
+    _droppedCounts.set(sourceNodeId, (_droppedCounts.get(sourceNodeId) ?? 0) + 1)
+
+    const srcType   = _nodesMap.get(sourceNodeId)?.type as NodeType | undefined
+    const srcMaxRps = srcType ? effectiveConfig(sourceNodeId, srcType).maxRps : 1000
+    const perParticle = Math.max(0.002, 10 / Math.max(10, srcMaxRps))
+    const existing = _upstreamPressure.get(sourceNodeId) ?? 0
+    _upstreamPressure.set(sourceNodeId, Math.min(1, existing + perParticle))
+
+    if (ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
+      _activeWorkers.set(sourceNodeId, Math.max(0, (_activeWorkers.get(sourceNodeId) ?? 1) - 1))
+    }
+
+    const srcLabel = (_nodesMap.get(sourceNodeId)?.data as NodeData)?.label ?? sourceNodeId
+    _onEvent('request_timeout', sourceNodeId, `${srcLabel} request timed out (504)`, 'warn', undefined, targetNodeId)
+  }
+
+  if (targetNodeId) {
+    const targetType = _nodesMap.get(targetNodeId)?.type as NodeType | undefined
+    const config = targetType ? effectiveConfig(targetNodeId, targetType) : null
+    if (config) recordBreakerResult(ep.id, true, config, now)
   }
 }
 
@@ -721,12 +878,26 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
     }
   }
 
-  // Schedule retry with exponential backoff + jitter if the target node allows it
+  // Event edges have their own retry/DLQ model — handle separately and exit early.
+  if (particle && ep.edgeType === 'event') {
+    handleEventEdgeRetry(ep, targetNodeId, particle)
+    return
+  }
+
+  // Schedule retry with exponential backoff + jitter. Request edges own their full retry
+  // config (edge-level only — no node fallback). All other edge types still fall back to
+  // the target node's retryConfig (e.g. stream-edge drops).
   if (particle) {
-    const targetNode = _nodesMap.get(targetNodeId)
-    const targetType = targetNode?.type as NodeType | undefined
-    const config = targetType ? effectiveConfig(targetNodeId, targetType) : null
-    const rc = config?.retryConfig
+    let rc: RetryConfig | undefined
+    if (ep.edgeType === 'request') {
+      const reqConfig = (_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.config as RequestEdgeConfig | undefined
+      rc = reqConfig?.retryConfig
+    } else {
+      const targetNode = _nodesMap.get(targetNodeId)
+      const targetType = targetNode?.type as NodeType | undefined
+      const config = targetType ? effectiveConfig(targetNodeId, targetType) : null
+      rc = config?.retryConfig
+    }
     if (rc && rc.maxRetries > 0 && particle.retries < rc.maxRetries) {
       // If the source of this edge is a LB/gateway, re-route the retry through the LB pool
       // instead of blindly retrying on the same failing edge — avoids hammering dead backends
@@ -751,6 +922,58 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
         color: particle.color,
         retries: particle.retries + 1,
         fireAt: performance.now() + computeRetryDelay(rc, particle.retries) / _speed,
+      })
+    }
+  }
+}
+
+// Event edge delivery: retries with edge-configured backoff up to maxDeliveryRetries.
+// Once exhausted, the message is dead-lettered — counted on the target node, and if
+// deadLetterRouting points at a real outbound edge from the target, rerouted onto it
+// with a dark "burnt" color marking it as a dead letter.
+function handleEventEdgeRetry(ep: EdgePath, targetNodeId: string, particle: Particle) {
+  const evConfig   = (_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.config as EventEdgeConfig | undefined
+  const rc         = evConfig?.retryConfig ?? DEFAULT_EVENT_EDGE_CONFIG.retryConfig
+  const maxRetries = rc.maxRetries
+  const backoff    = evConfig?.retryBackoff ?? 'exponential'
+
+  if (particle.retries < maxRetries) {
+    let delayMs: number
+    switch (backoff) {
+      case 'immediate':   delayMs = 50; break
+      case 'linear': {
+        const raw = rc.baseDelayMs * (particle.retries + 1)
+        delayMs = rc.maxDelayMs ? Math.min(rc.maxDelayMs, raw) : raw
+        break
+      }
+      case 'exponential': delayMs = computeRetryDelay(rc, particle.retries); break
+    }
+    _retryQueue.push({
+      edgeId: ep.id,
+      color: particle.color,
+      retries: particle.retries + 1,
+      fireAt: performance.now() + delayMs / _speed,
+    })
+    return
+  }
+
+  // Retries exhausted — dead letter
+  _deadLetterCounts.set(targetNodeId, (_deadLetterCounts.get(targetNodeId) ?? 0) + 1)
+  const tgtLabel = (_nodesMap.get(targetNodeId)?.data as NodeData)?.label ?? targetNodeId
+  _onEvent('dead_letter', targetNodeId, `${tgtLabel} dead-lettered after ${maxRetries} retr${maxRetries === 1 ? 'y' : 'ies'}`, 'critical')
+
+  if (evConfig?.deadLetterRouting && evConfig.deadLetterTargetId) {
+    const dlqEdge = _edgePaths.find(e => {
+      const d = _edgesData.find(x => x.id === e.id)
+      return d?.source === targetNodeId && d?.target === evConfig!.deadLetterTargetId
+    })
+    if (dlqEdge) {
+      _retryQueue.push({
+        edgeId: dlqEdge.id,
+        color: '#7F1D1D',
+        retries: 0,
+        fireAt: performance.now() + 50 / _speed,
+        deadLetter: true,
       })
     }
   }
@@ -942,7 +1165,18 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
 
     // Database nodes: separate read/write capacity limits + SQL locking penalty
     if (config.dbConfig && (targetNodeType === 'dbSql' || targetNodeType === 'dbNoSql')) {
-      const edgeReadPct = ((_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.readPercentage ?? 0.8)
+      // For request edges with a configured method distribution, GET = read and
+      // POST/PUT/DELETE = write — overrides the manual readPercentage slider.
+      const reqConfig = ep.edgeType === 'request'
+        ? (_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.config as RequestEdgeConfig | undefined
+        : undefined
+      const edgeReadPct = reqConfig
+        ? (() => {
+            const d = reqConfig.methodDistribution
+            const total = d.GET + d.POST + d.PUT + d.DELETE
+            return total > 0 ? d.GET / total : 0.8
+          })()
+        : ((_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.readPercentage ?? 0.8)
       const readRps   = totalInRps * edgeReadPct
       const writeRps  = totalInRps * (1 - edgeReadPct)
       const readUtil  = readRps  / config.dbConfig.maxReadRps
@@ -955,9 +1189,10 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
         return
       }
 
-      // Per-particle latency: read or write lane based on particle ID modulo.
+      // Per-particle latency: read or write lane. Request edges with a method distribution
+      // use the sampled HTTP method (GET = read); other edges fall back to ID-modulo sampling.
       // SQL locking: heavy write utilization increases read latency exponentially (row/table locks).
-      const isRead = isReadParticle(particle.id, edgeReadPct)
+      const isRead = particle.method ? particle.method === 'GET' : isReadParticle(particle.id, edgeReadPct)
       let dbLatency = isRead ? config.dbConfig.readLatencyMs : config.dbConfig.writeLatencyMs
       if (targetNodeType === 'dbSql') {
         const lockingPenalty = Math.pow(writeUtil, 2) * 50  // up to +50ms at 100% write util
@@ -1012,7 +1247,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
   // Load balancer / API gateway: round-robin or least-connections routing
   if (targetNodeType === 'loadBalancer' || targetNodeType === 'apiGateway') {
     const outEdges = _edgePaths.filter(e =>
-      _edgesData.find(d => d.id === e.id)?.source === targetNodeId,
+      _edgesData.find(d => d.id === e.id)?.source === targetNodeId && e.edgeType !== 'dependency',
     )
     if (outEdges.length > 0) {
       const lbConfig = effectiveConfig(targetNodeId, targetNodeType)
@@ -1045,7 +1280,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       }
 
       if (!state.particles.has(chosenEp.id)) state.particles.set(chosenEp.id, [])
-      const _lbp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(chosenEp.edgeType), edgeId: chosenEp.id, retries: 0, originLatencyMs: 0 }
+      const _lbp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(chosenEp.edgeType), edgeId: chosenEp.id, retries: 0, originLatencyMs: 0, spawnTime: performance.now(), payloadBytes: sampleEdgeResponsePayload(chosenEp.id) }
       state.particles.get(chosenEp.id)!.push(_lbp)
       _particleById.set(_lbp.id, _lbp)
     }
@@ -1061,12 +1296,12 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
 
 function forwardToOutbound(nodeId: string, _nodeType: NodeType) {
   const outEdges = _edgePaths.filter(e =>
-    _edgesData.find(d => d.id === e.id)?.source === nodeId,
+    _edgesData.find(d => d.id === e.id)?.source === nodeId && e.edgeType !== 'dependency',
   )
   if (outEdges.length === 0) return
   const outEp = outEdges[Math.floor(Math.random() * outEdges.length)]
   if (!state.particles.has(outEp.id)) state.particles.set(outEp.id, [])
-  const _fwdp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(outEp.edgeType), edgeId: outEp.id, retries: 0, originLatencyMs: 0 }
+  const _fwdp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(outEp.edgeType), edgeId: outEp.id, retries: 0, originLatencyMs: 0, spawnTime: performance.now(), payloadBytes: sampleEdgeResponsePayload(outEp.id) }
   state.particles.get(outEp.id)!.push(_fwdp)
   _particleById.set(_fwdp.id, _fwdp)
 }
@@ -1144,6 +1379,12 @@ function updateAllNodeMetrics(now: number, delta: number) {
   const mult = effectiveMultiplier(now)
   const metricsBatch = new Map<string, NodeMetrics>()
 
+  // Egress bandwidth window: convert bytes accumulated since the last flush into bytes/sec,
+  // scaled back up by the particle:request downsample ratio. Per-node values are read in the
+  // loop below; the accumulator is cleared at the end so the next window starts fresh.
+  const egressWindowSec = _lastEgressFlushAt > 0 ? Math.max(0.001, (now - _lastEgressFlushAt) / 1000) : 0
+  _lastEgressFlushAt = now
+
   // Decay upstream pressure (error rate contribution)
   for (const [id, pressure] of _upstreamPressure) {
     const next = pressure * 0.98
@@ -1166,8 +1407,10 @@ function updateAllNodeMetrics(now: number, delta: number) {
     if (!node || GROUPING_TYPES.has(node.type as NodeType)) continue
     const nodeType = node.type as NodeType
 
-    const inEdges  = _edgePaths.filter(ep => _edgesData.find(d => d.id === ep.id)?.target === nodeId)
-    const outEdges = _edgePaths.filter(ep => _edgesData.find(d => d.id === ep.id)?.source === nodeId)
+    // Dependency edges are static health links — they carry no traffic and must not
+    // contribute to RPS/utilization metrics.
+    const inEdges  = _edgePaths.filter(ep => ep.edgeType !== 'dependency' && _edgesData.find(d => d.id === ep.id)?.target === nodeId)
+    const outEdges = _edgePaths.filter(ep => ep.edgeType !== 'dependency' && _edgesData.find(d => d.id === ep.id)?.source === nodeId)
     const inRps  = inEdges.reduce((s, e) => s + e.rps, 0) * mult
     const outRps = outEdges.reduce((s, e) => s + e.rps, 0) * mult
 
@@ -1430,6 +1673,9 @@ function updateAllNodeMetrics(now: number, delta: number) {
     const activeRequests = _lbActiveRequests.get(nodeId)
 
     const dbSaturation = _dbSaturationReason.get(nodeId)
+    const egressBytesPerSec = egressWindowSec > 0
+      ? ((_egressBytesAccum.get(nodeId) ?? 0) / egressWindowSec) * PARTICLE_REQUEST_RATIO
+      : 0
     const rawMetrics: NodeMetrics = {
       inRps,
       outRps,
@@ -1445,7 +1691,9 @@ function updateAllNodeMetrics(now: number, delta: number) {
       ...(activeRequests !== undefined && { activeRequests }),
       circuitState,
       droppedRequests: _droppedCounts.get(nodeId) ?? 0,
+      deadLetterCount: _deadLetterCounts.get(nodeId) ?? 0,
       ...(dbSaturation !== undefined && { dbSaturation }),
+      egressBytesPerSec,
     }
 
     // ─── Health scoring ───────────────────────────────────────────────────────
@@ -1522,6 +1770,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
       p75LatencyMs:  ema(prev.p75LatencyMs, rawMetrics.p75LatencyMs),
       p90LatencyMs:  ema(prev.p90LatencyMs, rawMetrics.p90LatencyMs),
       p99LatencyMs:  ema(prev.p99LatencyMs, rawMetrics.p99LatencyMs),
+      egressBytesPerSec: ema(prev.egressBytesPerSec ?? 0, rawMetrics.egressBytesPerSec ?? 0),
       // Discrete fields — no smoothing
       queueDepth:       rawMetrics.queueDepth,
       consumerLagMs:    rawMetrics.consumerLagMs,
@@ -1531,6 +1780,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
       healthScore:      rawMetrics.healthScore,
       healthState:      rawMetrics.healthState,
       droppedRequests:  rawMetrics.droppedRequests,
+      deadLetterCount:  rawMetrics.deadLetterCount,
       dbSaturation:     rawMetrics.dbSaturation,
     } : rawMetrics
     _smoothedMetrics.set(nodeId, metrics)
@@ -1539,6 +1789,41 @@ function updateAllNodeMetrics(now: number, delta: number) {
     // Bottleneck threshold uses raw utilization (before stall inflation) so nodes aren't
     // marked as bottlenecks purely because their downstream is failing
     _onBottleneck(nodeId, rawUtilization > 0.8)
+  }
+
+  // Egress window consumed — reset for the next metrics tick.
+  _egressBytesAccum.clear()
+
+  // ── Dependency edges: propagate health from critical static dependencies ────
+  // Runs after the main per-node loop so every node's health state for this tick
+  // is finalized before we read target health states. A critical dependency on a
+  // 'down' target reduces the source's health score by healthPropagation.
+  for (const edgeData of _edgesData) {
+    const edgePath = _edgePaths.find(ep => ep.id === edgeData.id)
+    if (edgePath?.edgeType !== 'dependency') continue
+    const depConfig = edgeData.data?.config as DependencyEdgeConfig | undefined
+    if (!depConfig?.isCritical) continue
+    if (_nodeHealthStates.get(edgeData.target) !== 'down') continue
+
+    const sourceId = edgeData.source
+    const sourceMetrics = metricsBatch.get(sourceId)
+    if (!sourceMetrics) continue
+
+    const baseScore = sourceMetrics.healthScore ?? 1
+    const newScore  = Math.max(0, baseScore * (1 - depConfig.healthPropagation))
+    const newState: 'healthy' | 'degraded' | 'down' =
+      newScore >= 0.85 ? 'healthy' : newScore >= 0.50 ? 'degraded' : 'down'
+
+    sourceMetrics.healthScore = newScore
+    sourceMetrics.healthState = newState
+    _smoothedMetrics.set(sourceId, sourceMetrics)
+
+    if (newState === 'down' && _nodeHealthStates.get(sourceId) !== 'down') {
+      const label    = (_nodesMap.get(sourceId)?.data as NodeData)?.label ?? sourceId
+      const tgtLabel = (_nodesMap.get(edgeData.target)?.data as NodeData)?.label ?? edgeData.target
+      _onEvent('cascade_detected', sourceId, `${label} degraded — critical dependency ${tgtLabel} is down`, 'critical')
+    }
+    _nodeHealthStates.set(sourceId, newState)
   }
 
   if (metricsBatch.size > 0) _onNodeMetrics(metricsBatch)
@@ -1632,7 +1917,7 @@ function processRetryQueue(now: number) {
     if (total >= MAX_PARTICLES) break
 
     if (!state.particles.has(r.edgeId)) state.particles.set(r.edgeId, [])
-    const _rp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.4), color: r.color, edgeId: r.edgeId, retries: r.retries, originLatencyMs: 0 }
+    const _rp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.4), color: r.color, edgeId: r.edgeId, retries: r.retries, originLatencyMs: 0, spawnTime: now, payloadBytes: sampleEdgeResponsePayload(r.edgeId), deadLetter: r.deadLetter }
     state.particles.get(r.edgeId)!.push(_rp)
     _particleById.set(_rp.id, _rp)
   }
@@ -1732,8 +2017,22 @@ function advanceAndDraw(canvas: HTMLCanvasElement, now: number, delta: number) {
       }
     }
 
+    // Request edge timeout: a particle still in flight past timeoutMs is treated as a 504 —
+    // the caller gives up waiting before the response (or even the request) completes.
+    let requestTimeoutMs: number | undefined
+    if (ep.edgeType === 'request') {
+      const reqConfig = (_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.config as RequestEdgeConfig | undefined
+      requestTimeoutMs = reqConfig?.timeoutMs
+    }
+
     const surviving: Particle[] = []
     for (const p of arr) {
+      if (requestTimeoutMs !== undefined && requestTimeoutMs > 0 && (now - p.spawnTime) > requestTimeoutMs / _speed) {
+        _particleById.delete(p.id)
+        handleRequestTimeout(ep, now, p)
+        continue
+      }
+
       p.t += p.speed * streamLagFactor * dt
 
       if (p.t >= 1) {
@@ -1829,7 +2128,7 @@ function buildSnapshot(p: Particle): RequestSnapshot {
   const STREAM_OPS  = ['PUBLISH', 'CONSUME', 'EMIT', 'SUBSCRIBE']
 
   const isStream = edgeType === 'stream' || edgeType === 'event'
-  const method   = isStream ? STREAM_OPS[seed % STREAM_OPS.length] : METHODS[seed % METHODS.length]
+  const method   = isStream ? STREAM_OPS[seed % STREAM_OPS.length] : (p.method ?? METHODS[seed % METHODS.length])
   const path     = PATHS[(seed * 3) % PATHS.length]
 
   return {
@@ -1842,7 +2141,7 @@ function buildSnapshot(p: Particle): RequestSnapshot {
     progress:     p.t,
     httpMethod:   method,
     httpPath:     path,
-    payloadBytes: 64 + ((seed * 41) % 8192),
+    payloadBytes: p.payloadBytes,
   }
 }
 
@@ -1962,11 +2261,14 @@ export function startSimulation(
   _spikeEndAt      = 0
   _chaosNextFailAt = 0
   _chaosFailures.clear()
+  _egressBytesAccum.clear()
+  _lastEgressFlushAt = _simStartTime
   _frameCount = 0
   _latencyWindows.clear()
   _upstreamPressure.clear()
   _downstreamStallPressure.clear()
   _saturatedNodes.clear()
+  _streamBackpressureEdges.clear()
   _circuitBreakers.clear()
   _smoothedMetrics.clear()
   _activeConnections.clear()
@@ -2001,6 +2303,7 @@ export function stopSimulation() {
   _latencyWindows.clear()
   _upstreamPressure.clear()
   _downstreamStallPressure.clear()
+  _streamBackpressureEdges.clear()
   _circuitBreakers.clear()
   _activeConnections.clear()
   _lbActiveRequests.clear()
@@ -2018,6 +2321,9 @@ export function stopSimulation() {
   _restartCooldown.clear()
   _retryQueue.length = 0
   _droppedCounts.clear()
+  _deadLetterCounts.clear()
+  _egressBytesAccum.clear()
+  _lastEgressFlushAt = 0
   _activeWorkers.clear()
   _smoothedMetrics.clear()
   _particleFrames.length = 0
@@ -2052,6 +2358,10 @@ export function setNodeConfigs(configs: Map<string, NodeSimConfig>) {
   _nodeConfigs = configs
 }
 
+export function setNodeProviders(providers: Map<string, CloudProvider>) {
+  _nodeProviders = providers
+}
+
 export function injectBurst(nodeId: string, edges: Edge<EdgeData>[]) {
   const outEdges = edges.filter(e => e.source === nodeId)
   for (const edge of outEdges) {
@@ -2060,7 +2370,7 @@ export function injectBurst(nodeId: string, edges: Edge<EdgeData>[]) {
     if (!state.particles.has(edge.id)) state.particles.set(edge.id, [])
     const arr = state.particles.get(edge.id)!
     for (let i = 0; i < 20; i++) {
-      const _bp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.8), color: edgeColor(ep.edgeType), edgeId: edge.id, retries: 0, originLatencyMs: 0 }
+      const _bp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.8), color: edgeColor(ep.edgeType), edgeId: edge.id, retries: 0, originLatencyMs: 0, spawnTime: performance.now(), payloadBytes: sampleEdgeResponsePayload(edge.id) }
       arr.push(_bp)
       _particleById.set(_bp.id, _bp)
     }

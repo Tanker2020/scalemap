@@ -112,6 +112,21 @@
   text-overflow: ellipsis;
 }
 
+/* Cloud-provider badge — small text chip tinted by provider brand color */
+.providerBadge {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: var(--prov-color, #94A3B8);
+  background: color-mix(in srgb, var(--prov-color, #94A3B8) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--prov-color, #94A3B8) 50%, transparent);
+}
+
 /* Universal utilization bar — replaces the old messaging-only queueBar */
 .utilBar {
   margin-top: 5px;

@@ -6,6 +6,7 @@ import { useMetricsHistoryStore } from '../../store/metricsHistory.store'
 import { useReplayStore } from '../../store/replay.store'
 import { DEFAULT_SLO } from '../../simulation/defaults'
 import type { NodeData, NodeType } from '../../../lib/nodeConfig'
+import { computeCost } from '../../../lib/costModel'
 import {
   startSimulation,
   stopSimulation,
@@ -13,6 +14,7 @@ import {
   updateTrafficMode,
   updateGlobalMultiplier,
   setNodeConfigs,
+  setNodeProviders,
   setCallbacks,
   pickParticleAtPoint,
   enterReplay,
@@ -127,6 +129,7 @@ export function SimulationOverlay({ width, height }: Props) {
           nodeSnapshots: new Map(nodeMetrics),
           trafficMode: mode,
           globalMultiplier: mult,
+          costSummary: computeCost(nodes as Node<NodeData>[], nodeMetrics),
         }
         pushRun(run)
       }
@@ -148,6 +151,10 @@ export function SimulationOverlay({ width, height }: Props) {
   useEffect(() => { updateTrafficMode(simulationMode) }, [simulationMode])
   useEffect(() => { updateGlobalMultiplier(globalMultiplier) }, [globalMultiplier])
   useEffect(() => { setNodeConfigs(nodeConfigs) }, [nodeConfigs])
+  // Sync each node's cloud provider so effectiveConfig() can apply provider sim presets.
+  useEffect(() => {
+    setNodeProviders(new Map(nodes.map(n => [n.id, (n.data as NodeData).provider ?? 'generic'])))
+  }, [nodes])
 
   // Enter/exit outage-replay on pause/resume. On pause the engine publishes its recorded
   // particle timeline to the replay store (scrubber appears); on resume we return to live.

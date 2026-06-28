@@ -4,6 +4,7 @@ import { useCanvasStore } from '../store/canvas.store'
 import { useSimulationStore, type SimulationRun } from '../store/simulation.store'
 import { useUiStore } from '../store/ui.store'
 import { NODE_CONFIG, type NodeType, type NodeData } from '../../lib/nodeConfig'
+import { formatUsd } from '../../lib/costModel'
 import { EventCard } from '../simulation/SimConfigPanel'
 import styles from './ReportsPanel.module.css'
 import type { Node } from '@xyflow/react'
@@ -240,6 +241,7 @@ function RunDetailOverlay({ run, runIndex, onClose }: { run: SimulationRun; runI
               { label: 'Nodes',       value: String(run.nodeSnapshots.size) },
               { label: 'Events',      value: String(run.events.length) },
               { label: 'Started',     value: startLabel },
+              ...(run.costSummary ? [{ label: 'Est. Cost/mo', value: formatUsd(run.costSummary.totalMonthlyUsd) }] : []),
             ].map(({ label, value, alert }) => (
               <div key={label} className={styles.statCard}>
                 <span className={styles.statLabel}>{label}</span>
@@ -272,6 +274,28 @@ function RunDetailOverlay({ run, runIndex, onClose }: { run: SimulationRun; runI
                     </div>
                   )
                 })}
+              </div>
+            </div>
+          )}
+
+          {/* Estimated cloud cost breakdown */}
+          {run.costSummary && run.costSummary.perNode.length > 0 && (
+            <div className={styles.section}>
+              <div className={styles.sectionTitle}>
+                Estimated Cloud Cost — ~{formatUsd(run.costSummary.totalMonthlyUsd)}/mo
+              </div>
+              <div className={styles.sloTable}>
+                {run.costSummary.perNode.map(n => (
+                  <div key={n.nodeId} className={styles.barRow}>
+                    <div className={styles.barLabel}>
+                      <span>{n.nodeLabel}</span>
+                      <span style={{ color: '#64748B', fontSize: 9 }}>{n.serviceName}</span>
+                    </div>
+                    <span className={styles.barPct} style={{ color: '#F5A623', marginLeft: 'auto' }}>
+                      {formatUsd(n.monthlyUsd)}/mo
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
           )}

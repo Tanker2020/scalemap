@@ -13,6 +13,7 @@ import { CATEGORY_COLORS } from '../../lib/theme'
 import { Sparkline } from '../sidebar/Sparkline'
 import { MetricGraphOverlay, type GraphMetric } from '../analytics/MetricGraphOverlay'
 import { EventLogPanel } from './EventLogPanel'
+import { CostTracker } from './CostTracker'
 import type { NodeData, NodeSlo } from '../../lib/nodeConfig'
 import styles from './SimConfigPanel.module.css'
 
@@ -98,6 +99,8 @@ const EVENT_META: Record<SimEventType, { label: string; icon: string }> = {
   quota_constrained:         { label: 'Quota Capped',        icon: '⊠' },
   cluster_exhausted:         { label: 'Cluster Exhausted',   icon: '⊠' },
   hpa_blocked:               { label: 'HPA Blocked',         icon: '⛔' },
+  dead_letter:               { label: 'Dead Letter',         icon: '☠' },
+  edge_backpressure:         { label: 'Backpressure',        icon: '⏸' },
 }
 
 type SimEvent = import('../store/simulation.store').SimEvent
@@ -1092,6 +1095,8 @@ export function SimConfigPanel() {
         </div>
       </div>
       {eventLogOpen && <EventLogPanel onClose={() => setEventLogOpen(false)} />}
+
+      <CostTracker />
 
       {/* Body */}
       <div className={styles.trayBody}>

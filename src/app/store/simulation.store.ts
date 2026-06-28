@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { NodeSimConfig } from '../../lib/nodeConfig'
+import type { CostSummary } from '../../lib/costModel'
 
 export type TrafficMode = 'steady' | 'ramp' | 'spike' | 'chaos'
 
@@ -22,7 +23,9 @@ export interface NodeMetrics {
   healthScore?: number                            // 0.0 (critical) – 1.0 (perfect)
   healthState?: 'healthy' | 'degraded' | 'down'  // computed or forced
   droppedRequests?: number                        // cumulative drops at this node since sim start
+  deadLetterCount?: number                        // event edges: cumulative dead-lettered messages
   dbSaturation?: 'read' | 'write'                // DB nodes: which capacity limit was the bottleneck
+  egressBytesPerSec?: number                      // live outbound response bandwidth (drives egress cost)
 }
 
 export type SimEventType =
@@ -44,6 +47,8 @@ export type SimEventType =
   | 'quota_constrained'
   | 'cluster_exhausted'
   | 'hpa_blocked'
+  | 'dead_letter'
+  | 'edge_backpressure'
 
 export interface SimEvent {
   id: string
@@ -71,6 +76,7 @@ export interface SimulationRun {
   nodeSnapshots: Map<string, NodeMetrics>
   trafficMode: TrafficMode
   globalMultiplier: number
+  costSummary?: CostSummary
 }
 
 export interface SloStatus {

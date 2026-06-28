@@ -10,7 +10,7 @@ import {
   type Connection,
   addEdge,
 } from '@xyflow/react'
-import { NODE_CONFIG, GROUPING_TYPES } from '../../lib/nodeConfig'
+import { NODE_CONFIG, GROUPING_TYPES, defaultEdgeConfig } from '../../lib/nodeConfig'
 import type { NodeData, EdgeData, NodeType, EdgeType } from '../../lib/nodeConfig'
 
 interface CanvasSnapshot {
@@ -71,7 +71,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         {
           ...connection,
           type: 'request',
-          data: { label: '', edgeType: 'request', throughput: 100, latency: 20 } as EdgeData,
+          data: { label: '', edgeType: 'request', throughput: 100, latency: 20, config: defaultEdgeConfig('request') } as EdgeData,
         },
         s.edges,
       ),
@@ -134,7 +134,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     set(s => ({
       edges: s.edges.map(e =>
         e.id === id
-          ? { ...e, type: edgeType, data: { ...e.data!, edgeType } }
+          ? { ...e, type: edgeType, data: { ...e.data!, edgeType, config: defaultEdgeConfig(edgeType) } }
           : e,
       ),
     }))

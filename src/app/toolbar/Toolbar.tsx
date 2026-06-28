@@ -10,7 +10,7 @@ import { lintGraph } from '../../lib/lint/lintGraph'
 import { exportTerraform } from '../../lib/terraform/exportTerraform'
 import { serialize } from '../../lib/serializer'
 import { parseScaleScript, applyScaleScript, exportScaleScript } from '../../lib/scalescript'
-import type { NodeData, NodeSlo } from '../../lib/nodeConfig'
+import type { NodeData, NodeSlo, EdgeData } from '../../lib/nodeConfig'
 import styles from './Toolbar.module.css'
 
 const SPEEDS: number[]      = [0.5, 1, 2, 5]
@@ -66,7 +66,7 @@ function ExportMenu({ fileName }: { fileName: string | null }) {
 
   const handleExportScript = useCallback(() => {
     setOpen(false)
-    const { nodes } = useCanvasStore.getState()
+    const { nodes, edges } = useCanvasStore.getState()
     const { nodeConfigs, edgeRps, sloStatus, simulationMode, globalMultiplier, speed } = useSimulationStore.getState()
     const sloMap = new Map<string, NodeSlo>()
     for (const [nid] of sloStatus) {
@@ -75,7 +75,7 @@ function ExportMenu({ fileName }: { fileName: string | null }) {
       if (slo) sloMap.set(nid, slo)
     }
     const name = fileName?.replace('.scalemap', '') || 'script'
-    const json = exportScaleScript(name, nodes, nodeConfigs, edgeRps, sloMap, simulationMode, globalMultiplier, speed)
+    const json = exportScaleScript(name, nodes, nodeConfigs, edgeRps, sloMap, simulationMode, globalMultiplier, speed, edges)
     downloadBlob(json, `${name}.scalescript.json`, 'application/json')
   }, [fileName])
 
@@ -153,6 +153,9 @@ function ImportMenu() {
         }
         for (const { edgeId, rps } of applied.edgeRps) {
           simStore.setEdgeRps(edgeId, rps)
+        }
+        for (const { edgeId, config } of applied.edgeConfigs) {
+          useCanvasStore.getState().updateEdgeData(edgeId, { config: config as unknown as EdgeData['config'] })
         }
         if (applied.simulationOverrides?.mode) simStore.setSimulationMode(applied.simulationOverrides.mode)
         if (applied.simulationOverrides?.baseMultiplier) simStore.setGlobalMultiplier(applied.simulationOverrides.baseMultiplier)

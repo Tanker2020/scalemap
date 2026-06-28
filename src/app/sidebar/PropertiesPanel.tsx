@@ -5,12 +5,14 @@ import { useUiStore } from '../store/ui.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
 import { useDisplayMetrics, useDisplayMetricsMap } from '../canvas/simulation/useDisplayMetrics'
-import { NODE_CONFIG, GROUPING_TYPES, type NodeStatus, type EdgeType, type NodeType, type NodeData as ND } from '../../lib/nodeConfig'
+import { NODE_CONFIG, GROUPING_TYPES, type NodeStatus, type EdgeType, type NodeType, type NodeData as ND, type NodeCostConfig } from '../../lib/nodeConfig'
 import { REGIONS_BY_ZONE, WORLD_REGIONS } from '../../lib/regionConfig'
 import { CATEGORY_COLORS } from '../../lib/theme'
+import { CLOUD_REGISTRY, getServiceSpec, type CloudProvider, type CostComponentSpec } from '../../lib/cloudRegistry'
 import { Sparkline } from './Sparkline'
 import { EventCard } from '../simulation/SimConfigPanel'
 import { MetricGraphOverlay, type GraphMetric } from '../analytics/MetricGraphOverlay'
+import { EdgeConfigForm } from './EdgeConfigForm'
 import styles from './PropertiesPanel.module.css'
 
 // ─── Tab bar ──────────────────────────────────────────────────────────────────
@@ -225,6 +227,119 @@ function NodePanel({ nodeId }: { nodeId: string }) {
             <span className={styles.statusLabel}>{data.status}</span>
           </div>
         </div>
+
+        {/* Cloud provider mapping + pricing parameters */}
+        {CLOUD_REGISTRY[nodeType] && (() => {
+          const provider = data.provider ?? 'generic'
+          const spec = getServiceSpec(nodeType, provider)
+          const cost = data.cost ?? {}
+          const updCost = (patch: Partial<NodeCostConfig>) =>
+            updateNodeData(selectedNode.id, { cost: { ...cost, ...patch } })
+          const find = <K extends CostComponentSpec['kind']>(kind: K) =>
+            spec?.pricing.find(p => p.kind === kind) as Extract<CostComponentSpec, { kind: K }> | undefined
+          const instanceComp = find('instanceHourly')
+          const storageComp  = find('storageGbMonth')
+          const egressComp   = find('egress')
+          const reqComp      = find('requestsPerMillion')
+          const fixedComp    = find('fixedMonthly')
+          return (
+            <>
+              <div className={styles.section}>
+                <div className={styles.sectionLabel}>Cloud Provider</div>
+                <div className={styles.row}>
+                  <span className={styles.rowLabel}>Provider</span>
+                  <select className={styles.edgeTypeSelect} value={provider}
+                    onChange={e => updateNodeData(selectedNode.id, { provider: e.target.value as CloudProvider })}>
+                    <option value="generic">Generic</option>
+                    <option value="aws">AWS</option>
+                    <option value="gcp">GCP</option>
+                    <option value="azure">Azure</option>
+                  </select>
+                </div>
+                {spec && (
+                  <div style={{ fontSize: 11, color: colors.accent, marginTop: 4 }}>
+                    Mapped service: <strong>{spec.serviceName}</strong>
+                  </div>
+                )}
+              </div>
+
+              {spec && (
+                <div className={styles.section}>
+                  <div className={styles.sectionLabel}>Cost Parameters</div>
+
+                  {instanceComp && (
+                    <>
+                      <div className={styles.row}>
+                        <span className={styles.rowLabel}>{instanceComp.label} count</span>
+                        <input className={styles.numberInput} type="number" min={0} step={1}
+                          value={cost.instanceCount ?? instanceComp.defaultCount}
+                          onChange={e => updCost({ instanceCount: Number(e.target.value) })} />
+                      </div>
+                      <div className={styles.row}>
+                        <span className={styles.rowLabel}>Rate ($/hr)</span>
+                        <input className={styles.numberInput} type="number" min={0} step={0.001}
+                          value={cost.instanceRateUsdHr ?? instanceComp.defaultRateUsdHr}
+                          onChange={e => updCost({ instanceRateUsdHr: Number(e.target.value) })} />
+                      </div>
+                      <div style={{ fontSize: 10, color: '#64748B', marginTop: 2 }}>
+                        ≈ ${(((cost.instanceRateUsdHr ?? instanceComp.defaultRateUsdHr) / 60)).toFixed(4)}/min per {instanceComp.label.toLowerCase()}
+                      </div>
+                    </>
+                  )}
+
+                  {storageComp && (
+                    <>
+                      <div className={styles.row}>
+                        <span className={styles.rowLabel}>Storage tier</span>
+                        <select className={styles.edgeTypeSelect}
+                          value={cost.storageTierId ?? storageComp.tiers[0].id}
+                          onChange={e => updCost({ storageTierId: e.target.value })}>
+                          {storageComp.tiers.map(t => (
+                            <option key={t.id} value={t.id}>{t.label} — ${t.storageGbMonth}/GB·mo</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className={styles.row}>
+                        <span className={styles.rowLabel}>Stored data (GB)</span>
+                        <input className={styles.numberInput} type="number" min={0} step={10}
+                          value={cost.storageGb ?? 0}
+                          onChange={e => updCost({ storageGb: Number(e.target.value) })} />
+                      </div>
+                      <input type="range" min={0} max={10000} step={10}
+                        value={Math.min(cost.storageGb ?? 0, 10000)}
+                        onChange={e => updCost({ storageGb: Number(e.target.value) })}
+                        style={{ width: '100%', accentColor: colors.accent, marginTop: 2 }} />
+                    </>
+                  )}
+
+                  {/* Payload sizes drive the simulation's per-request data flow. Response size
+                      feeds live egress bandwidth/cost; request size is reserved for future
+                      ingress pricing. Shown for every mapped service, not just egress nodes. */}
+                  <div className={styles.row}>
+                    <span className={styles.rowLabel}>Avg request size (KB)</span>
+                    <input className={styles.numberInput} type="number" min={0} step={1}
+                      value={cost.avgRequestKb ?? 0}
+                      onChange={e => updCost({ avgRequestKb: Number(e.target.value) })} />
+                  </div>
+                  <div className={styles.row}>
+                    <span className={styles.rowLabel}>Avg response size (KB)</span>
+                    <input className={styles.numberInput} type="number" min={0} step={1}
+                      value={cost.avgResponseKb ?? 0}
+                      onChange={e => updCost({ avgResponseKb: Number(e.target.value) })} />
+                  </div>
+
+                  {(reqComp || fixedComp || egressComp) && (
+                    <div style={{ fontSize: 10, color: '#64748B', marginTop: 6, lineHeight: 1.6 }}>
+                      {reqComp && <div>{reqComp.label}: ${reqComp.usdPerMillion}/M requests</div>}
+                      {fixedComp && <div>{fixedComp.label}: ${fixedComp.usd}/mo fixed</div>}
+                      {egressComp && <div>Egress billed on measured outbound response bandwidth (avg response size × live traffic).</div>}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )
+        })()}
 
         {/* K8s cluster config — node pool, service mesh, CNI latency */}
         {(nodeType === 'k8sCluster' || nodeType === 'ecsCluster' || nodeType === 'dockerCompose') && (() => {
@@ -551,6 +666,7 @@ export function PropertiesPanel() {
             />
           </div>
 
+          {data?.edgeType !== 'dependency' && (
           <div className={styles.section}>
             <div className={styles.sectionLabel}>
               Simulation
@@ -581,7 +697,8 @@ export function PropertiesPanel() {
             {(() => {
               const targetNode = nodes.find(n => n.id === selectedEdge.target)
               const isDbEdge = targetNode?.type === 'dbSql' || targetNode?.type === 'dbNoSql'
-              if (!isDbEdge) return null
+              // For request edges, the method distribution (below) derives the read/write split.
+              if (!isDbEdge || data?.edgeType === 'request') return null
               const readPct = data?.readPercentage ?? 0.8
               return (
                 <div className={styles.row}>
@@ -604,6 +721,14 @@ export function PropertiesPanel() {
             })()}
             </fieldset>
           </div>
+          )}
+
+          <EdgeConfigForm
+            edge={selectedEdge}
+            nodes={nodes}
+            running={running}
+            updateEdgeData={updateEdgeData}
+          />
         </motion.div>
         </AnimatePresence>
       </aside>

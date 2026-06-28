@@ -27,7 +27,7 @@ export interface ScaleScript {
   tags?: string[]
   simulation?: { mode?: TrafficMode; baseMultiplier?: number; speed?: number }
   nodes?: Record<string, ScaleScriptNodeRule>
-  edges?: Record<string, { match: { sourceType?: NodeType; targetLabel?: string; id?: string }; throughput?: number }>
+  edges?: Record<string, { match: { sourceType?: NodeType; targetLabel?: string; id?: string }; throughput?: number; config?: Record<string, unknown> }>
   scenarios?: ScaleScriptScenario[]
   globalSlo?: { maxErrorRate?: number; maxP99LatencyMs?: number }
 }
@@ -45,6 +45,11 @@ export interface ResolvedEdgeRps {
   rps: number
 }
 
+export interface ResolvedEdgeConfig {
+  edgeId: string
+  config: Record<string, unknown>
+}
+
 export interface ResolvedScenario extends ScaleScriptScenario {
   resolvedNodeId?: string
 }
@@ -52,6 +57,7 @@ export interface ResolvedScenario extends ScaleScriptScenario {
 export interface AppliedScript {
   nodeConfigs: ResolvedNodeConfig[]
   edgeRps: ResolvedEdgeRps[]
+  edgeConfigs: ResolvedEdgeConfig[]
   sloMap: Map<string, NodeSlo>
   scenarios: ResolvedScenario[]
   simulationOverrides: ScaleScript['simulation']
@@ -102,22 +108,30 @@ export function applyScaleScript(
   }
 
   const edgeRps: ResolvedEdgeRps[] = []
+  const edgeConfigs: ResolvedEdgeConfig[] = []
   if (script.edges) {
     for (const [, edgeRule] of Object.entries(script.edges)) {
-      if (!edgeRule.throughput) continue
+      if (!edgeRule.throughput && !edgeRule.config) continue
       for (const edge of edges) {
         const m = edgeRule.match
+        let matched = false
         if (m.id && edge.id === m.id) {
-          edgeRps.push({ edgeId: edge.id, rps: edgeRule.throughput })
-          continue
+          matched = true
+        } else {
+          const srcNode = nodes.find(n => n.id === edge.source)
+          const tgtNode = nodes.find(n => n.id === edge.target)
+          const srcTypeMatch = !m.sourceType || srcNode?.type === m.sourceType
+          const tgtLabelMatch = !m.targetLabel ||
+            ((tgtNode?.data as NodeData)?.label ?? '').toLowerCase().includes(m.targetLabel.toLowerCase())
+          matched = srcTypeMatch && tgtLabelMatch
         }
-        const srcNode = nodes.find(n => n.id === edge.source)
-        const tgtNode = nodes.find(n => n.id === edge.target)
-        const srcTypeMatch = !m.sourceType || srcNode?.type === m.sourceType
-        const tgtLabelMatch = !m.targetLabel ||
-          ((tgtNode?.data as NodeData)?.label ?? '').toLowerCase().includes(m.targetLabel.toLowerCase())
-        if (srcTypeMatch && tgtLabelMatch) {
-          edgeRps.push({ edgeId: edge.id, rps: edgeRule.throughput })
+        if (!matched) continue
+        if (edgeRule.throughput) edgeRps.push({ edgeId: edge.id, rps: edgeRule.throughput })
+        if (edgeRule.config) {
+          edgeConfigs.push({
+            edgeId: edge.id,
+            config: { ...(edge.data as EdgeData | undefined)?.config, ...edgeRule.config },
+          })
         }
       }
     }
@@ -136,6 +150,7 @@ export function applyScaleScript(
   return {
     nodeConfigs,
     edgeRps,
+    edgeConfigs,
     sloMap,
     scenarios,
     simulationOverrides: script.simulation,
@@ -153,6 +168,7 @@ export function exportScaleScript(
   simulationMode: TrafficMode,
   globalMultiplier: number,
   speed: number,
+  edges: Edge<EdgeData>[] = [],
 ): string {
   const nodesSection: Record<string, ScaleScriptNodeRule> = {}
   for (const [nodeId, config] of nodeConfigs) {
@@ -166,11 +182,22 @@ export function exportScaleScript(
     }
   }
 
+  const edgesSection: ScaleScript['edges'] = {}
+  for (const edge of edges) {
+    const config = (edge.data as EdgeData | undefined)?.config
+    if (!config) continue
+    edgesSection[edge.id] = {
+      match: { id: edge.id },
+      config: config as unknown as Record<string, unknown>,
+    }
+  }
+
   const script: ScaleScript = {
     version: '1',
     name,
     simulation: { mode: simulationMode, baseMultiplier: globalMultiplier, speed },
     nodes: Object.keys(nodesSection).length > 0 ? nodesSection : undefined,
+    edges: Object.keys(edgesSection).length > 0 ? edgesSection : undefined,
     scenarios: [],
   }
 

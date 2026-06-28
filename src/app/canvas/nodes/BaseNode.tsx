@@ -4,6 +4,7 @@ import { Handle, Position, type NodeProps } from '@xyflow/react'
 import type { NodeData } from '../../../lib/nodeConfig'
 import { NODE_CONFIG, GROUPING_TYPES, type NodeType } from '../../../lib/nodeConfig'
 import { CATEGORY_COLORS } from '../../../lib/theme'
+import { PROVIDER_COLORS, PROVIDER_LABELS } from '../../../lib/cloudRegistry'
 import { useCanvasStore } from '../../store/canvas.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { useDiagnosticsStore } from '../../store/diagnostics.store'
@@ -143,6 +144,14 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
           </div>
         )}
         {nodeData.subtitle && <div className={styles.subtitle}>{nodeData.subtitle}</div>}
+        {nodeData.provider && nodeData.provider !== 'generic' && (
+          <div
+            className={styles.providerBadge}
+            style={{ '--prov-color': PROVIDER_COLORS[nodeData.provider] } as React.CSSProperties}
+          >
+            {PROVIDER_LABELS[nodeData.provider]}
+          </div>
+        )}
 
         {/* Universal utilization bar — shown for all node types during simulation */}
         {running && utilization > 0 && (
