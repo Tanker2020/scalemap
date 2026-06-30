@@ -84,6 +84,29 @@ export interface SloStatus {
   violations: string[]
 }
 
+// Resolved, render-ready packet info attached at pick time so the inspector needs no
+// registry lookup. Fields are protocol-specific; only the matching ones are populated.
+export interface TemplateInfo {
+  name: string
+  protocol: 'http' | 'event' | 'stream' | 'db'
+  sizeKb: number
+  // http
+  method?: string
+  path?: string
+  statusCode?: number
+  // event
+  topic?: string
+  eventType?: string
+  deliveryMode?: string
+  // stream
+  streamId?: string
+  compressionType?: string
+  // db
+  queryType?: string
+  isWAL?: boolean
+  resultSizeKb?: number
+}
+
 export interface RequestSnapshot {
   particleId: number
   edgeId: string
@@ -95,6 +118,8 @@ export interface RequestSnapshot {
   httpMethod: string
   httpPath: string
   payloadBytes: number
+  templateId?: number
+  templateInfo?: TemplateInfo  // present only in custom mode on a typed particle
 }
 
 import type { ScaleScript } from '../../lib/scalescript'

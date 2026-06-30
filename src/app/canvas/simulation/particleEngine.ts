@@ -2,10 +2,12 @@ import type { Node, Edge } from '@xyflow/react'
 import type {
   NodeData, EdgeData, NodeType, NodeSimConfig, RetryConfig,
   RequestEdgeConfig, StreamEdgeConfig, EventEdgeConfig, DependencyEdgeConfig,
+  PacketMode, PacketTemplate, HttpTemplate, StreamTemplate,
 } from '../../../lib/nodeConfig'
 import { GROUPING_TYPES, DEFAULT_EVENT_EDGE_CONFIG } from '../../../lib/nodeConfig'
+import { useCanvasStore } from '../../store/canvas.store'
 import { interRegionLatencyMs } from '../../../lib/regionConfig'
-import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventType, type CircuitState, type RequestSnapshot } from '../../store/simulation.store'
+import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventType, type CircuitState, type RequestSnapshot, type TemplateInfo } from '../../store/simulation.store'
 import { useReplayStore } from '../../store/replay.store'
 import { NODE_SIM_DEFAULTS } from '../../simulation/defaults'
 import { CLOUD_REGISTRY, type CloudProvider } from '../../../lib/cloudRegistry'
@@ -24,6 +26,7 @@ export interface Particle {
   payloadBytes: number    // sampled response size this hop carries (log-normal) — egress + inspector
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE'  // request edges only — sampled from methodDistribution
   deadLetter?: boolean    // event edges only — true once routed to a DLQ after exhausting retries
+  templateId?: number     // custom packet mode — points into the central registry (Flyweight)
 }
 
 // ─── Internal state ───────────────────────────────────────────────────────────
@@ -52,6 +55,7 @@ interface RetryEntry {
   retries: number   // attempt number this particle is on (1 = first retry)
   fireAt: number    // performance.now() timestamp when it should re-spawn
   deadLetter?: boolean  // event edges: true once rerouted to a DLQ after exhausting retries
+  templateId?: number   // carried through so a retried packet keeps its identity (no re-roll)
 }
 
 interface EngineState {
@@ -242,6 +246,75 @@ function recordLatency(nodeId: string, ms: number) {
   if (window.length > 200) window.splice(0, window.length - 200)
 }
 
+// ─── Packet template helpers ──────────────────────────────────────────────────
+
+// Roll a templateId from a node's distribution table by cumulative weight. Returns undefined
+// when the node has no distribution (or all weights are zero / templates were deleted), so the
+// particle falls back to generic sizing. Rolled exactly once, at per-edge spawn time.
+function rollDistribution(nodeId: string): number | undefined {
+  const dist = (_nodesMap.get(nodeId)?.data as NodeData | undefined)?.packetDistribution
+  if (!dist || dist.length === 0) return undefined
+  let total = 0
+  for (const d of dist) if (_packetTemplates[d.templateId] && d.weight > 0) total += d.weight
+  if (total <= 0) return undefined
+  let r = Math.random() * total
+  for (const d of dist) {
+    if (!_packetTemplates[d.templateId] || d.weight <= 0) continue
+    r -= d.weight
+    if (r <= 0) return d.templateId
+  }
+  return undefined
+}
+
+// A template represents a DB write when it's a db query that isn't a plain read, or an HTTP
+// method that mutates state. Used to split a node's traffic into read/write lanes.
+function templateIsWrite(tpl: PacketTemplate): boolean {
+  if (tpl.protocol === 'db') return tpl.queryType !== 'read'
+  if (tpl.protocol === 'http') return tpl.method !== 'GET'
+  return false
+}
+
+// Expected read fraction (0–1) of the traffic a node generates, derived from its weighted packet
+// distribution. Lets the DB write-bottleneck reflect the *actual* configured mix instead of an
+// edge method slider. Returns undefined when the node has no usable distribution.
+function distributionReadFraction(nodeId: string): number | undefined {
+  const dist = (_nodesMap.get(nodeId)?.data as NodeData | undefined)?.packetDistribution
+  if (!dist || dist.length === 0) return undefined
+  let total = 0, writeW = 0
+  for (const d of dist) {
+    const tpl = _packetTemplates[d.templateId]
+    if (!tpl || d.weight <= 0) continue
+    total += d.weight
+    if (templateIsWrite(tpl)) writeW += d.weight
+  }
+  if (total <= 0) return undefined
+  return 1 - writeW / total
+}
+
+// Compression shrinks bytes on the wire — applied to stream-template egress.
+function compressionFactor(type: StreamTemplate['compressionType']): number {
+  switch (type) {
+    case 'gzip':   return 0.3
+    case 'snappy': return 0.5
+    default:       return 1
+  }
+}
+
+// Response-payload bytes for a hop, sized from the template (custom mode) or the node's
+// avgResponseKb (generic fallback). This is what the target node egresses and what the inspector
+// shows. DB targets return resultSizeKb (their result set), not the inbound request size; stream
+// templates apply their compression factor. Single source of truth used at every mint site.
+function templatePayloadBytes(templateId: number | undefined, targetNodeType: NodeType | undefined, edgeId: string): number {
+  const tpl = templateId !== undefined ? _packetTemplates[templateId] : undefined
+  if (!tpl) return sampleEdgeResponsePayload(edgeId)
+  if ((targetNodeType === 'dbSql' || targetNodeType === 'dbNoSql') && tpl.protocol === 'db') {
+    return sampleLogNormalPayload(tpl.resultSizeKb)
+  }
+  let bytes = sampleLogNormalPayload(tpl.sizeKb)
+  if (tpl.protocol === 'stream') bytes *= compressionFactor(tpl.compressionType)
+  return Math.max(1, Math.round(bytes))
+}
+
 function computePercentile(samples: number[], p: number): number {
   if (samples.length === 0) return 0
   const sorted = [...samples].sort((a, b) => a - b)
@@ -282,6 +355,7 @@ interface EdgePath {
   targetNodeType?: NodeType
   rps: number
   geoLatencyMs: number  // inter-region hop penalty; 0 for same-region or no region tags
+  effectiveRps?: number // live actual RPS flowing over this edge, updated every frame
 }
 
 let _edgePaths: EdgePath[] = []
@@ -293,6 +367,24 @@ let _nodeProviders: Map<string, CloudProvider> = new Map()
 let _nodesMap: Map<string, Node<NodeData>> = new Map()
 let _edgesData: Edge<EdgeData>[] = []
 let _simStartTime = 0
+
+// ─── Packet registry mirror (Flyweight) ──────────────────────────────────────
+// Snapshotted from canvas.store at startSimulation so the hot loop never touches React state.
+// Generic mode → empty/ignored; custom mode → templates drive size, DB query-type, status, etc.
+let _packetMode: PacketMode = 'generic'
+let _packetTemplates: Record<number, PacketTemplate> = {}
+
+// Per-node client-error (4xx) tally since sim start — surfaced through the node's errorRate.
+const _clientErrorCounts = new Map<string, number>()
+
+// ─── Simulation clock ─────────────────────────────────────────────────────────
+// Monotonic simulation time, accumulated frame-by-frame as `delta * _speed` ONLY while the
+// engine actually processes a frame. Unlike performance.now(), this is immune to: pausing (no
+// delta added while paused), speed changes (scaled by _speed), and lag spikes / delta-clamping
+// (it tracks the exact ms of logic processed, not real-world time). All simulation-relative
+// timing — replay timeline, traffic ramp, egress bandwidth window — reads from this, never the
+// wall clock. (Frame-delta baselines and inter-frame scheduling still use performance.now().)
+let _simulatedTimeMs = 0
 
 // Spike mode state
 let _spikeNextAt = 0
@@ -472,7 +564,9 @@ function effectiveMultiplier(now: number): number {
       return _globalMultiplier
 
     case 'ramp': {
-      const elapsed = now - _simStartTime
+      // Ramp progresses in simulation time, so it survives pauses and tracks playback speed
+      // (2× speed reaches full load in half the wall-clock time, not a fixed 2 real minutes).
+      const elapsed = _simulatedTimeMs
       const rampMs  = 120_000   // 2-min ramp to observe cascade effects
       return _globalMultiplier * Math.min(1, elapsed / rampMs)
     }
@@ -617,6 +711,10 @@ function effectiveProcessingMs(nodeId: string, config: NodeSimConfig): number {
 // Routers and accumulators: not counted as backends for LAC routing
 const _LB_SKIP_TYPES = new Set<string>(['loadBalancer', 'apiGateway', 'queue', 'eventBus', 'pubsub', 'stream'])
 
+// Nodes exempt from inbound-RPS gating: queue-like types drain from queue depth, not live inbound traffic.
+// LBs and API Gateways are intentionally NOT in this set — they should be gated by their own inbound traffic.
+const _INBOUND_GATE_EXEMPT_TYPES = new Set<string>(['queue', 'eventBus', 'pubsub', 'stream'])
+
 // Node types that model a traditional thread pool: slow downstream holds a thread, blocking new requests
 const THREAD_POOL_TYPES = new Set<string>(['ec2', 'container', 'pod', 'k8sCluster', 'ecsCluster'])
 
@@ -684,13 +782,15 @@ function spawnParticles(now: number, delta: number) {
     // Excluded: pure source nodes (no inbound edges), LBs/gateways/queues, nodes not yet in metrics.
     const IDLE_RPS_THRESHOLD = 5  // below this the node is considered effectively idle
     if (downstreamFactor > 0 && sourceNodeId && ep.sourceNodeType
-        && !_LB_SKIP_TYPES.has(ep.sourceNodeType)) {
+        && !_INBOUND_GATE_EXEMPT_TYPES.has(ep.sourceNodeType)) {
       const hasInbound = _edgesData.some(e => e.target === sourceNodeId)
       if (hasInbound) {
-        const srcMetrics = _smoothedMetrics.get(sourceNodeId)
-        if (srcMetrics && srcMetrics.inRps < IDLE_RPS_THRESHOLD) {
+        // Treat missing metrics as 0 RPS (simulation just started) rather than skipping the gate.
+        // Without this, all downstream nodes fire at 100% for the first metrics cycle (~200ms).
+        const inRps = _smoothedMetrics.get(sourceNodeId)?.inRps ?? 0
+        if (inRps < IDLE_RPS_THRESHOLD) {
           // Soft fade: 0 RPS → 0%, 5 RPS → 100%. Saturates immediately above the threshold.
-          downstreamFactor *= srcMetrics.inRps / IDLE_RPS_THRESHOLD
+          downstreamFactor *= inRps / IDLE_RPS_THRESHOLD
         }
         // Above the threshold: no scaling — configured outbound flows freely.
       }
@@ -740,6 +840,7 @@ function spawnParticles(now: number, delta: number) {
     }
 
     const rps = ep.rps * mult * downstreamFactor
+    ep.effectiveRps = rps
     const particlesPerSec = rps / PARTICLE_REQUEST_RATIO
     const spawnChance = particlesPerSec * (delta / 1000) * _speed
     const n = Math.floor(spawnChance) + (Math.random() < (spawnChance % 1) ? 1 : 0)
@@ -775,18 +876,24 @@ function spawnParticles(now: number, delta: number) {
     const targetNodeId = _edgesData.find(e => e.id === ep.id)?.target
     for (let i = 0; i < n && total < MAX_PARTICLES; i++) {
       const pid = ++_particleIdCounter
-      const payloadBytes = sampleEdgeResponsePayload(ep.id)
+      // Custom mode: roll a templateId once from this edge's source-node distribution. The
+      // template then drives payload size, particle colour, and (for HTTP) the method.
+      const templateId = _packetMode === 'custom' && sourceNodeId ? rollDistribution(sourceNodeId) : undefined
+      const tpl = templateId !== undefined ? _packetTemplates[templateId] : undefined
+      const payloadBytes = templatePayloadBytes(templateId, ep.targetNodeType, ep.id)
+      const httpTpl = tpl?.protocol === 'http' ? tpl as HttpTemplate : undefined
       const p: Particle = {
         id: pid,
         t: 0,
         speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.4) * geoSpeedFactor,
-        color: edgeColor(ep.edgeType),
+        color: tpl?.colorOverride ?? edgeColor(ep.edgeType),
         edgeId: ep.id,
         retries: 0,
         originLatencyMs,
         spawnTime: now,
         payloadBytes,
-        method: reqConfig ? pickMethod(reqConfig.methodDistribution) : undefined,
+        method: httpTpl ? httpTpl.method : (reqConfig ? pickMethod(reqConfig.methodDistribution) : undefined),
+        templateId,
       }
       arr.push(p)
       _particleById.set(pid, p)
@@ -922,6 +1029,7 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
         color: particle.color,
         retries: particle.retries + 1,
         fireAt: performance.now() + computeRetryDelay(rc, particle.retries) / _speed,
+        templateId: particle.templateId,
       })
     }
   }
@@ -953,6 +1061,7 @@ function handleEventEdgeRetry(ep: EdgePath, targetNodeId: string, particle: Part
       color: particle.color,
       retries: particle.retries + 1,
       fireAt: performance.now() + delayMs / _speed,
+      templateId: particle.templateId,
     })
     return
   }
@@ -974,6 +1083,7 @@ function handleEventEdgeRetry(ep: EdgePath, targetNodeId: string, particle: Part
         retries: 0,
         fireAt: performance.now() + 50 / _speed,
         deadLetter: true,
+        templateId: particle.templateId,
       })
     }
   }
@@ -1038,6 +1148,23 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
     if (Math.random() < dropRate) {
       dropParticle(ep, targetNodeId, particle)
       return
+    }
+  }
+
+  // Packet template status code (custom mode, HTTP): 5xx = server failure → drop (retry/error
+  // pressure via dropParticle); 4xx = client error → the request reached the server and got a
+  // response, so it completes but is tallied into the node's error rate. 2xx/3xx fall through.
+  if (particle.templateId !== undefined) {
+    const tpl = _packetTemplates[particle.templateId]
+    if (tpl?.protocol === 'http') {
+      if (tpl.statusCode >= 500) {
+        recordBreakerResult(ep.id, true, config, now)
+        dropParticle(ep, targetNodeId, particle)
+        return
+      }
+      if (tpl.statusCode >= 400) {
+        _clientErrorCounts.set(targetNodeId, (_clientErrorCounts.get(targetNodeId) ?? 0) + 1)
+      }
     }
   }
 
@@ -1159,7 +1286,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
           _activeWorkers.set(sourceNodeId, Math.max(0, (_activeWorkers.get(sourceNodeId) ?? 1) - 1))
         }, (effectiveLatency + ep.geoLatencyMs) / _speed)
       }
-      forwardToOutbound(targetNodeId, targetNodeType)
+      forwardToOutbound(targetNodeId, targetNodeType, particle.templateId)
       return
     }
 
@@ -1170,13 +1297,16 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       const reqConfig = ep.edgeType === 'request'
         ? (_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.config as RequestEdgeConfig | undefined
         : undefined
-      const edgeReadPct = reqConfig
+      // Custom mode: the read/write mix is whatever the source node's packet distribution
+      // actually generates — this is what makes the write-bottleneck reflect real traffic.
+      const distReadPct = _packetMode === 'custom' && sourceNodeId ? distributionReadFraction(sourceNodeId) : undefined
+      const edgeReadPct = distReadPct ?? (reqConfig
         ? (() => {
             const d = reqConfig.methodDistribution
             const total = d.GET + d.POST + d.PUT + d.DELETE
             return total > 0 ? d.GET / total : 0.8
           })()
-        : ((_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.readPercentage ?? 0.8)
+        : ((_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.readPercentage ?? 0.8))
       const readRps   = totalInRps * edgeReadPct
       const writeRps  = totalInRps * (1 - edgeReadPct)
       const readUtil  = readRps  / config.dbConfig.maxReadRps
@@ -1189,11 +1319,16 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
         return
       }
 
-      // Per-particle latency: read or write lane. Request edges with a method distribution
-      // use the sampled HTTP method (GET = read); other edges fall back to ID-modulo sampling.
+      // Per-particle latency: read or write lane. A db template names its queryType explicitly;
+      // otherwise the sampled HTTP method (GET = read) or ID-modulo sampling decides.
       // SQL locking: heavy write utilization increases read latency exponentially (row/table locks).
-      const isRead = particle.method ? particle.method === 'GET' : isReadParticle(particle.id, edgeReadPct)
+      const dbTpl = particle.templateId !== undefined ? _packetTemplates[particle.templateId] : undefined
+      const isRead = dbTpl?.protocol === 'db'
+        ? dbTpl.queryType === 'read'
+        : (particle.method ? particle.method === 'GET' : isReadParticle(particle.id, edgeReadPct))
       let dbLatency = isRead ? config.dbConfig.readLatencyMs : config.dbConfig.writeLatencyMs
+      // Write-Ahead Logging: a templated WAL write pays an extra fsync/journal cost.
+      if (!isRead && dbTpl?.protocol === 'db' && dbTpl.isWAL) dbLatency += config.dbConfig.writeLatencyMs * 0.5
       if (targetNodeType === 'dbSql') {
         const lockingPenalty = Math.pow(writeUtil, 2) * 50  // up to +50ms at 100% write util
         dbLatency += lockingPenalty  // applies to both reads AND writes under SQL contention
@@ -1207,7 +1342,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
           _activeWorkers.set(sourceNodeId, Math.max(0, (_activeWorkers.get(sourceNodeId) ?? 1) - 1))
         }, (dbLatency + ep.geoLatencyMs) / _speed)
       }
-      forwardToOutbound(targetNodeId, targetNodeType)
+      forwardToOutbound(targetNodeId, targetNodeType, particle.templateId)
       return
     }
 
@@ -1280,7 +1415,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       }
 
       if (!state.particles.has(chosenEp.id)) state.particles.set(chosenEp.id, [])
-      const _lbp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(chosenEp.edgeType), edgeId: chosenEp.id, retries: 0, originLatencyMs: 0, spawnTime: performance.now(), payloadBytes: sampleEdgeResponsePayload(chosenEp.id) }
+      const _lbp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE, color: particle.templateId !== undefined ? (_packetTemplates[particle.templateId]?.colorOverride ?? edgeColor(chosenEp.edgeType)) : edgeColor(chosenEp.edgeType), edgeId: chosenEp.id, retries: 0, originLatencyMs: 0, spawnTime: performance.now(), payloadBytes: templatePayloadBytes(particle.templateId, chosenEp.targetNodeType, chosenEp.id), templateId: particle.templateId }
       state.particles.get(chosenEp.id)!.push(_lbp)
       _particleById.set(_lbp.id, _lbp)
     }
@@ -1289,19 +1424,20 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
 
   // Orchestration clusters: forward to all outbound (broadcast)
   if (['k8sCluster', 'ecsCluster', 'dockerCompose'].includes(targetNodeType)) {
-    forwardToOutbound(targetNodeId, targetNodeType)
+    forwardToOutbound(targetNodeId, targetNodeType, particle.templateId)
     return
   }
 }
 
-function forwardToOutbound(nodeId: string, _nodeType: NodeType) {
+function forwardToOutbound(nodeId: string, _nodeType: NodeType, templateId?: number) {
   const outEdges = _edgePaths.filter(e =>
     _edgesData.find(d => d.id === e.id)?.source === nodeId && e.edgeType !== 'dependency',
   )
   if (outEdges.length === 0) return
   const outEp = outEdges[Math.floor(Math.random() * outEdges.length)]
   if (!state.particles.has(outEp.id)) state.particles.set(outEp.id, [])
-  const _fwdp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(outEp.edgeType), edgeId: outEp.id, retries: 0, originLatencyMs: 0, spawnTime: performance.now(), payloadBytes: sampleEdgeResponsePayload(outEp.id) }
+  // Forwarded packet inherits the parent's templateId — no re-roll, so distributions stay intact.
+  const _fwdp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(outEp.edgeType), edgeId: outEp.id, retries: 0, originLatencyMs: 0, spawnTime: performance.now(), payloadBytes: templatePayloadBytes(templateId, outEp.targetNodeType, outEp.id), templateId }
   state.particles.get(outEp.id)!.push(_fwdp)
   _particleById.set(_fwdp.id, _fwdp)
 }
@@ -1318,7 +1454,7 @@ function spawnErrorFlash(nodeId: string) {
 
 // ─── Outage playback: record / render particle keyframes ─────────────────────
 
-function recordParticleFrame(now: number) {
+function recordParticleFrame() {
   // Pack [edgeIdx, t] for every live particle on a mappable edge (exact-sized typed array).
   const pairs: number[] = []
   for (const [edgeId, arr] of state.particles) {
@@ -1326,7 +1462,7 @@ function recordParticleFrame(now: number) {
     if (idx === undefined) continue
     for (const p of arr) { pairs.push(idx, p.t) }
   }
-  const elapsedS = (now - _simStartTime) / 1000
+  const elapsedS = _simulatedTimeMs / 1000
   _particleFrames.push({ elapsedS, packed: Float32Array.from(pairs) })
   if (_particleFrames.length > MAX_PARTICLE_FRAMES) {
     _particleFrames.splice(0, _particleFrames.length - MAX_PARTICLE_FRAMES)
@@ -1374,16 +1510,18 @@ function updateAllNodeMetrics(now: number, delta: number) {
   if (_frameCount % METRICS_THROTTLE !== 0) return
 
   // Record a particle keyframe at the metrics cadence (~15fps) for outage playback.
-  recordParticleFrame(now)
+  recordParticleFrame()
 
   const mult = effectiveMultiplier(now)
   const metricsBatch = new Map<string, NodeMetrics>()
 
   // Egress bandwidth window: convert bytes accumulated since the last flush into bytes/sec,
-  // scaled back up by the particle:request downsample ratio. Per-node values are read in the
-  // loop below; the accumulator is cleared at the end so the next window starts fresh.
-  const egressWindowSec = _lastEgressFlushAt > 0 ? Math.max(0.001, (now - _lastEgressFlushAt) / 1000) : 0
-  _lastEgressFlushAt = now
+  // scaled back up by the particle:request downsample ratio. Measured against SIMULATION time
+  // (not the wall clock) so the rate stays tied to the configured RPS — at 2× speed twice as
+  // many particles spawn over twice as much simulated time, so bytes/sec is unchanged. Per-node
+  // values are read in the loop below; the accumulator is cleared at the end.
+  const egressWindowSec = Math.max(0.001, (_simulatedTimeMs - _lastEgressFlushAt) / 1000)
+  _lastEgressFlushAt = _simulatedTimeMs
 
   // Decay upstream pressure (error rate contribution)
   for (const [id, pressure] of _upstreamPressure) {
@@ -1411,8 +1549,8 @@ function updateAllNodeMetrics(now: number, delta: number) {
     // contribute to RPS/utilization metrics.
     const inEdges  = _edgePaths.filter(ep => ep.edgeType !== 'dependency' && _edgesData.find(d => d.id === ep.id)?.target === nodeId)
     const outEdges = _edgePaths.filter(ep => ep.edgeType !== 'dependency' && _edgesData.find(d => d.id === ep.id)?.source === nodeId)
-    const inRps  = inEdges.reduce((s, e) => s + e.rps, 0) * mult
-    const outRps = outEdges.reduce((s, e) => s + e.rps, 0) * mult
+    const inRps  = inEdges.reduce((s, e) => s + (e.effectiveRps ?? (e.rps * mult)), 0)
+    const outRps = outEdges.reduce((s, e) => s + (e.effectiveRps ?? (e.rps * mult)), 0)
 
     const config = effectiveConfig(nodeId, nodeType)
     const isQueue = ['queue', 'pubsub', 'stream', 'eventBus'].includes(nodeType)
@@ -1443,6 +1581,8 @@ function updateAllNodeMetrics(now: number, delta: number) {
       utilization = Math.min(1, cur / maxC)
     } else {
       let effectiveMaxRps = config.maxRps
+      const isDb = config.dbConfig && (nodeType === 'dbSql' || nodeType === 'dbNoSql')
+      let dbUtil = 0
 
       // ── Pod: K8s HPA + three-tier capacity constraint ─────────────────────
       if (nodeType === 'pod' && config.k8sPod) {
@@ -1603,13 +1743,43 @@ function updateAllNodeMetrics(now: number, delta: number) {
           }
         }
         effectiveMaxRps = _currentCapacity.get(nodeId) ?? config.autoScale.minCapacityRps
+      } else if (isDb && config.dbConfig) {
+        let readRps = 0
+        let writeRps = 0
+        for (const ep of inEdges) {
+          const reqConfig = ep.edgeType === 'request'
+            ? (_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.config as RequestEdgeConfig | undefined
+            : undefined
+          const edgeReadPct = reqConfig
+            ? (() => {
+                const d = reqConfig.methodDistribution
+                const total = d.GET + d.POST + d.PUT + d.DELETE
+                return total > 0 ? d.GET / total : 0.8
+              })()
+            : ((_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.readPercentage ?? 0.8)
+          
+          const edgeEffective = ep.effectiveRps ?? (ep.rps * mult)
+          readRps += edgeEffective * edgeReadPct
+          writeRps += edgeEffective * (1 - edgeReadPct)
+        }
+        const readUtil = config.dbConfig.maxReadRps > 0 ? readRps / config.dbConfig.maxReadRps : 0
+        const writeUtil = config.dbConfig.maxWriteRps > 0 ? writeRps / config.dbConfig.maxWriteRps : 0
+        dbUtil = Math.max(readUtil, writeUtil)
+        effectiveMaxRps = writeUtil >= readUtil ? config.dbConfig.maxWriteRps : config.dbConfig.maxReadRps
       }
 
+      let degradationFactor = 1.0
       if (_nodeHealthStates.get(nodeId) === 'degraded') {
         const prevScore = _smoothedMetrics.get(nodeId)?.healthScore ?? 0.67
-        effectiveMaxRps = effectiveMaxRps * (1 - degradedDepth(prevScore) * 0.5)
+        degradationFactor = 1 - degradedDepth(prevScore) * 0.5
+        effectiveMaxRps = effectiveMaxRps * degradationFactor
       }
-      utilization = Math.min(1, inRps / effectiveMaxRps)
+
+      if (isDb) {
+        utilization = Math.min(1, dbUtil / degradationFactor)
+      } else {
+        utilization = Math.min(1, inRps / effectiveMaxRps)
+      }
     }
 
     if (_chaosFailures.has(nodeId)) utilization = 1
@@ -1668,7 +1838,13 @@ function updateAllNodeMetrics(now: number, delta: number) {
       ? Math.min(1, (utilization - errorOnset) / (1.0 - errorOnset) * 0.15)
       : 0
 
-    const rawErrorRate = Math.min(1, baseErrorRate + cascadePressure * 0.15)
+    // Templated 4xx responses count as errors without being dropped. Convert the windowed
+    // count (each particle ≈ PARTICLE_REQUEST_RATIO requests) into a rate against inbound RPS.
+    const clientErrors = _clientErrorCounts.get(nodeId) ?? 0
+    const clientErrorRps = (clientErrors * PARTICLE_REQUEST_RATIO) / egressWindowSec
+    const clientErrorRate = inRps > 0 ? Math.min(1, clientErrorRps / inRps) : 0
+
+    const rawErrorRate = Math.min(1, baseErrorRate + cascadePressure * 0.15 + clientErrorRate)
 
     const activeRequests = _lbActiveRequests.get(nodeId)
 
@@ -1793,6 +1969,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
 
   // Egress window consumed — reset for the next metrics tick.
   _egressBytesAccum.clear()
+  _clientErrorCounts.clear()
 
   // ── Dependency edges: propagate health from critical static dependencies ────
   // Runs after the main per-node loop so every node's health state for this tick
@@ -1917,7 +2094,8 @@ function processRetryQueue(now: number) {
     if (total >= MAX_PARTICLES) break
 
     if (!state.particles.has(r.edgeId)) state.particles.set(r.edgeId, [])
-    const _rp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.4), color: r.color, edgeId: r.edgeId, retries: r.retries, originLatencyMs: 0, spawnTime: now, payloadBytes: sampleEdgeResponsePayload(r.edgeId), deadLetter: r.deadLetter }
+    const _rTargetType = _edgePaths.find(e => e.id === r.edgeId)?.targetNodeType
+    const _rp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.4), color: r.color, edgeId: r.edgeId, retries: r.retries, originLatencyMs: 0, spawnTime: now, payloadBytes: templatePayloadBytes(r.templateId, _rTargetType, r.edgeId), deadLetter: r.deadLetter, templateId: r.templateId }
     state.particles.get(r.edgeId)!.push(_rp)
     _particleById.set(_rp.id, _rp)
   }
@@ -2096,6 +2274,9 @@ function loop(now: number) {
 
     if (!_canvas) { state.rafId = requestAnimationFrame(loop); return }
 
+    // Advance the simulation clock by the processed (clamped) delta, scaled by playback speed.
+    _simulatedTimeMs += delta * _speed
+
     processRetryQueue(now)
     spawnParticles(now, delta)
     advanceAndDraw(_canvas, now, delta)
@@ -2128,8 +2309,25 @@ function buildSnapshot(p: Particle): RequestSnapshot {
   const STREAM_OPS  = ['PUBLISH', 'CONSUME', 'EMIT', 'SUBSCRIBE']
 
   const isStream = edgeType === 'stream' || edgeType === 'event'
-  const method   = isStream ? STREAM_OPS[seed % STREAM_OPS.length] : (p.method ?? METHODS[seed % METHODS.length])
-  const path     = PATHS[(seed * 3) % PATHS.length]
+
+  // Custom mode: resolve the real template so the inspector renders a protocol-specific card.
+  const tpl = p.templateId !== undefined ? _packetTemplates[p.templateId] : undefined
+  const templateInfo: TemplateInfo | undefined = tpl ? (() => {
+    const base = { name: tpl.name, protocol: tpl.protocol, sizeKb: tpl.sizeKb }
+    switch (tpl.protocol) {
+      case 'http':   return { ...base, method: tpl.method, path: tpl.path, statusCode: tpl.statusCode }
+      case 'event':  return { ...base, topic: tpl.topic, eventType: tpl.eventType, deliveryMode: tpl.deliveryMode }
+      case 'stream': return { ...base, streamId: tpl.streamId, compressionType: tpl.compressionType }
+      case 'db':     return { ...base, queryType: tpl.queryType, isWAL: tpl.isWAL, resultSizeKb: tpl.resultSizeKb }
+    }
+  })() : undefined
+
+  // Method/path: prefer the template, else fall back to today's deterministic placeholders.
+  const httpTpl = tpl?.protocol === 'http' ? tpl as HttpTemplate : undefined
+  const method  = httpTpl ? httpTpl.method
+    : isStream ? STREAM_OPS[seed % STREAM_OPS.length]
+    : (p.method ?? METHODS[seed % METHODS.length])
+  const path    = httpTpl ? httpTpl.path : PATHS[(seed * 3) % PATHS.length]
 
   return {
     particleId:   p.id,
@@ -2142,6 +2340,8 @@ function buildSnapshot(p: Particle): RequestSnapshot {
     httpMethod:   method,
     httpPath:     path,
     payloadBytes: p.payloadBytes,
+    templateId:   p.templateId,
+    templateInfo,
   }
 }
 
@@ -2200,6 +2400,14 @@ export function startSimulation(
   _nodesMap  = new Map(nodes.map(n => [n.id, n]))
   _edgesData = edges
 
+  // Snapshot the packet registry so the hot loop never reads React state.
+  {
+    const cs = useCanvasStore.getState()
+    _packetMode = cs.packetMode
+    _packetTemplates = cs.packetTemplates
+    _clientErrorCounts.clear()
+  }
+
   _edgePaths = edges.map(edge => {
     const src = _nodesMap.get(edge.source)
     const tgt = _nodesMap.get(edge.target)
@@ -2231,6 +2439,7 @@ export function startSimulation(
       targetNodeType: tgt.type as NodeType | undefined,
       rps: useSimulationStore.getState().getEdgeRps(edge.id),
       geoLatencyMs,
+      effectiveRps: 0
     }
   }).filter(Boolean) as EdgePath[]
 
@@ -2261,8 +2470,9 @@ export function startSimulation(
   _spikeEndAt      = 0
   _chaosNextFailAt = 0
   _chaosFailures.clear()
+  _simulatedTimeMs = 0
   _egressBytesAccum.clear()
-  _lastEgressFlushAt = _simStartTime
+  _lastEgressFlushAt = 0
   _frameCount = 0
   _latencyWindows.clear()
   _upstreamPressure.clear()
@@ -2322,6 +2532,7 @@ export function stopSimulation() {
   _retryQueue.length = 0
   _droppedCounts.clear()
   _deadLetterCounts.clear()
+  _simulatedTimeMs = 0
   _egressBytesAccum.clear()
   _lastEgressFlushAt = 0
   _activeWorkers.clear()
@@ -2342,6 +2553,13 @@ export function stopSimulation() {
 
 export function updateSpeed(speed: number) {
   _speed = speed
+}
+
+// Elapsed SIMULATION time in seconds (pause/speed/lag-proof). Consumers that record a replay-
+// timeline coordinate (health frames, event elapsedS) must use this — never the wall clock —
+// so they stay aligned with the particle keyframes the engine timestamps the same way.
+export function getSimulatedElapsedS(): number {
+  return _simulatedTimeMs / 1000
 }
 
 export function updateTrafficMode(mode: TrafficMode) {
@@ -2370,7 +2588,9 @@ export function injectBurst(nodeId: string, edges: Edge<EdgeData>[]) {
     if (!state.particles.has(edge.id)) state.particles.set(edge.id, [])
     const arr = state.particles.get(edge.id)!
     for (let i = 0; i < 20; i++) {
-      const _bp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.8), color: edgeColor(ep.edgeType), edgeId: edge.id, retries: 0, originLatencyMs: 0, spawnTime: performance.now(), payloadBytes: sampleEdgeResponsePayload(edge.id) }
+      const templateId = _packetMode === 'custom' ? rollDistribution(nodeId) : undefined
+      const tpl = templateId !== undefined ? _packetTemplates[templateId] : undefined
+      const _bp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.8), color: tpl?.colorOverride ?? edgeColor(ep.edgeType), edgeId: edge.id, retries: 0, originLatencyMs: 0, spawnTime: performance.now(), payloadBytes: templatePayloadBytes(templateId, ep.targetNodeType, edge.id), templateId }
       arr.push(_bp)
       _particleById.set(_bp.id, _bp)
     }

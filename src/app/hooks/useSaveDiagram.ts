@@ -5,7 +5,7 @@ import { saveDiagram, saveFileDialog } from '../../lib/tauri'
 import { serialize } from '../../lib/serializer'
 
 export function useSaveDiagram() {
-  const { nodes, edges, viewport } = useCanvasStore()
+  const { nodes, edges, viewport, packetMode, packetTemplates, nextTemplateId } = useCanvasStore()
   const { filePath, fileName, markSaved } = useFileStore()
 
   return useCallback(async () => {
@@ -14,8 +14,10 @@ export function useSaveDiagram() {
       path = await saveFileDialog()
       if (!path) return
     }
-    const data = serialize(nodes, edges, viewport, fileName ?? 'Untitled', new Date().toISOString())
+    const data = serialize(nodes, edges, viewport, fileName ?? 'Untitled', new Date().toISOString(), {
+      mode: packetMode, templates: packetTemplates, nextId: nextTemplateId,
+    })
     await saveDiagram(path, data)
     markSaved(path)
-  }, [nodes, edges, viewport, filePath, fileName, markSaved])
+  }, [nodes, edges, viewport, packetMode, packetTemplates, nextTemplateId, filePath, fileName, markSaved])
 }

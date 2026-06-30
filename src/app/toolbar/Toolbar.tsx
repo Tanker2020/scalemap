@@ -1,5 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from 'react'
-import { FilePlus, FolderOpen, ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, Save, Upload, Download, ClipboardList, ShieldCheck } from 'lucide-react'
+import { FilePlus, FolderOpen, ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, Save, Upload, Download, ClipboardList, ShieldCheck, Package } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
 import { useSimulationStore, type TrafficMode } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
@@ -26,10 +26,12 @@ const TRAFFIC_MODES: { key: TrafficMode; label: string; short: string; desc: str
 
 function SaveButton({ fileName }: { fileName: string | null }) {
   const handleSave = useCallback(() => {
-    const { nodes, edges, viewport } = useCanvasStore.getState()
+    const { nodes, edges, viewport, packetMode, packetTemplates, nextTemplateId } = useCanvasStore.getState()
     const name    = fileName?.replace('.scalemap', '') || 'diagram'
     const created = new Date().toISOString()
-    const json    = serialize(nodes, edges, viewport, name, created)
+    const json    = serialize(nodes, edges, viewport, name, created, {
+      mode: packetMode, templates: packetTemplates, nextId: nextTemplateId,
+    })
     downloadBlob(json, `${name}.scalemap`, 'application/json')
   }, [fileName])
 
@@ -287,7 +289,8 @@ function downloadBlob(content: string, filename: string, type: string) {
 export function Toolbar() {
   const { undo, redo } = useCanvasStore()
   const { running, paused, setRunning, setPaused, activeScript, setActiveScript, runs, simulationMode, globalMultiplier } = useSimulationStore()
-  const { activeTool, setActiveTool, setSimConfigOpen, simConfigOpen, reportsPanelOpen, setReportsPanelOpen, setDiagnosticsOpen } = useUiStore()
+  const { activeTool, setActiveTool, setSimConfigOpen, simConfigOpen, reportsPanelOpen, setReportsPanelOpen, setDiagnosticsOpen, packetEditorOpen, setPacketEditorOpen } = useUiStore()
+  const packetMode = useCanvasStore(s => s.packetMode)
   const diagnosticsCount = useDiagnosticsStore(s => s.diagnostics.length)
   const { showHome, setShowHome, fileName } = useFileStore()
 
@@ -412,6 +415,19 @@ export function Toolbar() {
             Reports
             {runs.length > 0 && (
               <span className={styles.reportsBadge}>{runs.length}</span>
+            )}
+          </button>
+
+          {/* Packet editor button — define request templates + traffic mix */}
+          <button
+            className={`${styles.btnReports} ${packetEditorOpen ? styles.btnReportsActive : ''}`}
+            onClick={() => setPacketEditorOpen(!packetEditorOpen)}
+            title="Packet templates — define request types and per-node traffic distribution"
+          >
+            <Package size={12} />
+            Packets
+            {packetMode === 'custom' && (
+              <span className={styles.reportsBadge}>on</span>
             )}
           </button>
 

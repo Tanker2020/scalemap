@@ -317,6 +317,7 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
   const hasConnPool = eff.connectionPool !== undefined
   const hasTimeout  = eff.timeoutMs !== undefined
   const slo: NodeSlo | undefined = data.slo ?? DEFAULT_SLO[nodeType]
+  const isDb = nodeType === 'dbSql' || nodeType === 'dbNoSql'
 
   return (
     <>
@@ -330,15 +331,17 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
       <div className={styles.configBlock}>
         <div className={styles.configBlockTitle}>Capacity</div>
         <div className={styles.configGrid}>
-          <div className={styles.configField}>
-            <span className={styles.configLabel}>Max RPS</span>
-            <NumericStepper
-              value={eff.maxRps}
-              onChange={v => setNodeConfig(nodeId, { maxRps: v })}
-              min={1}
-              step={100}
-            />
-          </div>
+          {!isDb && (
+            <div className={styles.configField}>
+              <span className={styles.configLabel}>Max RPS</span>
+              <NumericStepper
+                value={eff.maxRps}
+                onChange={v => setNodeConfig(nodeId, { maxRps: v })}
+                min={1}
+                step={100}
+              />
+            </div>
+          )}
           <div className={styles.configField}>
             <span className={styles.configLabel}>Processing (ms)</span>
             <NumericStepper

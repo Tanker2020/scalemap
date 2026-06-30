@@ -11,7 +11,7 @@ import {
   addEdge,
 } from '@xyflow/react'
 import { NODE_CONFIG, GROUPING_TYPES, defaultEdgeConfig } from '../../lib/nodeConfig'
-import type { NodeData, EdgeData, NodeType, EdgeType } from '../../lib/nodeConfig'
+import type { NodeData, EdgeData, NodeType, EdgeType, PacketTemplate, PacketMode, PacketRegistry, PacketDistributionEntry, NewPacketTemplate } from '../../lib/nodeConfig'
 
 interface CanvasSnapshot {
   nodes: Node<NodeData>[]
@@ -25,6 +25,16 @@ interface CanvasStore {
   history: CanvasSnapshot[]
   future: CanvasSnapshot[]
 
+  // ─── Packet registry (Flyweight) ───────────────────────────────────────────
+  packetMode: PacketMode
+  packetTemplates: Record<number, PacketTemplate>
+  nextTemplateId: number
+
+  setPacketMode: (mode: PacketMode) => void
+  addPacketTemplate: (template: NewPacketTemplate) => number
+  updatePacketTemplate: (id: number, patch: Partial<PacketTemplate>) => void
+  removePacketTemplate: (id: number) => void
+
   onNodesChange: (changes: NodeChange<Node<NodeData>>[]) => void
   onEdgesChange: (changes: EdgeChange<Edge<EdgeData>>[]) => void
   onConnect: (connection: Connection) => void
@@ -37,7 +47,7 @@ interface CanvasStore {
   changeEdgeType: (id: string, edgeType: EdgeType) => void
   removeEdges: (ids: string[]) => void
   setViewport: (viewport: Viewport) => void
-  loadDiagram: (nodes: Node<NodeData>[], edges: Edge<EdgeData>[], viewport: Viewport) => void
+  loadDiagram: (nodes: Node<NodeData>[], edges: Edge<EdgeData>[], viewport: Viewport, packets?: PacketRegistry) => void
 
   pushHistory: () => void
   undo: () => void
@@ -55,6 +65,43 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   viewport: { x: 0, y: 0, zoom: 1 },
   history: [],
   future: [],
+
+  packetMode: 'generic',
+  packetTemplates: {},
+  nextTemplateId: 1,
+
+  setPacketMode: (mode) => set({ packetMode: mode }),
+
+  addPacketTemplate: (template) => {
+    const id = get().nextTemplateId
+    set(s => ({
+      packetTemplates: { ...s.packetTemplates, [id]: { ...template, id } as PacketTemplate },
+      nextTemplateId: id + 1,
+    }))
+    return id
+  },
+
+  updatePacketTemplate: (id, patch) => {
+    set(s => {
+      const existing = s.packetTemplates[id]
+      if (!existing) return {}
+      return { packetTemplates: { ...s.packetTemplates, [id]: { ...existing, ...patch, id } as PacketTemplate } }
+    })
+  },
+
+  removePacketTemplate: (id) => {
+    set(s => {
+      const next = { ...s.packetTemplates }
+      delete next[id]
+      // Strip the deleted template from every node's distribution table so no dangling refs remain.
+      const nodes = s.nodes.map(n => {
+        const dist = n.data.packetDistribution
+        if (!dist?.some((d: PacketDistributionEntry) => d.templateId === id)) return n
+        return { ...n, data: { ...n.data, packetDistribution: dist.filter((d: PacketDistributionEntry) => d.templateId !== id) } }
+      })
+      return { packetTemplates: next, nodes }
+    })
+  },
 
   onNodesChange: (changes) => {
     set(s => ({ nodes: applyNodeChanges(changes, s.nodes) }))
@@ -148,8 +195,14 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 
   setViewport: (viewport) => set({ viewport }),
 
-  loadDiagram: (nodes, edges, viewport) => {
-    set({ nodes, edges, viewport, history: [], future: [] })
+  loadDiagram: (nodes, edges, viewport, packets) => {
+    set({
+      nodes, edges, viewport, history: [], future: [],
+      // Restore the packet registry, defaulting to generic/empty for legacy files with no `packets`.
+      packetMode: packets?.mode ?? 'generic',
+      packetTemplates: packets?.templates ?? {},
+      nextTemplateId: packets?.nextId ?? 1,
+    })
   },
 
   pushHistory: () => {

@@ -54,7 +54,7 @@ export function HomeScreen() {
       const raw = await loadDiagram(path)
       const diagram = deserialize(raw)
       resetSim()
-      loadDiagramStore(diagram.nodes, diagram.edges, diagram.viewport)
+      loadDiagramStore(diagram.nodes, diagram.edges, diagram.viewport, diagram.packets)
       markSaved(path)
       setShowHome(false)
     } catch (e) {

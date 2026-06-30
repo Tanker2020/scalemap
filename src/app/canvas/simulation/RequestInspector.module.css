@@ -130,6 +130,74 @@
   50%       { opacity: 0.5; }
 }
 
+/* ── Template card (custom packet mode) ──────────── */
+
+.templateCard {
+  margin: 8px 12px;
+  padding: 9px 10px;
+  background: #0D0F12;
+  border: 1px solid #2A2E38;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.templateHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.templateName {
+  font-size: 11px;
+  font-weight: 600;
+  color: #E2E8F0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.protocolBadge {
+  font-size: 8px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.kvGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.kvRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.kvKey {
+  font-size: 9px;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.kvVal {
+  font-size: 10px;
+  color: #CBD5E1;
+  font-family: 'JetBrains Mono', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Metadata ────────────────────────────────────── */
 
 .meta {

@@ -23,10 +23,24 @@ const EDGE_TYPE_LABELS: Record<string, string> = {
   dependency: 'Dependency',
 }
 
+const PROTOCOL_COLORS: Record<string, string> = {
+  http:   '#4A9EFF',
+  event:  '#2DD4BF',
+  stream: '#A78BFA',
+  db:     '#F5A623',
+}
+
 function fmtBytes(b: number): string {
   if (b < 1024) return `${Math.round(b)} B`
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
   return `${(b / (1024 * 1024)).toFixed(2)} MB`
+}
+
+function statusColor(code: number): string {
+  if (code >= 500) return '#EF4444'
+  if (code >= 400) return '#F59E0B'
+  if (code >= 300) return '#A78BFA'
+  return '#22C55E'
 }
 
 export function RequestInspector() {
@@ -42,6 +56,7 @@ export function RequestInspector() {
   }, [setInspectedRequest])
 
   const methodColor = request ? (METHOD_COLORS[request.httpMethod] ?? '#94A3B8') : '#94A3B8'
+  const tpl = request?.templateInfo
 
   return (
     <AnimatePresence>
@@ -81,6 +96,55 @@ export function RequestInspector() {
             <span className={styles.path}>{request.httpPath}</span>
             <span className={styles.statusBadge}>IN FLIGHT</span>
           </div>
+
+          {/* Protocol-specific template card (custom packet mode) */}
+          {tpl && (
+            <div className={styles.templateCard}>
+              <div className={styles.templateHead}>
+                <span className={styles.templateName}>{tpl.name}</span>
+                <span
+                  className={styles.protocolBadge}
+                  style={{
+                    color: PROTOCOL_COLORS[tpl.protocol] ?? '#94A3B8',
+                    borderColor: `${PROTOCOL_COLORS[tpl.protocol] ?? '#94A3B8'}44`,
+                    background: `${PROTOCOL_COLORS[tpl.protocol] ?? '#94A3B8'}11`,
+                    border: '1px solid',
+                  }}
+                >
+                  {tpl.protocol}
+                </span>
+              </div>
+              <div className={styles.kvGrid}>
+                {tpl.protocol === 'http' && (
+                  <>
+                    <KV k="Request" v={`${tpl.method} ${tpl.path}`} />
+                    <KV k="Status" v={String(tpl.statusCode)} color={statusColor(tpl.statusCode ?? 200)} />
+                  </>
+                )}
+                {tpl.protocol === 'db' && (
+                  <>
+                    <KV k="Query" v={(tpl.queryType ?? '').toUpperCase()} color={tpl.queryType === 'read' ? '#22C55E' : '#F59E0B'} />
+                    <KV k="WAL" v={tpl.isWAL ? 'true' : 'false'} />
+                    <KV k="Result" v={`${tpl.resultSizeKb} KB`} />
+                  </>
+                )}
+                {tpl.protocol === 'event' && (
+                  <>
+                    <KV k="Topic" v={tpl.topic ?? ''} />
+                    <KV k="Type" v={tpl.eventType ?? ''} />
+                    <KV k="Delivery" v={tpl.deliveryMode ?? ''} />
+                  </>
+                )}
+                {tpl.protocol === 'stream' && (
+                  <>
+                    <KV k="Stream" v={tpl.streamId ?? ''} />
+                    <KV k="Compression" v={tpl.compressionType ?? 'none'} />
+                  </>
+                )}
+                <KV k="Size" v={`${tpl.sizeKb} KB`} />
+              </div>
+            </div>
+          )}
 
           {/* Metadata grid */}
           <div className={styles.meta}>
@@ -122,5 +186,14 @@ export function RequestInspector() {
         </motion.div>
       )}
     </AnimatePresence>
+  )
+}
+
+function KV({ k, v, color }: { k: string; v: string; color?: string }) {
+  return (
+    <div className={styles.kvRow}>
+      <span className={styles.kvKey}>{k}</span>
+      <span className={styles.kvVal} style={color ? { color } : undefined}>{v}</span>
+    </div>
   )
 }

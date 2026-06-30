@@ -18,6 +18,7 @@ import {
   setCallbacks,
   pickParticleAtPoint,
   enterReplay,
+  getSimulatedElapsedS,
 } from './particleEngine'
 
 function getTopoKey(ns: Node[], es: Edge[]): string {
@@ -64,7 +65,9 @@ export function SimulationOverlay({ width, height }: Props) {
 
   const onEvent = useCallback(
     (type: SimEventType, nodeId: string | undefined, message: string, severity: 'info' | 'warn' | 'critical', snapshot?: Partial<NodeMetrics>, causedByNodeId?: string) => {
-      const elapsedS = Math.round((Date.now() - simStartRef.current) / 1000)
+      // elapsedS is the replay-timeline coordinate — use simulation time so it aligns with the
+      // engine's particle keyframes (at: stays wall-clock for absolute event timestamping).
+      const elapsedS = Math.round(getSimulatedElapsedS())
       addEvent({ type, nodeId, at: Date.now(), elapsedS, message, severity, metricsSnapshot: snapshot, causedByNodeId })
     },
     [addEvent],
@@ -173,7 +176,9 @@ export function SimulationOverlay({ width, height }: Props) {
       const { nodeMetrics, addEvent: addEv, setSloStatus: setSlo, paused } = useSimulationStore.getState()
       // Don't record history or fire SLO events while paused — analytics must be frozen
       if (paused) return
-      const elapsedS = Math.round((Date.now() - simStartRef.current) / 1000)
+      // Simulation-time coordinate so health frames line up with the engine's particle
+      // keyframes on the replay scrubber (which correlates the two via elapsedS).
+      const elapsedS = Math.round(getSimulatedElapsedS())
       // Outage playback: snapshot the full per-node metrics map (1 Hz health timeline)
       useReplayStore.getState().recordHealthFrame(elapsedS, nodeMetrics)
       let totalRps  = 0

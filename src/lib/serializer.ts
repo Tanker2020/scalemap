@@ -1,5 +1,5 @@
 import type { Node, Edge, Viewport } from '@xyflow/react'
-import type { NodeData, EdgeData } from './nodeConfig'
+import type { NodeData, EdgeData, PacketRegistry } from './nodeConfig'
 
 export interface DiagramFile {
   version: '1'
@@ -7,6 +7,7 @@ export interface DiagramFile {
   viewport: Viewport
   nodes: Node<NodeData>[]
   edges: Edge<EdgeData>[]
+  packets?: PacketRegistry  // optional — absent in legacy files (load as generic/empty)
 }
 
 export function serialize(
@@ -15,6 +16,7 @@ export function serialize(
   viewport: Viewport,
   name: string,
   created: string,
+  packets?: PacketRegistry,
 ): string {
   const diagram: DiagramFile = {
     version: '1',
@@ -22,6 +24,7 @@ export function serialize(
     viewport,
     nodes,
     edges,
+    ...(packets ? { packets } : {}),
   }
   return JSON.stringify(diagram, null, 2)
 }

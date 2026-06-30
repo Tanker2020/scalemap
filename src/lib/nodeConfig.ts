@@ -135,6 +135,67 @@ export interface NodeCostConfig {
   avgResponseKb?: number       // avg outbound response size — drives dynamic egress bandwidth/cost
 }
 
+// ─── Packet templates (Flyweight) ──────────────────────────────────────────────
+// Users define reusable "kinds of request" centrally; live particles hold only a small
+// integer templateId pointing into the registry. Heavy per-protocol data never touches
+// the hot particle loop. Generic mode ignores templates entirely (avgResponseKb sizing).
+
+export type PacketProtocol = 'http' | 'event' | 'stream' | 'db'
+
+export interface BasePacketTemplate {
+  id: number
+  name: string
+  protocol: PacketProtocol
+  sizeKb: number            // request/packet payload — drives payloadBytes via log-normal
+  colorOverride?: string    // optional particle tint
+}
+
+export interface HttpTemplate extends BasePacketTemplate {
+  protocol: 'http'
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  path: string
+  statusCode: number        // 2xx/3xx ok · 4xx error-but-completes · 5xx drop
+}
+
+export interface EventTemplate extends BasePacketTemplate {
+  protocol: 'event'
+  topic: string
+  eventType: string
+  deliveryMode: 'at-most-once' | 'at-least-once' | 'exactly-once'
+}
+
+export interface StreamTemplate extends BasePacketTemplate {
+  protocol: 'stream'
+  streamId: string
+  compressionType: 'none' | 'gzip' | 'snappy'  // scales egress bytes
+}
+
+export interface DbTemplate extends BasePacketTemplate {
+  protocol: 'db'
+  queryType: 'read' | 'write' | 'transaction'
+  isWAL: boolean            // Write-Ahead Logging active — adds write-latency penalty
+  resultSizeKb: number      // DB's response payload — sizes the DB node's egress
+}
+
+export type PacketTemplate = HttpTemplate | EventTemplate | StreamTemplate | DbTemplate
+
+// Distributive Omit so dropping `id` preserves each protocol variant's own fields
+// (a plain Omit<Union, K> collapses to only the keys common to every member).
+export type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
+export type NewPacketTemplate = DistributiveOmit<PacketTemplate, 'id'>
+
+export type PacketMode = 'generic' | 'custom'
+
+// One weighted reference per node; weights need not sum to 100 (normalized at use).
+export interface PacketDistributionEntry { templateId: number; weight: number }
+
+// Serialized form of the central registry — persisted in .scalemap and mirrored into the engine.
+export interface PacketRegistry {
+  mode: PacketMode
+  templates: Record<number, PacketTemplate>
+  nextId: number
+}
+
 export interface NodeData extends Record<string, unknown> {
   label: string
   subtitle: string
@@ -146,6 +207,7 @@ export interface NodeData extends Record<string, unknown> {
   regionId?: string  // set on 'region' grouping nodes; links to WorldRegion.id
   provider?: CloudProvider  // cloud provider mapping; undefined ≡ 'generic'
   cost?: NodeCostConfig     // user-entered pricing parameters
+  packetDistribution?: PacketDistributionEntry[]  // custom-mode traffic profile (entry/source nodes)
 }
 
 // ─── Per-edge-type configuration ───────────────────────────────────────────────

@@ -10,6 +10,7 @@ import { MetricsDrawer } from './app/analytics/MetricsDrawer'
 import { SimConfigPanel } from './app/simulation/SimConfigPanel'
 import { ReportsPanel } from './app/reports/ReportsPanel'
 import { DiagnosticsPanel } from './app/diagnostics/DiagnosticsPanel'
+import { PacketEditor } from './app/simulation/PacketEditor'
 import { useFileStore } from './app/store/file.store'
 import { useCanvasStore } from './app/store/canvas.store'
 import { useSimulationStore } from './app/store/simulation.store'
@@ -27,6 +28,7 @@ export default function App() {
   const simConfigOpen = useUiStore(s => s.simConfigOpen)
   const reportsPanelOpen = useUiStore(s => s.reportsPanelOpen)
   const diagnosticsOpen = useUiStore(s => s.diagnosticsOpen)
+  const packetEditorOpen = useUiStore(s => s.packetEditorOpen)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   useEffect(() => {
@@ -53,11 +55,13 @@ export default function App() {
     const id = setInterval(() => {
       const { dirty } = useFileStore.getState()
       if (!dirty) return
-      const { nodes, edges, viewport } = useCanvasStore.getState()
+      const { nodes, edges, viewport, packetMode, packetTemplates, nextTemplateId } = useCanvasStore.getState()
       const { fileName } = useFileStore.getState()
       const name = fileName?.replace('.scalemap', '') || 'untitled'
       try {
-        const json = serialize(nodes, edges, viewport, name, new Date().toISOString())
+        const json = serialize(nodes, edges, viewport, name, new Date().toISOString(), {
+          mode: packetMode, templates: packetTemplates, nextId: nextTemplateId,
+        })
         localStorage.setItem(AUTOSAVE_KEY, json)
         useFileStore.getState().markSaved()
         useFileStore.getState().setLastAutosave(new Date())
@@ -112,6 +116,9 @@ export default function App() {
       <StatusBar onToggleDrawer={() => setDrawerOpen(o => !o)} drawerOpen={drawerOpen} />
       {reportsPanelOpen && <ReportsPanel />}
       {diagnosticsOpen && <DiagnosticsPanel />}
+      <AnimatePresence>
+        {packetEditorOpen && <PacketEditor key="packet-editor" />}
+      </AnimatePresence>
     </div>
   )
 }

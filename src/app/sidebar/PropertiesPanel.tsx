@@ -155,6 +155,105 @@ function OpenInInspectorHint({ nodeId }: { nodeId: string }) {
 
 // ─── Node properties panel ────────────────────────────────────────────────────
 
+// ─── Packet distribution (custom mode, traffic-generating nodes) ──────────────
+
+const PROTOCOL_DOT: Record<string, string> = {
+  http: '#4A9EFF', event: '#2DD4BF', stream: '#A78BFA', db: '#F5A623',
+}
+
+function PacketDistributionSection({ nodeId }: { nodeId: string }) {
+  const packetMode      = useCanvasStore(s => s.packetMode)
+  const templates       = useCanvasStore(s => s.packetTemplates)
+  const edges           = useCanvasStore(s => s.edges)
+  const updateNodeData  = useCanvasStore(s => s.updateNodeData)
+  const setPacketEditorOpen = useUiStore(s => s.setPacketEditorOpen)
+  const node            = useCanvasStore(s => s.nodes.find(n => n.id === nodeId))
+  const running         = useSimulationStore(s => s.running)
+
+  // Only meaningful in custom mode for nodes that actually originate traffic on an outbound edge.
+  const generatesTraffic = edges.some(e => e.source === nodeId && (e.data?.edgeType ?? 'request') !== 'dependency')
+  if (packetMode !== 'custom' || !generatesTraffic) return null
+
+  const data = (node?.data ?? {}) as ND
+  const dist = data.packetDistribution ?? []
+  const templateList = Object.values(templates).sort((a, b) => a.id - b.id)
+  const totalWeight = dist.reduce((s, d) => s + (d.weight > 0 ? d.weight : 0), 0)
+
+  const setDist = (next: typeof dist) => updateNodeData(nodeId, { packetDistribution: next })
+
+  const addRow = () => {
+    const used = new Set(dist.map(d => d.templateId))
+    const free = templateList.find(t => !used.has(t.id))
+    if (!free) return
+    setDist([...dist, { templateId: free.id, weight: 10 }])
+  }
+
+  return (
+    <div className={styles.section}>
+      <div className={styles.sectionLabel}>Packet Distribution</div>
+
+      {templateList.length === 0 ? (
+        <div style={{ fontSize: 10, color: '#64748B', lineHeight: 1.5 }}>
+          No packet templates yet.{' '}
+          <button className={styles.addLink} onClick={() => setPacketEditorOpen(true)}>Open Packet Editor</button>
+        </div>
+      ) : (
+        <>
+          {dist.length === 0 && (
+            <div style={{ fontSize: 10, color: '#64748B', lineHeight: 1.5, marginBottom: 5 }}>No traffic mix assigned — this node generates generic packets.</div>
+          )}
+          {dist.map((row, i) => {
+            const pct = totalWeight > 0 && row.weight > 0 ? Math.round((row.weight / totalWeight) * 100) : 0
+            const tpl = templates[row.templateId]
+            return (
+              <div key={i} className={styles.row} style={{ gap: 6, alignItems: 'center', marginBottom: 5 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: tpl?.colorOverride ?? PROTOCOL_DOT[tpl?.protocol ?? 'http'], flexShrink: 0 }} />
+                <select
+                  className={styles.field}
+                  style={{ flex: 1, minWidth: 0 }}
+                  disabled={running}
+                  value={row.templateId}
+                  onChange={e => {
+                    const next = [...dist]
+                    next[i] = { ...row, templateId: Number(e.target.value) }
+                    setDist(next)
+                  }}
+                >
+                  {templateList.map(t => <option key={t.id} value={t.id}>#{t.id} {t.name}</option>)}
+                </select>
+                <input
+                  className={styles.field}
+                  style={{ width: 52 }}
+                  type="number"
+                  min={0}
+                  disabled={running}
+                  value={row.weight}
+                  onChange={e => {
+                    const next = [...dist]
+                    next[i] = { ...row, weight: Math.max(0, Number(e.target.value)) }
+                    setDist(next)
+                  }}
+                />
+                <span style={{ fontSize: 10, color: '#64748B', width: 30, textAlign: 'right' }}>{pct}%</span>
+                <button
+                  className={styles.addLink}
+                  disabled={running}
+                  style={{ color: '#EF4444' }}
+                  onClick={() => setDist(dist.filter((_, j) => j !== i))}
+                  title="Remove"
+                >×</button>
+              </div>
+            )
+          })}
+          {dist.length < templateList.length && (
+            <button className={styles.addLink} disabled={running} onClick={addRow}>+ Add template</button>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 function NodePanel({ nodeId }: { nodeId: string }) {
   const { nodes, updateNodeData } = useCanvasStore()
   const selectedNode = nodes.find(n => n.id === nodeId)!
@@ -480,6 +579,8 @@ function NodePanel({ nodeId }: { nodeId: string }) {
           }
           return null
         })()}
+
+        <PacketDistributionSection nodeId={selectedNode.id} />
 
         {showNotes ? (
           <div className={styles.section}>
