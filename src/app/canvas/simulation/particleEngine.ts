@@ -1,10 +1,10 @@
 import type { Node, Edge } from '@xyflow/react'
 import type {
-  NodeData, EdgeData, NodeType, NodeSimConfig, RetryConfig,
+  NodeData, EdgeData, NodeType, EdgeType, NodeSimConfig, RetryConfig,
   RequestEdgeConfig, StreamEdgeConfig, EventEdgeConfig, DependencyEdgeConfig,
-  PacketMode, PacketTemplate, HttpTemplate, StreamTemplate,
+  PacketMode, PacketTemplate, HttpTemplate, StreamTemplate, PacketDistributionEntry,
 } from '../../../lib/nodeConfig'
-import { GROUPING_TYPES, DEFAULT_EVENT_EDGE_CONFIG } from '../../../lib/nodeConfig'
+import { GROUPING_TYPES, DEFAULT_EVENT_EDGE_CONFIG, edgeAcceptsProtocol } from '../../../lib/nodeConfig'
 import { useCanvasStore } from '../../store/canvas.store'
 import { interRegionLatencyMs } from '../../../lib/regionConfig'
 import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventType, type CircuitState, type RequestSnapshot, type TemplateInfo } from '../../store/simulation.store'
@@ -248,18 +248,24 @@ function recordLatency(nodeId: string, ms: number) {
 
 // ─── Packet template helpers ──────────────────────────────────────────────────
 
-// Roll a templateId from a node's distribution table by cumulative weight. Returns undefined
-// when the node has no distribution (or all weights are zero / templates were deleted), so the
-// particle falls back to generic sizing. Rolled exactly once, at per-edge spawn time.
-function rollDistribution(nodeId: string): number | undefined {
+// Roll a templateId from a node's distribution table by cumulative weight, considering only
+// templates whose protocol is compatible with the edge being spawned on (http/db → request,
+// event → event, stream → stream). The compatible subset renormalizes automatically, so one
+// mixed distribution feeds each outbound edge only its matching slice. Returns undefined when
+// no compatible weighted template exists, so the particle falls back to generic sizing.
+function rollDistribution(nodeId: string, edgeType: EdgeType): number | undefined {
   const dist = (_nodesMap.get(nodeId)?.data as NodeData | undefined)?.packetDistribution
   if (!dist || dist.length === 0) return undefined
+  const eligible = (d: PacketDistributionEntry) => {
+    const tpl = _packetTemplates[d.templateId]
+    return !!tpl && d.weight > 0 && edgeAcceptsProtocol(edgeType, tpl.protocol)
+  }
   let total = 0
-  for (const d of dist) if (_packetTemplates[d.templateId] && d.weight > 0) total += d.weight
+  for (const d of dist) if (eligible(d)) total += d.weight
   if (total <= 0) return undefined
   let r = Math.random() * total
   for (const d of dist) {
-    if (!_packetTemplates[d.templateId] || d.weight <= 0) continue
+    if (!eligible(d)) continue
     r -= d.weight
     if (r <= 0) return d.templateId
   }
@@ -280,10 +286,12 @@ function templateIsWrite(tpl: PacketTemplate): boolean {
 function distributionReadFraction(nodeId: string): number | undefined {
   const dist = (_nodesMap.get(nodeId)?.data as NodeData | undefined)?.packetDistribution
   if (!dist || dist.length === 0) return undefined
+  // Only templates that ride a request edge (http + db) ever arrive at a DB, so event/stream
+  // weights must not skew the read/write split.
   let total = 0, writeW = 0
   for (const d of dist) {
     const tpl = _packetTemplates[d.templateId]
-    if (!tpl || d.weight <= 0) continue
+    if (!tpl || d.weight <= 0 || !edgeAcceptsProtocol('request', tpl.protocol)) continue
     total += d.weight
     if (templateIsWrite(tpl)) writeW += d.weight
   }
@@ -878,7 +886,7 @@ function spawnParticles(now: number, delta: number) {
       const pid = ++_particleIdCounter
       // Custom mode: roll a templateId once from this edge's source-node distribution. The
       // template then drives payload size, particle colour, and (for HTTP) the method.
-      const templateId = _packetMode === 'custom' && sourceNodeId ? rollDistribution(sourceNodeId) : undefined
+      const templateId = _packetMode === 'custom' && sourceNodeId ? rollDistribution(sourceNodeId, ep.edgeType as EdgeType) : undefined
       const tpl = templateId !== undefined ? _packetTemplates[templateId] : undefined
       const payloadBytes = templatePayloadBytes(templateId, ep.targetNodeType, ep.id)
       const httpTpl = tpl?.protocol === 'http' ? tpl as HttpTemplate : undefined
@@ -1434,7 +1442,14 @@ function forwardToOutbound(nodeId: string, _nodeType: NodeType, templateId?: num
     _edgesData.find(d => d.id === e.id)?.source === nodeId && e.edgeType !== 'dependency',
   )
   if (outEdges.length === 0) return
-  const outEp = outEdges[Math.floor(Math.random() * outEdges.length)]
+  // A typed packet may only continue on a transport-compatible edge — an http request can't be
+  // forwarded onto an event edge. Fall back to all outbound when none match (or it's untyped).
+  const tpl = templateId !== undefined ? _packetTemplates[templateId] : undefined
+  const compatible = tpl
+    ? outEdges.filter(e => edgeAcceptsProtocol(e.edgeType as EdgeType, tpl.protocol))
+    : outEdges
+  const candidates = compatible.length > 0 ? compatible : outEdges
+  const outEp = candidates[Math.floor(Math.random() * candidates.length)]
   if (!state.particles.has(outEp.id)) state.particles.set(outEp.id, [])
   // Forwarded packet inherits the parent's templateId — no re-roll, so distributions stay intact.
   const _fwdp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(outEp.edgeType), edgeId: outEp.id, retries: 0, originLatencyMs: 0, spawnTime: performance.now(), payloadBytes: templatePayloadBytes(templateId, outEp.targetNodeType, outEp.id), templateId }
@@ -1455,15 +1470,16 @@ function spawnErrorFlash(nodeId: string) {
 // ─── Outage playback: record / render particle keyframes ─────────────────────
 
 function recordParticleFrame() {
-  // Pack [edgeIdx, t] for every live particle on a mappable edge (exact-sized typed array).
-  const pairs: number[] = []
+  // Pack [edgeIdx, t, templateId] for every live particle on a mappable edge (templateId = -1
+  // when untyped). The templateId lets the paused/scrub redraw recover each packet's colour.
+  const triples: number[] = []
   for (const [edgeId, arr] of state.particles) {
     const idx = _edgeIndexMap.get(edgeId)
     if (idx === undefined) continue
-    for (const p of arr) { pairs.push(idx, p.t) }
+    for (const p of arr) { triples.push(idx, p.t, p.templateId ?? -1) }
   }
   const elapsedS = _simulatedTimeMs / 1000
-  _particleFrames.push({ elapsedS, packed: Float32Array.from(pairs) })
+  _particleFrames.push({ elapsedS, packed: Float32Array.from(triples) })
   if (_particleFrames.length > MAX_PARTICLE_FRAMES) {
     _particleFrames.splice(0, _particleFrames.length - MAX_PARTICLE_FRAMES)
   }
@@ -1477,12 +1493,15 @@ function drawReplayFrame(canvas: HTMLCanvasElement, index: number) {
   const frame = _particleFrames[index]
   if (!frame) return
   const packed = frame.packed
-  for (let i = 0; i < packed.length; i += 2) {
+  for (let i = 0; i < packed.length; i += 3) {
     const ep = _edgePaths[packed[i]]
     if (!ep) continue
     const pos = getEdgePoint(ep.id, packed[i + 1])
     if (!pos) continue
-    const color = edgeColor(ep.edgeType)
+    const templateId = packed[i + 2]
+    const color = templateId >= 0
+      ? (_packetTemplates[templateId]?.colorOverride ?? edgeColor(ep.edgeType))
+      : edgeColor(ep.edgeType)
     ctx.beginPath()
     ctx.arc(pos[0], pos[1], 2.5, 0, Math.PI * 2)
     ctx.fillStyle  = color
@@ -2588,7 +2607,7 @@ export function injectBurst(nodeId: string, edges: Edge<EdgeData>[]) {
     if (!state.particles.has(edge.id)) state.particles.set(edge.id, [])
     const arr = state.particles.get(edge.id)!
     for (let i = 0; i < 20; i++) {
-      const templateId = _packetMode === 'custom' ? rollDistribution(nodeId) : undefined
+      const templateId = _packetMode === 'custom' ? rollDistribution(nodeId, ep.edgeType as EdgeType) : undefined
       const tpl = templateId !== undefined ? _packetTemplates[templateId] : undefined
       const _bp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.8), color: tpl?.colorOverride ?? edgeColor(ep.edgeType), edgeId: edge.id, retries: 0, originLatencyMs: 0, spawnTime: performance.now(), payloadBytes: templatePayloadBytes(templateId, ep.targetNodeType, edge.id), templateId }
       arr.push(_bp)

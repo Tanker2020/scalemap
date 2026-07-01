@@ -5,7 +5,7 @@ import { useUiStore } from '../store/ui.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
 import { useDisplayMetrics, useDisplayMetricsMap } from '../canvas/simulation/useDisplayMetrics'
-import { NODE_CONFIG, GROUPING_TYPES, type NodeStatus, type EdgeType, type NodeType, type NodeData as ND, type NodeCostConfig } from '../../lib/nodeConfig'
+import { NODE_CONFIG, GROUPING_TYPES, edgeAcceptsProtocol, type NodeStatus, type EdgeType, type NodeType, type NodeData as ND, type NodeCostConfig, type PacketProtocol } from '../../lib/nodeConfig'
 import { REGIONS_BY_ZONE, WORLD_REGIONS } from '../../lib/regionConfig'
 import { CATEGORY_COLORS } from '../../lib/theme'
 import { CLOUD_REGISTRY, getServiceSpec, type CloudProvider, type CostComponentSpec } from '../../lib/cloudRegistry'
@@ -161,6 +161,19 @@ const PROTOCOL_DOT: Record<string, string> = {
   http: '#4A9EFF', event: '#2DD4BF', stream: '#A78BFA', db: '#F5A623',
 }
 
+// Transport groups, in display order. Templates within a group renormalize independently, since
+// each group's traffic rides its own edge type and its cross-group volume is set by edge rps.
+const TRANSPORT_GROUPS: { type: EdgeType; label: string }[] = [
+  { type: 'request', label: 'Request · HTTP / DB' },
+  { type: 'event',   label: 'Event' },
+  { type: 'stream',  label: 'Stream' },
+]
+
+// Which transport group a protocol belongs to (http/db → request, event → event, stream → stream).
+function groupOfProtocol(protocol: PacketProtocol): EdgeType {
+  return (TRANSPORT_GROUPS.find(g => edgeAcceptsProtocol(g.type, protocol))?.type) ?? 'request'
+}
+
 function PacketDistributionSection({ nodeId }: { nodeId: string }) {
   const packetMode      = useCanvasStore(s => s.packetMode)
   const templates       = useCanvasStore(s => s.packetTemplates)
@@ -171,14 +184,15 @@ function PacketDistributionSection({ nodeId }: { nodeId: string }) {
   const running         = useSimulationStore(s => s.running)
 
   // Only meaningful in custom mode for nodes that actually originate traffic on an outbound edge.
-  const generatesTraffic = edges.some(e => e.source === nodeId && (e.data?.edgeType ?? 'request') !== 'dependency')
-  if (packetMode !== 'custom' || !generatesTraffic) return null
+  const outboundTypes = new Set<EdgeType>(
+    edges.filter(e => e.source === nodeId && (e.data?.edgeType ?? 'request') !== 'dependency')
+         .map(e => (e.data?.edgeType ?? 'request') as EdgeType),
+  )
+  if (packetMode !== 'custom' || outboundTypes.size === 0) return null
 
   const data = (node?.data ?? {}) as ND
   const dist = data.packetDistribution ?? []
   const templateList = Object.values(templates).sort((a, b) => a.id - b.id)
-  const totalWeight = dist.reduce((s, d) => s + (d.weight > 0 ? d.weight : 0), 0)
-
   const setDist = (next: typeof dist) => updateNodeData(nodeId, { packetDistribution: next })
 
   const addRow = () => {
@@ -187,6 +201,9 @@ function PacketDistributionSection({ nodeId }: { nodeId: string }) {
     if (!free) return
     setDist([...dist, { templateId: free.id, weight: 10 }])
   }
+
+  // Rows paired with their original index (needed to write back into the flat dist array).
+  const rows = dist.map((row, i) => ({ row, i, tpl: templates[row.templateId] }))
 
   return (
     <div className={styles.section}>
@@ -202,49 +219,64 @@ function PacketDistributionSection({ nodeId }: { nodeId: string }) {
           {dist.length === 0 && (
             <div style={{ fontSize: 10, color: '#64748B', lineHeight: 1.5, marginBottom: 5 }}>No traffic mix assigned — this node generates generic packets.</div>
           )}
-          {dist.map((row, i) => {
-            const pct = totalWeight > 0 && row.weight > 0 ? Math.round((row.weight / totalWeight) * 100) : 0
-            const tpl = templates[row.templateId]
+
+          {TRANSPORT_GROUPS.map(group => {
+            const groupRows = rows.filter(r => r.tpl && groupOfProtocol(r.tpl.protocol) === group.type)
+            if (groupRows.length === 0) return null
+            const groupTotal = groupRows.reduce((s, r) => s + (r.row.weight > 0 ? r.row.weight : 0), 0)
+            const noEdge = !outboundTypes.has(group.type)  // dead weight: nothing will spawn
+
             return (
-              <div key={i} className={styles.row} style={{ gap: 6, alignItems: 'center', marginBottom: 5 }}>
-                <span style={{ width: 8, height: 8, borderRadius: '50%', background: tpl?.colorOverride ?? PROTOCOL_DOT[tpl?.protocol ?? 'http'], flexShrink: 0 }} />
-                <select
-                  className={styles.field}
-                  style={{ flex: 1, minWidth: 0 }}
-                  disabled={running}
-                  value={row.templateId}
-                  onChange={e => {
-                    const next = [...dist]
-                    next[i] = { ...row, templateId: Number(e.target.value) }
-                    setDist(next)
-                  }}
-                >
-                  {templateList.map(t => <option key={t.id} value={t.id}>#{t.id} {t.name}</option>)}
-                </select>
-                <input
-                  className={styles.field}
-                  style={{ width: 52 }}
-                  type="number"
-                  min={0}
-                  disabled={running}
-                  value={row.weight}
-                  onChange={e => {
-                    const next = [...dist]
-                    next[i] = { ...row, weight: Math.max(0, Number(e.target.value)) }
-                    setDist(next)
-                  }}
-                />
-                <span style={{ fontSize: 10, color: '#64748B', width: 30, textAlign: 'right' }}>{pct}%</span>
-                <button
-                  className={styles.addLink}
-                  disabled={running}
-                  style={{ color: '#EF4444' }}
-                  onClick={() => setDist(dist.filter((_, j) => j !== i))}
-                  title="Remove"
-                >×</button>
+              <div key={group.type} style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 9, color: noEdge ? '#EF4444' : '#475569', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+                  {group.label}{noEdge ? ' — no matching edge, won’t spawn' : ''}
+                </div>
+                {groupRows.map(({ row, i, tpl }) => {
+                  const pct = groupTotal > 0 && row.weight > 0 ? Math.round((row.weight / groupTotal) * 100) : 0
+                  return (
+                    <div key={i} className={styles.row} style={{ gap: 6, alignItems: 'center', marginBottom: 5, opacity: noEdge ? 0.5 : 1 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: tpl?.colorOverride ?? PROTOCOL_DOT[tpl?.protocol ?? 'http'], flexShrink: 0 }} />
+                      <select
+                        className={styles.field}
+                        style={{ flex: 1, minWidth: 0 }}
+                        disabled={running}
+                        value={row.templateId}
+                        onChange={e => {
+                          const next = [...dist]
+                          next[i] = { ...row, templateId: Number(e.target.value) }
+                          setDist(next)
+                        }}
+                      >
+                        {templateList.map(t => <option key={t.id} value={t.id}>#{t.id} {t.name}</option>)}
+                      </select>
+                      <input
+                        className={styles.field}
+                        style={{ width: 52 }}
+                        type="number"
+                        min={0}
+                        disabled={running}
+                        value={row.weight}
+                        onChange={e => {
+                          const next = [...dist]
+                          next[i] = { ...row, weight: Math.max(0, Number(e.target.value)) }
+                          setDist(next)
+                        }}
+                      />
+                      <span style={{ fontSize: 10, color: '#64748B', width: 30, textAlign: 'right' }}>{pct}%</span>
+                      <button
+                        className={styles.addLink}
+                        disabled={running}
+                        style={{ color: '#EF4444' }}
+                        onClick={() => setDist(dist.filter((_, j) => j !== i))}
+                        title="Remove"
+                      >×</button>
+                    </div>
+                  )
+                })}
               </div>
             )
           })}
+
           {dist.length < templateList.length && (
             <button className={styles.addLink} disabled={running} onClick={addRow}>+ Add template</button>
           )}
@@ -289,6 +321,8 @@ function NodePanel({ nodeId }: { nodeId: string }) {
         exit={{ opacity: 0, x: 8 }}
         transition={{ duration: 0.18 }}
       >
+        {/* Editing is locked during a run — grey out all config, but keep Live Metrics below live. */}
+        <fieldset disabled={running} style={{ border: 'none', padding: 0, margin: 0, minInlineSize: 0, opacity: running ? 0.5 : 1 }}>
         <div className={styles.section}>
           <div className={styles.sectionLabel}>Identity</div>
           <input
@@ -597,6 +631,7 @@ function NodePanel({ nodeId }: { nodeId: string }) {
             <button className={styles.addLink} onClick={() => setShowNotes(true)}>+ Add notes</button>
           </div>
         )}
+        </fieldset>
 
         {running && nodeHistory && nodeHistory.length > 1 && (
           <div className={styles.section}>

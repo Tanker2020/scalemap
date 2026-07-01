@@ -4,6 +4,7 @@ import { useCanvasStore } from '../../store/canvas.store'
 import { useSimulationStore, type SimEventType, type NodeMetrics, type SimulationRun } from '../../store/simulation.store'
 import { useMetricsHistoryStore } from '../../store/metricsHistory.store'
 import { useReplayStore } from '../../store/replay.store'
+import { useUiStore } from '../../store/ui.store'
 import { DEFAULT_SLO } from '../../simulation/defaults'
 import type { NodeData, NodeType } from '../../../lib/nodeConfig'
 import { computeCost } from '../../../lib/costModel'
@@ -46,6 +47,8 @@ export function SimulationOverlay({ width, height }: Props) {
   const prevSloRef     = useRef<Map<string, boolean>>(new Map())
   const mouseDownRef   = useRef<{ x: number; y: number } | null>(null)
   const setInspectedRequest = useSimulationStore(s => s.setInspectedRequest)
+  const setSelectedNode = useUiStore(s => s.setSelectedNode)
+  const setRightTab     = useUiStore(s => s.setRightTab)
 
   // Peak metric tracking for SimulationRun summary
   const peakRpsRef  = useRef(0)
@@ -272,7 +275,21 @@ export function SimulationOverlay({ width, height }: Props) {
         if (Math.sqrt(dx * dx + dy * dy) >= 5) return  // was a drag, not a click
         const rect = canvasRef.current.getBoundingClientRect()
         const snap = pickParticleAtPoint(e.clientX, e.clientY, rect)
-        setInspectedRequest(snap)  // null clears the panel on a miss
+        if (snap) { setInspectedRequest(snap); return }
+        setInspectedRequest(null)  // missed a particle — clear the inspector
+
+        // The overlay swallows clicks while running, so nodes never get them. On a particle
+        // miss, hit-test the DOM beneath the cursor and select the node there (if any) so its
+        // live-metrics panel opens — editing stays locked, but analytics become viewable.
+        const canvas = canvasRef.current
+        canvas.style.pointerEvents = 'none'
+        const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
+        canvas.style.pointerEvents = 'auto'
+        const nodeId = el?.closest('.react-flow__node')?.getAttribute('data-id')
+        if (nodeId) {
+          setSelectedNode(nodeId)
+          setRightTab('properties')
+        }
       }}
     />
   )

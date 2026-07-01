@@ -186,6 +186,26 @@ export type NewPacketTemplate = DistributiveOmit<PacketTemplate, 'id'>
 
 export type PacketMode = 'generic' | 'custom'
 
+// ─── Packet⇄edge transport compatibility ──────────────────────────────────────
+// An edge's `edgeType` is authoritative for transport physics (sync thread-holding vs async
+// fire-and-forget vs stream backpressure). A packet may only travel an edge whose transport it
+// fits. Single source of truth for the engine spawn filter, the distribution UI, and future
+// routing. request carries http + db; event carries event; stream carries stream.
+const EDGE_PROTOCOLS: Record<EdgeType, PacketProtocol[]> = {
+  request:    ['http', 'db'],
+  event:      ['event'],
+  stream:     ['stream'],
+  dependency: [],
+}
+
+export function protocolsForEdgeType(edgeType: EdgeType): PacketProtocol[] {
+  return EDGE_PROTOCOLS[edgeType] ?? []
+}
+
+export function edgeAcceptsProtocol(edgeType: EdgeType, protocol: PacketProtocol): boolean {
+  return EDGE_PROTOCOLS[edgeType]?.includes(protocol) ?? false
+}
+
 // One weighted reference per node; weights need not sum to 100 (normalized at use).
 export interface PacketDistributionEntry { templateId: number; weight: number }
 

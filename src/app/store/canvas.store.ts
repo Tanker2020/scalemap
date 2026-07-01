@@ -8,7 +8,6 @@ import {
   type EdgeChange,
   type Viewport,
   type Connection,
-  addEdge,
 } from '@xyflow/react'
 import { NODE_CONFIG, GROUPING_TYPES, defaultEdgeConfig } from '../../lib/nodeConfig'
 import type { NodeData, EdgeData, NodeType, EdgeType, PacketTemplate, PacketMode, PacketRegistry, PacketDistributionEntry, NewPacketTemplate } from '../../lib/nodeConfig'
@@ -112,17 +111,18 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   },
 
   onConnect: (connection) => {
+    if (!connection.source || !connection.target) return
     get().pushHistory()
-    set(s => ({
-      edges: addEdge(
-        {
-          ...connection,
-          type: 'request',
-          data: { label: '', edgeType: 'request', throughput: 100, latency: 20, config: defaultEdgeConfig('request') } as EdgeData,
-        },
-        s.edges,
-      ),
-    }))
+    // Append with a unique id instead of addEdge, which dedupes on (source,target,handles) and
+    // would silently drop a second edge between the same pair. Parallel edges are intentional —
+    // a node can have e.g. a request edge AND an event edge to the same target.
+    const newEdge: Edge<EdgeData> = {
+      ...connection,
+      id: nextId('edge'),
+      type: 'request',
+      data: { label: '', edgeType: 'request', throughput: 100, latency: 20, config: defaultEdgeConfig('request') } as EdgeData,
+    }
+    set(s => ({ edges: [...s.edges, newEdge] }))
   },
 
   addNode: (type, position, parentId?) => {

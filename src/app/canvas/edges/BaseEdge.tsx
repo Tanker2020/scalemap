@@ -5,7 +5,24 @@ import {
   type Edge,
 } from '@xyflow/react'
 import type { EdgeData } from '../../../lib/nodeConfig'
+import { useCanvasStore } from '../../store/canvas.store'
 import styles from './edges.module.css'
+
+const PARALLEL_GAP = 22  // px between sibling edges in the same corridor
+
+// A cubic bezier from source→target whose two control points are displaced perpendicular to the
+// straight line by `offset`, so parallel edges in the same corridor bow apart while their
+// endpoints stay anchored to the node handles. Returns the SVG path plus the bowed midpoint.
+function bowedPath(sx: number, sy: number, tx: number, ty: number, offset: number): [string, number, number] {
+  const dx = tx - sx, dy = ty - sy
+  const len = Math.hypot(dx, dy) || 1
+  const nx = -dy / len, ny = dx / len            // unit perpendicular
+  const c1x = sx + dx / 3 + nx * offset, c1y = sy + dy / 3 + ny * offset
+  const c2x = sx + (dx * 2) / 3 + nx * offset, c2y = sy + (dy * 2) / 3 + ny * offset
+  const midX = (sx + tx) / 2 + nx * offset * 0.75
+  const midY = (sy + ty) / 2 + ny * offset * 0.75
+  return [`M${sx},${sy} C${c1x},${c1y} ${c2x},${c2y} ${tx},${ty}`, midX, midY]
+}
 
 type EdgeConfig = {
   color: string
@@ -42,7 +59,8 @@ const EDGE_CONFIG: Record<string, EdgeConfig> = {
 }
 
 export function ScalemapEdge({
-  id, sourceX, sourceY, targetX, targetY,
+  id, source, target,
+  sourceX, sourceY, targetX, targetY,
   sourcePosition, targetPosition,
   data, selected,
 }: EdgeProps<Edge<EdgeData>>) {
@@ -50,10 +68,24 @@ export function ScalemapEdge({
   const edgeType = edgeData?.edgeType ?? 'request'
   const cfg = EDGE_CONFIG[edgeType] ?? EDGE_CONFIG.request
 
-  const [edgePath, labelX, labelY] = getBezierPath({
+  // Fan parallel edges apart: find siblings sharing this unordered {source,target} corridor and
+  // this edge's index among them, then bow by a perpendicular offset. Single edges are unchanged.
+  // Select the stable edges array (not a derived one) so the snapshot stays referentially cached.
+  const allEdges = useCanvasStore(s => s.edges)
+  const siblings = allEdges.filter(e =>
+    (e.source === source && e.target === target) || (e.source === target && e.target === source),
+  )
+  const n = siblings.length
+  const idx = Math.max(0, siblings.findIndex(e => e.id === id))
+  const offset = n > 1 ? (idx - (n - 1) / 2) * PARALLEL_GAP : 0
+
+  const [straightPath, straightLabelX, straightLabelY] = getBezierPath({
     sourceX, sourceY, sourcePosition,
     targetX, targetY, targetPosition,
   })
+  const [edgePath, labelX, labelY] = offset === 0
+    ? [straightPath, straightLabelX, straightLabelY]
+    : bowedPath(sourceX, sourceY, targetX, targetY, offset)
 
   const stroke = selected
     ? cfg.color.replace(/[0-9a-f]{2}$/i, 'cc')
