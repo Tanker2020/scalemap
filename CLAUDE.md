@@ -202,3 +202,6 @@ Rust (`src-tauri/Cargo.toml`): `tauri`, `tauri-plugin-opener`, `tauri-plugin-dia
 - **Terraform import doesn't exist.** If this is picked back up, decide whether to keep parsing client-side or reintroduce a Rust-side `hcl-rs` sidecar before writing code.
 - **`ReportsPanel.tsx` exports aren't persisted to disk** — wire up a Tauri command instead of leaving it browser-only.
 - **Rust commands are a single flat file.** Fine at the current size; revisit modularization only if `commands.rs` becomes hard to navigate.
+
+
+When making changes to the codebase refer to the [module boundaries](docs/module-boundaries.md) document to understand which files are low-risk to modify in parallel and which are high-conflict "hub" files that require careful coordination, and try to utilize codegraph mcp server if possible to understand the fan-in and fan-out of the files you are modifying.
