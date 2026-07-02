@@ -102,7 +102,7 @@
 .label {
   font-size: 12px;
   font-weight: 600;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -112,14 +112,14 @@
 .labelInput {
   font-size: 12px;
   font-weight: 600;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
   background: transparent;
   border: none;
   border-bottom: 1px solid var(--accent, #4A9EFF);
   width: 100%;
   padding: 0;
   outline: none;
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
 }
 
 .subtitle {
