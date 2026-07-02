@@ -28,10 +28,10 @@
   align-items: center;
   gap: 5px;
   padding: 5px 11px;
-  background: #1E2430;
-  border: 1px solid #3A4255;
+  background: var(--color-surface);
+  border: 1px solid var(--color-node-border);
   border-radius: 6px;
-  color: #CBD5E1;
+  color: var(--color-text-secondary);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -40,8 +40,8 @@
 }
 
 .btnPrimary:hover {
-  background: #263044;
-  border-color: #4A9EFF66;
+  background: var(--color-surface-hover);
+  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
   color: var(--color-text-primary);
 }
 
@@ -73,15 +73,15 @@
 }
 
 .btnTool:hover {
-  background: #1A1D25;
+  background: var(--color-surface-hover);
   border-color: var(--color-toolbar-border);
-  color: #E2E8F0;
+  color: var(--color-text-primary);
 }
 
 .btnTool.active {
-  background: #152035;
-  border-color: #4A9EFF55;
-  color: #7DC4FF;
+  background: color-mix(in srgb, var(--color-accent) 13%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 33%, transparent);
+  color: var(--color-accent);
   font-weight: 600;
 }
 
@@ -161,19 +161,19 @@
 
 .btnSettings:hover,
 .btnSettingsOpen {
-  background: #1A1D25;
-  border-color: #4A9EFF44;
-  color: #CBD5E1;
+  background: var(--color-surface-hover);
+  border-color: color-mix(in srgb, var(--color-accent) 27%, transparent);
+  color: var(--color-text-secondary);
 }
 
 .settingsBadge {
   font-size: 9px;
-  color: #7DC4FF;
+  color: var(--color-accent);
   font-weight: 600;
   letter-spacing: 0.03em;
   padding: 1px 5px;
-  background: #0D1F35;
-  border: 1px solid #4A9EFF33;
+  background: color-mix(in srgb, var(--color-accent) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 20%, transparent);
   border-radius: 3px;
 }
 
@@ -218,7 +218,7 @@
 }
 
 .dropdownItem:hover {
-  background: #161A23;
+  background: var(--color-surface-hover);
 }
 
 .dropdownItemIcon {
@@ -232,14 +232,14 @@
   display: block;
   font-size: 11px;
   font-weight: 600;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
   letter-spacing: 0.01em;
 }
 
 .dropdownItemDesc {
   display: block;
   font-size: 10px;
-  color: #475569;
+  color: var(--color-text-muted);
   margin-top: 1px;
   letter-spacing: 0.01em;
 }
@@ -266,7 +266,7 @@
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #475569;
+  color: var(--color-text-muted);
   border-bottom: 1px solid var(--color-canvas-dots);
 }
 
@@ -279,7 +279,7 @@
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: #475569;
+  color: var(--color-text-muted);
   margin-bottom: 7px;
 }
 
@@ -311,14 +311,14 @@
 }
 
 .settingsChip:hover {
-  background: #1A1D25;
-  color: #CBD5E1;
+  background: var(--color-surface-hover);
+  color: var(--color-text-secondary);
 }
 
 .settingsChip.settingsChipActive {
-  background: #152035;
-  border-color: #4A9EFF55;
-  color: #7DC4FF;
+  background: color-mix(in srgb, var(--color-accent) 13%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 33%, transparent);
+  color: var(--color-accent);
   font-weight: 700;
 }
 
@@ -343,27 +343,31 @@
 }
 
 .settingsModeBtn:hover {
-  background: #1A1D25;
-  border-color: #4A9EFF33;
+  background: var(--color-surface-hover);
+  border-color: color-mix(in srgb, var(--color-accent) 20%, transparent);
 }
 
 .settingsModeBtn.settingsModeBtnActive {
-  background: #152035;
-  border-color: #4A9EFF55;
+  background: color-mix(in srgb, var(--color-accent) 13%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 33%, transparent);
 }
 
 .settingsModeName {
   font-size: 11px;
   font-weight: 600;
-  color: #CBD5E1;
+  color: var(--color-text-secondary);
   letter-spacing: 0.01em;
 }
 
 .settingsModeBtn.settingsModeBtnActive .settingsModeName {
-  color: #7DC4FF;
+  color: var(--color-accent);
 }
 
-/* chaos active — purple tint */
+/* chaos active — purple tint. TODO: #A78BFA/#C4B5FD/#1A0F2A are a distinct "messaging/chaos"
+   accent with no corresponding entry in ColorTokens (theme.ts) — CATEGORY_COLORS.messaging
+   exists but isn't exposed as a --color-* custom property, so it can't be referenced from CSS
+   without adding a new token. Left hardcoded (dark-mode-only) pending that decision; flagged in
+   final-review-fix-report.md rather than inventing a token unilaterally. */
 .settingsModeBtn:last-child.settingsModeBtnActive {
   background: #1A0F2A;
   border-color: #A78BFA55;
@@ -375,7 +379,7 @@
 
 .settingsModeDesc {
   font-size: 9px;
-  color: #475569;
+  color: var(--color-text-muted);
   margin-top: 2px;
   letter-spacing: 0.01em;
   line-height: 1.3;
@@ -397,7 +401,7 @@
   border-radius: 4px;
   font-family: var(--font-mono);
   font-size: 9px;
-  color: #475569;
+  color: var(--color-text-muted);
 }
 
 /* ── Inspect button ─────────────────────────────── */
@@ -438,10 +442,10 @@
   align-items: center;
   gap: 7px;
   padding: 5px 12px;
-  background: #1A0808;
-  border: 1px solid #EF444455;
+  background: color-mix(in srgb, var(--color-danger) 10%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, var(--color-danger) 33%, transparent);
   border-radius: 6px;
-  color: #FCA5A5;
+  color: var(--color-danger);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -451,14 +455,14 @@
 }
 
 .btnEnd:hover {
-  background: #2D0B0B;
-  border-color: #EF444488;
+  background: color-mix(in srgb, var(--color-danger) 18%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-danger) 53%, transparent);
 }
 
 .stopIcon {
   width: 8px;
   height: 8px;
-  background: #FCA5A5;
+  background: var(--color-danger);
   border-radius: 1px;
   flex-shrink: 0;
 }
@@ -492,8 +496,13 @@
   transition: background 0.1s, border-color 0.1s, color 0.1s;
 }
 
+/* .btnReportsActive/.reportsBadge/.btnReports:hover text-color use a distinct purple
+   (messaging-family accent, #A78BFA/#C4B5FD) with no corresponding ColorTokens entry — see
+   TODO on .settingsModeBtn:last-child.settingsModeBtnActive above and final-review-fix-report.md.
+   Neutral hover background is theme-aware; the purple foreground/border stays hardcoded pending
+   a token decision. */
 .btnReports:hover {
-  background: #1A1D25;
+  background: var(--color-surface-hover);
   border-color: #A78BFA44;
   color: #C4B5FD;
 }
@@ -535,8 +544,11 @@
   transition: background 0.1s, border-color 0.1s, color 0.1s;
 }
 
+/* Hover foreground/border use a distinct teal (network-family accent, #2DD4BF/#5EEAD4) with no
+   corresponding ColorTokens entry — same category as the messaging-purple TODO above. Neutral
+   hover background is theme-aware; the teal stays hardcoded pending a token decision. */
 .btnDiagnostics:hover {
-  background: #1A1D25;
+  background: var(--color-surface-hover);
   border-color: #2DD4BF44;
   color: #5EEAD4;
 }
@@ -545,8 +557,8 @@
   font-size: 8px;
   font-weight: 700;
   color: var(--color-warning);
-  background: #2A1A00;
-  border: 1px solid #F59E0B66;
+  background: color-mix(in srgb, var(--color-warning) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 40%, transparent);
   border-radius: 9px;
   padding: 0 5px;
   min-width: 16px;
@@ -561,8 +573,8 @@
   display: flex;
   align-items: center;
   gap: 0;
-  background: #0D1A2E;
-  border: 1px solid #4A9EFF33;
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, var(--color-accent) 20%, transparent);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -570,7 +582,7 @@
 .scriptName {
   font-size: 10px;
   font-weight: 600;
-  color: #7DC4FF;
+  color: var(--color-accent);
   background: none;
   border: none;
   padding: 4px 9px;
@@ -584,15 +596,15 @@
 }
 
 .scriptName:hover {
-  color: #BAE6FF;
+  color: color-mix(in srgb, var(--color-accent) 70%, white);
 }
 
 .scriptClose {
   font-size: 12px;
-  color: #475569;
+  color: var(--color-text-muted);
   background: none;
   border: none;
-  border-left: 1px solid #4A9EFF22;
+  border-left: 1px solid color-mix(in srgb, var(--color-accent) 13%, transparent);
   padding: 4px 7px;
   cursor: pointer;
   line-height: 1;
@@ -633,14 +645,14 @@
   padding: 10px 14px;
   font-size: 11px;
   font-weight: 700;
-  color: #CBD5E1;
+  color: var(--color-text-secondary);
   border-bottom: 1px solid var(--color-canvas-dots);
 }
 
 .scriptModalHeader button {
   background: none;
   border: none;
-  color: #475569;
+  color: var(--color-text-muted);
   font-size: 14px;
   cursor: pointer;
 }

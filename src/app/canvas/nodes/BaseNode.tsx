@@ -85,7 +85,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
     ? 'var(--color-danger)'
     : utilization >= 0.5
     ? 'var(--color-warning)'
-    : colors.accent
+    : accentColor
 
   // Lint diagnostics: colour by the most severe issue on this node, tooltip lists them all.
   const hasLintError = !!lintIssues?.some(i => i.severity === 'error')
