@@ -119,7 +119,7 @@ function RetryConfigFields({ config, onChange }: {
         </select>
       </div>
       {config.maxRetries === 0 && (
-        <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
+        <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 2 }}>
           Retries disabled — dropped messages are permanently lost
         </div>
       )}
@@ -268,7 +268,7 @@ function EventConfigForm({ config, running, nodes, onChange }: {
             type="checkbox"
             checked={config.deadLetterRouting}
             onChange={e => onChange({ deadLetterRouting: e.target.checked })}
-            style={{ accentColor: '#2DD4BF' }}
+            style={{ accentColor: 'var(--color-accent)' }}
           />
         </div>
         {config.deadLetterRouting && (
@@ -311,7 +311,7 @@ function DependencyConfigForm({ config, running, onChange }: {
             type="checkbox"
             checked={config.isCritical}
             onChange={e => onChange({ isCritical: e.target.checked })}
-            style={{ accentColor: '#475569' }}
+            style={{ accentColor: 'var(--color-text-muted)' }}
           />
         </div>
         <div className={styles.row}>
@@ -323,14 +323,14 @@ function DependencyConfigForm({ config, running, onChange }: {
               max={100}
               value={Math.round(config.healthPropagation * 100)}
               onChange={e => onChange({ healthPropagation: Number(e.target.value) / 100 })}
-              style={{ flex: 1, accentColor: '#475569' }}
+              style={{ flex: 1, accentColor: 'var(--color-text-muted)' }}
             />
-            <span style={{ fontSize: 11, color: '#94A3B8', whiteSpace: 'nowrap' }}>
+            <span style={{ fontSize: 11, color: 'var(--color-text-secondary)', whiteSpace: 'nowrap' }}>
               {Math.round(config.healthPropagation * 100)}%
             </span>
           </div>
         </div>
-        <div style={{ fontSize: 10, color: '#64748B', marginTop: 4, lineHeight: 1.5 }}>
+        <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 4, lineHeight: 1.5 }}>
           Dependency edges don't carry traffic. If the target is down and this is marked critical,
           the source node's health score is reduced by the propagation factor.
         </div>

@@ -15,10 +15,10 @@ interface Props {
 }
 
 const METRIC_CONFIG: Record<GraphMetric, { label: string; color: string; unit: string; format: (v: number) => string }> = {
-  utilization:  { label: 'Utilization',  color: '#4A9EFF', unit: '%',  format: v => `${Math.round(v * 100)}%` },
-  inRps:        { label: 'Inbound RPS',  color: '#22C55E', unit: 'rps', format: v => v >= 1000 ? `${(v/1000).toFixed(1)}k` : `${Math.round(v)}` },
-  errorRate:    { label: 'Error Rate',   color: '#EF4444', unit: '%',  format: v => `${(v * 100).toFixed(2)}%` },
-  p90LatencyMs: { label: 'P90 Latency', color: '#F59E0B', unit: 'ms', format: v => `${Math.round(v)}ms` },
+  utilization:  { label: 'Utilization',  color: 'var(--color-accent)', unit: '%',  format: v => `${Math.round(v * 100)}%` },
+  inRps:        { label: 'Inbound RPS',  color: 'var(--color-success)', unit: 'rps', format: v => v >= 1000 ? `${(v/1000).toFixed(1)}k` : `${Math.round(v)}` },
+  errorRate:    { label: 'Error Rate',   color: 'var(--color-danger)', unit: '%',  format: v => `${(v * 100).toFixed(2)}%` },
+  p90LatencyMs: { label: 'P90 Latency', color: 'var(--color-warning)', unit: 'ms', format: v => `${Math.round(v)}ms` },
 }
 
 const ALL_METRICS: GraphMetric[] = ['utilization', 'inRps', 'errorRate', 'p90LatencyMs']
@@ -190,7 +190,7 @@ export function MetricGraphOverlay({ nodeId, metric: initialMetric, onClose }: P
                 const y = PAD_T + frac * chartH
                 return (
                   <line key={frac} x1={PAD_L} y1={y} x2={PAD_L + chartW} y2={y}
-                    stroke="#1E2230" strokeWidth="1" />
+                    stroke="var(--color-toolbar-border)" strokeWidth="1" />
                 )
               })}
 
@@ -203,7 +203,7 @@ export function MetricGraphOverlay({ nodeId, metric: initialMetric, onClose }: P
                   const label = METRIC_CONFIG[m].format(val)
                   return (
                     <text key={`y-${frac}`} x={PAD_L - 5} y={y + 4} textAnchor="end"
-                      fontSize="9" fill="#475569">{label}</text>
+                      fontSize="9" fill="var(--color-text-muted)">{label}</text>
                   )
                 })
               })}
@@ -216,7 +216,7 @@ export function MetricGraphOverlay({ nodeId, metric: initialMetric, onClose }: P
                 const x = PAD_L + frac * chartW
                 return (
                   <text key={`x-${frac}`} x={x} y={PAD_T + chartH + 18} textAnchor="middle"
-                    fontSize="9" fill="#334155">{formatTime(snap.t)}</text>
+                    fontSize="9" fill="var(--color-text-muted)">{formatTime(snap.t)}</text>
                 )
               })}
 
@@ -257,7 +257,7 @@ export function MetricGraphOverlay({ nodeId, metric: initialMetric, onClose }: P
                 <line
                   x1={tooltip.x} y1={PAD_T}
                   x2={tooltip.x} y2={PAD_T + chartH}
-                  stroke="#475569" strokeWidth="1" strokeDasharray="2,2"
+                  stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="2,2"
                 />
               )}
 

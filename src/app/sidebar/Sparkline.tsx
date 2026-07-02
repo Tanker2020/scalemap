@@ -8,7 +8,7 @@ interface SparklineProps {
 export function Sparkline({ data, color, height = 32, maxPoints = 60 }: SparklineProps) {
   const points = data.slice(-maxPoints)
   if (points.length < 2) {
-    return <div style={{ height, background: '#111318', borderRadius: 3 }} />
+    return <div style={{ height, background: 'var(--color-surface)', borderRadius: 3 }} />
   }
 
   const max = Math.max(...points, 0.001)
