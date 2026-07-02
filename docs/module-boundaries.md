@@ -69,11 +69,13 @@ Self-contained, already well-factored for parallel work.
 | File | Role |
 |---|---|
 | `src/lib/costModel.ts` (144 lines) | Simulation traffic → monthly cost |
-| `src/lib/cloudRegistry.ts` (263 lines) | Per-provider service/pricing catalog, egress tiers |
+| `src/lib/cloudRegistry.ts` (~295 lines) | Per-provider service/pricing catalog, egress tiers, provider-aware label rewrite (`resolveProviderLabel`) |
 | `src/lib/regionConfig.ts` (58 lines) | Region metadata |
 | `src/app/simulation/CostTracker.tsx` | Renders cost output |
 
 **Blast radius:** `costModel.ts` is imported by `BaseNode.tsx`, `particleEngine.ts`, `nodeConfig.ts`, `PropertiesPanel.tsx` — changing its exported function *signatures* ripples into simulation and node rendering; adding new provider pricing data does not.
+
+**Provider-driven label rewrite (2026-07-02):** `cloudRegistry.ts` exports `resolveProviderLabel(nodeType, provider, currentLabel, genericLabel)`, called from the Cloud Provider `<select>`'s `onChange` in `PropertiesPanel.tsx`'s `NodePanel` (~line 385) alongside the existing `updateNodeData(id, { provider })` call — it now also passes `label: resolveProviderLabel(...)` in the same `updateNodeData` call, so provider and label change atomically (one history/undo entry, not two). No new field was added to `CloudServiceSpec`; the rewrite reuses the existing `serviceName` (e.g. `CLOUD_REGISTRY.ec2.aws.serviceName === 'Amazon EC2'`) that was already there for the "Mapped service" hint text. **Overwrite rule:** the label is only rewritten if it currently equals a "known default" for that node type — either `NODE_CONFIG[nodeType].label` (generic) or any provider's `serviceName` for that node type (so aws → gcp → azure hops keep auto-updating). The instant a user types anything else into the Identity/Label field, that string stops matching any known default and every subsequent provider switch leaves it alone — this is a value-equality heuristic, not a dirty-flag, so a user-typed name that happens to collide with a real service name (e.g. typing "Amazon EC2" by hand) is indistinguishable from an auto-set one and remains rewritable; considered acceptable given how unlikely that collision is. Node types with no `CLOUD_REGISTRY` entry (grouping/orchestration types) never render the Cloud Provider section at all, so they're unaffected. Covered by `src/lib/cloudRegistry.test.ts` (10 cases: default rewrite, provider-hop rewrite, revert-to-generic, custom-label preservation across one and multiple switches, unmapped-type fallback, and three real nodeType×provider mappings). `BaseNode.tsx`'s existing `providerBadge` (small colored pill showing `PROVIDER_LABELS[provider]`) is unrelated and untouched — the badge still shows the short provider name (AWS/GCP/Azure) alongside the now-rewritten main label.
 
 ### E. Packet system (Flyweight templates)
 | File | Role |
