@@ -4,8 +4,8 @@
   min-width: 200px;
   min-height: 120px;
   background: color-mix(in srgb, var(--accent, #475569) 4%, transparent);
-  border: 1.5px dashed color-mix(in srgb, var(--accent, #475569) 40%, transparent);
-  border-radius: 10px;
+  border: 1.5px dashed color-mix(in srgb, var(--color-node-border, #2A2E38) 70%, var(--accent, #475569));
+  border-radius: 12px;
   position: relative;
   transition: border-color 0.15s;
 }

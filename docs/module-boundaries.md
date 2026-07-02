@@ -26,7 +26,7 @@ Nodes/edges CRUD, undo-redo, packet registry, drag/drop.
 | `src/app/store/canvas.store.ts` (249 lines) | Nodes/edges state, history/future undo stack, packet registry |
 | `src/app/canvas/Canvas.tsx` | React Flow wrapper, registers node/edge types |
 | `src/app/canvas/nodes/BaseNode.tsx` | Compute/network/storage node rendering |
-| `src/app/canvas/nodes/GroupNode.tsx` | Container node rendering (VPC/subnet/cluster/etc) |
+| `src/app/canvas/nodes/GroupNode.tsx` | Container node rendering (VPC/subnet/cluster/etc) — deliberately static: same 12px corner-radius family as `BaseNode` (visual resemblance), but no breathing glow/hover-lift/per-category saturation, so containers stay recessive relative to the nodes placed inside them (design-system task 7) |
 | `src/app/canvas/edges/BaseEdge.tsx` | Edge rendering |
 | `src/app/sidebar/PropertiesPanel.tsx`, `ContextMenu.tsx`, `EdgeConfigForm.tsx` | Node/edge property editing UI |
 
@@ -113,7 +113,7 @@ in-flight changes.
 |---|---|---|
 | `src/lib/nodeConfig.ts` (~380 lines) | `NODE_CONFIG` registry — every node type's icon/category/label | **31 files import it** — the single largest fan-in in the repo. `NodeSimConfig` gained two append-only optional fields (`consistencyLevel`, `replicationLagMs`, GitHub #12) — fan-in count unchanged (no new importers), verified via `grep -rln "from '.*nodeConfig'" src` before/after |
 | `src/lib/theme.ts` (28 lines) | `COLORS`/`CATEGORY_COLORS` — small file, but touched by any node/edge visual change | Node rendering, group nodes, panels |
-| `src/app/store/ui.store.ts` | `themeMode: 'dark' \| 'light'` + `setThemeMode` — drives a runtime CSS custom-property bootstrap in `App.tsx` that every panel's CSS module reads via `var(--color-*)`. Persisted to `localStorage` (`scalemap-theme-mode`). Toggled from `Toolbar.tsx` (Sun/Moon button in the Select/Hand/Connect tool cluster) — the only current writer besides the initial bootstrap read | `App.tsx` (bootstrap), `Toolbar.tsx` (toggle UI); read transitively by every CSS module via custom properties, not by direct import |
+| `src/app/store/ui.store.ts` | `themeMode: 'dark' \| 'light'` + `setThemeMode` — drives a runtime CSS custom-property bootstrap in `App.tsx` that every panel's CSS module reads via `var(--color-*)`. Persisted to `localStorage` (`scalemap-theme-mode`). Toggled from `Toolbar.tsx` (Sun/Moon button in the Select/Hand/Connect tool cluster) — the only current writer besides the initial bootstrap read | `App.tsx` (bootstrap), `Toolbar.tsx` (toggle UI); read transitively by every CSS module via custom properties, not by direct import. **Also directly imported** by `BaseNode.tsx` and `GroupNode.tsx` (design-system tasks 6/7) — both read `themeMode` to resolve `CATEGORY_COLORS[category].accent` (dark) vs `.foreground.light` (light) into a per-instance `--accent`/`--node-accent` inline style, since `CATEGORY_COLORS` itself isn't theme-mode-aware the way `DARK_COLORS`/`LIGHT_COLORS` are |
 | `src/app/store/simulation.store.ts` | `NodeMetrics`/`SimEvent`/`SloStatus` shape — anyone adding a new metric touches this | particleEngine, BaseNode, SimConfigPanel, ReportsPanel |
 | `src/app/canvas/simulation/particleEngine.ts` | See §1B — also a hub in the sense that *any* new sim behavior lands here today | N/A (internal, but everyone's diff passes through it) |
 

@@ -4,6 +4,7 @@ import type { NodeData, NodeType } from '../../../lib/nodeConfig'
 import { NODE_CONFIG } from '../../../lib/nodeConfig'
 import { CATEGORY_COLORS } from '../../../lib/theme'
 import { useCanvasStore } from '../../store/canvas.store'
+import { useUiStore } from '../../store/ui.store'
 import styles from './GroupNode.module.css'
 
 export function GroupNode({ id, type, data, selected }: NodeProps) {
@@ -13,6 +14,8 @@ export function GroupNode({ id, type, data, selected }: NodeProps) {
   if (!config) return null
 
   const colors = CATEGORY_COLORS[config.category]
+  const themeMode = useUiStore(s => s.themeMode)
+  const accentColor = themeMode === 'light' ? colors.foreground.light : colors.accent
   const [collapsed, setCollapsed] = useState(false)
   const updateNodeData = useCanvasStore(s => s.updateNodeData)
   const childCount = useCanvasStore(s => s.nodes.filter(n => n.parentId === id).length)
@@ -28,7 +31,7 @@ export function GroupNode({ id, type, data, selected }: NodeProps) {
   return (
     <div
       className={`${styles.group} ${selected ? styles.selected : ''} ${collapsed ? styles.collapsed : ''}`}
-      style={{ '--accent': colors.accent } as React.CSSProperties}
+      style={{ '--accent': accentColor } as React.CSSProperties}
     >
       {!collapsed && (
         <NodeResizer
@@ -39,20 +42,20 @@ export function GroupNode({ id, type, data, selected }: NodeProps) {
             width: 10,
             height: 10,
             borderRadius: '50%',
-            background: colors.accent,
+            background: accentColor,
             border: `2px solid #0D0F12`,
             opacity: 0.85,
           }}
           lineStyle={{
             borderWidth: 1.5,
-            borderColor: `${colors.accent}55`,
+            borderColor: `${accentColor}55`,
             borderStyle: 'solid',
           }}
         />
       )}
 
       <div className={styles.header}>
-        <div className={styles.typeBadge} style={{ color: colors.accent, borderColor: `${colors.accent}44` }}>
+        <div className={styles.typeBadge} style={{ color: accentColor, borderColor: `${accentColor}44` }}>
           {config.label}
         </div>
         {editing ? (
