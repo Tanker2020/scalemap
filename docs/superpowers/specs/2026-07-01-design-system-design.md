@@ -73,7 +73,7 @@ Baseline ambient motion is subtle, not decorative:
 
 Same four category hue families (compute=blue, network=teal, storage=amber, messaging=purple per `CATEGORY_COLORS`), desaturated roughly 15-20% and balanced to closer perceived lightness so no one category visually dominates when several appear on the same diagram — concretely (dark mode): `compute #5B9CF6` (was `#4A9EFF`), `network #3FC7B8` (was `#2DD4BF`), `storage #E0A552` (was `#F5A623`), `messaging #9C8CE0` (was `#A78BFA`). Exact light-mode equivalents follow the same relative desaturation, computed during implementation against the AA-contrast requirement (§ Global Constraints) rather than hand-picked.
 
-`grouping` (currently `#475569`, transparent bg) is unaffected — it was never in the "loud" set.
+`grouping` (transparent bg) was originally assumed unaffected ("never in the loud set"), but its accent value is also used as a foreground/icon-stroke color on `BaseNode`/`GroupNode`, not only as a transparent-bg tint — so it needs its own WCAG-verified value like the other four categories, not an exemption. Dark mode: `#8391A5` (5.49:1 against the dark card surface, up from the original `#475569`'s 2.32:1, which failed AA). Light mode `foreground.light` stays `#475569` (7.58:1 against white — already passing, unaffected).
 
 ## 6. Derived Mechanical Details (spacing, icons, cursors)
 

@@ -99,9 +99,12 @@ describe('WCAG AA contrast — light mode', () => {
     expect(contrastRatio(LIGHT_COLORS.successText, LIGHT_COLORS.nodeBase)).toBeGreaterThanOrEqual(4.5)
   })
 
-  it('every category foreground color passes normal-text AA on the light card surface', () => {
+  it('every category foreground color, including grouping, passes normal-text AA on the light card surface', () => {
+    // No exemptions: every CATEGORY_COLORS entry's foreground is used as a text/icon-stroke
+    // color somewhere (BaseNode/GroupNode), so every one must independently pass AA — an earlier
+    // version of this plan exempted `grouping` on the assumption it only ever renders on a
+    // transparent background, which turned out to be false (task-1 review caught it).
     for (const key of Object.keys(CATEGORY_COLORS) as (keyof typeof CATEGORY_COLORS)[]) {
-      if (key === 'grouping') continue // transparent bg, exempt — never rendered as text on a solid card
       const fg = CATEGORY_COLORS[key].foreground.light
       expect(contrastRatio(fg, LIGHT_COLORS.nodeBase)).toBeGreaterThanOrEqual(4.5)
     }
@@ -114,9 +117,8 @@ describe('WCAG AA contrast — dark mode', () => {
     expect(contrastRatio(DARK_COLORS.textSecondary, DARK_COLORS.nodeBase)).toBeGreaterThanOrEqual(4.5)
   })
 
-  it('every category accent color passes normal-text AA on the dark card surface', () => {
+  it('every category accent color, including grouping, passes normal-text AA on the dark card surface', () => {
     for (const key of Object.keys(CATEGORY_COLORS) as (keyof typeof CATEGORY_COLORS)[]) {
-      if (key === 'grouping') continue
       const accent = CATEGORY_COLORS[key].accent
       expect(contrastRatio(accent, DARK_COLORS.nodeBase)).toBeGreaterThanOrEqual(4.5)
     }
@@ -230,8 +232,12 @@ export const CATEGORY_COLORS = {
     bg: '#0D1F35', border: '#1A3A5C',
   },
   grouping: {
-    accent: '#475569',
-    foreground: { light: '#475569' }, // grouping renders on transparent bg, contrast not applicable
+    accent: '#8391A5',                // 5.49:1 on dark card — was #475569 (2.32:1, failed AA);
+                                       // grouping's accent is used as a foreground/icon-stroke
+                                       // color on BaseNode/GroupNode, not only a transparent-bg
+                                       // tint, so it needs the same AA guarantee every other
+                                       // category gets (task-1 review caught the original value)
+    foreground: { light: '#475569' }, // 7.58:1 on white — already passing, unaffected
     bg: 'transparent', border: '#2A2E38',
   },
 } as const
@@ -688,7 +694,7 @@ git commit -m "feat: apply Living Circuit glassy/glow treatment to BaseNode"
 .group {
   border-radius: 12px;
   border: 1px solid var(--color-node-border);
-  background: color-mix(in srgb, var(--color-grouping-accent, #475569) 4%, transparent);
+  background: color-mix(in srgb, var(--color-grouping-accent, #8391A5) 4%, transparent);
 }
 ```
 
