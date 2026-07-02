@@ -83,6 +83,7 @@ function CanvasInner() {
     contextMenu, setContextMenu, closeContextMenu,
     activeTool, setActiveTool,
     connectSourceId, setConnectSource,
+    highlightedNodeIds,
   } = useUiStore()
   const { running, setInspectedRequest } = useSimulationStore()
   const { setDirty } = useFileStore()
@@ -101,6 +102,18 @@ function CanvasInner() {
     ro.observe(wrapperRef.current)
     return () => ro.disconnect()
   }, [])
+
+  // Diagnostics panel "focus" — pan/zoom to fit whatever node(s) were just highlighted
+  // (a single issue's node, or the whole path for a cycle/deep-sync-chain issue).
+  useEffect(() => {
+    if (highlightedNodeIds.length === 0) return
+    const targets = highlightedNodeIds
+      .map(id => nodes.find(n => n.id === id))
+      .filter((n): n is Node<NodeData> => !!n)
+    if (targets.length === 0) return
+    fitView({ nodes: targets, padding: 0.6, duration: 450, maxZoom: 1.2 })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightedNodeIds])
 
   // Auto-expand group nodes to contain their children
   const expandGroups = useCallback(() => {

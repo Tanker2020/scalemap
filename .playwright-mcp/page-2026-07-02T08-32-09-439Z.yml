@@ -1,0 +1,86 @@
+- generic [ref=f14e3]:
+  - generic [ref=f14e4]:
+    - button "New" [ref=f14e5] [cursor=pointer]:
+      - img [ref=f14e6]
+      - text: New
+    - button "Open" [ref=f14e9] [cursor=pointer]:
+      - img [ref=f14e10]
+      - text: Open
+    - button "Select" [ref=f14e13] [cursor=pointer]:
+      - img [ref=f14e14]
+      - text: Select
+    - button "Hand" [ref=f14e16] [cursor=pointer]:
+      - img [ref=f14e17]
+      - text: Hand
+    - button "Connect" [ref=f14e22] [cursor=pointer]:
+      - img [ref=f14e23]
+      - text: Connect
+    - button "Switch to light mode" [ref=f14e26] [cursor=pointer]:
+      - img [ref=f14e27]
+  - generic [ref=f14e35]:
+    - generic [ref=f14e36]:
+      - generic [ref=f14e37]: scalemap
+      - generic [ref=f14e38]: Infrastructure visualization
+    - generic [ref=f14e39]:
+      - button "New Diagram Start from scratch" [ref=f14e40] [cursor=pointer]:
+        - img [ref=f14e41]
+        - generic [ref=f14e44]: New Diagram
+        - generic [ref=f14e45]: Start from scratch
+      - button "Import Terraform Coming soon" [disabled] [ref=f14e46]:
+        - img [ref=f14e47]
+        - generic [ref=f14e50]: Import Terraform
+        - generic [ref=f14e51]: Coming soon
+    - generic [ref=f14e52]:
+      - generic [ref=f14e53]:
+        - text: Template Vault
+        - generic [ref=f14e54]: 6 templates
+      - generic [ref=f14e55]:
+        - button "network 4 nodes Basic VPC + EC2 Single-region VPC with public subnet, EC2 instance, and Route 53" [ref=f14e56] [cursor=pointer]:
+          - generic [ref=f14e57]:
+            - generic [ref=f14e58]:
+              - img [ref=f14e59]
+              - text: network
+            - generic [ref=f14e64]: 4 nodes
+          - generic [ref=f14e65]: Basic VPC + EC2
+          - generic [ref=f14e66]: Single-region VPC with public subnet, EC2 instance, and Route 53
+        - button "web 5 nodes Load Balanced Cluster ALB distributing traffic across EC2 instances with RDS backend" [ref=f14e67] [cursor=pointer]:
+          - generic [ref=f14e68]:
+            - generic [ref=f14e69]:
+              - img [ref=f14e70]
+              - text: web
+            - generic [ref=f14e73]: 5 nodes
+          - generic [ref=f14e74]: Load Balanced Cluster
+          - generic [ref=f14e75]: ALB distributing traffic across EC2 instances with RDS backend
+        - button "serverless 5 nodes Serverless Stack API Gateway fronting Lambda functions with DynamoDB and S3" [ref=f14e76] [cursor=pointer]:
+          - generic [ref=f14e77]:
+            - generic [ref=f14e78]:
+              - img [ref=f14e79]
+              - text: serverless
+            - generic [ref=f14e81]: 5 nodes
+          - generic [ref=f14e82]: Serverless Stack
+          - generic [ref=f14e83]: API Gateway fronting Lambda functions with DynamoDB and S3
+        - button "serverless 7 nodes Event-Driven Pipeline EventBridge routing to SQS queues consumed by Lambda workers" [ref=f14e84] [cursor=pointer]:
+          - generic [ref=f14e85]:
+            - generic [ref=f14e86]:
+              - img [ref=f14e87]
+              - text: serverless
+            - generic [ref=f14e89]: 7 nodes
+          - generic [ref=f14e90]: Event-Driven Pipeline
+          - generic [ref=f14e91]: EventBridge routing to SQS queues consumed by Lambda workers
+        - button "k8s 8 nodes Kubernetes Microservices EKS cluster with service pods, Redis cache, and RDS Postgres" [ref=f14e92] [cursor=pointer]:
+          - generic [ref=f14e93]:
+            - generic [ref=f14e94]:
+              - img [ref=f14e95]
+              - text: k8s
+            - generic [ref=f14e98]: 8 nodes
+          - generic [ref=f14e99]: Kubernetes Microservices
+          - generic [ref=f14e100]: EKS cluster with service pods, Redis cache, and RDS Postgres
+        - button "data 6 nodes Data Pipeline Kinesis streaming ingestion, Lambda processing, S3 data lake + Redshift" [ref=f14e101] [cursor=pointer]:
+          - generic [ref=f14e102]:
+            - generic [ref=f14e103]:
+              - img [ref=f14e104]
+              - text: data
+            - generic [ref=f14e108]: 6 nodes
+          - generic [ref=f14e109]: Data Pipeline
+          - generic [ref=f14e110]: Kinesis streaming ingestion, Lambda processing, S3 data lake + Redshift
+  - generic [ref=f14e112]: untitled · not yet saved

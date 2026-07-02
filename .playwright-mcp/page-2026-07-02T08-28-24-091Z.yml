@@ -1,0 +1,17 @@
+- generic [ref=f1e3]:
+  - generic [ref=f1e6]:
+    - heading "This site can’t be reached" [level=1] [ref=f1e7]
+    - paragraph [ref=f1e8]:
+      - strong [ref=f1e9]: localhost
+      - text: refused to connect.
+    - generic [ref=f1e10]:
+      - paragraph [ref=f1e11]: "Try:"
+      - list [ref=f1e12]:
+        - listitem [ref=f1e13]: Checking the connection
+        - listitem [ref=f1e14]:
+          - link "Checking the proxy and the firewall" [ref=f1e15] [cursor=pointer]:
+            - /url: "#buttons"
+    - generic [ref=f1e16]: ERR_CONNECTION_REFUSED
+  - generic [ref=f1e17]:
+    - button "Reload" [ref=f1e19] [cursor=pointer]
+    - button "Details" [ref=f1e20] [cursor=pointer]

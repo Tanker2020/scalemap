@@ -1,0 +1,241 @@
+- generic [ref=f14e3]:
+  - generic [ref=f14e4]:
+    - button "New" [ref=f14e5] [cursor=pointer]:
+      - img [ref=f14e6]
+      - text: New
+    - button "Open" [ref=f14e9] [cursor=pointer]:
+      - img [ref=f14e10]
+      - text: Open
+    - button "Save" [ref=f14e109] [cursor=pointer]:
+      - img [ref=f14e110]
+      - text: Save
+    - button "Export" [ref=f14e115] [cursor=pointer]:
+      - img [ref=f14e116]
+      - text: Export
+      - img [ref=f14e119]
+    - button "Import" [ref=f14e122] [cursor=pointer]:
+      - img [ref=f14e123]
+      - text: Import
+      - img [ref=f14e126]
+    - button "Select" [ref=f14e13] [cursor=pointer]:
+      - img [ref=f14e14]
+      - text: Select
+    - button "Hand" [ref=f14e16] [cursor=pointer]:
+      - img [ref=f14e17]
+      - text: Hand
+    - button "Connect" [ref=f14e22] [cursor=pointer]:
+      - img [ref=f14e23]
+      - text: Connect
+    - button "Switch to dark mode" [ref=f14e26] [cursor=pointer]:
+      - img [ref=f14e27]
+    - button "Undo" [ref=f14e129] [cursor=pointer]
+    - button "Redo" [ref=f14e130] [cursor=pointer]
+    - button "Inspect" [ref=f14e131] [cursor=pointer]:
+      - img [ref=f14e132]
+      - text: Inspect
+    - button "Reports" [ref=f14e133] [cursor=pointer]:
+      - img [ref=f14e134]
+      - text: Reports
+    - button "Packets" [ref=f14e137] [cursor=pointer]:
+      - img [ref=f14e138]
+      - text: Packets
+    - button "Diagnostics" [ref=f14e142] [cursor=pointer]:
+      - img [ref=f14e143]
+      - text: Diagnostics
+    - generic [ref=f14e147]:
+      - button "Simulate" [ref=f14e148] [cursor=pointer]: Simulate
+      - button "Simulation settings — speed, traffic mode, volume" [ref=f14e150] [cursor=pointer]:
+        - img [ref=f14e151]
+  - generic [ref=f14e29]:
+    - complementary [ref=f14e153]:
+      - generic [ref=f14e154]:
+        - img [ref=f14e155]
+        - text: Node Palette
+      - textbox "Search nodes..." [ref=f14e161]
+      - generic [ref=f14e162]:
+        - generic [ref=f14e163]:
+          - generic [ref=f14e164]: Compute
+          - generic "Drag to add EC2 / VM" [ref=f14e165]:
+            - img [ref=f14e167]
+            - generic [ref=f14e170]: EC2 / VM
+          - generic "Drag to add Lambda" [ref=f14e171]:
+            - img [ref=f14e173]
+            - generic [ref=f14e175]: Lambda
+          - generic "Drag to add Pod" [ref=f14e176]:
+            - img [ref=f14e178]
+            - generic [ref=f14e180]: Pod
+        - generic [ref=f14e181]:
+          - generic [ref=f14e182]: Network
+          - generic "Drag to add Load Balancer" [ref=f14e183]:
+            - img [ref=f14e185]
+            - generic [ref=f14e189]: Load Balancer
+          - generic "Drag to add API Gateway" [ref=f14e190]:
+            - img [ref=f14e192]
+            - generic [ref=f14e195]: API Gateway
+          - generic "Drag to add CDN" [ref=f14e196]:
+            - img [ref=f14e198]
+            - generic [ref=f14e202]: CDN
+          - generic "Drag to add DNS" [ref=f14e203]:
+            - img [ref=f14e205]
+            - generic [ref=f14e208]: DNS
+          - generic "Drag to add Firewall" [ref=f14e209]:
+            - img [ref=f14e211]
+            - generic [ref=f14e213]: Firewall
+          - generic "Drag to add VPN" [ref=f14e214]:
+            - img [ref=f14e216]
+            - generic [ref=f14e219]: VPN
+        - generic [ref=f14e220]:
+          - generic [ref=f14e221]: Storage
+          - generic "Drag to add Database (SQL)" [ref=f14e222]:
+            - img [ref=f14e224]
+            - generic [ref=f14e228]: Database (SQL)
+          - generic "Drag to add Database (NoSQL)" [ref=f14e229]:
+            - img [ref=f14e231]
+            - generic [ref=f14e235]: Database (NoSQL)
+          - generic "Drag to add Object Storage" [ref=f14e236]:
+            - img [ref=f14e238]
+            - generic [ref=f14e241]: Object Storage
+          - generic "Drag to add File Storage" [ref=f14e242]:
+            - img [ref=f14e244]
+            - generic [ref=f14e246]: File Storage
+        - generic [ref=f14e247]:
+          - generic [ref=f14e248]: Messaging
+          - generic "Drag to add Message Queue" [ref=f14e249]:
+            - img [ref=f14e251]
+            - generic [ref=f14e252]: Message Queue
+          - generic "Drag to add Event Bus" [ref=f14e253]:
+            - img [ref=f14e255]
+            - generic [ref=f14e261]: Event Bus
+          - generic "Drag to add Pub/Sub Topic" [ref=f14e262]:
+            - img [ref=f14e264]
+            - generic [ref=f14e270]: Pub/Sub Topic
+          - generic "Drag to add Stream (Kafka)" [ref=f14e271]:
+            - img [ref=f14e273]
+            - generic [ref=f14e275]: Stream (Kafka)
+        - generic [ref=f14e276]:
+          - generic [ref=f14e277]: Caching
+          - generic "Drag to add Redis" [ref=f14e278]:
+            - img [ref=f14e280]
+            - generic [ref=f14e284]: Redis
+          - generic "Drag to add Memcached" [ref=f14e285]:
+            - img [ref=f14e287]
+            - generic [ref=f14e291]: Memcached
+          - generic "Drag to add CDN Cache" [ref=f14e292]:
+            - img [ref=f14e294]
+            - generic [ref=f14e298]: CDN Cache
+        - generic [ref=f14e299]:
+          - generic [ref=f14e300]: Orchestration
+          - generic "Drag to add K8s Cluster" [ref=f14e301]:
+            - img [ref=f14e303]
+            - generic [ref=f14e306]: K8s Cluster
+          - generic "Drag to add ECS Cluster" [ref=f14e307]:
+            - img [ref=f14e309]
+            - generic [ref=f14e312]: ECS Cluster
+          - generic "Drag to add Docker Compose" [ref=f14e313]:
+            - img [ref=f14e315]
+            - generic [ref=f14e319]: Docker Compose
+        - generic [ref=f14e320]:
+          - generic [ref=f14e321]: Grouping
+          - generic "Drag to add VPC" [ref=f14e322]:
+            - img [ref=f14e324]
+            - generic [ref=f14e326]: VPC
+          - generic "Drag to add Subnet" [ref=f14e327]:
+            - img [ref=f14e329]
+            - generic [ref=f14e331]: Subnet
+          - generic "Drag to add Availability Zone" [ref=f14e332]:
+            - img [ref=f14e334]
+            - generic [ref=f14e336]: Availability Zone
+          - generic "Drag to add Region" [ref=f14e337]:
+            - img [ref=f14e339]
+            - generic [ref=f14e341]: Region
+          - generic "Drag to add Namespace" [ref=f14e342]:
+            - img [ref=f14e344]
+            - generic [ref=f14e346]: Namespace
+    - application [ref=f14e349]:
+      - generic [ref=f14e351] [cursor=pointer]:
+        - generic:
+          - generic:
+            - img:
+              - group "Edge from lb-cdn to lb-alb" [ref=f14e352]:
+                - img
+            - img:
+              - group "Edge from lb-alb to lb-ec1" [ref=f14e355]:
+                - img
+            - img:
+              - group "Edge from lb-alb to lb-ec2" [ref=f14e358]:
+                - img
+            - img:
+              - group "Edge from lb-ec1 to lb-db" [ref=f14e361]:
+                - img
+            - img:
+              - group "Edge from lb-ec2 to lb-db" [ref=f14e364]:
+                - img
+          - generic:
+            - group [ref=f14e367]:
+              - generic [ref=f14e368]:
+                - img [ref=f14e374]
+                - generic [ref=f14e378]:
+                  - generic [ref=f14e379]: CloudFront
+                  - generic [ref=f14e380]: CDN layer
+            - group [ref=f14e383]:
+              - generic [ref=f14e384]:
+                - img [ref=f14e390]
+                - generic [ref=f14e394]:
+                  - generic [ref=f14e395]: App Load Balancer
+                  - generic [ref=f14e396]: ALB
+            - group [ref=f14e399]:
+              - generic [ref=f14e400]:
+                - img [ref=f14e406]
+                - generic [ref=f14e409]:
+                  - generic [ref=f14e410]: app-server-1
+                  - generic [ref=f14e411]: t3.medium
+            - group [ref=f14e414]:
+              - generic [ref=f14e415]:
+                - img [ref=f14e421]
+                - generic [ref=f14e424]:
+                  - generic [ref=f14e425]: app-server-2
+                  - generic [ref=f14e426]: t3.medium
+            - group [ref=f14e429]:
+              - generic [ref=f14e430]:
+                - img [ref=f14e436]
+                - generic [ref=f14e440]:
+                  - generic [ref=f14e441]: RDS Postgres
+                  - generic [ref=f14e442]: db.t3.large
+      - img
+      - img "Mini Map" [ref=f14e446]
+    - complementary [ref=f14e454]:
+      - generic [ref=f14e455]:
+        - button "Properties" [ref=f14e456] [cursor=pointer]
+        - button "Analytics" [ref=f14e457] [cursor=pointer]
+      - generic [ref=f14e458]: Select a node or edge to view its properties
+  - generic [ref=f14e108]: ● unsaved
+  - generic [ref=f14e460]:
+    - generic [ref=f14e461]:
+      - generic [ref=f14e462]:
+        - img [ref=f14e463]
+        - text: Packet Templates
+      - group [ref=f14e467]:
+        - generic [ref=f14e468]:
+          - button "Generic" [ref=f14e469] [cursor=pointer]
+          - button "Custom" [ref=f14e470] [cursor=pointer]
+      - button "Close" [ref=f14e471] [cursor=pointer]:
+        - img [ref=f14e472]
+    - generic [ref=f14e475]:
+      - text: Generic mode — all requests are uniform. Switch to
+      - strong [ref=f14e476]: Custom
+      - text: to use the templates below and assign traffic mixes per node.
+    - generic [ref=f14e477]:
+      - generic [ref=f14e478]:
+        - generic [ref=f14e480]: No templates yet. Add one to get started.
+        - group [ref=f14e481]:
+          - generic [ref=f14e482]:
+            - button "Add Packet" [active] [ref=f14e483] [cursor=pointer]:
+              - img [ref=f14e484]
+              - text: Add Packet
+            - generic [ref=f14e488]:
+              - button "HTTP" [ref=f14e489] [cursor=pointer]: HTTP
+              - button "Event" [ref=f14e491] [cursor=pointer]: Event
+              - button "Stream" [ref=f14e493] [cursor=pointer]: Stream
+              - button "DB" [ref=f14e495] [cursor=pointer]: DB
+      - group [ref=f14e485]:
+        - generic [ref=f14e487]: Select or add a template to edit it.

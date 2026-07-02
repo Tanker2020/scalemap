@@ -1,0 +1,164 @@
+- generic [ref=f18e3]:
+  - generic [ref=f18e4]:
+    - button "New" [ref=f18e5] [cursor=pointer]:
+      - img [ref=f18e6]
+      - text: New
+    - button "Open" [ref=f18e9] [cursor=pointer]:
+      - img [ref=f18e10]
+      - text: Open
+    - button "Save" [ref=f18e105] [cursor=pointer]:
+      - img [ref=f18e106]
+      - text: Save
+    - button "Export" [ref=f18e111] [cursor=pointer]:
+      - img [ref=f18e112]
+      - text: Export
+      - img [ref=f18e115]
+    - button "Import" [ref=f18e118] [cursor=pointer]:
+      - img [ref=f18e119]
+      - text: Import
+      - img [ref=f18e122]
+    - button "Select" [ref=f18e13] [cursor=pointer]:
+      - img [ref=f18e14]
+      - text: Select
+    - button "Hand" [ref=f18e16] [cursor=pointer]:
+      - img [ref=f18e17]
+      - text: Hand
+    - button "Connect" [ref=f18e22] [cursor=pointer]:
+      - img [ref=f18e23]
+      - text: Connect
+    - button "Undo" [ref=f18e125] [cursor=pointer]
+    - button "Redo" [ref=f18e126] [cursor=pointer]
+    - button "Inspect" [ref=f18e127] [cursor=pointer]:
+      - img [ref=f18e128]
+      - text: Inspect
+    - button "Reports" [ref=f18e129] [cursor=pointer]:
+      - img [ref=f18e130]
+      - text: Reports
+    - button "Packets" [ref=f18e133] [cursor=pointer]:
+      - img [ref=f18e134]
+      - text: Packets
+    - button "Diagnostics" [ref=f18e138] [cursor=pointer]:
+      - img [ref=f18e139]
+      - text: Diagnostics
+    - generic [ref=f18e143]:
+      - button "Simulate" [ref=f18e144] [cursor=pointer]: Simulate
+      - button "Simulation settings — speed, traffic mode, volume" [ref=f18e146] [cursor=pointer]:
+        - img [ref=f18e147]
+  - generic [ref=f18e25]:
+    - complementary [ref=f18e149]:
+      - generic [ref=f18e150]:
+        - img [ref=f18e151]
+        - text: Node Palette
+      - textbox "Search nodes..." [ref=f18e157]
+      - generic [ref=f18e158]:
+        - generic [ref=f18e159]:
+          - generic [ref=f18e160]: Compute
+          - generic "Drag to add EC2 / VM" [ref=f18e161]:
+            - img [ref=f18e163]
+            - generic [ref=f18e166]: EC2 / VM
+          - generic "Drag to add Lambda" [ref=f18e167]:
+            - img [ref=f18e169]
+            - generic [ref=f18e171]: Lambda
+          - generic "Drag to add Pod" [ref=f18e172]:
+            - img [ref=f18e174]
+            - generic [ref=f18e176]: Pod
+        - generic [ref=f18e177]:
+          - generic [ref=f18e178]: Network
+          - generic "Drag to add Load Balancer" [ref=f18e179]:
+            - img [ref=f18e181]
+            - generic [ref=f18e185]: Load Balancer
+          - generic "Drag to add API Gateway" [ref=f18e186]:
+            - img [ref=f18e188]
+            - generic [ref=f18e191]: API Gateway
+          - generic "Drag to add CDN" [ref=f18e192]:
+            - img [ref=f18e194]
+            - generic [ref=f18e198]: CDN
+          - generic "Drag to add DNS" [ref=f18e199]:
+            - img [ref=f18e201]
+            - generic [ref=f18e204]: DNS
+          - generic "Drag to add Firewall" [ref=f18e205]:
+            - img [ref=f18e207]
+            - generic [ref=f18e209]: Firewall
+          - generic "Drag to add VPN" [ref=f18e210]:
+            - img [ref=f18e212]
+            - generic [ref=f18e215]: VPN
+        - generic [ref=f18e216]:
+          - generic [ref=f18e217]: Storage
+          - generic "Drag to add Database (SQL)" [ref=f18e218]:
+            - img [ref=f18e220]
+            - generic [ref=f18e224]: Database (SQL)
+          - generic "Drag to add Database (NoSQL)" [ref=f18e225]:
+            - img [ref=f18e227]
+            - generic [ref=f18e231]: Database (NoSQL)
+          - generic "Drag to add Object Storage" [ref=f18e232]:
+            - img [ref=f18e234]
+            - generic [ref=f18e237]: Object Storage
+          - generic "Drag to add File Storage" [ref=f18e238]:
+            - img [ref=f18e240]
+            - generic [ref=f18e242]: File Storage
+        - generic [ref=f18e243]:
+          - generic [ref=f18e244]: Messaging
+          - generic "Drag to add Message Queue" [ref=f18e245]:
+            - img [ref=f18e247]
+            - generic [ref=f18e248]: Message Queue
+          - generic "Drag to add Event Bus" [ref=f18e249]:
+            - img [ref=f18e251]
+            - generic [ref=f18e257]: Event Bus
+          - generic "Drag to add Pub/Sub Topic" [ref=f18e258]:
+            - img [ref=f18e260]
+            - generic [ref=f18e266]: Pub/Sub Topic
+          - generic "Drag to add Stream (Kafka)" [ref=f18e267]:
+            - img [ref=f18e269]
+            - generic [ref=f18e271]: Stream (Kafka)
+        - generic [ref=f18e272]:
+          - generic [ref=f18e273]: Caching
+          - generic "Drag to add Redis" [ref=f18e274]:
+            - img [ref=f18e276]
+            - generic [ref=f18e280]: Redis
+          - generic "Drag to add Memcached" [ref=f18e281]:
+            - img [ref=f18e283]
+            - generic [ref=f18e287]: Memcached
+          - generic "Drag to add CDN Cache" [ref=f18e288]:
+            - img [ref=f18e290]
+            - generic [ref=f18e294]: CDN Cache
+        - generic [ref=f18e295]:
+          - generic [ref=f18e296]: Orchestration
+          - generic "Drag to add K8s Cluster" [ref=f18e297]:
+            - img [ref=f18e299]
+            - generic [ref=f18e302]: K8s Cluster
+          - generic "Drag to add ECS Cluster" [ref=f18e303]:
+            - img [ref=f18e305]
+            - generic [ref=f18e308]: ECS Cluster
+          - generic "Drag to add Docker Compose" [ref=f18e309]:
+            - img [ref=f18e311]
+            - generic [ref=f18e315]: Docker Compose
+        - generic [ref=f18e316]:
+          - generic [ref=f18e317]: Grouping
+          - generic "Drag to add VPC" [ref=f18e318]:
+            - img [ref=f18e320]
+            - generic [ref=f18e322]: VPC
+          - generic "Drag to add Subnet" [ref=f18e323]:
+            - img [ref=f18e325]
+            - generic [ref=f18e327]: Subnet
+          - generic "Drag to add Availability Zone" [ref=f18e328]:
+            - img [ref=f18e330]
+            - generic [ref=f18e332]: Availability Zone
+          - generic "Drag to add Region" [ref=f18e333]:
+            - img [ref=f18e335]
+            - generic [ref=f18e337]: Region
+          - generic "Drag to add Namespace" [ref=f18e338]:
+            - img [ref=f18e340]
+            - generic [ref=f18e342]: Namespace
+    - application [ref=f18e345]:
+      - group [ref=f18e357]:
+        - generic [ref=f18e358]:
+          - img [ref=f18e364]
+          - generic [ref=f18e368]: EC2 / VM
+      - img
+      - img "Mini Map" [ref=f18e349]
+    - complementary [ref=f18e352]:
+      - generic [ref=f18e353]:
+        - button "Properties" [ref=f18e354] [cursor=pointer]
+        - button "Analytics" [ref=f18e355] [cursor=pointer]
+      - generic [ref=f18e356]: Select a node or edge to view its properties
+  - generic [ref=f18e104]: ● unsaved

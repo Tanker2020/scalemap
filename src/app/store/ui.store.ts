@@ -22,6 +22,7 @@ interface UiStore {
   dockOpen: boolean
   dockTab: DockTab
   packetEditorOpen: boolean
+  highlightedNodeIds: string[]   // transient "look here" pulse driven by the diagnostics panel
   themeMode: 'dark' | 'light'
 
   setActiveTool: (tool: ActiveTool) => void
@@ -38,6 +39,7 @@ interface UiStore {
   /** Opens the dock on a specific tab (switches tab even if already open). */
   openDockTab: (tab: DockTab) => void
   setPacketEditorOpen: (open: boolean) => void
+  setHighlightedNodes: (ids: string[]) => void
   setThemeMode: (mode: 'dark' | 'light') => void
 }
 
@@ -56,6 +58,7 @@ export const useUiStore = create<UiStore>((set) => ({
   dockOpen: false,
   dockTab: 'diagnostics',
   packetEditorOpen: false,
+  highlightedNodeIds: [],
   themeMode: (localStorage.getItem('scalemap-theme-mode') as 'dark' | 'light') ?? 'dark',
 
   setActiveTool: (tool) => set({ activeTool: tool, connectSourceId: null }),
@@ -71,6 +74,7 @@ export const useUiStore = create<UiStore>((set) => ({
   setDockOpen: (open) => set({ dockOpen: open }),
   openDockTab: (tab) => set({ dockOpen: true, dockTab: tab }),
   setPacketEditorOpen: (open) => set({ packetEditorOpen: open }),
+  setHighlightedNodes: (ids) => set({ highlightedNodeIds: ids }),
   setThemeMode: (mode) => {
     localStorage.setItem('scalemap-theme-mode', mode)
     set({ themeMode: mode })

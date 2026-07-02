@@ -56,14 +56,14 @@ Self-contained, already well-factored for parallel work.
 
 | File | Role |
 |---|---|
-| `src/lib/lint/types.ts` | `LintIssue`/`LintRule`/`LintContext` types |
-| `src/lib/lint/rules.ts` (301 lines) | 9 rules + `LINT_RULES` registry array |
+| `src/lib/lint/types.ts` | `LintIssue`/`LintRule`/`LintContext` types — `LintIssue` gained an optional `path?: string[]` field (2026-07-02, diagnostics redesign) — ordered node ids for chain-shaped issues, purely additive, no existing consumer needs updating to keep compiling |
+| `src/lib/lint/rules.ts` (~310 lines) | 9 rules + `LINT_RULES` registry array. `circularDependency` now populates `path` with the detected cycle (data it already computed); `deepSyncChain` now tracks the actual longest-path predecessor chain (previously only tracked `depth` as a number) and populates `path` with it. Neither rule's *detection* logic changed — same issues, same count, same existing fields; `rules.test.ts` required no changes |
 | `src/lib/lint/lintGraph.ts` | Builds adjacency once, runs registry |
 | `src/lib/lint/classify.ts` | Node-type classification helpers (`isCompute`, `isDatabase`, ...) |
-| `src/app/diagnostics/DiagnosticsPanel.tsx` | Renders the issue list (filter chips + issue cards) — **no longer owns its own right-edge chrome**, see §H below |
+| `src/app/diagnostics/DiagnosticsPanel.tsx` | Redesigned 2026-07-02: groups issues by `ruleId` into collapsible sections (`RULE_META` presentation table maps `ruleId` → title/icon — update this alongside `rules.ts` if a rule's `ruleId` changes, else it silently falls back to a generic "Other Findings" group), renders a severity summary strip, an inline chip-strip path visualization for any issue with a `path` (click a chip to focus just that node), and a rewarding empty-state (glow ring + "N checks passed"). Clicking an issue now calls `useUiStore.setHighlightedNodes()` in addition to the existing `setSelectedNode()`. **No longer owns its own right-edge chrome** (position, header, close button, Escape-to-close) — mounted inside `UtilityDock.tsx`'s shared shell, see §H below |
 | `src/app/store/diagnostics.store.ts` | Issue list + nodeId index |
 
-**Blast radius:** low and well-isolated. `lintGraph` has 2 callers (`Toolbar.tsx`). Each rule in `rules.ts` is an independent pure function appended to one array — **two people adding two different rules will only conflict on the `LINT_RULES = [...]` array line**, not on rule logic. Good candidate for genuinely parallel work with near-zero conflict risk already.
+**Blast radius:** low and well-isolated. `lintGraph` has 2 callers (`Toolbar.tsx`). Each rule in `rules.ts` is an independent pure function appended to one array — **two people adding two different rules will only conflict on the `LINT_RULES = [...]` array line**, not on rule logic. Good candidate for genuinely parallel work with near-zero conflict risk already. **New cross-boundary link (2026-07-02):** `DiagnosticsPanel.tsx` now reaches into `src/app/store/ui.store.ts` (`highlightedNodeIds`/`setHighlightedNodes`, additive fields) and that state is read by `src/app/canvas/nodes/BaseNode.tsx` (renders a `.diagnosticPulse` ring, see `BaseNode.module.css`) and `src/app/canvas/Canvas.tsx` (a small `useEffect` calls React Flow's `fitView` scoped to the highlighted node ids on change). This is a one-way, additive dependency — Diagnostics writes, Canvas/BaseNode read — not a restructuring of canvas state; nothing in §A above changed shape.
 
 ### D. Cost modeling & cloud pricing
 | File | Role |
