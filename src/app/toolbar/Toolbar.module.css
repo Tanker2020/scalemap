@@ -363,18 +363,19 @@
   color: var(--color-accent);
 }
 
-/* chaos active — purple tint. TODO: #A78BFA/#C4B5FD/#1A0F2A are a distinct "messaging/chaos"
-   accent with no corresponding entry in ColorTokens (theme.ts) — CATEGORY_COLORS.messaging
-   exists but isn't exposed as a --color-* custom property, so it can't be referenced from CSS
-   without adding a new token. Left hardcoded (dark-mode-only) pending that decision; flagged in
-   final-review-fix-report.md rather than inventing a token unilaterally. */
+/* chaos active — purple tint, resolved from the TODO left in final-review-fix-report.md.
+   No --color-messaging token exists in ColorTokens (theme.ts), so rather than inventing one,
+   the background/border blend the brand purple against the theme's own surface color via
+   color-mix() (stays legible and reactive in both modes) and the text reuses --color-accent
+   (guaranteed-AA), matching the same "brand border, theme-safe text" treatment used on
+   .btnReports:hover below. */
 .settingsModeBtn:last-child.settingsModeBtnActive {
-  background: #1A0F2A;
-  border-color: #A78BFA55;
+  background: color-mix(in srgb, #A78BFA 16%, var(--color-surface-hover));
+  border-color: color-mix(in srgb, #A78BFA 40%, transparent);
 }
 
 .settingsModeBtn:last-child.settingsModeBtnActive .settingsModeName {
-  color: #C4B5FD;
+  color: var(--color-accent);
 }
 
 .settingsModeDesc {
@@ -497,12 +498,11 @@
 }
 
 /* .btnReportsActive/.reportsBadge use a distinct purple (messaging-family accent,
-   #A78BFA/#C4B5FD) with no corresponding ColorTokens entry — see TODO on
+   #A78BFA) with no corresponding ColorTokens entry — see resolved note on
    .settingsModeBtn:last-child.settingsModeBtnActive above and final-review-fix-report.md.
-   Those two are self-contained opaque-dark chips (legible in both modes regardless of theme).
-   .btnReports:hover's TEXT was the one genuine light-mode legibility break (final-branch-review
-   finding): the pale purple read at ~1.7:1 against the theme-aware light hover background.
-   Border keeps the brand hue (decorative, not text); text uses the theme-aware primary color. */
+   The prior near-black background/pale text combo was NOT actually theme-safe (it reads as a
+   dark blob once the surrounding toolbar goes light) — same fix applied here: brand purple
+   blended against the theme's own surface via color-mix(), text on --color-accent. */
 .btnReports:hover {
   background: var(--color-surface-hover);
   border-color: #A78BFA44;
@@ -510,17 +510,17 @@
 }
 
 .btnReportsActive {
-  background: #1A0F2A;
-  border-color: #A78BFA66;
-  color: #C4B5FD;
+  background: color-mix(in srgb, #A78BFA 16%, var(--color-surface-hover));
+  border-color: color-mix(in srgb, #A78BFA 40%, transparent);
+  color: var(--color-accent);
 }
 
 .reportsBadge {
   font-size: 8px;
   font-weight: 700;
-  color: #A78BFA;
-  background: #2E1065;
-  border: 1px solid #A78BFA44;
+  color: var(--color-accent);
+  background: color-mix(in srgb, #A78BFA 20%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, #A78BFA 40%, transparent);
   border-radius: 9px;
   padding: 0 5px;
   min-width: 16px;

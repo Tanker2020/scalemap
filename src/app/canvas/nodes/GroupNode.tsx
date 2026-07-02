@@ -4,6 +4,7 @@ import type { NodeData, NodeType } from '../../../lib/nodeConfig'
 import { NODE_CONFIG } from '../../../lib/nodeConfig'
 import { CATEGORY_COLORS } from '../../../lib/theme'
 import { useCanvasStore } from '../../store/canvas.store'
+import { useSimulationStore } from '../../store/simulation.store'
 import { useUiStore } from '../../store/ui.store'
 import styles from './GroupNode.module.css'
 
@@ -16,6 +17,7 @@ export function GroupNode({ id, type, data, selected }: NodeProps) {
   const colors = CATEGORY_COLORS[config.category]
   const themeMode = useUiStore(s => s.themeMode)
   const accentColor = themeMode === 'light' ? colors.foreground.light : colors.accent
+  const running = useSimulationStore(s => s.running)
   const [collapsed, setCollapsed] = useState(false)
   const updateNodeData = useCanvasStore(s => s.updateNodeData)
   const childCount = useCanvasStore(s => s.nodes.filter(n => n.parentId === id).length)
@@ -33,17 +35,20 @@ export function GroupNode({ id, type, data, selected }: NodeProps) {
       className={`${styles.group} ${selected ? styles.selected : ''} ${collapsed ? styles.collapsed : ''}`}
       style={{ '--accent': accentColor } as React.CSSProperties}
     >
+      {/* Resize handles are structural edits — locked while a simulation is running, same as
+          node drag/connect. isVisible (not conditional render) so ReactFlow keeps its internal
+          resize-observer mounted across running toggles. */}
       {!collapsed && (
         <NodeResizer
           minWidth={200}
           minHeight={120}
-          isVisible={selected}
+          isVisible={selected && !running}
           handleStyle={{
             width: 10,
             height: 10,
             borderRadius: '50%',
             background: accentColor,
-            border: `2px solid #0D0F12`,
+            border: '2px solid var(--color-canvas)',
             opacity: 0.85,
           }}
           lineStyle={{
@@ -71,7 +76,10 @@ export function GroupNode({ id, type, data, selected }: NodeProps) {
             }}
           />
         ) : (
-          <span className={styles.label} onDoubleClick={() => setEditing(true)}>
+          <span
+            className={styles.label}
+            onDoubleClick={() => { if (!running) setEditing(true) }}
+          >
             {nodeData.label}
           </span>
         )}

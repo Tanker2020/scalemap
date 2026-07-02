@@ -44,8 +44,8 @@
   left: 50%;
   transform: translateX(-50%);
   background: var(--color-node-base);
-  border: 1px solid #22C55E44;
-  color: #86EFAC;
+  border: 1px solid color-mix(in srgb, var(--color-success) 27%, transparent);
+  color: var(--color-success-text);
   font-size: 11px;
   padding: 6px 14px;
   border-radius: 20px;
@@ -57,8 +57,8 @@
 }
 
 .connectHint kbd {
-  background: #22C55E22;
-  border: 1px solid #22C55E44;
+  background: color-mix(in srgb, var(--color-success) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-success) 27%, transparent);
   border-radius: 3px;
   padding: 1px 5px;
   font-family: var(--font-mono);
@@ -101,7 +101,7 @@
   transform: translateX(-50%);
   background: color-mix(in srgb, var(--color-canvas) 80%, transparent);
   border: 1px solid #A78BFA44;
-  color: #C4B5FD;
+  color: var(--color-text-primary);
   font-size: 10px;
   letter-spacing: 0.04em;
   padding: 4px 12px;

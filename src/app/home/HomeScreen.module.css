@@ -4,7 +4,7 @@
   align-items: center;
   justify-content: center;
   background: var(--color-canvas);
-  background-image: radial-gradient(circle at 50% 40%, #0D1F3510 0%, transparent 60%);
+  background-image: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--color-accent) 6%, transparent) 0%, transparent 60%);
 }
 
 .inner {
@@ -25,7 +25,7 @@
   display: block;
   font-size: 32px;
   font-weight: 700;
-  color: #F1F5F9;
+  color: var(--color-text-primary);
   letter-spacing: -0.02em;
 }
 
@@ -60,9 +60,9 @@
 }
 
 .actionBtn:hover:not(:disabled) {
-  background: #161920;
-  border-color: #4A9EFF55;
-  color: #E2E8F0;
+  background: var(--color-surface-hover);
+  border-color: color-mix(in srgb, var(--color-accent) 33%, transparent);
+  color: var(--color-text-primary);
 }
 
 .actionBtn:disabled {
@@ -73,7 +73,7 @@
 .actionLabel {
   font-size: 13px;
   font-weight: 600;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
 }
 
 .actionSub {
@@ -120,12 +120,12 @@
 }
 
 .recentItem:hover {
-  background: #13161E;
+  background: var(--color-surface-hover);
 }
 
 .recentName {
   font-size: 12px;
-  color: #CBD5E1;
+  color: var(--color-text-secondary);
 }
 
 .recentDate {
@@ -156,7 +156,7 @@
   font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
-  color: #475569;
+  color: var(--color-text-muted);
 }
 
 .vaultGrid {
@@ -180,8 +180,8 @@
 }
 
 .templateCard:hover {
-  background: #161920;
-  border-color: color-mix(in srgb, var(--cat-color, #4A9EFF) 40%, transparent);
+  background: var(--color-surface-hover);
+  border-color: color-mix(in srgb, var(--cat-color, var(--color-accent)) 40%, transparent);
 }
 
 .templateTop {
@@ -198,18 +198,18 @@
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--cat-color, #4A9EFF);
+  color: var(--cat-color, var(--color-accent));
 }
 
 .templateNodes {
   font-size: 9px;
-  color: #475569;
+  color: var(--color-text-muted);
 }
 
 .templateName {
   font-size: 12px;
   font-weight: 600;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
   line-height: 1.3;
 }
 

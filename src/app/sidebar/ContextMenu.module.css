@@ -1,7 +1,7 @@
 .menu {
   position: fixed;
-  background: #1A1D25;
-  border: 1px solid #2A2E38;
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-node-border);
   border-radius: 7px;
   padding: 4px;
   min-width: 160px;
@@ -15,7 +15,7 @@
   text-align: left;
   padding: 6px 10px;
   font-size: 12px;
-  color: #CBD5E1;
+  color: var(--color-text-secondary);
   background: none;
   border: none;
   border-radius: 4px;
@@ -25,21 +25,21 @@
 }
 
 .item:hover {
-  background: #2A2E38;
-  color: #F1F5F9;
+  background: var(--color-node-border);
+  color: var(--color-text-primary);
 }
 
 .item.danger {
-  color: #FCA5A5;
+  color: color-mix(in srgb, var(--color-danger) 70%, white);
 }
 
 .item.danger:hover {
-  background: #1F0000;
-  color: #EF4444;
+  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
+  color: var(--color-danger);
 }
 
 .sep {
   height: 1px;
-  background: #2A2E38;
+  background: var(--color-node-border);
   margin: 3px 0;
 }

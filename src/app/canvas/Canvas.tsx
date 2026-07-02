@@ -188,6 +188,10 @@ function CanvasInner() {
   }, [])
 
   const onNodeDragStopHandler: OnNodeDrag = useCallback((_e, _node, draggedNodes) => {
+    // Defense in depth: nodesDraggable={!running} already prevents a drag from starting, but
+    // this handler also drives group resize/reparenting (see NodeResizer guard below), so it
+    // gets its own explicit check rather than relying solely on that upstream prop.
+    if (useSimulationStore.getState().running) return
     const ids = new Set<string>(draggedNodes.map((n: Node) => n.id))
     resolveNodeCollisions(ids)
 
@@ -292,8 +296,9 @@ function CanvasInner() {
 
   const onNodeContextMenu = useCallback((e: React.MouseEvent, node: Node) => {
     e.preventDefault()
+    if (running) return
     setContextMenu({ x: e.clientX, y: e.clientY, targetId: node.id, targetType: 'node' })
-  }, [setContextMenu])
+  }, [setContextMenu, running])
 
   // Click-to-connect: in Connect mode, click source → click target → creates edge
   const onNodeClick = useCallback((_e: React.MouseEvent, node: Node) => {
@@ -347,14 +352,16 @@ function CanvasInner() {
         if (e.key === 'Escape')              { setConnectSource(null) }
       }
 
-      if ((e.key === 'Delete' || e.key === 'Backspace') && !inInput) {
+      const simRunning = useSimulationStore.getState().running
+
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !inInput && !simRunning) {
         const selectedNodeIds = nodes.filter(n => n.selected).map(n => n.id)
         const selectedEdgeIds = edges.filter(ed => ed.selected).map(ed => ed.id)
         if (selectedNodeIds.length > 0) removeNodes(selectedNodeIds)
         if (selectedEdgeIds.length > 0) removeEdges(selectedEdgeIds)
       }
-      if (meta && e.key === 'z' && !e.shiftKey) { e.preventDefault(); useCanvasStore.getState().undo() }
-      if (meta && e.key === 'z' && e.shiftKey)  { e.preventDefault(); useCanvasStore.getState().redo() }
+      if (meta && e.key === 'z' && !e.shiftKey && !simRunning) { e.preventDefault(); useCanvasStore.getState().undo() }
+      if (meta && e.key === 'z' && e.shiftKey && !simRunning)  { e.preventDefault(); useCanvasStore.getState().redo() }
       if (meta && e.shiftKey && e.key === 'F')   { e.preventDefault(); fitView({ padding: 0.1 }) }
       if (e.key === ' ' && !inInput) {
         e.preventDefault()

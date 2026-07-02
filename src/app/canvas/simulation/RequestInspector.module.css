@@ -3,14 +3,14 @@
   bottom: 24px;
   right: 24px;
   width: 320px;
-  background: #111318;
-  border: 1px solid #2A2E38;
+  background: var(--color-toolbar);
+  border: 1px solid var(--color-node-border);
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(74, 158, 255, 0.06);
   z-index: 9999;
   overflow: hidden;
   font-size: 11px;
-  color: #F1F5F9;
+  color: var(--color-text-primary);
 }
 
 /* ── Header ─────────────────────────────────────── */
@@ -20,14 +20,14 @@
   align-items: center;
   justify-content: space-between;
   padding: 9px 12px;
-  border-bottom: 1px solid #1E2230;
-  background: #0D0F12;
+  border-bottom: 1px solid var(--color-toolbar-border);
+  background: var(--color-canvas);
 }
 
 .headerTitle {
   font-size: 10px;
   font-weight: 700;
-  color: #64748B;
+  color: var(--color-text-muted);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -40,15 +40,15 @@
   justify-content: center;
   background: none;
   border: none;
-  color: #475569;
+  color: var(--color-text-muted);
   cursor: pointer;
   border-radius: 3px;
   transition: background 0.1s, color 0.1s;
 }
 
 .closeBtn:hover {
-  background: #1A1D25;
-  color: #EF4444;
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+  color: var(--color-danger);
 }
 
 /* ── Route ──────────────────────────────────────── */
@@ -64,11 +64,11 @@
 .routeNode {
   font-size: 12px;
   font-weight: 600;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
 }
 
 .routeArrow {
-  color: #475569;
+  color: var(--color-text-muted);
   font-size: 12px;
 }
 
@@ -76,9 +76,9 @@
   font-size: 9px;
   padding: 2px 6px;
   border-radius: 3px;
-  background: #1A1D25;
-  border: 1px solid #2A2E38;
-  color: #64748B;
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-node-border);
+  color: var(--color-text-muted);
   margin-left: auto;
 }
 
@@ -89,7 +89,7 @@
   align-items: center;
   gap: 8px;
   padding: 6px 12px 10px;
-  border-bottom: 1px solid #1A1D22;
+  border-bottom: 1px solid var(--color-node-border);
 }
 
 .methodBadge {
@@ -104,7 +104,7 @@
 
 .path {
   font-size: 10px;
-  color: #94A3B8;
+  color: var(--color-text-secondary);
   font-family: 'JetBrains Mono', monospace;
   flex: 1;
   overflow: hidden;
@@ -117,9 +117,9 @@
   font-weight: 700;
   padding: 2px 6px;
   border-radius: 3px;
-  background: #1A2A1A;
-  border: 1px solid #22C55E33;
-  color: #4ADE80;
+  background: color-mix(in srgb, var(--color-success) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-success) 20%, transparent);
+  color: var(--color-success-text);
   letter-spacing: 0.04em;
   flex-shrink: 0;
   animation: pulse 2s ease-in-out infinite;
@@ -135,8 +135,8 @@
 .templateCard {
   margin: 8px 12px;
   padding: 9px 10px;
-  background: #0D0F12;
-  border: 1px solid #2A2E38;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-node-border);
   border-radius: 6px;
   display: flex;
   flex-direction: column;
@@ -152,7 +152,7 @@
 .templateName {
   font-size: 11px;
   font-weight: 600;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -184,14 +184,14 @@
 
 .kvKey {
   font-size: 9px;
-  color: #475569;
+  color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
 .kvVal {
   font-size: 10px;
-  color: #CBD5E1;
+  color: var(--color-text-secondary);
   font-family: 'JetBrains Mono', monospace;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -205,7 +205,7 @@
   display: flex;
   flex-direction: column;
   gap: 5px;
-  border-bottom: 1px solid #1A1D22;
+  border-bottom: 1px solid var(--color-node-border);
 }
 
 .metaRow {
@@ -216,12 +216,12 @@
 
 .metaLabel {
   font-size: 10px;
-  color: #475569;
+  color: var(--color-text-muted);
 }
 
 .metaVal {
   font-size: 10px;
-  color: #94A3B8;
+  color: var(--color-text-secondary);
 }
 
 /* ── Progress ────────────────────────────────────── */
@@ -234,20 +234,20 @@
   display: flex;
   justify-content: space-between;
   font-size: 9px;
-  color: #475569;
+  color: var(--color-text-muted);
   margin-bottom: 5px;
 }
 
 .progressTrack {
   height: 3px;
-  background: #1E2230;
+  background: var(--color-toolbar-border);
   border-radius: 2px;
   overflow: hidden;
 }
 
 .progressFill {
   height: 100%;
-  background: linear-gradient(90deg, #4A9EFF, #A78BFA);
+  background: linear-gradient(90deg, var(--color-accent), #A78BFA);
   border-radius: 2px;
   transition: width 0.2s ease;
 }
@@ -256,6 +256,6 @@
   display: flex;
   justify-content: space-between;
   font-size: 8px;
-  color: #334155;
+  color: var(--color-text-muted);
   margin-top: 4px;
 }

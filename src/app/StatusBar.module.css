@@ -3,7 +3,7 @@
   align-items: center;
   gap: 14px;
   padding: 5px 14px;
-  background: #0A0C10;
+  background: var(--color-canvas);
   border-top: 1px solid var(--color-toolbar-border);
   font-size: 10px;
   color: var(--color-text-muted);
@@ -16,7 +16,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #4A9EFF;
+  background: var(--color-accent);
   display: inline-block;
   margin-right: 2px;
 }
@@ -48,5 +48,5 @@
 }
 
 .btn.active {
-  color: #4A9EFF;
+  color: var(--color-accent);
 }

@@ -3,15 +3,15 @@
   height: 100%;
   min-width: 200px;
   min-height: 120px;
-  background: color-mix(in srgb, var(--accent, #475569) 4%, transparent);
-  border: 1.5px dashed color-mix(in srgb, var(--color-node-border, #2A2E38) 70%, var(--accent, #475569));
+  background: color-mix(in srgb, var(--accent, var(--color-accent)) 4%, transparent);
+  border: 1.5px dashed color-mix(in srgb, var(--color-node-border) 70%, var(--accent, var(--color-accent)));
   border-radius: 12px;
   position: relative;
   transition: border-color 0.15s;
 }
 
 .group.selected {
-  border-color: color-mix(in srgb, var(--accent, #475569) 70%, transparent);
+  border-color: color-mix(in srgb, var(--accent, var(--color-accent)) 70%, transparent);
 }
 
 .group.collapsed {
@@ -49,7 +49,7 @@
   color: var(--color-text-primary);
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--accent, #475569);
+  border-bottom: 1px solid var(--accent, var(--color-accent));
   outline: none;
   font-family: var(--font-body);
 }
@@ -71,9 +71,9 @@
 .childCount {
   font-size: 9px;
   font-weight: 700;
-  color: var(--accent, #475569);
-  background: color-mix(in srgb, var(--accent, #475569) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent, #475569) 30%, transparent);
+  color: var(--accent, var(--color-accent));
+  background: color-mix(in srgb, var(--accent, var(--color-accent)) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, var(--color-accent)) 30%, transparent);
   border-radius: 10px;
   padding: 1px 6px;
   flex-shrink: 0;
@@ -85,7 +85,7 @@
   left: 50%;
   transform: translate(-50%, -50%);
   font-size: 10px;
-  color: color-mix(in srgb, var(--accent, #475569) 30%, transparent);
+  color: color-mix(in srgb, var(--accent, var(--color-accent)) 30%, transparent);
   pointer-events: none;
   white-space: nowrap;
   letter-spacing: 0.04em;

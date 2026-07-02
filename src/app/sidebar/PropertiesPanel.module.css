@@ -35,7 +35,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #2A2E38;
+  color: var(--color-node-border);
   font-size: 11px;
   text-align: center;
   padding: 20px;
@@ -49,7 +49,7 @@
 
 .scroll::-webkit-scrollbar { width: 4px; }
 .scroll::-webkit-scrollbar-track { background: transparent; }
-.scroll::-webkit-scrollbar-thumb { background: #2A2E38; border-radius: 2px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--color-node-border); border-radius: 2px; }
 
 .section {
   padding: 11px 13px;
@@ -70,7 +70,7 @@
 
 .lockHint {
   font-size: 9px;
-  color: #475569;
+  color: var(--color-text-muted);
   text-transform: none;
   letter-spacing: 0;
   font-style: italic;
@@ -83,13 +83,13 @@
   border-radius: 5px;
   padding: 6px 9px;
   font-size: 12px;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
   margin-bottom: 6px;
   transition: border-color 0.15s;
 }
 
 .field:focus {
-  border-color: #4A9EFF55;
+  border-color: color-mix(in srgb, var(--color-accent) 33%, transparent);
   outline: none;
 }
 
@@ -121,15 +121,15 @@ textarea.field {
 
 .rowVal {
   font-size: 11px;
-  color: #CBD5E1;
+  color: var(--color-text-secondary);
   font-weight: 600;
 }
 
 .statusSelect {
-  background: #0F2A1A;
-  border: 1px solid #22C55E55;
+  background: color-mix(in srgb, var(--color-success) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-success) 33%, transparent);
   border-radius: 4px;
-  color: #4ADE80;
+  color: var(--color-success-text);
   font-family: var(--font-mono);
   font-size: 11px;
   padding: 3px 8px;
@@ -142,12 +142,12 @@ textarea.field {
   border-radius: 4px;
   padding: 3px 7px;
   font-size: 11px;
-  color: #CBD5E1;
+  color: var(--color-text-secondary);
   text-align: right;
 }
 
 .numberInput:focus {
-  border-color: #4A9EFF55;
+  border-color: color-mix(in srgb, var(--color-accent) 33%, transparent);
   outline: none;
 }
 
@@ -155,7 +155,7 @@ textarea.field {
   background: var(--color-node-base);
   border: 1px solid var(--color-node-border);
   border-radius: 4px;
-  color: #CBD5E1;
+  color: var(--color-text-secondary);
   font-family: var(--font-mono);
   font-size: 11px;
   padding: 3px 8px;
@@ -187,12 +187,12 @@ textarea.field {
 }
 
 .tab:hover {
-  color: #CBD5E1;
+  color: var(--color-text-secondary);
 }
 
 .tab.activeTab {
-  color: #4A9EFF;
-  border-bottom-color: #4A9EFF;
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
 }
 
 /* ── Analytics placeholder ─────────────────────── */
@@ -206,30 +206,30 @@ textarea.field {
   gap: 10px;
   padding: 24px 20px;
   text-align: center;
-  color: #2A2E38;
+  color: var(--color-node-border);
 }
 
 .analyticsIcon {
   width: 40px;
   height: 40px;
   border-radius: 10px;
-  background: #161920;
-  border: 1px solid #2A2E38;
+  background: var(--color-node-base);
+  border: 1px solid var(--color-node-border);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #4A9EFF33;
+  color: color-mix(in srgb, var(--color-accent) 20%, transparent);
 }
 
 .analyticsTitle {
   font-size: 12px;
   font-weight: 600;
-  color: #475569;
+  color: var(--color-text-muted);
 }
 
 .analyticsSub {
   font-size: 10px;
-  color: #2A2E38;
+  color: var(--color-node-border);
   line-height: 1.6;
 }
 
@@ -254,14 +254,14 @@ textarea.field {
 .metricVal {
   font-size: 11px;
   font-weight: 700;
-  color: #CBD5E1;
+  color: var(--color-text-secondary);
   letter-spacing: 0.02em;
 }
 
 .metricBar {
   margin-top: 5px;
   height: 3px;
-  background: #1A1D22;
+  background: var(--color-canvas-dots);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -308,14 +308,14 @@ textarea.field {
 .sloBadgePass {
   font-size: 9px;
   font-weight: 700;
-  color: #22C55E;
+  color: var(--color-success-text);
   letter-spacing: 0.04em;
 }
 
 .sloBadgeFail {
   font-size: 9px;
   font-weight: 700;
-  color: #EF4444;
+  color: var(--color-danger);
   letter-spacing: 0.04em;
 }
 
@@ -333,7 +333,7 @@ textarea.field {
 }
 
 .sloTarget {
-  color: #475569;
+  color: var(--color-text-muted);
   min-width: 60px;
   text-align: right;
 }
@@ -349,7 +349,7 @@ textarea.field {
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: #2A2E38;
+  color: var(--color-node-border);
   margin-top: 8px;
   margin-bottom: 6px;
 }
@@ -401,7 +401,7 @@ textarea.field {
 
 .statusLabel {
   font-size: 10px;
-  color: #475569;
+  color: var(--color-text-muted);
   margin-left: 4px;
   text-transform: capitalize;
 }
@@ -410,7 +410,7 @@ textarea.field {
 
 .addLink {
   font-size: 10px;
-  color: #475569;
+  color: var(--color-text-muted);
   background: none;
   border: none;
   cursor: pointer;
@@ -420,7 +420,7 @@ textarea.field {
 }
 
 .addLink:hover {
-  color: #94A3B8;
+  color: var(--color-text-secondary);
 }
 
 /* ── Inspector hint button ───────────────────────────── */
@@ -430,25 +430,25 @@ textarea.field {
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  background: #0D0F12;
-  border: 1px solid #2A2E38;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-node-border);
   border-radius: 5px;
   padding: 8px 10px;
   font-size: 11px;
-  color: #64748B;
+  color: var(--color-text-muted);
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s;
   text-align: left;
 }
 
 .inspectorHintBtn:hover {
-  border-color: #4A9EFF66;
-  color: #94A3B8;
+  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  color: var(--color-text-secondary);
 }
 
 .inspectorHintArrow {
   font-size: 12px;
-  color: #4A9EFF;
+  color: var(--color-accent);
   flex-shrink: 0;
 }
 
@@ -469,13 +469,13 @@ textarea.field {
 }
 
 .sparkClickable:hover {
-  background: #111318;
-  border-color: #2A2E38;
+  background: var(--color-toolbar);
+  border-color: var(--color-node-border);
 }
 
 .sparkClickLabel {
   font-size: 8px;
-  color: #475569;
+  color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-weight: 600;

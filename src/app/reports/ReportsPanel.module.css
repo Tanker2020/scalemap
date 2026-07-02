@@ -6,8 +6,8 @@
   right: 0;
   width: 340px;
   height: calc(100vh - 42px);
-  background: #0D0F12;
-  border-left: 1px solid #2A2E38;
+  background: var(--color-canvas);
+  border-left: 1px solid var(--color-node-border);
   display: flex;
   flex-direction: column;
   z-index: 9997;
@@ -21,8 +21,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 10px 13px;
-  border-bottom: 1px solid #1E2230;
-  background: #111318;
+  border-bottom: 1px solid var(--color-toolbar-border);
+  background: var(--color-toolbar);
   flex-shrink: 0;
 }
 
@@ -35,15 +35,15 @@
 .title {
   font-size: 11px;
   font-weight: 700;
-  color: #94A3B8;
+  color: var(--color-text-secondary);
   letter-spacing: 0.04em;
 }
 
 .runCount {
   font-size: 9px;
-  color: #475569;
-  background: #1A1D25;
-  border: 1px solid #2A2E38;
+  color: var(--color-text-muted);
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-node-border);
   border-radius: 3px;
   padding: 0 5px;
 }
@@ -52,9 +52,9 @@
   width: 24px;
   height: 24px;
   border-radius: 4px;
-  background: #1A1D25;
-  border: 1px solid #2A2E38;
-  color: #64748B;
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-node-border);
+  color: var(--color-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -63,8 +63,8 @@
 }
 
 .closeBtn:hover {
-  background: #2A1A1A;
-  color: #EF4444;
+  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
+  color: var(--color-danger);
 }
 
 /* ── Body ────────────────────────────────────────── */
@@ -80,7 +80,7 @@
 
 .body::-webkit-scrollbar { width: 3px; }
 .body::-webkit-scrollbar-track { background: transparent; }
-.body::-webkit-scrollbar-thumb { background: #1E2230; border-radius: 2px; }
+.body::-webkit-scrollbar-thumb { background: var(--color-toolbar-border); border-radius: 2px; }
 
 /* ── Empty state ─────────────────────────────────── */
 
@@ -99,13 +99,13 @@
 
 .emptyTitle {
   font-size: 12px;
-  color: #475569;
+  color: var(--color-text-muted);
   font-weight: 600;
 }
 
 .emptySub {
   font-size: 10px;
-  color: #334155;
+  color: var(--color-text-muted);
   line-height: 1.6;
   max-width: 200px;
 }
@@ -117,8 +117,8 @@
   flex-direction: column;
   gap: 5px;
   padding: 10px 12px;
-  background: #111318;
-  border: 1px solid #1E2230;
+  background: var(--color-toolbar);
+  border: 1px solid var(--color-toolbar-border);
   border-radius: 6px;
   text-align: left;
   cursor: pointer;
@@ -127,7 +127,7 @@
 }
 
 .runCard:hover {
-  background: #14181F;
+  background: var(--color-surface-hover);
   border-color: #A78BFA44;
 }
 
@@ -145,7 +145,7 @@
 
 .runCardDur {
   font-size: 10px;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -153,7 +153,7 @@
 .runCardTime {
   margin-left: auto;
   font-size: 9px;
-  color: #334155;
+  color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -165,7 +165,7 @@
 
 .runCardRps {
   font-size: 9px;
-  color: #64748B;
+  color: var(--color-text-muted);
 }
 
 .runCardSlo {
@@ -176,22 +176,22 @@
 }
 
 .runCardSloPass {
-  color: #22C55E;
-  background: #052e1620;
-  border: 1px solid #22C55E33;
+  color: var(--color-success-text);
+  background: color-mix(in srgb, var(--color-success) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-success) 20%, transparent);
 }
 
 .runCardSloFail {
-  color: #EF4444;
-  background: #2e050520;
-  border: 1px solid #EF444433;
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 20%, transparent);
 }
 
 .runCardBot { display: flex; }
 
 .runCardMode {
   font-size: 9px;
-  color: #334155;
+  color: var(--color-text-muted);
 }
 
 /* ── Footer ──────────────────────────────────────── */
@@ -199,9 +199,9 @@
 .footer {
   padding: 6px 13px;
   font-size: 9px;
-  color: #1E2230;
-  border-top: 1px solid #1A1D22;
-  background: #0B0D12;
+  color: var(--color-text-muted);
+  border-top: 1px solid var(--color-canvas-dots);
+  background: var(--color-surface);
   flex-shrink: 0;
 }
 
@@ -218,8 +218,8 @@
 }
 
 .overlayCard {
-  background: #0E1015;
-  border: 1px solid #2A2E38;
+  background: var(--color-surface);
+  border: 1px solid var(--color-node-border);
   border-radius: 10px;
   width: 620px;
   max-width: calc(100vw - 40px);
@@ -235,8 +235,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  border-bottom: 1px solid #1E2230;
-  background: #111318;
+  border-bottom: 1px solid var(--color-toolbar-border);
+  background: var(--color-toolbar);
   flex-shrink: 0;
 }
 
@@ -261,22 +261,22 @@
 }
 
 .overlayPassBadgeGreen {
-  color: #22C55E;
-  border-color: #22C55E55;
-  background: #052e1618;
+  color: var(--color-success-text);
+  border-color: color-mix(in srgb, var(--color-success) 33%, transparent);
+  background: color-mix(in srgb, var(--color-success) 10%, transparent);
 }
 
 .overlayPassBadgeRed {
-  color: #EF4444;
-  border-color: #EF444455;
-  background: #2e050518;
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 33%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
 }
 
 .overlayModePill {
   font-size: 9px;
-  color: #64748B;
-  background: #1A1D25;
-  border: 1px solid #2A2E38;
+  color: var(--color-text-muted);
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-node-border);
   border-radius: 3px;
   padding: 1px 6px;
 }
@@ -285,9 +285,9 @@
   width: 26px;
   height: 26px;
   border-radius: 5px;
-  background: #1A1D25;
-  border: 1px solid #2A2E38;
-  color: #64748B;
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-node-border);
+  color: var(--color-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -296,8 +296,8 @@
 }
 
 .overlayClose:hover {
-  background: #2A1A1A;
-  color: #EF4444;
+  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
+  color: var(--color-danger);
 }
 
 .overlayBody {
@@ -311,7 +311,7 @@
 
 .overlayBody::-webkit-scrollbar { width: 4px; }
 .overlayBody::-webkit-scrollbar-track { background: transparent; }
-.overlayBody::-webkit-scrollbar-thumb { background: #2A2E38; border-radius: 2px; }
+.overlayBody::-webkit-scrollbar-thumb { background: var(--color-node-border); border-radius: 2px; }
 
 /* ── Stats grid ──────────────────────────────────── */
 
@@ -325,15 +325,15 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  background: #0B0D12;
-  border: 1px solid #1E2230;
+  background: var(--color-surface);
+  border: 1px solid var(--color-toolbar-border);
   border-radius: 5px;
   padding: 8px 10px;
 }
 
 .statLabel {
   font-size: 8px;
-  color: #475569;
+  color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.07em;
 }
@@ -341,13 +341,13 @@
 .statVal {
   font-size: 16px;
   font-weight: 600;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
 }
 
 .statValAlert {
-  color: #EF4444;
+  color: var(--color-danger);
 }
 
 /* ── Section ─────────────────────────────────────── */
@@ -360,12 +360,12 @@
 
 .sectionTitle {
   font-size: 9px;
-  color: #475569;
+  color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.07em;
   font-weight: 700;
   padding-bottom: 4px;
-  border-bottom: 1px solid #1E2230;
+  border-bottom: 1px solid var(--color-toolbar-border);
 }
 
 /* ── Bar chart ───────────────────────────────────── */
@@ -387,7 +387,7 @@
   align-items: center;
   gap: 4px;
   font-size: 9px;
-  color: #64748B;
+  color: var(--color-text-muted);
   width: 100px;
   flex-shrink: 0;
   overflow: hidden;
@@ -398,7 +398,7 @@
 .barTrack {
   flex: 1;
   height: 6px;
-  background: #1E2230;
+  background: var(--color-toolbar-border);
   border-radius: 3px;
   overflow: hidden;
 }
@@ -431,8 +431,8 @@
   align-items: flex-start;
   gap: 8px;
   padding: 6px 8px;
-  background: #0B0D12;
-  border: 1px solid #EF444422;
+  background: var(--color-surface);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 13%, transparent);
   border-radius: 4px;
 }
 
@@ -446,15 +446,15 @@
 
 .sloNodeName {
   font-size: 10px;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
   font-weight: 600;
 }
 
 .sloNodeType {
   font-size: 8px;
-  color: #475569;
-  background: #1A1D25;
-  border: 1px solid #2A2E38;
+  color: var(--color-text-muted);
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-node-border);
   border-radius: 2px;
   padding: 0 3px;
   text-transform: uppercase;
@@ -470,13 +470,13 @@
 
 .sloMsg {
   font-size: 9px;
-  color: #FCA5A5;
+  color: color-mix(in srgb, var(--color-danger) 70%, white);
   line-height: 1.4;
 }
 
 .sloMetrics {
   font-size: 8px;
-  color: #475569;
+  color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -491,11 +491,11 @@
 }
 
 .eventList::-webkit-scrollbar { width: 3px; }
-.eventList::-webkit-scrollbar-thumb { background: #1E2230; border-radius: 2px; }
+.eventList::-webkit-scrollbar-thumb { background: var(--color-toolbar-border); border-radius: 2px; }
 
 .eventListMore {
   font-size: 9px;
-  color: #334155;
+  color: var(--color-text-muted);
   padding: 4px 8px;
   text-align: center;
 }
@@ -507,15 +507,15 @@
   align-items: center;
   gap: 10px;
   padding-top: 4px;
-  border-top: 1px solid #1E2230;
+  border-top: 1px solid var(--color-toolbar-border);
 }
 
 .shareBtn {
   padding: 5px 14px;
-  background: #1A1D25;
-  border: 1px solid #2A2E38;
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-node-border);
   border-radius: 5px;
-  color: #F1F5F9;
+  color: var(--color-text-primary);
   font-size: 10px;
   cursor: pointer;
   opacity: 1;
@@ -523,11 +523,11 @@
 }
 
 .shareBtn:hover {
-  background: #232736;
-  border-color: #4A9EFF;
+  background: color-mix(in srgb, var(--color-accent) 15%, var(--color-surface-hover));
+  border-color: var(--color-accent);
 }
 
 .shareHint {
   font-size: 9px;
-  color: #334155;
+  color: var(--color-text-muted);
 }

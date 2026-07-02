@@ -145,7 +145,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
         ) : (
           <div
             className={styles.label}
-            onDoubleClick={() => { setEditing(true); setEditValue(nodeData.label) }}
+            onDoubleClick={() => { if (running) return; setEditing(true); setEditValue(nodeData.label) }}
           >
             {nodeData.label}
           </div>

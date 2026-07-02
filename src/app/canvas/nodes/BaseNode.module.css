@@ -28,8 +28,8 @@
 }
 
 .node.selected {
-  border-color: var(--accent, #4A9EFF);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #4A9EFF) 12%, transparent),
+  border-color: var(--accent, var(--color-accent));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, var(--color-accent)) 12%, transparent),
               0 4px 18px rgba(0, 0, 0, 0.55);
 }
 
@@ -67,8 +67,8 @@
 .handle {
   width: 10px;
   height: 10px;
-  background: var(--accent, #4A9EFF);
-  border: 2px solid #0D0F12;
+  background: var(--accent, var(--color-accent));
+  border: 2px solid var(--color-canvas);
   border-radius: 50%;
   opacity: 0;
   transition: transform 0.1s;
@@ -82,7 +82,7 @@
   border-radius: 6px;
   background: var(--node-bg, #0D1F35);
   border: 1px solid var(--node-border, #1A3A5C);
-  color: var(--accent, #4A9EFF);
+  color: var(--accent, var(--color-accent));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -115,7 +115,7 @@
   color: var(--color-text-primary);
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--accent, #4A9EFF);
+  border-bottom: 1px solid var(--accent, var(--color-accent));
   width: 100%;
   padding: 0;
   outline: none;
@@ -141,16 +141,16 @@
   line-height: 1;
   padding: 2px 4px;
   border-radius: 3px;
-  color: var(--prov-color, #94A3B8);
-  background: color-mix(in srgb, var(--prov-color, #94A3B8) 15%, transparent);
-  border: 1px solid color-mix(in srgb, var(--prov-color, #94A3B8) 50%, transparent);
+  color: var(--prov-color, var(--color-text-secondary));
+  background: color-mix(in srgb, var(--prov-color, var(--color-text-secondary)) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--prov-color, var(--color-text-secondary)) 50%, transparent);
 }
 
 /* Universal utilization bar — replaces the old messaging-only queueBar */
 .utilBar {
   margin-top: 5px;
   height: 3px;
-  background: #1A1D22;
+  background: var(--color-canvas-dots);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -215,9 +215,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in srgb, var(--lint-color, #F59E0B) 18%, transparent);
-  border: 1px solid color-mix(in srgb, var(--lint-color, #F59E0B) 55%, transparent);
-  color: var(--lint-color, #F59E0B);
+  background: color-mix(in srgb, var(--lint-color, var(--color-warning)) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lint-color, var(--color-warning)) 55%, transparent);
+  color: var(--lint-color, var(--color-warning));
   cursor: help;
 }
 
