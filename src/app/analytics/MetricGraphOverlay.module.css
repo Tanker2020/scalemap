@@ -9,8 +9,8 @@
 }
 
 .card {
-  background: #0E1015;
-  border: 1px solid #2A2E38;
+  background: var(--color-surface);
+  border: 1px solid var(--color-node-border);
   border-radius: 10px;
   width: 720px;
   max-width: calc(100vw - 40px);
@@ -27,8 +27,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 11px 16px;
-  border-bottom: 1px solid #1E2230;
-  background: #111318;
+  border-bottom: 1px solid var(--color-toolbar-border);
+  background: var(--color-toolbar);
 }
 
 .headerLeft {
@@ -42,16 +42,16 @@
 .headerLabel {
   font-size: 13px;
   font-weight: 600;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
 }
 
 .headerType {
   font-size: 8px;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: #475569;
-  background: #1A1D25;
-  border: 1px solid #2A2E38;
+  color: var(--color-text-muted);
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-node-border);
   border-radius: 3px;
   padding: 1px 5px;
 }
@@ -61,7 +61,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #22C55E;
+  background: var(--color-success);
   animation: pulse 1.6s ease infinite;
 }
 
@@ -74,9 +74,9 @@
   width: 28px;
   height: 28px;
   border-radius: 5px;
-  background: #1A1D25;
-  border: 1px solid #2A2E38;
-  color: #64748B;
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-node-border);
+  color: var(--color-text-muted);
   font-size: 14px;
   cursor: pointer;
   display: flex;
@@ -86,8 +86,8 @@
 }
 
 .closeBtn:hover {
-  background: #2A1A1A;
-  color: #EF4444;
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+  color: var(--color-danger);
 }
 
 /* ── Metric tabs ─────────────────────────────────── */
@@ -96,16 +96,16 @@
   display: flex;
   gap: 3px;
   padding: 8px 16px;
-  border-bottom: 1px solid #1E2230;
-  background: #0B0D12;
+  border-bottom: 1px solid var(--color-toolbar-border);
+  background: var(--color-canvas);
 }
 
 .tab {
   padding: 4px 10px;
   border-radius: 4px;
-  border: 1px solid #2A2E38;
+  border: 1px solid var(--color-node-border);
   background: transparent;
-  color: #475569;
+  color: var(--color-text-muted);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -114,12 +114,12 @@
 }
 
 .tab:hover {
-  background: #1A1D25;
-  color: #94A3B8;
+  background: var(--color-surface-hover);
+  color: var(--color-text-secondary);
 }
 
 .tabActive {
-  background: #1A1D25;
+  background: var(--color-surface-hover);
   border-color: var(--metric-color, #A78BFA);
   color: var(--metric-color, #A78BFA);
 }
@@ -129,7 +129,7 @@
 .chartWrap {
   position: relative;
   padding: 12px 16px 4px;
-  background: #0D0F12;
+  background: var(--color-canvas);
 }
 
 .svg {
@@ -144,7 +144,7 @@
   align-items: center;
   justify-content: center;
   font-size: 11px;
-  color: #334155;
+  color: var(--color-text-muted);
 }
 
 /* ── Tooltip ─────────────────────────────────────── */
@@ -153,8 +153,8 @@
   position: absolute;
   top: 24px;
   pointer-events: none;
-  background: #111318;
-  border: 1px solid #2A2E38;
+  background: var(--color-toolbar);
+  border: 1px solid var(--color-node-border);
   border-radius: 6px;
   padding: 8px 10px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
@@ -164,7 +164,7 @@
 
 .tooltipTime {
   font-size: 9px;
-  color: #475569;
+  color: var(--color-text-muted);
   margin-bottom: 5px;
   font-variant-numeric: tabular-nums;
 }
@@ -185,12 +185,12 @@
 }
 
 .tooltipLabel {
-  color: #64748B;
+  color: var(--color-text-muted);
   flex: 1;
 }
 
 .tooltipVal {
-  color: #E2E8F0;
+  color: var(--color-text-primary);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
@@ -202,7 +202,7 @@
   align-items: center;
   gap: 14px;
   padding: 8px 16px 12px;
-  border-top: 1px solid #1A1D22;
+  border-top: 1px solid var(--color-node-border);
   flex-wrap: wrap;
 }
 
@@ -221,11 +221,11 @@
 
 .legendLabel {
   font-size: 9px;
-  color: #64748B;
+  color: var(--color-text-muted);
 }
 
 .legendCount {
   margin-left: auto;
   font-size: 9px;
-  color: #334155;
+  color: var(--color-text-muted);
 }

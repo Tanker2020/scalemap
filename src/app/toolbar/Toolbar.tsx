@@ -1,5 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from 'react'
-import { FilePlus, FolderOpen, ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, Save, Upload, Download, ClipboardList, ShieldCheck, Package } from 'lucide-react'
+import { FilePlus, FolderOpen, ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, Save, Upload, Download, ClipboardList, ShieldCheck, Package, Sun, Moon } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
 import { useSimulationStore, type TrafficMode } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
@@ -126,6 +126,7 @@ function ExportMenu({ fileName }: { fileName: string | null }) {
 function ImportMenu() {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const running = useSimulationStore(s => s.running)
 
   useEffect(() => {
     if (!open) return
@@ -137,6 +138,7 @@ function ImportMenu() {
   }, [open])
 
   const handleImportScript = useCallback(() => {
+    if (useSimulationStore.getState().running) return
     setOpen(false)
     const input = document.createElement('input')
     input.type = 'file'
@@ -144,6 +146,7 @@ function ImportMenu() {
     input.onchange = async () => {
       const file = input.files?.[0]
       if (!file) return
+      if (useSimulationStore.getState().running) return
       try {
         const text = await file.text()
         const script = parseScaleScript(text)
@@ -175,7 +178,8 @@ function ImportMenu() {
       <button
         className={`${styles.btnPrimary} ${styles.btnDropdown}`}
         onClick={() => setOpen(o => !o)}
-        title="Import files into diagram"
+        disabled={running}
+        title={running ? 'Editing locked while simulation is running' : 'Import files into diagram'}
       >
         <Upload size={12} /> Import <ChevronDown size={10} className={open ? styles.chevronOpen : ''} />
       </button>
@@ -289,7 +293,7 @@ function downloadBlob(content: string, filename: string, type: string) {
 export function Toolbar() {
   const { undo, redo } = useCanvasStore()
   const { running, paused, setRunning, setPaused, activeScript, setActiveScript, runs, simulationMode, globalMultiplier } = useSimulationStore()
-  const { activeTool, setActiveTool, setSimConfigOpen, simConfigOpen, reportsPanelOpen, setReportsPanelOpen, setDiagnosticsOpen, packetEditorOpen, setPacketEditorOpen } = useUiStore()
+  const { activeTool, setActiveTool, setSimConfigOpen, simConfigOpen, reportsPanelOpen, setReportsPanelOpen, setDiagnosticsOpen, packetEditorOpen, setPacketEditorOpen, themeMode, setThemeMode } = useUiStore()
   const packetMode = useCanvasStore(s => s.packetMode)
   const diagnosticsCount = useDiagnosticsStore(s => s.diagnostics.length)
   const { showHome, setShowHome, fileName } = useFileStore()
@@ -306,6 +310,7 @@ export function Toolbar() {
   const modeLabel = TRAFFIC_MODES.find(m => m.key === simulationMode)?.short ?? 'Steady'
 
   const handleNew = useCallback(() => {
+    if (useSimulationStore.getState().running) return
     useSimulationStore.getState().reset()
     useMetricsHistoryStore.getState().clearHistory()
     useCanvasStore.setState({ nodes: [], edges: [], history: [], future: [] })
@@ -344,7 +349,12 @@ export function Toolbar() {
   return (
     <div className={styles.toolbar}>
       {/* File */}
-      <button className={styles.btnPrimary} onClick={handleNew} title="New diagram (Cmd+N)">
+      <button
+        className={styles.btnPrimary}
+        onClick={handleNew}
+        disabled={running}
+        title={running ? 'Editing locked while simulation is running' : 'New diagram (Cmd+N)'}
+      >
         <FilePlus size={12} /> New
       </button>
       <button
@@ -387,11 +397,31 @@ export function Toolbar() {
         <Zap size={12} /> Connect
       </button>
 
+      <div className={styles.sep} />
+
+      <button
+        className={styles.btnTool}
+        onClick={() => setThemeMode(themeMode === 'dark' ? 'light' : 'dark')}
+        title={themeMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+      >
+        {themeMode === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
+      </button>
+
       {!showHome && (
         <>
           <div className={styles.sep} />
-          <button className={styles.btnTool} onClick={() => undo()} title="Undo (Cmd+Z)">Undo</button>
-          <button className={styles.btnTool} onClick={() => redo()} title="Redo (Cmd+Shift+Z)">Redo</button>
+          <button
+            className={styles.btnTool}
+            onClick={() => undo()}
+            disabled={running}
+            title={running ? 'Editing locked while simulation is running' : 'Undo (Cmd+Z)'}
+          >Undo</button>
+          <button
+            className={styles.btnTool}
+            onClick={() => redo()}
+            disabled={running}
+            title={running ? 'Editing locked while simulation is running' : 'Redo (Cmd+Shift+Z)'}
+          >Redo</button>
 
           <div className={styles.spacer} />
 

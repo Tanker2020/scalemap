@@ -5,20 +5,43 @@
 }
 
 :root {
-  --font: 'JetBrains Mono', monospace;
+  /* Color, font, spacing, and motion custom properties are overridden at runtime by App.tsx's
+     theme bootstrap (src/App.tsx, useThemeBootstrap) from src/lib/theme.ts. The values below are
+     a static copy of DARK_COLORS (dark mode is the app's designed default) so first paint is
+     coherent before the bootstrap effect runs — not a design decision, just closing the gap
+     between undefined custom properties and the runtime-computed values. If DARK_COLORS,
+     FONT_*, SPACING, or MOTION change in theme.ts, update this block to match. */
   --color-canvas: #0D0F12;
-  --color-surface: #0F1117;
-  --color-toolbar: #111318;
-  --color-toolbar-border: #1E2128;
+  --color-canvas-dots: #1A1D22;
   --color-node-base: #161920;
   --color-node-border: #2A2E38;
+  --color-surface: #0F1117;
+  --color-surface-hover: #13161E;
+  --color-toolbar: #111318;
+  --color-toolbar-border: #1E2128;
   --color-text-primary: #F1F5F9;
   --color-text-secondary: #94A3B8;
   --color-text-muted: #64748B;
-  --color-success: #22C55E;
-  --color-warning: #F59E0B;
   --color-danger: #EF4444;
+  --color-success: #22C55E;
+  --color-success-text: #22C55E;
+  --color-warning: #F59E0B;
   --color-accent: #4A9EFF;
+
+  --font-display: 'Space Grotesk', sans-serif;
+  --font-body: 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --motion-breathe-ms: 3000ms;
+  --motion-hover-ms: 175ms;
+  --motion-panel-ms: 200ms;
 }
 
 html, body, #root {
@@ -28,7 +51,7 @@ html, body, #root {
 }
 
 body {
-  font-family: var(--font);
+  font-family: var(--font-body);
   font-size: 13px;
   background: var(--color-canvas);
   color: var(--color-text-primary);
@@ -36,15 +59,20 @@ body {
   user-select: none;
 }
 
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+}
+
 button {
-  font-family: var(--font);
+  font-family: var(--font-body);
   cursor: pointer;
   border: none;
   background: none;
 }
 
 input, textarea, select {
-  font-family: var(--font);
+  font-family: var(--font-body);
   outline: none;
 }
 

@@ -25,7 +25,7 @@ import { SimulationOverlay } from './simulation/SimulationOverlay'
 import { PlaybackScrubber } from './simulation/PlaybackScrubber'
 import { RequestInspector } from './simulation/RequestInspector'
 import { ContextMenu } from '../sidebar/ContextMenu'
-import { injectBurst } from './simulation/particleEngine'
+import { injectBurst, pickParticleAtPoint, redrawCurrentReplayFrame } from './simulation/particleEngine'
 import { GROUPING_TYPES, type NodeType } from '../../lib/nodeConfig'
 import type { NodeData } from '../../lib/nodeConfig'
 import styles from './Canvas.module.css'
@@ -85,7 +85,7 @@ function CanvasInner() {
     connectSourceId, setConnectSource,
     highlightedNodeIds,
   } = useUiStore()
-  const { running } = useSimulationStore()
+  const { running, setInspectedRequest } = useSimulationStore()
   const { setDirty } = useFileStore()
 
   const isHand = activeTool === 'hand'
@@ -201,6 +201,10 @@ function CanvasInner() {
   }, [])
 
   const onNodeDragStopHandler: OnNodeDrag = useCallback((_e, _node, draggedNodes) => {
+    // Defense in depth: nodesDraggable={!running} already prevents a drag from starting, but
+    // this handler also drives group resize/reparenting (see NodeResizer guard below), so it
+    // gets its own explicit check rather than relying solely on that upstream prop.
+    if (useSimulationStore.getState().running) return
     const ids = new Set<string>(draggedNodes.map((n: Node) => n.id))
     resolveNodeCollisions(ids)
 
@@ -305,8 +309,9 @@ function CanvasInner() {
 
   const onNodeContextMenu = useCallback((e: React.MouseEvent, node: Node) => {
     e.preventDefault()
+    if (running) return
     setContextMenu({ x: e.clientX, y: e.clientY, targetId: node.id, targetType: 'node' })
-  }, [setContextMenu])
+  }, [setContextMenu, running])
 
   // Click-to-connect: in Connect mode, click source → click target → creates edge
   const onNodeClick = useCallback((_e: React.MouseEvent, node: Node) => {
@@ -328,10 +333,23 @@ function CanvasInner() {
     }
   }, [running, edges, isConnect, connectSourceId, setConnectSource, onConnect, setDirty])
 
-  const onPaneClick = useCallback(() => {
+  // Keep replay-frame particle dots glued to their edges while panning/zooming paused.
+  // getEdgePoint() itself is always viewport-correct; the redraw just needs to be re-triggered
+  // on every pan/zoom tick, not only when the scrubber index changes (see redrawCurrentReplayFrame).
+  const onMove = useCallback(() => { redrawCurrentReplayFrame() }, [])
+
+  const onPaneClick = useCallback((event: React.MouseEvent) => {
     closeContextMenu()
     if (isConnect) setConnectSource(null)
-  }, [closeContextMenu, isConnect, setConnectSource])
+    // Click-to-inspect a particle while simulating. React Flow only fires onPaneClick for a
+    // genuine click (it suppresses this after a pan-drag), so no manual drag-distance check
+    // is needed here — unlike the old overlay-canvas handler this replaces.
+    if (running && wrapperRef.current) {
+      const rect = wrapperRef.current.getBoundingClientRect()
+      const snap = pickParticleAtPoint(event.clientX, event.clientY, rect)
+      setInspectedRequest(snap ?? null)
+    }
+  }, [closeContextMenu, isConnect, setConnectSource, running, setInspectedRequest])
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -347,14 +365,16 @@ function CanvasInner() {
         if (e.key === 'Escape')              { setConnectSource(null) }
       }
 
-      if ((e.key === 'Delete' || e.key === 'Backspace') && !inInput) {
+      const simRunning = useSimulationStore.getState().running
+
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !inInput && !simRunning) {
         const selectedNodeIds = nodes.filter(n => n.selected).map(n => n.id)
         const selectedEdgeIds = edges.filter(ed => ed.selected).map(ed => ed.id)
         if (selectedNodeIds.length > 0) removeNodes(selectedNodeIds)
         if (selectedEdgeIds.length > 0) removeEdges(selectedEdgeIds)
       }
-      if (meta && e.key === 'z' && !e.shiftKey) { e.preventDefault(); useCanvasStore.getState().undo() }
-      if (meta && e.key === 'z' && e.shiftKey)  { e.preventDefault(); useCanvasStore.getState().redo() }
+      if (meta && e.key === 'z' && !e.shiftKey && !simRunning) { e.preventDefault(); useCanvasStore.getState().undo() }
+      if (meta && e.key === 'z' && e.shiftKey && !simRunning)  { e.preventDefault(); useCanvasStore.getState().redo() }
       if (meta && e.shiftKey && e.key === 'F')   { e.preventDefault(); fitView({ padding: 0.1 }) }
       if (e.key === ' ' && !inInput) {
         e.preventDefault()
@@ -395,6 +415,7 @@ function CanvasInner() {
         onNodeContextMenu={onNodeContextMenu}
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
+        onMove={onMove}
         onNodeDragStop={onNodeDragStopHandler}
         onDrop={onDrop}
         onDragOver={onDragOver}
@@ -409,6 +430,7 @@ function CanvasInner() {
         nodesDraggable={!running}
         nodesConnectable={!running && isConnect}
         nodesFocusable={!running}
+        deleteKeyCode={running ? null : ['Backspace', 'Delete']}
         connectionRadius={80}
         elevateEdgesOnSelect
         proOptions={{ hideAttribution: true }}
@@ -416,15 +438,15 @@ function CanvasInner() {
         {gridEnabled && (
           <Background
             variant={BackgroundVariant.Dots}
-            color="#1A1D22"
+            color="var(--color-canvas-dots)"
             gap={24}
             size={1}
           />
         )}
         <MiniMap
-          style={{ background: '#111318', border: '1px solid #2A2E38' }}
-          maskColor="#0D0F1288"
-          nodeColor={(n) => GROUPING_TYPES.has(n.type as NodeType) ? '#1A2035' : '#2A2E38'}
+          style={{ background: 'var(--color-toolbar)', border: '1px solid var(--color-node-border)' }}
+          maskColor="color-mix(in srgb, var(--color-canvas) 53%, transparent)"
+          nodeColor={(n) => GROUPING_TYPES.has(n.type as NodeType) ? 'var(--color-node-base)' : 'var(--color-node-border)'}
           zoomable
           pannable
         />

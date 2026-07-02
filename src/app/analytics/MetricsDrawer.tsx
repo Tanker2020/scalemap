@@ -68,7 +68,7 @@ export function MetricsDrawer({ open, onToggle }: MetricsDrawerProps) {
                 {activeNodes.map(node => {
                   const m    = nodeMetrics.get(node.id)
                   const util = m?.utilization ?? 0
-                  const color = util >= 1 ? '#EF4444' : util >= 0.8 ? '#F59E0B' : util > 0 ? '#22C55E' : '#2A2E38'
+                  const color = util >= 1 ? 'var(--color-danger)' : util >= 0.8 ? 'var(--color-warning)' : util > 0 ? 'var(--color-success)' : 'var(--color-node-border)'
                   return (
                     <button
                       key={node.id}
@@ -86,7 +86,7 @@ export function MetricsDrawer({ open, onToggle }: MetricsDrawerProps) {
             <div className={styles.eventFeed}>
               {events.slice(0, 8).map(ev => (
                 <div key={ev.id} className={styles.feedItem}>
-                  <span style={{ color: ev.severity === 'critical' ? '#EF4444' : ev.severity === 'warn' ? '#F59E0B' : '#475569' }}>●</span>
+                  <span style={{ color: ev.severity === 'critical' ? 'var(--color-danger)' : ev.severity === 'warn' ? 'var(--color-warning)' : 'var(--color-text-muted)' }}>●</span>
                   <span className={styles.feedTime}>{ev.elapsedS}s</span>
                   <span className={styles.feedMsg}>{ev.message}</span>
                 </div>

@@ -1,5 +1,16 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { DARK_COLORS, LIGHT_COLORS, FONT_DISPLAY, FONT_BODY, FONT_MONO, SPACING, MOTION } from './lib/theme'
+import '@fontsource/space-grotesk/400.css'
+import '@fontsource/space-grotesk/500.css'
+import '@fontsource/space-grotesk/600.css'
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/500.css'
+import '@fontsource/inter/600.css'
+import '@fontsource/jetbrains-mono/400.css'
+import '@fontsource/jetbrains-mono/500.css'
+import '@fontsource/jetbrains-mono/600.css'
+import '@fontsource/jetbrains-mono/700.css'
 import { Toolbar } from './app/toolbar/Toolbar'
 import { NodePalette } from './app/sidebar/NodePalette'
 import { Canvas } from './app/canvas/Canvas'
@@ -22,7 +33,31 @@ import styles from './App.module.css'
 
 const AUTOSAVE_KEY = 'scalemap-autosave'
 
+function useThemeBootstrap() {
+  const themeMode = useUiStore(s => s.themeMode)
+
+  useEffect(() => {
+    const colors = themeMode === 'light' ? LIGHT_COLORS : DARK_COLORS
+    const root = document.documentElement.style
+    for (const [key, value] of Object.entries(colors)) {
+      const kebab = key.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`)
+      root.setProperty(`--color-${kebab}`, value)
+    }
+    root.setProperty('--font-display', FONT_DISPLAY)
+    root.setProperty('--font-body', FONT_BODY)
+    root.setProperty('--font-mono', FONT_MONO)
+    for (const [key, value] of Object.entries(SPACING)) {
+      root.setProperty(`--space-${key.replace('space', '')}`, `${value}px`)
+    }
+    root.setProperty('--motion-breathe-ms', `${MOTION.breatheDurationMs}ms`)
+    root.setProperty('--motion-hover-ms', `${MOTION.hoverDurationMs}ms`)
+    root.setProperty('--motion-panel-ms', `${MOTION.panelDurationMs}ms`)
+    document.documentElement.dataset.theme = themeMode
+  }, [themeMode])
+}
+
 export default function App() {
+  useThemeBootstrap()
   const showHome = useFileStore(s => s.showHome)
   const running = useSimulationStore(s => s.running)
   const simConfigOpen = useUiStore(s => s.simConfigOpen)

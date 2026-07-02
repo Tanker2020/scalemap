@@ -19,6 +19,7 @@ interface UiStore {
   diagnosticsOpen: boolean
   packetEditorOpen: boolean
   highlightedNodeIds: string[]   // transient "look here" pulse driven by the diagnostics panel
+  themeMode: 'dark' | 'light'
 
   setActiveTool: (tool: ActiveTool) => void
   setSelectedNode: (id: string | null) => void
@@ -34,6 +35,7 @@ interface UiStore {
   setDiagnosticsOpen: (open: boolean) => void
   setPacketEditorOpen: (open: boolean) => void
   setHighlightedNodes: (ids: string[]) => void
+  setThemeMode: (mode: 'dark' | 'light') => void
 }
 
 export const useUiStore = create<UiStore>((set) => ({
@@ -52,6 +54,7 @@ export const useUiStore = create<UiStore>((set) => ({
   diagnosticsOpen: false,
   packetEditorOpen: false,
   highlightedNodeIds: [],
+  themeMode: (localStorage.getItem('scalemap-theme-mode') as 'dark' | 'light') ?? 'dark',
 
   setActiveTool: (tool) => set({ activeTool: tool, connectSourceId: null }),
   setSelectedNode: (id) => set({ selectedNodeId: id, selectedEdgeId: null }),
@@ -67,4 +70,8 @@ export const useUiStore = create<UiStore>((set) => ({
   setDiagnosticsOpen: (open) => set({ diagnosticsOpen: open }),
   setPacketEditorOpen: (open) => set({ packetEditorOpen: open }),
   setHighlightedNodes: (ids) => set({ highlightedNodeIds: ids }),
+  setThemeMode: (mode) => {
+    localStorage.setItem('scalemap-theme-mode', mode)
+    set({ themeMode: mode })
+  },
 }))

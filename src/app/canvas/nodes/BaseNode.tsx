@@ -23,6 +23,13 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
 
   const colors = CATEGORY_COLORS[config.category]
   const Icon = config.icon
+  const themeMode = useUiStore(s => s.themeMode)
+  const accentColor = themeMode === 'light' ? colors.foreground.light : colors.accent
+  // CATEGORY_COLORS.bg/.border have no light-mode variant (dark navy/teal/etc squares) — fine as
+  // a single icon chip on a canvas, but reads as "still dark mode" when the raw dark value is
+  // used verbatim in light mode. Blend a soft tint of the (already-swapped) accent color instead.
+  const iconChipBg     = themeMode === 'light' ? `color-mix(in srgb, ${accentColor} 12%, var(--color-node-base))` : colors.bg
+  const iconChipBorder = themeMode === 'light' ? `color-mix(in srgb, ${accentColor} 35%, transparent)` : colors.border
 
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(nodeData.label)
@@ -66,32 +73,35 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
   // Live health state from simulation overrides the static canvas status while running
   const displayStatus = (running && metrics?.healthState) ? metrics.healthState : nodeData.status
   const statusColor = {
-    healthy:  '#22C55E',
-    degraded: '#F59E0B',
-    down:     '#EF4444',
-    idle:     '#475569',
-  }[displayStatus] ?? '#475569'
+    healthy:  'var(--color-success)',
+    degraded: 'var(--color-warning)',
+    down:     'var(--color-danger)',
+    idle:     'var(--color-text-muted)',
+  }[displayStatus] ?? 'var(--color-text-muted)'
 
   // Saturation border overrides the normal border during simulation
   const saturationBorderColor = isSaturated
-    ? '#EF4444'
+    ? 'var(--color-danger)'
     : isCritical
-    ? '#F59E0B'
+    ? 'var(--color-warning)'
     : undefined
 
   // Utilization bar color
   const utilColor = utilization >= 0.8
-    ? '#EF4444'
+    ? 'var(--color-danger)'
     : utilization >= 0.5
-    ? '#F59E0B'
-    : colors.accent
+    ? 'var(--color-warning)'
+    : accentColor
 
   // Lint diagnostics: colour by the most severe issue on this node, tooltip lists them all.
   const hasLintError = !!lintIssues?.some(i => i.severity === 'error')
-  const lintColor = hasLintError ? '#EF4444' : '#F59E0B'
+  const lintColor = hasLintError ? 'var(--color-danger)' : 'var(--color-warning)'
   const lintTitle = lintIssues
     ?.map(i => `${i.severity === 'error' ? '✕' : '⚠'} ${i.message} — ${i.recommendation}`)
     .join('\n')
+
+  // Breathing glow only for nodes that are actually healthy/active — not idle, degraded, or down
+  const isHealthy = displayStatus === 'healthy'
 
   return (
     <motion.div
@@ -103,13 +113,15 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
         isHighlighted ? styles.diagnosticPulse : '',
       ].filter(Boolean).join(' ')}
       style={{
-        '--accent': colors.accent,
-        '--node-bg': colors.bg,
-        '--node-border': colors.border,
+        '--accent': accentColor,
+        '--node-accent': accentColor,
+        '--node-bg': iconChipBg,
+        '--node-border': iconChipBorder,
         ...(saturationBorderColor && {
           '--saturation-border': saturationBorderColor,
         }),
       } as React.CSSProperties}
+      data-healthy={isHealthy}
       initial={{ scale: 0.8, opacity: 0 }}
       animate={{ scale: 1, opacity: 1 }}
       exit={{ scale: 0.8, opacity: 0 }}
@@ -121,7 +133,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
       <Handle type="source" position={Position.Right}  className={styles.handle} />
 
       <div className={styles.iconWrap}>
-        <Icon size={14} strokeWidth={1.5} />
+        <Icon className={styles.nodeIcon} size={14} strokeWidth={1.5} />
       </div>
 
       <div className={styles.body}>
@@ -140,7 +152,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
         ) : (
           <div
             className={styles.label}
-            onDoubleClick={() => { setEditing(true); setEditValue(nodeData.label) }}
+            onDoubleClick={() => { if (running) return; setEditing(true); setEditValue(nodeData.label) }}
           >
             {nodeData.label}
           </div>
@@ -207,7 +219,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
         )}
         <div
           className={styles.statusDot}
-          style={{ background: statusColor, boxShadow: `0 0 6px ${statusColor}99` }}
+          style={{ background: statusColor, boxShadow: `0 0 6px color-mix(in srgb, ${statusColor} 60%, transparent)` }}
         />
       </div>
     </motion.div>

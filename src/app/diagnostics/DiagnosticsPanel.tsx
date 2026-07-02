@@ -16,8 +16,8 @@ import styles from './DiagnosticsPanel.module.css'
 type SeverityFilter = 'all' | 'error' | 'warn'
 
 const SEVERITY_COLOR: Record<LintIssue['severity'], string> = {
-  error: '#EF4444',
-  warn:  '#F59E0B',
+  error: 'var(--color-danger)',
+  warn:  'var(--color-warning)',
 }
 
 // Human title + icon per ruleId — the rule functions themselves stay untouched;

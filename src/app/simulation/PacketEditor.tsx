@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { X, Plus, Trash2, Package } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
+import { useSimulationStore } from '../store/simulation.store'
 import { useUiStore } from '../store/ui.store'
 import type {
   PacketProtocol, PacketTemplate, NewPacketTemplate, HttpTemplate, EventTemplate, StreamTemplate, DbTemplate,
@@ -37,6 +38,7 @@ export function PacketEditor() {
   const updatePacketTemplate = useCanvasStore(s => s.updatePacketTemplate)
   const removePacketTemplate = useCanvasStore(s => s.removePacketTemplate)
   const setPacketEditorOpen = useUiStore(s => s.setPacketEditorOpen)
+  const running = useSimulationStore(s => s.running)
 
   const list = Object.values(templates).sort((a, b) => a.id - b.id)
   const [selectedId, setSelectedId] = useState<number | null>(list[0]?.id ?? null)
@@ -76,22 +78,24 @@ export function PacketEditor() {
           <div className={styles.headerTitle}>
             <Package size={14} /> Packet Templates
           </div>
-          <div className={styles.modeToggle}>
-            <button
-              className={`${styles.modeBtn} ${packetMode === 'generic' ? styles.modeBtnActive : ''}`}
-              onClick={() => setPacketMode('generic')}
-              title="Uniform particles sized by each node's avg response — templates ignored"
-            >
-              Generic
-            </button>
-            <button
-              className={`${styles.modeBtn} ${packetMode === 'custom' ? styles.modeBtnActive : ''}`}
-              onClick={() => setPacketMode('custom')}
-              title="Templates + per-node distribution drive the simulation"
-            >
-              Custom
-            </button>
-          </div>
+          <fieldset disabled={running} style={{ border: 'none', padding: 0, margin: 0, display: 'contents' }}>
+            <div className={styles.modeToggle}>
+              <button
+                className={`${styles.modeBtn} ${packetMode === 'generic' ? styles.modeBtnActive : ''}`}
+                onClick={() => setPacketMode('generic')}
+                title="Uniform particles sized by each node's avg response — templates ignored"
+              >
+                Generic
+              </button>
+              <button
+                className={`${styles.modeBtn} ${packetMode === 'custom' ? styles.modeBtnActive : ''}`}
+                onClick={() => setPacketMode('custom')}
+                title="Templates + per-node distribution drive the simulation"
+              >
+                Custom
+              </button>
+            </div>
+          </fieldset>
           <button className={styles.closeBtn} onClick={() => setPacketEditorOpen(false)} title="Close">
             <X size={13} />
           </button>
@@ -105,7 +109,8 @@ export function PacketEditor() {
         )}
 
         <div className={styles.body}>
-          {/* Left: template list */}
+          {/* Left: template list — selecting a template to view it stays available while running;
+              only the mutating controls (add/patch/delete) are locked below. */}
           <div className={styles.listCol}>
             <div className={styles.listScroll}>
               {list.length === 0 && (
@@ -123,35 +128,39 @@ export function PacketEditor() {
                 </button>
               ))}
             </div>
-            <div className={styles.addWrap}>
-              <button className={styles.addBtn} onClick={() => setAddOpen(o => !o)}>
-                <Plus size={12} /> Add Packet
-              </button>
-              {addOpen && (
-                <div className={styles.addMenu}>
-                  {PROTOCOLS.map(p => (
-                    <button key={p.key} className={styles.addMenuItem} onClick={() => handleAdd(p.key)}>
-                      <span className={styles.listDot} style={{ background: p.color }} />
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <fieldset disabled={running} style={{ border: 'none', padding: 0, margin: 0, display: 'contents' }}>
+              <div className={styles.addWrap}>
+                <button className={styles.addBtn} onClick={() => setAddOpen(o => !o)}>
+                  <Plus size={12} /> Add Packet
+                </button>
+                {addOpen && (
+                  <div className={styles.addMenu}>
+                    {PROTOCOLS.map(p => (
+                      <button key={p.key} className={styles.addMenuItem} onClick={() => handleAdd(p.key)}>
+                        <span className={styles.listDot} style={{ background: p.color }} />
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </fieldset>
           </div>
 
           {/* Right: editor form */}
-          <div className={styles.formCol}>
-            {!selected ? (
-              <div className={styles.empty}>Select or add a template to edit it.</div>
-            ) : (
-              <TemplateForm template={selected} patch={patch} onDelete={() => {
-                removePacketTemplate(selected.id)
-                const rest = list.filter(t => t.id !== selected.id)
-                setSelectedId(rest[0]?.id ?? null)
-              }} />
-            )}
-          </div>
+          <fieldset disabled={running} style={{ border: 'none', padding: 0, margin: 0, display: 'contents' }}>
+            <div className={styles.formCol}>
+              {!selected ? (
+                <div className={styles.empty}>Select or add a template to edit it.</div>
+              ) : (
+                <TemplateForm template={selected} patch={patch} onDelete={() => {
+                  removePacketTemplate(selected.id)
+                  const rest = list.filter(t => t.id !== selected.id)
+                  setSelectedId(rest[0]?.id ?? null)
+                }} />
+              )}
+            </div>
+          </fieldset>
         </div>
       </motion.div>
     </motion.div>
