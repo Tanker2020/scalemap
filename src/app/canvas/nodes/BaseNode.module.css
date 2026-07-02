@@ -4,13 +4,27 @@
   gap: 9px;
   padding: 10px 12px;
   min-width: 148px;
-  background: var(--color-node-base);
-  border: 1px solid var(--color-node-border);
-  border-radius: 8px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--node-accent, var(--color-accent)) 8%, var(--color-node-base)), var(--color-node-base));
+  border: 1px solid color-mix(in srgb, var(--node-accent, var(--color-accent)) 35%, transparent);
+  border-radius: 12px;
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
   cursor: default;
   position: relative;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s, transform var(--motion-hover-ms, 175ms) ease, box-shadow var(--motion-hover-ms, 175ms) ease;
+}
+
+.node:hover {
+  transform: translateY(-1px);
+}
+
+/* Breathing glow — healthy/active nodes only, per the Restrained motion tier */
+.node[data-healthy='true'] {
+  animation: breathe var(--motion-breathe-ms, 3000ms) ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%, 100%   { box-shadow: 0 0 8px color-mix(in srgb, var(--node-accent, var(--color-accent)) 40%, transparent), 0 4px 18px rgba(0, 0, 0, 0.55); }
+  50%        { box-shadow: 0 0 16px color-mix(in srgb, var(--node-accent, var(--color-accent)) 70%, transparent), 0 4px 18px rgba(0, 0, 0, 0.55); }
 }
 
 .node.selected {
@@ -73,6 +87,11 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+/* Category-color halo around the node's lucide icon glyph */
+.nodeIcon {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--node-accent, var(--color-accent)) 50%, transparent));
 }
 
 .body {

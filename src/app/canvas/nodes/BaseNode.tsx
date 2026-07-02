@@ -23,6 +23,8 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
 
   const colors = CATEGORY_COLORS[config.category]
   const Icon = config.icon
+  const themeMode = useUiStore(s => s.themeMode)
+  const accentColor = themeMode === 'light' ? colors.foreground.light : colors.accent
 
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(nodeData.label)
@@ -92,6 +94,9 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
     ?.map(i => `${i.severity === 'error' ? '✕' : '⚠'} ${i.message} — ${i.recommendation}`)
     .join('\n')
 
+  // Breathing glow only for nodes that are actually healthy/active — not idle, degraded, or down
+  const isHealthy = displayStatus === 'healthy'
+
   return (
     <motion.div
       className={[
@@ -101,13 +106,15 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
         isCircuitOpen ? styles.circuitOpen : isCircuitHalf ? styles.circuitHalfOpen : isSaturated ? styles.saturated : isCritical ? styles.critical : '',
       ].filter(Boolean).join(' ')}
       style={{
-        '--accent': colors.accent,
+        '--accent': accentColor,
+        '--node-accent': accentColor,
         '--node-bg': colors.bg,
         '--node-border': colors.border,
         ...(saturationBorderColor && {
           '--saturation-border': saturationBorderColor,
         }),
       } as React.CSSProperties}
+      data-healthy={isHealthy}
       initial={{ scale: 0.8, opacity: 0 }}
       animate={{ scale: 1, opacity: 1 }}
       exit={{ scale: 0.8, opacity: 0 }}
@@ -119,7 +126,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
       <Handle type="source" position={Position.Right}  className={styles.handle} />
 
       <div className={styles.iconWrap}>
-        <Icon size={14} strokeWidth={1.5} />
+        <Icon className={styles.nodeIcon} size={14} strokeWidth={1.5} />
       </div>
 
       <div className={styles.body}>
