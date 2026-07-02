@@ -120,13 +120,24 @@ export function checkBreakerTransition(
 // Extracted verbatim from updateAllNodeMetrics's inline force-open loop (previously ~:1934-1947)
 // and the periodic recovery scan (previously ~:2072). No behavior change — pure code motion.
 
+// hasBreakerConfig: whether the target node type ships a `circuitBreaker` config in
+// NODE_SIM_DEFAULTS (see src/app/simulation/defaults.ts). Many node types (redis, memcached,
+// objectStorage, fileStorage, loadBalancer, apiGateway, cdn, dns, firewall, vpn, all queue types)
+// have none — for those, a breaker has no semantic meaning and force-opening one here is
+// redundant with (and outlives) the 'down' hard-gate already applied at particle-arrival time,
+// which is what caused C1: a force-opened breaker on a config-less node type could never be
+// found/reset by checkBreakerTransition or the periodic recovery scan below, since both bail out
+// early on `!cb`, permanently latching traffic off even after the node recovered.
 export function forceOpenBreakersForNode(
   nodeId: string,
   inboundRequestEdges: Edge<EdgeData>[],
+  hasBreakerConfig: boolean,
   now: number,
   nodesMap: Map<string, Node<NodeData>>,
   onEvent: OnEvent,
 ): void {
+  if (!hasBreakerConfig) return // no breaker semantically exists for this node type — the
+                                 // down-state hard-gate at arrival time already suppresses traffic
   const label = (nodesMap.get(nodeId)?.data as NodeData)?.label ?? nodeId
   for (const e of inboundRequestEdges) {
     const breaker = getBreaker(e.id)
@@ -156,10 +167,18 @@ export function resetBreakersIfRecovered(
     const tgtType = nodesMap.get(targetId)?.type as NodeType | undefined
     if (!tgtType) continue
     const cb = effectiveConfig(targetId, tgtType).circuitBreaker
-    if (!cb || now - breaker.openedAt <= cb.resetMs) continue
-    breaker.state  = 'half-open'
     const srcLabel = (nodesMap.get(edgeData.source)?.data as NodeData)?.label ?? edgeData.source
     const tgtLabel = (nodesMap.get(targetId)?.data    as NodeData)?.label ?? targetId
+    if (!cb) {
+      // Belt-and-suspenders: close any breaker force-opened before this fix landed (or by a
+      // config path change mid-run), even though this node type has no circuitBreaker config —
+      // otherwise it stays latched open forever with no config to ever satisfy the resetMs check.
+      breaker.state = 'closed'
+      onEvent('circuit_close', targetId, `Circuit closed: ${srcLabel} → ${tgtLabel} (no breaker config for this node type)`, 'info')
+      continue
+    }
+    if (now - breaker.openedAt <= cb.resetMs) continue
+    breaker.state  = 'half-open'
     onEvent('circuit_half_open', targetId, `Circuit half-open: ${srcLabel} → ${tgtLabel} (testing)`, 'warn')
   }
 }

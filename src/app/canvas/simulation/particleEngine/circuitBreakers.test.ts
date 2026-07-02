@@ -73,10 +73,10 @@ describe('circuitBreakers', () => {
     expect(state).toBe('half-open')
   })
 
-  it('forceOpenBreakersForNode opens breakers on the given inbound edges', () => {
+  it('forceOpenBreakersForNode opens breakers on the given inbound edges when the node type has a circuitBreaker config', () => {
     const nodesMap = new Map([['a', makeNode('a', 'A')], ['b', makeNode('b', 'B')]])
     const edgesData = [makeEdge('e1', 'a', 'b')]
-    forceOpenBreakersForNode('b', edgesData, 100, nodesMap, noop)
+    forceOpenBreakersForNode('b', edgesData, /* hasBreakerConfig */ true, 100, nodesMap, noop)
     expect(getBreaker('e1').state).toBe('open')
   })
 
@@ -90,5 +90,34 @@ describe('circuitBreakers', () => {
     const effectiveConfig = (_nodeId: string, _nodeType: NodeType) => configWithBreaker
     resetBreakersIfRecovered(5000, edgesData, nodesMap, nodeHealthStates, effectiveConfig, noop)
     expect(getBreaker('e1').state).toBe('half-open')
+  })
+
+  // ─── C1: config-less node types must never latch a breaker open forever ─────
+  describe('force-open on config-less node types (C1)', () => {
+    const configNoBreaker: NodeSimConfig = {
+      maxRps: 50000,
+      processingMs: 1,
+      errorRate: 0,
+      // no circuitBreaker key — mirrors NODE_SIM_DEFAULTS.redis / queue / loadBalancer / etc.
+    } as unknown as NodeSimConfig
+
+    it('does not open a breaker for a node type with no circuitBreaker config (redis)', () => {
+      const nodesMap = new Map([['api-1', makeNode('api-1', 'API')], ['redis-1', makeNode('redis-1', 'Redis')]])
+      const edgesData = [makeEdge('e1', 'api-1', 'redis-1')]
+      forceOpenBreakersForNode('redis-1', edgesData, /* hasBreakerConfig */ false, 100, nodesMap, noop)
+      expect(getBreaker('e1').state).not.toBe('open')
+    })
+
+    it('can still close a breaker that was already force-opened before this fix shipped', () => {
+      const nodesMap = new Map([['api-1', makeNode('api-1', 'API')], ['redis-1', makeNode('redis-1', 'Redis')]])
+      const edgesData = [makeEdge('e1', 'api-1', 'redis-1')]
+      const nodeHealthStates = new Map<string, 'healthy' | 'degraded' | 'down'>([['redis-1', 'healthy']])
+      const b = getBreaker('e1')
+      b.state = 'open'
+      b.openedAt = Date.now() - 10_000
+      const effectiveConfig = (_nodeId: string, _nodeType: NodeType) => configNoBreaker
+      resetBreakersIfRecovered(Date.now(), edgesData, nodesMap, nodeHealthStates, effectiveConfig, noop)
+      expect(getBreaker('e1').state).not.toBe('open')
+    })
   })
 })

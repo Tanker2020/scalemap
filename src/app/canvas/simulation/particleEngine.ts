@@ -1801,7 +1801,8 @@ function updateAllNodeMetrics(now: number, delta: number) {
         const edgePath = _edgePaths.find(ep => ep.id === ed.id)
         return edgePath?.edgeType !== 'event' && edgePath?.edgeType !== 'stream'
       })
-      forceOpenBreakersForNode(nodeId, inboundRequestEdges, now, _nodesMap, _onEvent)
+      const hasBreakerConfig = nodeConfig.circuitBreaker !== undefined
+      forceOpenBreakersForNode(nodeId, inboundRequestEdges, hasBreakerConfig, now, _nodesMap, _onEvent)
     }
 
     // Emit health state transition events (distinct from saturation events)
