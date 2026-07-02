@@ -6,6 +6,7 @@ import {
 } from '@xyflow/react'
 import type { EdgeData } from '../../../lib/nodeConfig'
 import { useCanvasStore } from '../../store/canvas.store'
+import { CATEGORY_COLORS } from '../../../lib/theme'
 import styles from './edges.module.css'
 
 const PARALLEL_GAP = 22  // px between sibling edges in the same corridor
@@ -36,19 +37,19 @@ type EdgeConfig = {
 
 const EDGE_CONFIG: Record<string, EdgeConfig> = {
   request: {
-    color: '#4A9EFF55',
+    color: `${CATEGORY_COLORS.compute.accent}55`,
     markerEnd: 'url(#arrow-request)',
     markerStart: 'url(#arrow-request)',
   },
   stream: {
-    color: '#A78BFA66',
+    color: `${CATEGORY_COLORS.messaging.accent}66`,
     strokeDasharray: '6 4',
     animated: true,
     markerEnd: 'url(#arrow-stream)',
     className: styles.streamPath,
   },
   event: {
-    color: '#2DD4BF55',
+    color: `${CATEGORY_COLORS.network.accent}55`,
     strokeDasharray: '2 4',
     markerEnd: 'url(#arrow-event)',
   },
@@ -135,13 +136,13 @@ function EdgeDefs() {
     <svg style={{ position: 'absolute', width: 0, height: 0 }}>
       <defs>
         <marker id="arrow-request" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-          <path d="M0,0 L0,6 L6,3 z" fill="#4A9EFF55" />
+          <path d="M0,0 L0,6 L6,3 z" fill={`${CATEGORY_COLORS.compute.accent}55`} />
         </marker>
         <marker id="arrow-stream" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-          <path d="M0,0 L0,6 L6,3 z" fill="#A78BFA66" />
+          <path d="M0,0 L0,6 L6,3 z" fill={`${CATEGORY_COLORS.messaging.accent}66`} />
         </marker>
         <marker id="arrow-event" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-          <path d="M0,0 L0,6 L6,3 z" fill="#2DD4BF55" />
+          <path d="M0,0 L0,6 L6,3 z" fill={`${CATEGORY_COLORS.network.accent}55`} />
         </marker>
       </defs>
     </svg>
