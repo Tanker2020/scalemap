@@ -26,9 +26,9 @@ export function StatusBar({ onToggleDrawer, drawerOpen }: StatusBarProps) {
   return (
     <div className={styles.bar}>
       {dirty ? (
-        <span className={styles.item} style={{ color: '#F59E0B' }}>● unsaved</span>
+        <span className={styles.item} style={{ color: 'var(--color-warning)' }}>● unsaved</span>
       ) : (
-        <span className={styles.item} style={{ color: '#2A2E38' }}>
+        <span className={styles.item} style={{ color: 'var(--color-text-muted)' }}>
           {fileName ? fileName : 'untitled'} · {formatAutosave(lastAutosave)}
         </span>
       )}

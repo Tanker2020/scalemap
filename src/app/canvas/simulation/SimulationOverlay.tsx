@@ -5,7 +5,6 @@ import { useSimulationStore, type SimEventType, type NodeMetrics, type Simulatio
 import { useMetricsHistoryStore } from '../../store/metricsHistory.store'
 import { useCostHistoryStore } from '../../store/costHistory.store'
 import { useReplayStore } from '../../store/replay.store'
-import { useUiStore } from '../../store/ui.store'
 import { DEFAULT_SLO } from '../../simulation/defaults'
 import type { NodeData, NodeType } from '../../../lib/nodeConfig'
 import { computeCost, computeCostByCategory } from '../../../lib/costModel'
@@ -18,7 +17,6 @@ import {
   setNodeConfigs,
   setNodeProviders,
   setCallbacks,
-  pickParticleAtPoint,
   enterReplay,
   getSimulatedElapsedS,
 } from './particleEngine'
@@ -46,10 +44,6 @@ export function SimulationOverlay({ width, height }: Props) {
 
   const simStartRef    = useRef<number>(0)
   const prevSloRef     = useRef<Map<string, boolean>>(new Map())
-  const mouseDownRef   = useRef<{ x: number; y: number } | null>(null)
-  const setInspectedRequest = useSimulationStore(s => s.setInspectedRequest)
-  const setSelectedNode = useUiStore(s => s.setSelectedNode)
-  const setRightTab     = useUiStore(s => s.setRightTab)
 
   // Peak metric tracking for SimulationRun summary
   const peakRpsRef  = useRef(0)
@@ -274,6 +268,11 @@ export function SimulationOverlay({ width, height }: Props) {
     return () => clearInterval(interval)
   }, [running, nodes]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Purely a draw surface — never captures pointer input. Click-to-inspect-a-particle is
+  // handled by Canvas.tsx's onPaneClick instead (which reaches this same coordinate space
+  // and already gets correct click-vs-drag disambiguation from React Flow for free). Making
+  // this layer interactive previously blocked ALL pointer/wheel input to the pane underneath
+  // while a simulation was running — panning, zooming, and node clicks all silently broke.
   return (
     <canvas
       ref={canvasRef}
@@ -281,34 +280,7 @@ export function SimulationOverlay({ width, height }: Props) {
       height={height}
       style={{
         position: 'absolute', top: 0, left: 0, zIndex: 10,
-        pointerEvents: running ? 'auto' : 'none',
-        cursor: running ? 'crosshair' : 'default',
-      }}
-      onMouseDown={e => { mouseDownRef.current = { x: e.clientX, y: e.clientY } }}
-      onMouseUp={e => {
-        const down = mouseDownRef.current
-        mouseDownRef.current = null
-        if (!down || !canvasRef.current) return
-        const dx = e.clientX - down.x
-        const dy = e.clientY - down.y
-        if (Math.sqrt(dx * dx + dy * dy) >= 5) return  // was a drag, not a click
-        const rect = canvasRef.current.getBoundingClientRect()
-        const snap = pickParticleAtPoint(e.clientX, e.clientY, rect)
-        if (snap) { setInspectedRequest(snap); return }
-        setInspectedRequest(null)  // missed a particle — clear the inspector
-
-        // The overlay swallows clicks while running, so nodes never get them. On a particle
-        // miss, hit-test the DOM beneath the cursor and select the node there (if any) so its
-        // live-metrics panel opens — editing stays locked, but analytics become viewable.
-        const canvas = canvasRef.current
-        canvas.style.pointerEvents = 'none'
-        const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
-        canvas.style.pointerEvents = 'auto'
-        const nodeId = el?.closest('.react-flow__node')?.getAttribute('data-id')
-        if (nodeId) {
-          setSelectedNode(nodeId)
-          setRightTab('properties')
-        }
+        pointerEvents: 'none',
       }}
     />
   )

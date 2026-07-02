@@ -5,22 +5,22 @@
   width: 100%;
   padding: 7px 13px;
   border: none;
-  border-bottom: 1px solid var(--color-toolbar-border, #2A2E38);
-  background: #0D0F12;
+  border-bottom: 1px solid var(--color-toolbar-border);
+  background: var(--color-canvas);
   cursor: pointer;
-  color: #F1F5F9;
+  color: var(--color-text-primary);
   font-family: 'JetBrains Mono', monospace;
   text-align: left;
   transition: background 0.12s;
 }
-.bar:hover { background: #12151B; }
+.bar:hover { background: var(--color-surface-hover); }
 
-.icon { color: #22C55E; flex-shrink: 0; }
+.icon { color: var(--color-success); flex-shrink: 0; }
 
-.live { font-size: 12px; font-weight: 600; color: #22C55E; }
-.monthly { font-size: 12px; font-weight: 600; color: #F1F5F9; }
-.unit { font-size: 9px; color: #64748B; margin-left: 1px; font-weight: 400; }
-.sep { color: #475569; }
+.live { font-size: 12px; font-weight: 600; color: var(--color-success); }
+.monthly { font-size: 12px; font-weight: 600; color: var(--color-text-primary); }
+.unit { font-size: 9px; color: var(--color-text-muted); margin-left: 1px; font-weight: 400; }
+.sep { color: var(--color-text-muted); }
 
 .spark {
   width: 64px;
@@ -34,7 +34,7 @@
   gap: 4px;
   margin-left: auto;
   font-size: 9px;
-  color: #475569;
+  color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   flex-shrink: 0;

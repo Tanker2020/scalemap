@@ -4,8 +4,8 @@
   right: 0;
   width: 360px;
   height: calc(100vh - 42px);
-  background: #0D0F12;
-  border-left: 1px solid #2A2E38;
+  background: var(--color-canvas);
+  border-left: 1px solid var(--color-node-border);
   display: flex;
   flex-direction: column;
   z-index: 9998;
@@ -19,15 +19,15 @@
   align-items: center;
   justify-content: space-between;
   padding: 10px 13px;
-  border-bottom: 1px solid #1E2230;
-  background: #111318;
+  border-bottom: 1px solid var(--color-toolbar-border);
+  background: var(--color-toolbar);
   flex-shrink: 0;
 }
 
 .title {
   font-size: 11px;
   font-weight: 700;
-  color: #94A3B8;
+  color: var(--color-text-secondary);
   letter-spacing: 0.04em;
 }
 
@@ -39,9 +39,9 @@
 
 .clearBtn {
   font-size: 9px;
-  color: #475569;
-  background: #1A1D25;
-  border: 1px solid #2A2E38;
+  color: var(--color-text-muted);
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-node-border);
   border-radius: 3px;
   padding: 2px 7px;
   cursor: pointer;
@@ -49,17 +49,17 @@
 }
 
 .clearBtn:hover {
-  color: #EF4444;
-  border-color: #EF444455;
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 33%, transparent);
 }
 
 .closeBtn {
   width: 24px;
   height: 24px;
   border-radius: 4px;
-  background: #1A1D25;
-  border: 1px solid #2A2E38;
-  color: #64748B;
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-node-border);
+  color: var(--color-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -68,8 +68,8 @@
 }
 
 .closeBtn:hover {
-  background: #2A1A1A;
-  color: #EF4444;
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+  color: var(--color-danger);
 }
 
 /* ── Filters ─────────────────────────────────────── */
@@ -78,9 +78,9 @@
   display: flex;
   gap: 4px;
   padding: 8px 10px;
-  border-bottom: 1px solid #1A1D22;
+  border-bottom: 1px solid var(--color-toolbar-border);
   flex-shrink: 0;
-  background: #0B0D12;
+  background: var(--color-toolbar);
 }
 
 .chip {
@@ -89,9 +89,9 @@
   gap: 4px;
   padding: 3px 8px;
   border-radius: 3px;
-  border: 1px solid #2A2E38;
+  border: 1px solid var(--color-node-border);
   background: transparent;
-  color: #475569;
+  color: var(--color-text-muted);
   font-size: 9px;
   font-weight: 600;
   cursor: pointer;
@@ -99,37 +99,37 @@
 }
 
 .chip:hover {
-  background: #1A1D25;
-  color: #94A3B8;
+  background: var(--color-surface-hover);
+  color: var(--color-text-secondary);
 }
 
 .chipActive {
-  background: #1A1D25;
+  background: var(--color-surface-hover);
   border-color: #A78BFA55;
   color: #C4B5FD;
 }
 
 .chip_critical.chipActive {
-  border-color: #EF444455;
-  color: #FCA5A5;
+  border-color: color-mix(in srgb, var(--color-danger) 33%, transparent);
+  color: var(--color-danger);
 }
 
 .chip_warn.chipActive {
-  border-color: #F59E0B55;
-  color: #FCD34D;
+  border-color: color-mix(in srgb, var(--color-warning) 33%, transparent);
+  color: var(--color-warning);
 }
 
 .chip_info.chipActive {
-  border-color: #4A9EFF55;
-  color: #93C5FD;
+  border-color: color-mix(in srgb, var(--color-accent) 33%, transparent);
+  color: var(--color-accent);
 }
 
 .chipCount {
   font-size: 8px;
-  background: #1A1D25;
+  background: var(--color-surface-hover);
   border-radius: 8px;
   padding: 0 4px;
-  color: #64748B;
+  color: var(--color-text-muted);
 }
 
 /* ── Search ──────────────────────────────────────── */
@@ -137,7 +137,7 @@
 .searchWrap {
   position: relative;
   padding: 6px 10px;
-  border-bottom: 1px solid #1A1D22;
+  border-bottom: 1px solid var(--color-toolbar-border);
   flex-shrink: 0;
 }
 
@@ -146,18 +146,18 @@
   left: 19px;
   top: 50%;
   transform: translateY(-50%);
-  color: #64748B;
+  color: var(--color-text-muted);
   pointer-events: none;
 }
 
 .searchInput {
   width: 100%;
-  background: #111318;
-  border: 1px solid #2A2E38;
+  background: var(--color-toolbar);
+  border: 1px solid var(--color-node-border);
   border-radius: 4px;
   padding: 4px 24px 4px 24px;
   font-size: 10px;
-  color: #CBD5E1;
+  color: var(--color-text-secondary);
   outline: none;
   transition: border-color 0.15s;
 }
@@ -167,7 +167,7 @@
 }
 
 .searchInput::placeholder {
-  color: #334155;
+  color: var(--color-text-muted);
 }
 
 .searchClear {
@@ -177,7 +177,7 @@
   transform: translateY(-50%);
   background: none;
   border: none;
-  color: #475569;
+  color: var(--color-text-muted);
   font-size: 13px;
   cursor: pointer;
   line-height: 1;
@@ -194,12 +194,12 @@
 
 .body::-webkit-scrollbar { width: 3px; }
 .body::-webkit-scrollbar-track { background: transparent; }
-.body::-webkit-scrollbar-thumb { background: #1E2230; border-radius: 2px; }
+.body::-webkit-scrollbar-thumb { background: var(--color-toolbar-border); border-radius: 2px; }
 
 .empty {
   padding: 24px 16px;
   font-size: 10px;
-  color: #334155;
+  color: var(--color-text-muted);
   text-align: center;
 }
 
@@ -212,11 +212,11 @@
 .groupLabel {
   font-size: 9px;
   font-weight: 600;
-  color: #334155;
+  color: var(--color-text-muted);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   padding: 5px 5px 4px;
-  border-bottom: 1px solid #1A1D22;
+  border-bottom: 1px solid var(--color-toolbar-border);
   margin-bottom: 4px;
 }
 
@@ -231,25 +231,25 @@
 .footer {
   padding: 6px 13px;
   font-size: 9px;
-  color: #334155;
-  border-top: 1px solid #1A1D22;
+  color: var(--color-text-muted);
+  border-top: 1px solid var(--color-toolbar-border);
   display: flex;
   align-items: center;
   gap: 5px;
   flex-shrink: 0;
-  background: #0B0D12;
+  background: var(--color-toolbar);
 }
 
 .footerFiltered {
-  color: #475569;
+  color: var(--color-text-muted);
 }
 
 /* ── Tab bar ─────────────────────────────────────── */
 
 .tabBar {
   display: flex;
-  border-bottom: 1px solid #1A1D22;
-  background: #0B0D12;
+  border-bottom: 1px solid var(--color-toolbar-border);
+  background: var(--color-toolbar);
   flex-shrink: 0;
 }
 
@@ -262,7 +262,7 @@
   padding: 7px 0;
   font-size: 10px;
   font-weight: 600;
-  color: #475569;
+  color: var(--color-text-muted);
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
@@ -271,7 +271,7 @@
 }
 
 .tabBtn:hover {
-  color: #94A3B8;
+  color: var(--color-text-secondary);
 }
 
 .tabBtnActive {
@@ -281,18 +281,18 @@
 
 .tabCount {
   font-size: 8px;
-  background: #1A1D25;
+  background: var(--color-surface-hover);
   border-radius: 8px;
   padding: 1px 5px;
-  color: #64748B;
+  color: var(--color-text-muted);
 }
 
 .tabCountCritical {
   font-size: 8px;
-  background: #EF444422;
+  background: color-mix(in srgb, var(--color-danger) 13%, transparent);
   border-radius: 8px;
   padding: 1px 5px;
-  color: #FCA5A5;
+  color: var(--color-danger);
 }
 
 /* ── Summary tab ─────────────────────────────────── */
@@ -304,11 +304,11 @@
 .summarySectionLabel {
   font-size: 9px;
   font-weight: 700;
-  color: #334155;
+  color: var(--color-text-muted);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   padding: 6px 8px 4px;
-  border-bottom: 1px solid #1A1D22;
+  border-bottom: 1px solid var(--color-toolbar-border);
   margin-bottom: 4px;
 }
 
@@ -331,7 +331,7 @@
 }
 
 .incidentCard:hover {
-  background: #111318 !important;
+  background: var(--color-toolbar) !important;
 }
 
 .incidentHead {
@@ -361,13 +361,13 @@
 
 .incidentTime {
   font-size: 9px;
-  color: #475569;
+  color: var(--color-text-muted);
   flex-shrink: 0;
 }
 
 .incidentChevron {
   font-size: 8px;
-  color: #475569;
+  color: var(--color-text-muted);
   flex-shrink: 0;
 }
 
@@ -386,17 +386,17 @@
 
 .incidentArrow {
   font-size: 9px;
-  color: #475569;
+  color: var(--color-text-muted);
 }
 
 .incidentChainNode {
   font-size: 10px;
-  color: #94A3B8;
+  color: var(--color-text-secondary);
 }
 
 .incidentDetail {
   margin-top: 4px;
-  border-top: 1px solid #1A1D22;
+  border-top: 1px solid var(--color-toolbar-border);
   padding-top: 6px;
   display: flex;
   flex-direction: column;
@@ -411,12 +411,12 @@
 
 .incidentDetailLabel {
   font-size: 9px;
-  color: #475569;
+  color: var(--color-text-muted);
   flex-shrink: 0;
   width: 70px;
 }
 
 .incidentDetailVal {
   font-size: 10px;
-  color: #94A3B8;
+  color: var(--color-text-secondary);
 }

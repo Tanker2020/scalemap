@@ -43,7 +43,7 @@ export function CostTracker() {
         </span>
         {sparkData.length >= 2 && (
           <span className={styles.spark}>
-            <Sparkline data={sparkData} color="#F5A623" height={16} maxPoints={60} />
+            <Sparkline data={sparkData} color="var(--color-warning)" height={16} maxPoints={60} />
           </span>
         )}
         <span className={styles.hint}>

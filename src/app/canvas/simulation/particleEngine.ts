@@ -344,27 +344,33 @@ export function saturationLatencyMultiplier(rawUtilization: number): number {
 }
 
 // ─── Color helpers ────────────────────────────────────────────────────────────
+// NOTE: hex values below are the dark-mode CATEGORY_COLORS accents from theme.ts, inlined
+// (not imported) because this is a rAF-driven imperative canvas loop, not a React component —
+// it doesn't re-render on themeMode changes. Particle/edge colors are intentionally fixed to
+// dark-mode values regardless of light/dark toggle; this is by design, not an oversight. If a
+// future light-mode-focused pass needs theme-reactive particles, wire `themeMode` into
+// `setNodeConfigs`-style engine state rather than assuming it already happens here.
 
 function edgeColor(edgeType: string): string {
   switch (edgeType) {
-    case 'stream':     return '#A78BFA'
-    case 'event':      return '#2DD4BF'
-    case 'dependency': return '#475569'
-    default:           return '#4A9EFF'
+    case 'stream':     return '#9C8CE0' // messaging category, harmonized
+    case 'event':      return '#3FC7B8' // network category, harmonized
+    case 'dependency': return '#475569' // unchanged — grouping/neutral, not part of the harmonized set
+    default:           return '#5B9CF6' // compute category, harmonized
   }
 }
 
 function nodeAccentColor(nodeType: NodeType): string {
   const map: Record<string, string> = {
-    ec2: '#4A9EFF', lambda: '#4A9EFF', container: '#4A9EFF', pod: '#4A9EFF',
-    loadBalancer: '#2DD4BF', apiGateway: '#2DD4BF', cdn: '#2DD4BF',
-    dns: '#2DD4BF', firewall: '#2DD4BF', vpn: '#2DD4BF',
-    dbSql: '#F5A623', dbNoSql: '#F5A623', objectStorage: '#F5A623', fileStorage: '#F5A623',
-    queue: '#A78BFA', eventBus: '#A78BFA', pubsub: '#A78BFA', stream: '#A78BFA',
-    redis: '#F5A623', memcached: '#F5A623', cdnCache: '#F5A623',
-    k8sCluster: '#4A9EFF', ecsCluster: '#4A9EFF', dockerCompose: '#4A9EFF',
+    ec2: '#5B9CF6', lambda: '#5B9CF6', container: '#5B9CF6', pod: '#5B9CF6',
+    loadBalancer: '#3FC7B8', apiGateway: '#3FC7B8', cdn: '#3FC7B8',
+    dns: '#3FC7B8', firewall: '#3FC7B8', vpn: '#3FC7B8',
+    dbSql: '#E0A552', dbNoSql: '#E0A552', objectStorage: '#E0A552', fileStorage: '#E0A552',
+    queue: '#9C8CE0', eventBus: '#9C8CE0', pubsub: '#9C8CE0', stream: '#9C8CE0',
+    redis: '#E0A552', memcached: '#E0A552', cdnCache: '#E0A552',
+    k8sCluster: '#5B9CF6', ecsCluster: '#5B9CF6', dockerCompose: '#5B9CF6',
   }
-  return map[nodeType] ?? '#4A9EFF'
+  return map[nodeType] ?? '#5B9CF6'
 }
 
 // ─── Edge path data ───────────────────────────────────────────────────────────
@@ -1524,6 +1530,20 @@ function drawReplayFrame(canvas: HTMLCanvasElement, index: number) {
 export function enterReplay() {
   _lastReplayIndexDrawn = -1
   useReplayStore.getState().startReplay(_particleFrames.map(f => f.elapsedS))
+}
+
+// Force-redraw the current replay frame, bypassing the _lastReplayIndexDrawn dedup guard.
+// getEdgePoint() recomputes each particle's screen position from the edge SVG's live
+// getScreenCTM() every call, so the *positions* are always viewport-correct -- but the guard in
+// loop()'s paused branch only re-invokes drawReplayFrame when the scrubber index changes, not
+// when the user pans/zooms. Panning without this left the last-drawn dots frozen in stale screen
+// coordinates while the edges visually moved underneath them. Call this from a viewport-change
+// listener (Canvas.tsx's onMove) while paused/replaying.
+export function redrawCurrentReplayFrame(): void {
+  if (!_canvas) return
+  const { isReplaying, replayIndex } = useReplayStore.getState()
+  if (!isReplaying) return
+  drawReplayFrame(_canvas, replayIndex)
 }
 
 // ─── Per-frame metrics update ────────────────────────────────────────────────

@@ -5,7 +5,18 @@ import { useCostHistoryStore } from '../store/costHistory.store'
 import { computeCostByCategory, formatUsd, type CostSummary } from '../../lib/costModel'
 import { NODE_CONFIG, type NodeData, type NodeCategory, type NodeType } from '../../lib/nodeConfig'
 import { CATEGORY_COLORS } from '../../lib/theme'
+import { useUiStore } from '../store/ui.store'
 import styles from './CostDashboard.module.css'
+
+// CATEGORY_COLORS.accent is dark-mode-only (see BaseNode.tsx/NodePalette.tsx for the same
+// pattern) -- swap to .foreground.light in light mode so category dots/bars/hero chart stay
+// legible instead of using the vivid dark-tuned hue verbatim on a light background.
+function categoryColor(category: NodeCategory | undefined, themeMode: 'dark' | 'light'): string {
+  if (!category) return 'var(--color-text-secondary)'
+  const c = CATEGORY_COLORS[category]
+  if (!c) return 'var(--color-text-secondary)'
+  return themeMode === 'light' ? c.foreground.light : c.accent
+}
 
 interface Props {
   summary: CostSummary
@@ -42,6 +53,11 @@ export function CostDashboard({ summary, nodes, onClose }: Props) {
   const history = useCostHistoryStore(s => s.history)
   const [tooltip, setTooltip] = useState<TooltipState | null>(null)
   const svgRef = useRef<SVGSVGElement>(null)
+  const themeMode = useUiStore(s => s.themeMode)
+  // "Cost is amber" branding is independent of any node category (it's a money signal, not a
+  // storage-category signal that happens to share a hex value) -- var(--color-warning) already
+  // resolves an AA-safe amber in both themes, no JS/themeMode branching needed.
+  const heroColor = 'var(--color-warning)'
 
   const categories = useMemo(() => computeCostByCategory(summary, nodes), [summary, nodes])
 
@@ -171,14 +187,14 @@ export function CostDashboard({ summary, nodes, onClose }: Props) {
             >
               {[0, 0.25, 0.5, 0.75, 1].map(frac => {
                 const y = PAD_T + frac * chartH
-                return <line key={frac} x1={PAD_L} y1={y} x2={PAD_L + chartW} y2={y} stroke="#1E2230" strokeWidth="1" />
+                return <line key={frac} x1={PAD_L} y1={y} x2={PAD_L + chartW} y2={y} stroke="var(--color-toolbar-border)" strokeWidth="1" />
               })}
 
               {[0, 0.25, 0.5, 0.75, 1].map(frac => {
                 const y = PAD_T + (1 - frac) * chartH
                 const val = frac * maxMonthly
                 return (
-                  <text key={`y-${frac}`} x={PAD_L - 6} y={y + 4} textAnchor="end" fontSize="9" fill="#475569">
+                  <text key={`y-${frac}`} x={PAD_L - 6} y={y + 4} textAnchor="end" fontSize="9" fill="var(--color-text-muted)">
                     {formatUsd(val)}
                   </text>
                 )
@@ -190,17 +206,17 @@ export function CostDashboard({ summary, nodes, onClose }: Props) {
                 if (!snap) return null
                 const x = PAD_L + frac * chartW
                 return (
-                  <text key={`x-${frac}`} x={x} y={PAD_T + chartH + 18} textAnchor="middle" fontSize="9" fill="#334155">
+                  <text key={`x-${frac}`} x={x} y={PAD_T + chartH + 18} textAnchor="middle" fontSize="9" fill="var(--color-text-muted)">
                     {formatTime(snap.t)}
                   </text>
                 )
               })}
 
-              <path d={buildArea(monthlyVals, maxMonthly)} fill="#F5A623" fillOpacity="0.1" />
-              <path d={buildPath(monthlyVals, maxMonthly)} fill="none" stroke="#F5A623" strokeWidth="1.5" strokeLinejoin="round" />
+              <path d={buildArea(monthlyVals, maxMonthly)} fill={heroColor} fillOpacity="0.1" />
+              <path d={buildPath(monthlyVals, maxMonthly)} fill="none" stroke={heroColor} strokeWidth="1.5" strokeLinejoin="round" />
 
               {tooltip && (
-                <line x1={tooltip.x} y1={PAD_T} x2={tooltip.x} y2={PAD_T + chartH} stroke="#475569" strokeWidth="1" strokeDasharray="2,2" />
+                <line x1={tooltip.x} y1={PAD_T} x2={tooltip.x} y2={PAD_T + chartH} stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="2,2" />
               )}
 
               <rect x={PAD_L} y={PAD_T} width={chartW} height={chartH} fill="transparent" />
@@ -214,7 +230,7 @@ export function CostDashboard({ summary, nodes, onClose }: Props) {
             >
               <div className={styles.tooltipTime}>{formatTime(tooltip.t)}</div>
               <div className={styles.tooltipRow}>
-                <span className={styles.tooltipDot} style={{ background: '#F5A623' }} />
+                <span className={styles.tooltipDot} style={{ background: heroColor }} />
                 <span className={styles.tooltipLabel}>Monthly</span>
                 <span className={styles.tooltipVal}>{formatUsd(tooltip.totalMonthlyUsd)}</span>
               </div>
@@ -233,7 +249,7 @@ export function CostDashboard({ summary, nodes, onClose }: Props) {
         <div className={styles.categoryList}>
           {categories.length === 0 && <div className={styles.noData}>No categorized costs yet</div>}
           {categories.map(c => {
-            const color = CATEGORY_COLORS[c.category]?.accent ?? '#94A3B8'
+            const color = categoryColor(c.category, themeMode)
             return (
               <div key={c.category} className={styles.categoryRow}>
                 <div className={styles.categoryHead}>
@@ -259,7 +275,7 @@ export function CostDashboard({ summary, nodes, onClose }: Props) {
           {summary.perNode.map(nd => {
             const node = nodes.find(x => x.id === nd.nodeId)
             const category = node ? NODE_CONFIG[node.type as NodeType]?.category : undefined
-            const color = category ? (CATEGORY_COLORS[category]?.accent ?? '#94A3B8') : '#94A3B8'
+            const color = categoryColor(category, themeMode)
             return (
               <div key={nd.nodeId} className={styles.nodeRow}>
                 <span className={styles.nodeDot} style={{ background: color }} />
