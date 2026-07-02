@@ -613,7 +613,11 @@ const MAX_PARTICLES = 500
 function spawnParticles(now: number, delta: number) {
   let total = 0
   for (const arr of state.particles.values()) total += arr.length
-  if (total >= MAX_PARTICLES) return
+  // Gates only the visual particle-minting step below, never the effectiveRps bookkeeping loop —
+  // under sustained overload the per-edge rate math must keep running every frame so inRps/outRps/
+  // utilization/queue-depth integration (all of which read ep.effectiveRps) keep tracking offered
+  // load instead of freezing at their last pre-cap value.
+  const atCap = total >= MAX_PARTICLES
 
   const mult = effectiveMultiplier(now)
 
@@ -724,6 +728,12 @@ function spawnParticles(now: number, delta: number) {
     const spawnChance = particlesPerSec * (delta / 1000) * _speed
     const n = Math.floor(spawnChance) + (Math.random() < (spawnChance % 1) ? 1 : 0)
     if (n === 0) continue
+
+    // Visual particle cap: effectiveRps bookkeeping above always runs; only the actual minting
+    // of Particle objects (and the thread-pool acquisition that models their in-flight cost) is
+    // skipped once the global visual cap is reached, so the canvas never renders/animates more
+    // than MAX_PARTICLES concurrent particles regardless of how far offered load exceeds it.
+    if (atCap) continue
 
     // Thread pool gate: request edges on compute source nodes must acquire a worker thread.
     // A slow downstream holds threads until its response arrives; exhaustion causes local 503s
