@@ -496,15 +496,17 @@
   transition: background 0.1s, border-color 0.1s, color 0.1s;
 }
 
-/* .btnReportsActive/.reportsBadge/.btnReports:hover text-color use a distinct purple
-   (messaging-family accent, #A78BFA/#C4B5FD) with no corresponding ColorTokens entry — see
-   TODO on .settingsModeBtn:last-child.settingsModeBtnActive above and final-review-fix-report.md.
-   Neutral hover background is theme-aware; the purple foreground/border stays hardcoded pending
-   a token decision. */
+/* .btnReportsActive/.reportsBadge use a distinct purple (messaging-family accent,
+   #A78BFA/#C4B5FD) with no corresponding ColorTokens entry — see TODO on
+   .settingsModeBtn:last-child.settingsModeBtnActive above and final-review-fix-report.md.
+   Those two are self-contained opaque-dark chips (legible in both modes regardless of theme).
+   .btnReports:hover's TEXT was the one genuine light-mode legibility break (final-branch-review
+   finding): the pale purple read at ~1.7:1 against the theme-aware light hover background.
+   Border keeps the brand hue (decorative, not text); text uses the theme-aware primary color. */
 .btnReports:hover {
   background: var(--color-surface-hover);
   border-color: #A78BFA44;
-  color: #C4B5FD;
+  color: var(--color-text-primary);
 }
 
 .btnReportsActive {
@@ -544,13 +546,15 @@
   transition: background 0.1s, border-color 0.1s, color 0.1s;
 }
 
-/* Hover foreground/border use a distinct teal (network-family accent, #2DD4BF/#5EEAD4) with no
-   corresponding ColorTokens entry — same category as the messaging-purple TODO above. Neutral
-   hover background is theme-aware; the teal stays hardcoded pending a token decision. */
+/* Border uses a distinct teal (network-family accent) with no corresponding ColorTokens entry —
+   same category as the messaging-purple TODO above; decorative, not text, so no contrast concern.
+   Hover TEXT was the one genuine light-mode legibility break (final-branch-review finding): the
+   pale teal read at ~1.4:1 against the theme-aware light hover background. Fixed to the
+   theme-aware primary text color, same treatment as .btnReports:hover above. */
 .btnDiagnostics:hover {
   background: var(--color-surface-hover);
   border-color: #2DD4BF44;
-  color: #5EEAD4;
+  color: var(--color-text-primary);
 }
 
 .diagnosticsBadge {
