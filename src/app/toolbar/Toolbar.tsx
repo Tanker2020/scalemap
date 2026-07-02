@@ -1,5 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from 'react'
-import { FilePlus, FolderOpen, ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, Save, Upload, Download, ClipboardList, ShieldCheck, Package } from 'lucide-react'
+import { FilePlus, FolderOpen, ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, Save, Upload, Download, ClipboardList, ShieldCheck, Package, Sun, Moon } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
 import { useSimulationStore, type TrafficMode } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
@@ -289,7 +289,7 @@ function downloadBlob(content: string, filename: string, type: string) {
 export function Toolbar() {
   const { undo, redo } = useCanvasStore()
   const { running, paused, setRunning, setPaused, activeScript, setActiveScript, runs, simulationMode, globalMultiplier } = useSimulationStore()
-  const { activeTool, setActiveTool, setSimConfigOpen, simConfigOpen, reportsPanelOpen, setReportsPanelOpen, setDiagnosticsOpen, packetEditorOpen, setPacketEditorOpen } = useUiStore()
+  const { activeTool, setActiveTool, setSimConfigOpen, simConfigOpen, reportsPanelOpen, setReportsPanelOpen, setDiagnosticsOpen, packetEditorOpen, setPacketEditorOpen, themeMode, setThemeMode } = useUiStore()
   const packetMode = useCanvasStore(s => s.packetMode)
   const diagnosticsCount = useDiagnosticsStore(s => s.diagnostics.length)
   const { showHome, setShowHome, fileName } = useFileStore()
@@ -385,6 +385,16 @@ export function Toolbar() {
         title="Connect (C)"
       >
         <Zap size={12} /> Connect
+      </button>
+
+      <div className={styles.sep} />
+
+      <button
+        className={styles.btnTool}
+        onClick={() => setThemeMode(themeMode === 'dark' ? 'light' : 'dark')}
+        title={themeMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+      >
+        {themeMode === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
       </button>
 
       {!showHome && (
