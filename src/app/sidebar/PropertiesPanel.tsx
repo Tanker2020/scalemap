@@ -86,14 +86,14 @@ function AnalyticsPane() {
         </div>
         <div className={styles.metricRow}>
           <span className={styles.metricLabel}>Bottlenecks</span>
-          <span className={styles.metricVal} style={{ color: bottlenecks.size > 0 ? '#F59E0B' : '#22C55E' }}>
+          <span className={styles.metricVal} style={{ color: bottlenecks.size > 0 ? 'var(--color-warning)' : 'var(--color-success-text)' }}>
             {bottlenecks.size} node{bottlenecks.size !== 1 ? 's' : ''}
           </span>
         </div>
         {sloStatus.size > 0 && (
           <div className={styles.metricRow}>
             <span className={styles.metricLabel}>SLO Status</span>
-            <span className={styles.metricVal} style={{ color: sloViolations > 0 ? '#EF4444' : '#22C55E' }}>
+            <span className={styles.metricVal} style={{ color: sloViolations > 0 ? 'var(--color-danger)' : 'var(--color-success-text)' }}>
               {sloPassing} pass · {sloViolations} fail
             </span>
           </div>
@@ -103,14 +103,14 @@ function AnalyticsPane() {
       {sysUtilData.length > 1 && (
         <div className={styles.section}>
           <div className={styles.sectionLabel}>System Utilization (60s)</div>
-          <Sparkline data={sysUtilData} color="#4A9EFF" height={32} />
+          <Sparkline data={sysUtilData} color="var(--color-accent)" height={32} />
         </div>
       )}
 
       {sysRpsData.length > 1 && (
         <div className={styles.section}>
           <div className={styles.sectionLabel}>Traffic (60s)</div>
-          <Sparkline data={sysRpsData} color="#22C55E" height={28} />
+          <Sparkline data={sysRpsData} color="var(--color-success)" height={28} />
         </div>
       )}
 
@@ -210,14 +210,14 @@ function PacketDistributionSection({ nodeId }: { nodeId: string }) {
       <div className={styles.sectionLabel}>Packet Distribution</div>
 
       {templateList.length === 0 ? (
-        <div style={{ fontSize: 10, color: '#64748B', lineHeight: 1.5 }}>
+        <div style={{ fontSize: 10, color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
           No packet templates yet.{' '}
           <button className={styles.addLink} onClick={() => setPacketEditorOpen(true)}>Open Packet Editor</button>
         </div>
       ) : (
         <>
           {dist.length === 0 && (
-            <div style={{ fontSize: 10, color: '#64748B', lineHeight: 1.5, marginBottom: 5 }}>No traffic mix assigned — this node generates generic packets.</div>
+            <div style={{ fontSize: 10, color: 'var(--color-text-muted)', lineHeight: 1.5, marginBottom: 5 }}>No traffic mix assigned — this node generates generic packets.</div>
           )}
 
           {TRANSPORT_GROUPS.map(group => {
@@ -228,7 +228,7 @@ function PacketDistributionSection({ nodeId }: { nodeId: string }) {
 
             return (
               <div key={group.type} style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: 9, color: noEdge ? '#EF4444' : '#475569', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+                <div style={{ fontSize: 9, color: noEdge ? 'var(--color-danger)' : 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
                   {group.label}{noEdge ? ' — no matching edge, won’t spawn' : ''}
                 </div>
                 {groupRows.map(({ row, i, tpl }) => {
@@ -262,11 +262,11 @@ function PacketDistributionSection({ nodeId }: { nodeId: string }) {
                           setDist(next)
                         }}
                       />
-                      <span style={{ fontSize: 10, color: '#64748B', width: 30, textAlign: 'right' }}>{pct}%</span>
+                      <span style={{ fontSize: 10, color: 'var(--color-text-muted)', width: 30, textAlign: 'right' }}>{pct}%</span>
                       <button
                         className={styles.addLink}
                         disabled={running}
-                        style={{ color: '#EF4444' }}
+                        style={{ color: 'var(--color-danger)' }}
                         onClick={() => setDist(dist.filter((_, j) => j !== i))}
                         title="Remove"
                       >×</button>
@@ -291,7 +291,9 @@ function NodePanel({ nodeId }: { nodeId: string }) {
   const selectedNode = nodes.find(n => n.id === nodeId)!
   const nodeType = selectedNode.type as NodeType
   const config = NODE_CONFIG[nodeType]
+  const themeMode = useUiStore(s => s.themeMode)
   const colors = config ? CATEGORY_COLORS[config.category] : CATEGORY_COLORS.compute
+  const accentColor = themeMode === 'light' ? colors.foreground.light : colors.accent
   const data = selectedNode.data as import('../../lib/nodeConfig').NodeData
   const [showNotes, setShowNotes] = useState(!!data.notes)
   const [showSubtitle, setShowSubtitle] = useState(!!data.subtitle)
@@ -306,7 +308,7 @@ function NodePanel({ nodeId }: { nodeId: string }) {
         <div className={styles.header}>
           <span
             className={styles.typeBadge}
-            style={{ color: colors.accent, borderColor: `${colors.accent}44` }}
+            style={{ color: accentColor, borderColor: `color-mix(in srgb, ${accentColor} 27%, transparent)` }}
           >
             {config.category}
           </span>
@@ -351,7 +353,7 @@ function NodePanel({ nodeId }: { nodeId: string }) {
                 key={s}
                 className={`${styles.statusDotBtn} ${data.status === s ? styles.statusDotBtnActive : ''}`}
                 style={{
-                  '--dot-color': s === 'healthy' ? '#22C55E' : s === 'degraded' ? '#F59E0B' : s === 'down' ? '#EF4444' : '#475569',
+                  '--dot-color': s === 'healthy' ? 'var(--color-success)' : s === 'degraded' ? 'var(--color-warning)' : s === 'down' ? 'var(--color-danger)' : 'var(--color-text-muted)',
                 } as React.CSSProperties}
                 onClick={() => updateNodeData(selectedNode.id, { status: s })}
                 title={s.charAt(0).toUpperCase() + s.slice(1)}
@@ -390,7 +392,7 @@ function NodePanel({ nodeId }: { nodeId: string }) {
                   </select>
                 </div>
                 {spec && (
-                  <div style={{ fontSize: 11, color: colors.accent, marginTop: 4 }}>
+                  <div style={{ fontSize: 11, color: accentColor, marginTop: 4 }}>
                     Mapped service: <strong>{spec.serviceName}</strong>
                   </div>
                 )}
@@ -414,7 +416,7 @@ function NodePanel({ nodeId }: { nodeId: string }) {
                           value={cost.instanceRateUsdHr ?? instanceComp.defaultRateUsdHr}
                           onChange={e => updCost({ instanceRateUsdHr: Number(e.target.value) })} />
                       </div>
-                      <div style={{ fontSize: 10, color: '#64748B', marginTop: 2 }}>
+                      <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 2 }}>
                         ≈ ${(((cost.instanceRateUsdHr ?? instanceComp.defaultRateUsdHr) / 60)).toFixed(4)}/min per {instanceComp.label.toLowerCase()}
                       </div>
                     </>
@@ -441,7 +443,7 @@ function NodePanel({ nodeId }: { nodeId: string }) {
                       <input type="range" min={0} max={10000} step={10}
                         value={Math.min(cost.storageGb ?? 0, 10000)}
                         onChange={e => updCost({ storageGb: Number(e.target.value) })}
-                        style={{ width: '100%', accentColor: colors.accent, marginTop: 2 }} />
+                        style={{ width: '100%', accentColor: accentColor, marginTop: 2 }} />
                     </>
                   )}
 
@@ -462,7 +464,7 @@ function NodePanel({ nodeId }: { nodeId: string }) {
                   </div>
 
                   {(reqComp || fixedComp || egressComp) && (
-                    <div style={{ fontSize: 10, color: '#64748B', marginTop: 6, lineHeight: 1.6 }}>
+                    <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 6, lineHeight: 1.6 }}>
                       {reqComp && <div>{reqComp.label}: ${reqComp.usdPerMillion}/M requests</div>}
                       {fixedComp && <div>{fixedComp.label}: ${fixedComp.usd}/mo fixed</div>}
                       {egressComp && <div>Egress billed on measured outbound response bandwidth (avg response size × live traffic).</div>}
@@ -501,7 +503,7 @@ function NodePanel({ nodeId }: { nodeId: string }) {
                   onChange={e => upd({ hasServiceMesh: e.target.checked })} />
               </div>
               {kc.hasServiceMesh && (
-                <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 4, lineHeight: 1.6 }}>
+                <div style={{ fontSize: 10, color: 'var(--color-text-secondary)', marginTop: 4, lineHeight: 1.6 }}>
                   +2ms Envoy sidecar overhead on intra-cluster pod-to-pod hops.
                 </div>
               )}
@@ -527,7 +529,7 @@ function NodePanel({ nodeId }: { nodeId: string }) {
               <div className={styles.row}>
                 <span className={styles.rowLabel}>Network Policy</span>
                 <select
-                  style={{ background: '#0D0F12', color: '#F1F5F9', border: '1px solid #2A2E38',
+                  style={{ background: 'var(--color-canvas)', color: 'var(--color-text-primary)', border: '1px solid var(--color-node-border)',
                     borderRadius: 4, padding: '3px 6px', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer' }}
                   value={kn.networkPolicy}
                   onChange={e => upd({ networkPolicy: e.target.value as 'open' | 'strict' })}>
@@ -549,8 +551,8 @@ function NodePanel({ nodeId }: { nodeId: string }) {
               value={data.regionId ?? ''}
               onChange={e => updateNodeData(selectedNode.id, { regionId: e.target.value || undefined })}
               style={{
-                width: '100%', background: '#0D0F12', color: '#F1F5F9',
-                border: '1px solid #2A2E38', borderRadius: 4,
+                width: '100%', background: 'var(--color-canvas)', color: 'var(--color-text-primary)',
+                border: '1px solid var(--color-node-border)', borderRadius: 4,
                 padding: '6px 8px', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer',
               }}
             >
@@ -572,13 +574,13 @@ function NodePanel({ nodeId }: { nodeId: string }) {
               </optgroup>
             </select>
             {data.regionId && (
-              <div style={{ fontSize: 10, color: '#475569', marginTop: 6, lineHeight: 1.6 }}>
+              <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 6, lineHeight: 1.6 }}>
                 Cross-region edge latency is determined by the zone pair, not the region itself:
                 <div style={{ marginTop: 4, display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1px 8px', fontFamily: 'inherit' }}>
-                  <span style={{ color: '#4A9EFF' }}>AMER ↔ EMEA</span><span>~80ms</span>
-                  <span style={{ color: '#4A9EFF' }}>AMER ↔ APAC</span><span>~170ms</span>
-                  <span style={{ color: '#4A9EFF' }}>EMEA ↔ APAC</span><span>~140ms</span>
-                  <span style={{ color: '#4A9EFF' }}>Same zone</span><span>~25–45ms</span>
+                  <span style={{ color: 'var(--color-accent)' }}>AMER ↔ EMEA</span><span>~80ms</span>
+                  <span style={{ color: 'var(--color-accent)' }}>AMER ↔ APAC</span><span>~170ms</span>
+                  <span style={{ color: 'var(--color-accent)' }}>EMEA ↔ APAC</span><span>~140ms</span>
+                  <span style={{ color: 'var(--color-accent)' }}>Same zone</span><span>~25–45ms</span>
                 </div>
               </div>
             )}
@@ -597,14 +599,14 @@ function NodePanel({ nodeId }: { nodeId: string }) {
               return region ? (
                 <div className={styles.section}>
                   <div className={styles.sectionLabel}>Geographic Region</div>
-                  <div style={{ fontSize: 11, color: '#94A3B8', padding: '4px 0' }}>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', padding: '4px 0' }}>
                     {region.label}
-                    <span style={{ color: '#475569', fontSize: 10, marginLeft: 6 }}>
+                    <span style={{ color: 'var(--color-text-muted)', fontSize: 10, marginLeft: 6 }}>
                       +{region.baseLatencyMs}ms base latency
                     </span>
                   </div>
-                  <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
-                    Inherited from <span style={{ color: '#64748B' }}>{(cur.data as ND)?.label ?? cur.id}</span>
+                  <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 2 }}>
+                    Inherited from <span style={{ color: 'var(--color-text-muted)' }}>{(cur.data as ND)?.label ?? cur.id}</span>
                   </div>
                 </div>
               ) : null
@@ -638,20 +640,20 @@ function NodePanel({ nodeId }: { nodeId: string }) {
             <div className={styles.sectionLabel}>Live Metrics</div>
             <button className={styles.sparkClickable} onClick={() => setGraphOverlay('utilization')} title="Click for full graph">
               <span className={styles.sparkClickLabel}>Utilization</span>
-              <Sparkline data={nodeHistory.map(s => s.utilization)} color="#4A9EFF" height={26} />
+              <Sparkline data={nodeHistory.map(s => s.utilization)} color="var(--color-accent)" height={26} />
             </button>
             <button className={styles.sparkClickable} onClick={() => setGraphOverlay('inRps')} title="Click for full graph">
               <span className={styles.sparkClickLabel}>RPS</span>
-              <Sparkline data={nodeHistory.map(s => s.inRps)} color="#22C55E" height={26} />
+              <Sparkline data={nodeHistory.map(s => s.inRps)} color="var(--color-success)" height={26} />
             </button>
             <button className={styles.sparkClickable} onClick={() => setGraphOverlay('errorRate')} title="Click for full graph">
               <span className={styles.sparkClickLabel}>Errors</span>
-              <Sparkline data={nodeHistory.map(s => s.errorRate)} color="#EF4444" height={26} />
+              <Sparkline data={nodeHistory.map(s => s.errorRate)} color="var(--color-danger)" height={26} />
             </button>
             {consumerLagMs !== undefined && (
               <div className={styles.metricRow} title="Time to drain the current backlog at the consumer's current rate">
                 <span className={styles.metricLabel}>Consumer Lag</span>
-                <span className={styles.metricVal} style={{ color: consumerLagMs > 5000 ? '#EF4444' : consumerLagMs > 1000 ? '#F59E0B' : '#22C55E' }}>
+                <span className={styles.metricVal} style={{ color: consumerLagMs > 5000 ? 'var(--color-danger)' : consumerLagMs > 1000 ? 'var(--color-warning)' : 'var(--color-success-text)' }}>
                   {consumerLagMs === Infinity ? '∞'
                     : consumerLagMs >= 60000 ? `${(consumerLagMs / 60000).toFixed(1)}m`
                     : consumerLagMs >= 1000  ? `${(consumerLagMs / 1000).toFixed(1)}s`
@@ -741,7 +743,7 @@ export function PropertiesPanel() {
       <aside className={styles.sidebar}>
         <TabBar />
         <div className={styles.header}>
-          <span className={styles.typeBadge} style={{ color: '#4A9EFF', borderColor: '#4A9EFF44' }}>
+          <span className={styles.typeBadge} style={{ color: 'var(--color-accent)', borderColor: 'color-mix(in srgb, var(--color-accent) 27%, transparent)' }}>
             Edge
           </span>
         </div>
@@ -757,18 +759,18 @@ export function PropertiesPanel() {
           {hasPartialRegion && (
             <div style={{
               margin: '0 0 2px', padding: '8px 12px',
-              background: '#1C1500', border: '1px solid #F59E0B44', borderRadius: 5,
+              background: 'color-mix(in srgb, var(--color-warning) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--color-warning) 27%, transparent)', borderRadius: 5,
             }}>
-              <div style={{ fontSize: 10, color: '#FCD34D', fontWeight: 600, marginBottom: 3 }}>
+              <div style={{ fontSize: 10, color: 'var(--color-warning)', fontWeight: 600, marginBottom: 3 }}>
                 ⚠ Partial region coverage
               </div>
-              <div style={{ fontSize: 10, color: '#94A3B8', lineHeight: 1.6 }}>
+              <div style={{ fontSize: 10, color: 'var(--color-text-secondary)', lineHeight: 1.6 }}>
                 {srcRegion
-                  ? <>Source is in <span style={{ color: '#F1F5F9' }}>{srcRegion.label}</span> ({srcRegion.regionId}) but the target has no region assigned.</>
-                  : <>Target is in <span style={{ color: '#F1F5F9' }}>{tgtRegion!.label}</span> ({tgtRegion!.regionId}) but the source has no region assigned.</>
+                  ? <>Source is in <span style={{ color: 'var(--color-text-primary)' }}>{srcRegion.label}</span> ({srcRegion.regionId}) but the target has no region assigned.</>
+                  : <>Target is in <span style={{ color: 'var(--color-text-primary)' }}>{tgtRegion!.label}</span> ({tgtRegion!.regionId}) but the source has no region assigned.</>
                 }
               </div>
-              <div style={{ fontSize: 10, color: '#64748B', marginTop: 4 }}>
+              <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 4 }}>
                 Assign the other node to a region container for accurate inter-region latency. A default +50ms is applied for now.
               </div>
             </div>
@@ -846,9 +848,9 @@ export function PropertiesPanel() {
                       max={100}
                       value={Math.round(readPct * 100)}
                       onChange={e => updateEdgeData(selectedEdge.id, { readPercentage: Number(e.target.value) / 100 })}
-                      style={{ flex: 1, accentColor: '#4A9EFF' }}
+                      style={{ flex: 1, accentColor: 'var(--color-accent)' }}
                     />
-                    <span style={{ fontSize: 11, color: '#94A3B8', whiteSpace: 'nowrap' }}>
+                    <span style={{ fontSize: 11, color: 'var(--color-text-secondary)', whiteSpace: 'nowrap' }}>
                       {Math.round(readPct * 100)}% R / {100 - Math.round(readPct * 100)}% W
                     </span>
                   </div>

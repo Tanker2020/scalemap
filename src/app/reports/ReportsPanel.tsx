@@ -12,7 +12,7 @@ import type { Node } from '@xyflow/react'
 // ─── PDF export ───────────────────────────────────────────────────────────────
 
 function severityColor(s: string) {
-  return s === 'critical' ? '#EF4444' : s === 'warn' ? '#F59E0B' : '#22C55E'
+  return s === 'critical' ? 'var(--color-danger)' : s === 'warn' ? 'var(--color-warning)' : 'var(--color-success-text)'
 }
 
 function exportRunAsPdf(run: SimulationRun, runIndex: number, nodes: Node<NodeData>[]) {
@@ -40,29 +40,29 @@ function exportRunAsPdf(run: SimulationRun, runIndex: number, nodes: Node<NodeDa
 
   const topNodesRows = topNodes.map(([id, m]) => {
     const pct   = Math.min(100, Math.round(m.utilization * 100))
-    const color = pct >= 85 ? '#EF4444' : pct >= 60 ? '#F59E0B' : '#22C55E'
+    const color = pct >= 85 ? 'var(--color-danger)' : pct >= 60 ? 'var(--color-warning)' : 'var(--color-success-text)'
     return `<tr>
       <td>${getLabel(id)}</td>
-      <td style="color:#94A3B8;font-size:10px">${getType(id)}</td>
-      <td><div style="height:6px;background:#1E2230;border-radius:3px;width:120px">
+      <td style="color:var(--color-text-secondary);font-size:10px">${getType(id)}</td>
+      <td><div style="height:6px;background:var(--color-surface-hover);border-radius:3px;width:120px">
         <div style="width:${pct}%;height:100%;background:${color};border-radius:3px"></div>
       </div></td>
       <td style="text-align:right;color:${color}">${pct}%</td>
       <td style="text-align:right">${Math.round(m.inRps)}</td>
-      <td style="text-align:right;color:${m.errorRate > 0.01 ? '#EF4444' : '#94A3B8'}">${(m.errorRate * 100).toFixed(1)}%</td>
+      <td style="text-align:right;color:${m.errorRate > 0.01 ? 'var(--color-danger)' : 'var(--color-text-secondary)'}">${(m.errorRate * 100).toFixed(1)}%</td>
       <td style="text-align:right">${Math.round(m.p90LatencyMs)}ms</td>
     </tr>`
   }).join('')
 
   const sloHtml = violatedNodeIds.length === 0
-    ? `<tr><td colspan="3" style="color:#22C55E">✓ All SLOs passed</td></tr>`
+    ? `<tr><td colspan="3" style="color:var(--color-success-text)">✓ All SLOs passed</td></tr>`
     : violatedNodeIds.map(id => {
         const snap = run.nodeSnapshots.get(id)
         const msg  = sloViolationEvents.find(e => e.nodeId === id)?.message ?? ''
         return `<tr>
           <td>${getLabel(id)}</td>
-          <td style="color:#94A3B8;font-size:10px">${getType(id)}</td>
-          <td style="color:#F87171">${msg}${snap ? ` — Util ${Math.round(snap.utilization * 100)}% · P90 ${Math.round(snap.p90LatencyMs)}ms` : ''}</td>
+          <td style="color:var(--color-text-secondary);font-size:10px">${getType(id)}</td>
+          <td style="color:var(--color-danger)">${msg}${snap ? ` — Util ${Math.round(snap.utilization * 100)}% · P90 ${Math.round(snap.p90LatencyMs)}ms` : ''}</td>
         </tr>`
       }).join('')
 
@@ -72,16 +72,16 @@ function exportRunAsPdf(run: SimulationRun, runIndex: number, nodes: Node<NodeDa
     return `<tr>
       <td style="color:${color};white-space:nowrap">${elapsed}</td>
       <td style="color:${color};text-transform:uppercase;font-size:10px;white-space:nowrap">${ev.type.replace(/_/g, ' ')}</td>
-      <td style="color:#94A3B8">${ev.message}</td>
+      <td style="color:var(--color-text-secondary)">${ev.message}</td>
     </tr>`
   }).join('')
 
   const allNodesRows = Array.from(run.nodeSnapshots.entries()).map(([id, m]) => `<tr>
     <td>${getLabel(id)}</td>
-    <td style="color:#94A3B8;font-size:10px">${getType(id)}</td>
+    <td style="color:var(--color-text-secondary);font-size:10px">${getType(id)}</td>
     <td style="text-align:right">${Math.round(m.inRps)}</td>
-    <td style="text-align:right;color:${m.utilization > 0.85 ? '#EF4444' : '#F1F5F9'}">${Math.round(m.utilization * 100)}%</td>
-    <td style="text-align:right;color:${m.errorRate > 0.01 ? '#EF4444' : '#F1F5F9'}">${(m.errorRate * 100).toFixed(2)}%</td>
+    <td style="text-align:right;color:${m.utilization > 0.85 ? 'var(--color-danger)' : 'var(--color-text-primary)'}">${Math.round(m.utilization * 100)}%</td>
+    <td style="text-align:right;color:${m.errorRate > 0.01 ? 'var(--color-danger)' : 'var(--color-text-primary)'}">${(m.errorRate * 100).toFixed(2)}%</td>
     <td style="text-align:right">${Math.round(m.p50LatencyMs)}ms</td>
     <td style="text-align:right">${Math.round(m.p90LatencyMs)}ms</td>
     <td style="text-align:right">${Math.round(m.p99LatencyMs)}ms</td>
@@ -89,22 +89,22 @@ function exportRunAsPdf(run: SimulationRun, runIndex: number, nodes: Node<NodeDa
 
   const css = `
     *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:'Courier New',monospace;font-size:12px;background:#0D0F12;color:#F1F5F9;padding:32px}
+    body{font-family:'Courier New',monospace;font-size:12px;background:var(--color-canvas);color:var(--color-text-primary);padding:32px}
     h1{font-size:20px;font-weight:700;margin-bottom:4px}
-    h2{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:#475569;margin:24px 0 8px;padding-bottom:4px;border-bottom:1px solid #1E2230}
+    h2{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--color-text-muted);margin:24px 0 8px;padding-bottom:4px;border-bottom:1px solid var(--color-node-border)}
     table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:4px}
-    th{text-align:left;color:#475569;text-transform:uppercase;letter-spacing:.05em;font-size:9px;padding:4px 8px;border-bottom:1px solid #1E2230}
-    td{padding:5px 8px;border-bottom:1px solid #0D0F12}
+    th{text-align:left;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.05em;font-size:9px;padding:4px 8px;border-bottom:1px solid var(--color-node-border)}
+    td{padding:5px 8px;border-bottom:1px solid var(--color-canvas)}
     .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:4px}
-    .s{background:#161920;border:1px solid #2A2E38;border-radius:6px;padding:10px 12px}
-    .sl{font-size:9px;color:#475569;text-transform:uppercase;letter-spacing:.06em}
+    .s{background:var(--color-node-base);border:1px solid var(--color-node-border);border-radius:6px;padding:10px 12px}
+    .sl{font-size:9px;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.06em}
     .sv{font-size:20px;font-weight:700;margin-top:2px}
-    .red{color:#EF4444}.grn{color:#22C55E}
+    .red{color:var(--color-danger)}.grn{color:var(--color-success-text)}
   `
 
   const body = `
     <h1>Scalemap Simulation Report</h1>
-    <p style="color:#475569;font-size:11px;margin-top:4px;margin-bottom:20px">
+    <p style="color:var(--color-text-muted);font-size:11px;margin-top:4px;margin-bottom:20px">
       Run #${runIndex + 1} &nbsp;·&nbsp; ${startLabel} &nbsp;·&nbsp;
       ${modeLabel[run.trafficMode] ?? run.trafficMode} &nbsp;·&nbsp;
       ${run.globalMultiplier}× &nbsp;·&nbsp; ${durationLabel}
@@ -260,11 +260,11 @@ function RunDetailOverlay({ run, runIndex, onClose }: { run: SimulationRun; runI
                   const nt = getNodeType(id)
                   const cfg = nt ? NODE_CONFIG[nt] : undefined
                   const pct = Math.min(100, Math.round(m.utilization * 100))
-                  const color = m.utilization >= 0.85 ? '#EF4444' : m.utilization >= 0.6 ? '#F59E0B' : '#22C55E'
+                  const color = m.utilization >= 0.85 ? 'var(--color-danger)' : m.utilization >= 0.6 ? 'var(--color-warning)' : 'var(--color-success-text)'
                   return (
                     <div key={id} className={styles.barRow}>
                       <div className={styles.barLabel}>
-                        {cfg?.icon && <cfg.icon size={10} style={{ color: '#64748B' }} />}
+                        {cfg?.icon && <cfg.icon size={10} style={{ color: 'var(--color-text-muted)' }} />}
                         <span>{label}</span>
                       </div>
                       <div className={styles.barTrack}>
@@ -289,9 +289,9 @@ function RunDetailOverlay({ run, runIndex, onClose }: { run: SimulationRun; runI
                   <div key={n.nodeId} className={styles.barRow}>
                     <div className={styles.barLabel}>
                       <span>{n.nodeLabel}</span>
-                      <span style={{ color: '#64748B', fontSize: 9 }}>{n.serviceName}</span>
+                      <span style={{ color: 'var(--color-text-muted)', fontSize: 9 }}>{n.serviceName}</span>
                     </div>
-                    <span className={styles.barPct} style={{ color: '#F5A623', marginLeft: 'auto' }}>
+                    <span className={styles.barPct} style={{ color: 'var(--color-warning)', marginLeft: 'auto' }}>
                       {formatUsd(n.monthlyUsd)}/mo
                     </span>
                   </div>
@@ -313,7 +313,7 @@ function RunDetailOverlay({ run, runIndex, onClose }: { run: SimulationRun; runI
                   return (
                     <div key={id} className={styles.sloRow}>
                       <div className={styles.sloRowLeft}>
-                        {cfg?.icon && <cfg.icon size={11} style={{ color: '#EF4444' }} />}
+                        {cfg?.icon && <cfg.icon size={11} style={{ color: 'var(--color-danger)' }} />}
                         <span className={styles.sloNodeName}>{getNodeLabel(id)}</span>
                         {nt && <span className={styles.sloNodeType}>{nt}</span>}
                       </div>

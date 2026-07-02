@@ -37,10 +37,10 @@ function fmtBytes(b: number): string {
 }
 
 function statusColor(code: number): string {
-  if (code >= 500) return '#EF4444'
-  if (code >= 400) return '#F59E0B'
+  if (code >= 500) return 'var(--color-danger)'
+  if (code >= 400) return 'var(--color-warning)'
   if (code >= 300) return '#A78BFA'
-  return '#22C55E'
+  return 'var(--color-success-text)'
 }
 
 export function RequestInspector() {
@@ -55,7 +55,7 @@ export function RequestInspector() {
     return () => document.removeEventListener('keydown', onKey)
   }, [setInspectedRequest])
 
-  const methodColor = request ? (METHOD_COLORS[request.httpMethod] ?? '#94A3B8') : '#94A3B8'
+  const methodColor = request ? (METHOD_COLORS[request.httpMethod] ?? 'var(--color-text-secondary)') : 'var(--color-text-secondary)'
   const tpl = request?.templateInfo
 
   return (
@@ -105,9 +105,9 @@ export function RequestInspector() {
                 <span
                   className={styles.protocolBadge}
                   style={{
-                    color: PROTOCOL_COLORS[tpl.protocol] ?? '#94A3B8',
-                    borderColor: `${PROTOCOL_COLORS[tpl.protocol] ?? '#94A3B8'}44`,
-                    background: `${PROTOCOL_COLORS[tpl.protocol] ?? '#94A3B8'}11`,
+                    color: PROTOCOL_COLORS[tpl.protocol] ?? 'var(--color-text-secondary)',
+                    borderColor: `${PROTOCOL_COLORS[tpl.protocol] ?? 'var(--color-text-secondary)'}44`,
+                    background: `${PROTOCOL_COLORS[tpl.protocol] ?? 'var(--color-text-secondary)'}11`,
                     border: '1px solid',
                   }}
                 >
@@ -123,7 +123,7 @@ export function RequestInspector() {
                 )}
                 {tpl.protocol === 'db' && (
                   <>
-                    <KV k="Query" v={(tpl.queryType ?? '').toUpperCase()} color={tpl.queryType === 'read' ? '#22C55E' : '#F59E0B'} />
+                    <KV k="Query" v={(tpl.queryType ?? '').toUpperCase()} color={tpl.queryType === 'read' ? 'var(--color-success-text)' : 'var(--color-warning)'} />
                     <KV k="WAL" v={tpl.isWAL ? 'true' : 'false'} />
                     <KV k="Result" v={`${tpl.resultSizeKb} KB`} />
                   </>
@@ -154,13 +154,13 @@ export function RequestInspector() {
             </div>
             <div className={styles.metaRow}>
               <span className={styles.metaLabel}>Retries</span>
-              <span className={styles.metaVal} style={{ color: request.retries > 0 ? '#F59E0B' : '#94A3B8' }}>
+              <span className={styles.metaVal} style={{ color: request.retries > 0 ? 'var(--color-warning)' : 'var(--color-text-secondary)' }}>
                 {request.retries > 0 ? `${request.retries} retry${request.retries > 1 ? ' (x' + request.retries + ')' : ''}` : 'None'}
               </span>
             </div>
             <div className={styles.metaRow}>
               <span className={styles.metaLabel}>Request ID</span>
-              <span className={styles.metaVal} style={{ color: '#475569', fontFamily: 'monospace', fontSize: 9 }}>
+              <span className={styles.metaVal} style={{ color: 'var(--color-text-muted)', fontFamily: 'monospace', fontSize: 9 }}>
                 #{request.particleId.toString().padStart(6, '0')}
               </span>
             </div>
