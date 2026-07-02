@@ -157,7 +157,12 @@ function detectCycles(ctx: LintContext): string[][] {
     }
     visiting.push(id)
     visitingSet.add(id)
-    for (const e of ctx.outEdges.get(id) ?? []) dfs(e.target)
+    for (const e of ctx.outEdges.get(id) ?? []) {
+      const data = e.data as EdgeData | undefined
+      const et = data?.edgeType ?? 'request'
+      if (et !== 'request' && et !== 'dependency') continue // async edges break the cycle by design
+      dfs(e.target)
+    }
     visiting.pop()
     visitingSet.delete(id)
     done.add(id)

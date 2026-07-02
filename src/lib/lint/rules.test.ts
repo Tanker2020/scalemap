@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { Node, Edge } from '@xyflow/react'
 import type { NodeData, EdgeData } from '../nodeConfig'
 import type { LintContext } from './types'
-import { deepSyncChain } from './rules'
+import { deepSyncChain, circularDependency } from './rules'
 
 // ─── Test fixture helper ───────────────────────────────────────────────────
 // Builds a minimal, real LintContext from a flat node-id list and an edge list.
@@ -71,5 +71,33 @@ describe('deepSyncChain reports the longest sync path, not the shortest', () => 
     )
     const issues = deepSyncChain(ctx)
     expect(issues).toHaveLength(0)
+  })
+})
+
+describe('circularDependency does not flag cycles broken by an async edge', () => {
+  it('does not flag a -> b (request) -> a (event) as a circular dependency', () => {
+    const ctx = makeCtx(
+      ['a', 'b'],
+      [
+        ['a', 'b', 'request'],
+        ['b', 'a', 'event'],
+      ],
+      { entryId: 'a' },
+    )
+    const issues = circularDependency(ctx)
+    expect(issues.length).toBe(0)
+  })
+
+  it('still flags a -> b -> a when both edges are request/dependency', () => {
+    const ctx = makeCtx(
+      ['a', 'b'],
+      [
+        ['a', 'b', 'request'],
+        ['b', 'a', 'request'],
+      ],
+      { entryId: 'a' },
+    )
+    const issues = circularDependency(ctx)
+    expect(issues.length).toBeGreaterThan(0)
   })
 })
