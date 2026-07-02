@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { X } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
 import { useSimulationStore, type SimulationRun } from '../store/simulation.store'
-import { useUiStore } from '../store/ui.store'
 import { NODE_CONFIG, type NodeType, type NodeData } from '../../lib/nodeConfig'
 import { formatUsd } from '../../lib/costModel'
 import { EventCard } from '../simulation/SimConfigPanel'
@@ -401,61 +400,48 @@ function RunCard({ run, runIndex, onClick }: { run: SimulationRun; runIndex: num
 
 // ─── ReportsPanel ─────────────────────────────────────────────────────────────
 
+/**
+ * Reports tab body — mounted inside UtilityDock (src/app/dock/UtilityDock.tsx), which owns
+ * the shared right-edge shell (position, header, tab strip, Escape-to-close). This component
+ * only renders the run list + footer; it no longer manages its own fixed-position chrome or
+ * close button (previously duplicated DiagnosticsPanel's, which is how the two ended up
+ * stacking on top of each other at the same right-edge position). The full-screen
+ * RunDetailOverlay modal below is unaffected — it already renders above everything via its
+ * own backdrop, independent of the dock.
+ */
 export function ReportsPanel() {
-  const { setReportsPanelOpen } = useUiStore()
   const runs = useSimulationStore(s => s.runs)
   const [selectedRun, setSelectedRun] = useState<{ run: SimulationRun; index: number } | null>(null)
 
-  const handleClose = useCallback(() => setReportsPanelOpen(false), [setReportsPanelOpen])
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape' && !selectedRun) handleClose() }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [handleClose, selectedRun])
-
   return (
     <>
-      <div className={styles.panel}>
-        {/* Header */}
-        <div className={styles.header}>
-          <div className={styles.headerLeft}>
-            <span className={styles.title}>Reports</span>
-            <span className={styles.runCount}>{runs.length} run{runs.length !== 1 ? 's' : ''}</span>
+      {/* Run list */}
+      <div className={styles.body}>
+        {runs.length === 0 ? (
+          <div className={styles.empty}>
+            <div className={styles.emptyIcon}>📊</div>
+            <div className={styles.emptyTitle}>No runs yet</div>
+            <div className={styles.emptySub}>Run the simulation and stop it to capture a report</div>
           </div>
-          <button className={styles.closeBtn} onClick={handleClose} title="Close (Escape)">
-            <X size={13} />
-          </button>
-        </div>
-
-        {/* Run list */}
-        <div className={styles.body}>
-          {runs.length === 0 ? (
-            <div className={styles.empty}>
-              <div className={styles.emptyIcon}>📊</div>
-              <div className={styles.emptyTitle}>No runs yet</div>
-              <div className={styles.emptySub}>Run the simulation and stop it to capture a report</div>
-            </div>
-          ) : (
-            runs.map((run, i) => (
-              <RunCard
-                key={run.id}
-                run={run}
-                runIndex={i}
-                onClick={() => setSelectedRun({ run, index: i })}
-              />
-            ))
-          )}
-        </div>
-
-        {/* Footer note */}
-        {runs.length > 0 && (
-          <div className={styles.footer}>
-            {/* TODO: persist to disk via Tauri fs */}
-            Reports stored in memory · reset on reload
-          </div>
+        ) : (
+          runs.map((run, i) => (
+            <RunCard
+              key={run.id}
+              run={run}
+              runIndex={i}
+              onClick={() => setSelectedRun({ run, index: i })}
+            />
+          ))
         )}
       </div>
+
+      {/* Footer note */}
+      {runs.length > 0 && (
+        <div className={styles.footer}>
+          {/* TODO: persist to disk via Tauri fs */}
+          Reports stored in memory · reset on reload
+        </div>
+      )}
 
       {selectedRun && (
         <RunDetailOverlay

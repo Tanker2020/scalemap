@@ -1,71 +1,8 @@
-/* ── Panel shell ─────────────────────────────────── */
-
-.panel {
-  position: fixed;
-  top: 42px; /* toolbar height */
-  right: 0;
-  width: 340px;
-  height: calc(100vh - 42px);
-  background: var(--color-canvas);
-  border-left: 1px solid var(--color-node-border);
-  display: flex;
-  flex-direction: column;
-  z-index: 9997;
-  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.5);
-}
-
-/* ── Header ─────────────────────────────────────── */
-
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 13px;
-  border-bottom: 1px solid var(--color-toolbar-border);
-  background: var(--color-toolbar);
-  flex-shrink: 0;
-}
-
-.headerLeft {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.title {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--color-text-secondary);
-  letter-spacing: 0.04em;
-}
-
-.runCount {
-  font-size: 9px;
-  color: var(--color-text-muted);
-  background: var(--color-surface-hover);
-  border: 1px solid var(--color-node-border);
-  border-radius: 3px;
-  padding: 0 5px;
-}
-
-.closeBtn {
-  width: 24px;
-  height: 24px;
-  border-radius: 4px;
-  background: var(--color-surface-hover);
-  border: 1px solid var(--color-node-border);
-  color: var(--color-text-muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.12s, color 0.12s;
-}
-
-.closeBtn:hover {
-  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
-  color: var(--color-danger);
-}
+/* Panel shell/header/close chrome formerly lived here; UtilityDock
+   (src/app/dock/UtilityDock.tsx) now owns the shared right-edge shell and tab strip. This
+   module only styles the run list + RunDetailOverlay modal rendered inside the dock's
+   Reports tab (the overlay's own .overlayHeader/.overlayClose etc. below are unaffected —
+   it's a separate full-screen modal, not part of the dock shell). */
 
 /* ── Body ────────────────────────────────────────── */
 

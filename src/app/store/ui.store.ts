@@ -2,6 +2,7 @@ import { create } from 'zustand'
 
 export type ActiveTool = 'select' | 'hand' | 'connect'
 export type RightTab = 'properties' | 'analytics'
+export type DockTab = 'diagnostics' | 'reports'
 
 interface UiStore {
   activeTool: ActiveTool
@@ -15,8 +16,11 @@ interface UiStore {
   contextMenu: { x: number; y: number; targetId: string; targetType: 'node' | 'edge' } | null
   simConfigOpen: boolean
   simConfigPanelNodeId: string | null
-  reportsPanelOpen: boolean
-  diagnosticsOpen: boolean
+  /** Unified Diagnostics/Reports dock (see UtilityDock.tsx) — one overlay slot, two tabs,
+   *  replacing the formerly-independent reportsPanelOpen/diagnosticsOpen flags that could
+   *  both be true at once and stack on top of each other at the same right-edge position. */
+  dockOpen: boolean
+  dockTab: DockTab
   packetEditorOpen: boolean
   themeMode: 'dark' | 'light'
 
@@ -30,8 +34,9 @@ interface UiStore {
   setRightTab: (tab: RightTab) => void
   setSimConfigOpen: (open: boolean) => void
   setSimConfigPanelNode: (id: string | null) => void
-  setReportsPanelOpen: (open: boolean) => void
-  setDiagnosticsOpen: (open: boolean) => void
+  setDockOpen: (open: boolean) => void
+  /** Opens the dock on a specific tab (switches tab even if already open). */
+  openDockTab: (tab: DockTab) => void
   setPacketEditorOpen: (open: boolean) => void
   setThemeMode: (mode: 'dark' | 'light') => void
 }
@@ -48,8 +53,8 @@ export const useUiStore = create<UiStore>((set) => ({
   contextMenu: null,
   simConfigOpen: false,
   simConfigPanelNodeId: null,
-  reportsPanelOpen: false,
-  diagnosticsOpen: false,
+  dockOpen: false,
+  dockTab: 'diagnostics',
   packetEditorOpen: false,
   themeMode: (localStorage.getItem('scalemap-theme-mode') as 'dark' | 'light') ?? 'dark',
 
@@ -63,8 +68,8 @@ export const useUiStore = create<UiStore>((set) => ({
   setRightTab: (tab) => set({ rightTab: tab }),
   setSimConfigOpen: (open) => set({ simConfigOpen: open }),
   setSimConfigPanelNode: (id) => set({ simConfigPanelNodeId: id }),
-  setReportsPanelOpen: (open) => set({ reportsPanelOpen: open }),
-  setDiagnosticsOpen: (open) => set({ diagnosticsOpen: open }),
+  setDockOpen: (open) => set({ dockOpen: open }),
+  openDockTab: (tab) => set({ dockOpen: true, dockTab: tab }),
   setPacketEditorOpen: (open) => set({ packetEditorOpen: open }),
   setThemeMode: (mode) => {
     localStorage.setItem('scalemap-theme-mode', mode)

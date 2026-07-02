@@ -1,65 +1,6 @@
-.panel {
-  position: fixed;
-  top: 43px;            /* below toolbar (42px + 1px border) */
-  right: 0;
-  bottom: 28px;         /* above status bar */
-  width: 340px;
-  z-index: 40;
-  display: flex;
-  flex-direction: column;
-  background: var(--color-surface);
-  border-left: 1px solid var(--color-node-border);
-  box-shadow: -8px 0 28px rgba(0, 0, 0, 0.5);
-  font-family: var(--font, 'JetBrains Mono', monospace);
-}
-
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--color-node-border);
-}
-
-.title {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-text-primary);
-}
-
-.count {
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--color-warning);
-  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-warning) 40%, transparent);
-  border-radius: 9px;
-  padding: 0 6px;
-  line-height: 16px;
-  height: 16px;
-}
-
-.closeBtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  transition: background 0.1s, color 0.1s;
-}
-
-.closeBtn:hover {
-  background: var(--color-surface-hover);
-  color: var(--color-text-primary);
-}
+/* Panel/header/close chrome formerly lived here; UtilityDock (src/app/dock/UtilityDock.tsx)
+   now owns the shared right-edge shell and tab strip. This module only styles the
+   filter chips + issue list rendered inside the dock's Diagnostics tab. */
 
 .filters {
   display: flex;

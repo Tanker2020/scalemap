@@ -16,7 +16,7 @@ export function MetricsDrawer({ open, onToggle }: MetricsDrawerProps) {
   const events      = useSimulationStore(s => s.events)
   const runs        = useSimulationStore(s => s.runs)
   const { nodes }   = useCanvasStore()
-  const { setSelectedNode, setSimConfigOpen, setSimConfigPanelNode, setReportsPanelOpen } = useUiStore()
+  const { setSelectedNode, setSimConfigOpen, setSimConfigPanelNode, openDockTab } = useUiStore()
 
   const lastRun = runs[0] ?? null
 
@@ -43,7 +43,7 @@ export function MetricsDrawer({ open, onToggle }: MetricsDrawerProps) {
         {!running && lastRun && (
           <span
             className={styles.lastRunPill}
-            onClick={e => { e.stopPropagation(); setReportsPanelOpen(true) }}
+            onClick={e => { e.stopPropagation(); openDockTab('reports') }}
           >
             ▶ {Math.floor(lastRun.durationS / 60) > 0 ? `${Math.floor(lastRun.durationS / 60)}m ${lastRun.durationS % 60}s` : `${lastRun.durationS}s`}
             {' · '}{lastRun.sloViolations > 0 ? `${lastRun.sloViolations} SLO violation${lastRun.sloViolations > 1 ? 's' : ''}` : 'All SLOs passed'}

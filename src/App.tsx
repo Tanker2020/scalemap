@@ -19,8 +19,7 @@ import { StatusBar } from './app/StatusBar'
 import { HomeScreen } from './app/home/HomeScreen'
 import { MetricsDrawer } from './app/analytics/MetricsDrawer'
 import { SimConfigPanel } from './app/simulation/SimConfigPanel'
-import { ReportsPanel } from './app/reports/ReportsPanel'
-import { DiagnosticsPanel } from './app/diagnostics/DiagnosticsPanel'
+import { UtilityDock } from './app/dock/UtilityDock'
 import { PacketEditor } from './app/simulation/PacketEditor'
 import { useFileStore } from './app/store/file.store'
 import { useCanvasStore } from './app/store/canvas.store'
@@ -61,8 +60,7 @@ export default function App() {
   const showHome = useFileStore(s => s.showHome)
   const running = useSimulationStore(s => s.running)
   const simConfigOpen = useUiStore(s => s.simConfigOpen)
-  const reportsPanelOpen = useUiStore(s => s.reportsPanelOpen)
-  const diagnosticsOpen = useUiStore(s => s.diagnosticsOpen)
+  const dockOpen = useUiStore(s => s.dockOpen)
   const packetEditorOpen = useUiStore(s => s.packetEditorOpen)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
@@ -149,8 +147,9 @@ export default function App() {
         )}
       </div>
       <StatusBar onToggleDrawer={() => setDrawerOpen(o => !o)} drawerOpen={drawerOpen} />
-      {reportsPanelOpen && <ReportsPanel />}
-      {diagnosticsOpen && <DiagnosticsPanel />}
+      <AnimatePresence>
+        {dockOpen && <UtilityDock key="utility-dock" />}
+      </AnimatePresence>
       <AnimatePresence>
         {packetEditorOpen && <PacketEditor key="packet-editor" />}
       </AnimatePresence>
