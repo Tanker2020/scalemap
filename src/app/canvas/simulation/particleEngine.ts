@@ -748,23 +748,6 @@ function spawnParticles(now: number, delta: number) {
       }
     }
 
-    // Consumer-edge gating: an edge whose SOURCE is a queue-type node models that queue's
-    // consumer draining it — it must not spawn traffic "from nothing." Without this gate the
-    // edge free-runs at its own configured RPS regardless of what (if anything) has actually
-    // arrived in the queue, so a queue with zero producers still emits consumer-side traffic.
-    // Minimum-viable fix per issue #6: hard-gate on depth <= 0, zeroing effectiveRps explicitly
-    // (not freezing it — consistent with C3's "always write effectiveRps" bookkeeping fix) rather
-    // than modeling full delivery-guarantee semantics (dedup, differentiated redelivery), which is
-    // out of scope here.
-    if (downstreamFactor > 0 && sourceNodeId && ep.sourceNodeType
-        && ['queue', 'pubsub', 'eventBus', 'stream'].includes(ep.sourceNodeType)) {
-      const depth = state.queueDepths.get(sourceNodeId) ?? 0
-      if (depth <= 0) {
-        ep.effectiveRps = 0
-        continue
-      }
-    }
-
     const rps = ep.rps * mult * downstreamFactor
     ep.effectiveRps = rps
     const particlesPerSec = rps / PARTICLE_REQUEST_RATIO
@@ -2014,14 +1997,48 @@ function processRetryQueue(now: number) {
     }
   }
 
-  // Re-spawn ready retries as particles, subject to the global cap
+  // Re-spawn ready retries as particles, subject to the global cap AND the same admission gates
+  // a fresh spawn would face on this edge (issue #8) — otherwise a retry storm bypasses circuit-
+  // open suppression and thread-pool exhaustion entirely, silently amplifying traffic into an
+  // already-failing/saturated node instead of backing off like the rest of the engine models.
   for (const r of ready) {
     let total = 0
     for (const arr of state.particles.values()) total += arr.length
     if (total >= MAX_PARTICLES) break
 
+    const ep = _edgePaths.find(e => e.id === r.edgeId)
+    const sourceNodeId = _edgesData.find(e => e.id === r.edgeId)?.source
+
+    // Circuit-open gate: mirrors spawnParticles' getBreaker(ep.id).state check — event/stream
+    // edges are exempt there too (they have their own retry/DLQ model, not a client-side breaker
+    // gate), so keep that same exemption here rather than dropping traffic spawnParticles wouldn't.
+    if (ep && ep.edgeType !== 'event' && ep.edgeType !== 'stream') {
+      const breakerState = getBreaker(r.edgeId).state
+      if (breakerState === 'open') {
+        if (sourceNodeId) {
+          spawnErrorFlash(sourceNodeId)
+          _droppedCounts.set(sourceNodeId, (_droppedCounts.get(sourceNodeId) ?? 0) + 1)
+        }
+        continue
+      }
+    }
+
+    // Thread-pool gate: mirrors spawnParticles' per-particle acquireWorkers call — a retry re-
+    // spawn is exactly as much in-flight cost as a fresh spawn, so it must acquire a worker slot
+    // the same way (and be fast-fail dropped, not silently minted, when the pool is exhausted).
+    const isThreadPoolEdge = ep?.edgeType === 'request' && !!sourceNodeId && !!ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)
+    if (isThreadPoolEdge) {
+      const maxThreads = effectiveConfig(sourceNodeId!, ep!.sourceNodeType as NodeType).maxConcurrency ?? 200
+      const admitted = acquireWorkers(sourceNodeId!, 1, maxThreads)
+      if (admitted === 0) {
+        spawnErrorFlash(sourceNodeId!)
+        _droppedCounts.set(sourceNodeId!, (_droppedCounts.get(sourceNodeId!) ?? 0) + 1)
+        continue
+      }
+    }
+
     if (!state.particles.has(r.edgeId)) state.particles.set(r.edgeId, [])
-    const _rTargetType = _edgePaths.find(e => e.id === r.edgeId)?.targetNodeType
+    const _rTargetType = ep?.targetNodeType
     const _rp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE * (0.8 + Math.random() * 0.4), color: r.color, edgeId: r.edgeId, retries: r.retries, originLatencyMs: 0, spawnTime: now, payloadBytes: templatePayloadBytes(r.templateId, _rTargetType, r.edgeId), deadLetter: r.deadLetter, templateId: r.templateId }
     state.particles.get(r.edgeId)!.push(_rp)
     _particleById.set(_rp.id, _rp)
