@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
-import { Search, X } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { Search, X, ChevronDown } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useReplayStore } from '../store/replay.store'
@@ -161,9 +162,11 @@ const EVENT_TYPE_LABELS: Partial<Record<SimEventType, string>> = {
 
 function IncidentCard({ incident }: { incident: Incident }) {
   const [expanded, setExpanded] = useState(false)
-  const severityColor = incident.severity === 'critical' ? '#EF4444' : '#F59E0B'
-  const severityBg    = incident.severity === 'critical' ? '#EF444408' : '#F59E0B08'
-  const statusColor   = incident.resolved ? '#22C55E' : severityColor
+  const severityColor = incident.severity === 'critical' ? 'var(--color-danger)' : 'var(--color-warning)'
+  const severityBg    = incident.severity === 'critical'
+    ? 'color-mix(in srgb, var(--color-danger) 3%, transparent)'
+    : 'color-mix(in srgb, var(--color-warning) 3%, transparent)'
+  const statusColor   = incident.resolved ? 'var(--color-success-text)' : severityColor
 
   const rootTypeLabel = EVENT_TYPE_LABELS[incident.rootEventType] ?? incident.rootEventType
 
@@ -173,9 +176,12 @@ function IncidentCard({ incident }: { incident: Incident }) {
     .filter(Boolean)
 
   return (
-    <button
-      className={styles.incidentCard}
-      style={{ background: severityBg, borderLeftColor: severityColor }}
+    <motion.button
+      layout
+      initial={{ opacity: 0, y: -4 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={`${styles.incidentCard} ${!incident.resolved && incident.severity === 'critical' ? styles.incidentCardCritical : ''}`}
+      style={{ background: severityBg, borderLeftColor: severityColor, '--severity-color': severityColor } as React.CSSProperties}
       onClick={() => setExpanded(e => !e)}
     >
       <div className={styles.incidentHead}>
@@ -185,54 +191,132 @@ function IncidentCard({ incident }: { incident: Incident }) {
         <span className={styles.incidentTitle} style={{ color: severityColor }}>
           {incident.chain.length > 0 ? 'CASCADING FAILURE' : rootTypeLabel.toUpperCase()}
         </span>
-        <span className={styles.incidentStatus} style={{ color: incident.resolved ? '#22C55E' : '#94A3B8' }}>
+        <span className={styles.incidentStatus} style={{ color: incident.resolved ? 'var(--color-success-text)' : 'var(--color-text-secondary)' }}>
           {incident.resolved ? 'resolved' : 'ongoing'}
         </span>
         <span className={styles.incidentTime}>+{incident.startElapsedS}s</span>
         <span className={styles.incidentChevron}>{expanded ? '▲' : '▼'}</span>
       </div>
 
-      {/* Chain summary — always visible */}
+      {/* Chain summary — rendered as literal connected nodes on a mini causal
+          spine rather than a text arrow chain, so a cascading failure reads
+          as a propagation path at a glance. */}
       <div className={styles.incidentChain}>
+        <span className={styles.incidentChainDot} style={{ background: severityColor }} />
         <span className={styles.incidentRoot} style={{ color: severityColor }}>
           {incident.rootLabel}
         </span>
         {incident.chain.map((n) => (
-          <span key={n.nodeId}>
-            <span className={styles.incidentArrow}>→</span>
+          <span key={n.nodeId} className={styles.incidentChainLink}>
+            <span className={styles.incidentChainWire} />
+            <span className={styles.incidentChainDot} style={{ background: severityColor }} />
             <span className={styles.incidentChainNode}>{n.label}</span>
           </span>
         ))}
       </div>
 
       {/* Detail — only when expanded */}
-      {expanded && (
-        <div className={styles.incidentDetail}>
-          <div className={styles.incidentDetailRow}>
-            <span className={styles.incidentDetailLabel}>Root cause</span>
-            <span className={styles.incidentDetailVal}>{incident.rootLabel} ({rootTypeLabel})</span>
-          </div>
-          {incident.chain.length > 0 && (
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            className={styles.incidentDetail}
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.16, ease: 'easeOut' }}
+          >
             <div className={styles.incidentDetailRow}>
-              <span className={styles.incidentDetailLabel}>Propagated to</span>
-              <span className={styles.incidentDetailVal}>
-                {incident.chain.map(n => n.label).join(' → ')}
-              </span>
+              <span className={styles.incidentDetailLabel}>Root cause</span>
+              <span className={styles.incidentDetailVal}>{incident.rootLabel} ({rootTypeLabel})</span>
             </div>
-          )}
-          {relatedLabels.length > 0 && (
+            {incident.chain.length > 0 && (
+              <div className={styles.incidentDetailRow}>
+                <span className={styles.incidentDetailLabel}>Propagated to</span>
+                <span className={styles.incidentDetailVal}>
+                  {incident.chain.map(n => n.label).join(' → ')}
+                </span>
+              </div>
+            )}
+            {relatedLabels.length > 0 && (
+              <div className={styles.incidentDetailRow}>
+                <span className={styles.incidentDetailLabel}>Also</span>
+                <span className={styles.incidentDetailVal}>{relatedLabels.join(', ')}</span>
+              </div>
+            )}
             <div className={styles.incidentDetailRow}>
-              <span className={styles.incidentDetailLabel}>Also</span>
-              <span className={styles.incidentDetailVal}>{relatedLabels.join(', ')}</span>
+              <span className={styles.incidentDetailLabel}>Events</span>
+              <span className={styles.incidentDetailVal}>{incident.eventCount} total</span>
             </div>
-          )}
-          <div className={styles.incidentDetailRow}>
-            <span className={styles.incidentDetailLabel}>Events</span>
-            <span className={styles.incidentDetailVal}>{incident.eventCount} total</span>
-          </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.button>
+  )
+}
+
+// ─── Run-length collapsing ──────────────────────────────────────────────────────
+//
+// Under chaos/spike traffic the same (type, nodeId) pair can fire many times a
+// second (e.g. repeated saturation pulses on one gateway). Rendering each as a
+// full card makes the feed unusable and jank-prone. Consecutive events sharing
+// type+nodeId collapse into a single run, shown as one card with a "×N" badge;
+// clicking it expands to the individual instances. Only *adjacent* repeats
+// collapse (order-preserving), so a real interleaving of distinct events never
+// gets merged away.
+
+interface EventRun {
+  key: string
+  type: SimEventType
+  nodeId?: string
+  events: SimEvent[]  // newest-relevant order preserved from input
+}
+
+function collapseRuns(events: SimEvent[]): EventRun[] {
+  const runs: EventRun[] = []
+  for (const ev of events) {
+    const last = runs[runs.length - 1]
+    if (last && last.type === ev.type && last.nodeId === ev.nodeId) {
+      last.events.push(ev)
+    } else {
+      runs.push({ key: ev.id, type: ev.type, nodeId: ev.nodeId, events: [ev] })
+    }
+  }
+  return runs
+}
+
+function EventRunCard({ run, nodeLabel }: { run: EventRun; nodeLabel: (id: string) => string }) {
+  const [expanded, setExpanded] = useState(false)
+  const head = run.events[run.events.length - 1] // most recent instance carries the freshest snapshot/message
+  const count = run.events.length
+
+  if (count === 1) {
+    return <EventCard ev={head} />
+  }
+
+  const severityColor =
+    head.severity === 'critical' ? 'var(--color-danger)' :
+    head.severity === 'warn'     ? 'var(--color-warning)' : 'var(--color-accent)'
+
+  return (
+    <div className={styles.runWrap}>
+      <button
+        className={styles.runHeader}
+        style={{ borderLeftColor: severityColor }}
+        onClick={() => setExpanded(e => !e)}
+        title={`${count} repeated ${run.type} events on ${run.nodeId ? nodeLabel(run.nodeId) : 'this run'}`}
+      >
+        <span className={styles.runCount} style={{ color: severityColor, borderColor: severityColor }}>×{count}</span>
+        <span className={styles.runLabel}>repeated · +{run.events[0].elapsedS}s–+{head.elapsedS}s</span>
+        <ChevronDown size={10} className={styles.runChevron} style={{ transform: expanded ? 'rotate(180deg)' : 'none' }} />
+      </button>
+      {expanded ? (
+        <div className={styles.runExpanded}>
+          {run.events.map(ev => <EventCard key={ev.id} ev={ev} />)}
         </div>
+      ) : (
+        <EventCard ev={head} />
       )}
-    </button>
+    </div>
   )
 }
 
@@ -291,35 +375,32 @@ export function EventLogPanel({ onClose }: Props) {
   }, [visibleEvents, severityFilter, search, nodeLabel])
 
   const grouped = useMemo(() => {
-    const groups: { label: string; events: SimEvent[] }[] = []
+    const groups: { label: string; events: SimEvent[]; runs: EventRun[] }[] = []
     let currentBucket = -1
     let currentGroup: SimEvent[] = []
+
+    const flush = () => {
+      if (currentGroup.length === 0 || currentBucket < 0) return
+      const start = Math.floor(currentBucket * 60)
+      const end = start + 60
+      groups.push({
+        label: `${fmtTime(start)}–${fmtTime(end)} · ${currentGroup.length} event${currentGroup.length !== 1 ? 's' : ''}`,
+        events: currentGroup,
+        runs: collapseRuns(currentGroup),
+      })
+    }
 
     for (const ev of filtered) {
       const bucket = Math.floor(ev.elapsedS / 60)
       if (bucket !== currentBucket) {
-        if (currentGroup.length > 0) {
-          const start = Math.floor(currentBucket * 60)
-          const end = start + 60
-          groups.push({
-            label: `${fmtTime(start)}–${fmtTime(end)} · ${currentGroup.length} event${currentGroup.length !== 1 ? 's' : ''}`,
-            events: currentGroup,
-          })
-        }
+        flush()
         currentBucket = bucket
         currentGroup = [ev]
       } else {
         currentGroup.push(ev)
       }
     }
-    if (currentGroup.length > 0 && currentBucket >= 0) {
-      const start = Math.floor(currentBucket * 60)
-      const end = start + 60
-      groups.push({
-        label: `${fmtTime(start)}–${fmtTime(end)} · ${currentGroup.length} event${currentGroup.length !== 1 ? 's' : ''}`,
-        events: currentGroup,
-      })
-    }
+    flush()
     return groups
   }, [filtered])
 
@@ -397,7 +478,10 @@ export function EventLogPanel({ onClose }: Props) {
             )}
           </div>
 
-          {/* Event list */}
+          {/* Event list — a live timeline spine down the left edge. Each run's
+              tick pulses on critical severity, echoing the same ring-pulse the
+              canvas uses for saturated nodes, so an event feels like a live
+              pulse traveling down a wire rather than a static log line. */}
           <div className={styles.body}>
             {filtered.length === 0 ? (
               <div className={styles.empty}>
@@ -407,10 +491,33 @@ export function EventLogPanel({ onClose }: Props) {
               grouped.map((group, gi) => (
                 <div key={gi} className={styles.group}>
                   <div className={styles.groupLabel}>{group.label}</div>
-                  <div className={styles.groupEvents}>
-                    {group.events.map(ev => (
-                      <EventCard key={ev.id} ev={ev} />
-                    ))}
+                  <div className={styles.spine}>
+                    <AnimatePresence initial={false}>
+                      {group.runs.map(run => {
+                        const head = run.events[run.events.length - 1]
+                        const tickColor =
+                          head.severity === 'critical' ? 'var(--color-danger)' :
+                          head.severity === 'warn'     ? 'var(--color-warning)' : 'var(--color-accent)'
+                        return (
+                          <motion.div
+                            key={run.key}
+                            layout
+                            className={styles.spineRow}
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                          >
+                            <span
+                              className={`${styles.spineTick} ${head.severity === 'critical' ? styles.spineTickCritical : ''}`}
+                              style={{ background: tickColor, '--severity-color': tickColor } as React.CSSProperties}
+                            />
+                            <div className={styles.spineContent}>
+                              <EventRunCard run={run} nodeLabel={nodeLabel} />
+                            </div>
+                          </motion.div>
+                        )
+                      })}
+                    </AnimatePresence>
                   </div>
                 </div>
               ))
