@@ -67,29 +67,29 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
   // Live health state from simulation overrides the static canvas status while running
   const displayStatus = (running && metrics?.healthState) ? metrics.healthState : nodeData.status
   const statusColor = {
-    healthy:  '#22C55E',
-    degraded: '#F59E0B',
-    down:     '#EF4444',
-    idle:     '#475569',
-  }[displayStatus] ?? '#475569'
+    healthy:  'var(--color-success)',
+    degraded: 'var(--color-warning)',
+    down:     'var(--color-danger)',
+    idle:     'var(--color-text-muted)',
+  }[displayStatus] ?? 'var(--color-text-muted)'
 
   // Saturation border overrides the normal border during simulation
   const saturationBorderColor = isSaturated
-    ? '#EF4444'
+    ? 'var(--color-danger)'
     : isCritical
-    ? '#F59E0B'
+    ? 'var(--color-warning)'
     : undefined
 
   // Utilization bar color
   const utilColor = utilization >= 0.8
-    ? '#EF4444'
+    ? 'var(--color-danger)'
     : utilization >= 0.5
-    ? '#F59E0B'
+    ? 'var(--color-warning)'
     : colors.accent
 
   // Lint diagnostics: colour by the most severe issue on this node, tooltip lists them all.
   const hasLintError = !!lintIssues?.some(i => i.severity === 'error')
-  const lintColor = hasLintError ? '#EF4444' : '#F59E0B'
+  const lintColor = hasLintError ? 'var(--color-danger)' : 'var(--color-warning)'
   const lintTitle = lintIssues
     ?.map(i => `${i.severity === 'error' ? '✕' : '⚠'} ${i.message} — ${i.recommendation}`)
     .join('\n')
@@ -212,7 +212,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
         )}
         <div
           className={styles.statusDot}
-          style={{ background: statusColor, boxShadow: `0 0 6px ${statusColor}99` }}
+          style={{ background: statusColor, boxShadow: `0 0 6px color-mix(in srgb, ${statusColor} 60%, transparent)` }}
         />
       </div>
     </motion.div>

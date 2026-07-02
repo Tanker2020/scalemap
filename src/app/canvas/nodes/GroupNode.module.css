@@ -39,25 +39,25 @@
 .label {
   font-size: 12px;
   font-weight: 600;
-  color: #94A3B8;
+  color: var(--color-text-secondary);
   cursor: text;
 }
 
 .labelInput {
   font-size: 12px;
   font-weight: 600;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
   background: transparent;
   border: none;
   border-bottom: 1px solid var(--accent, #475569);
   outline: none;
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
 }
 
 .collapseBtn {
   margin-left: auto;
   font-size: 9px;
-  color: #475569;
+  color: var(--color-text-muted);
   background: none;
   border: none;
   cursor: pointer;
@@ -65,7 +65,7 @@
 }
 
 .collapseBtn:hover {
-  color: #94A3B8;
+  color: var(--color-text-secondary);
 }
 
 .childCount {
