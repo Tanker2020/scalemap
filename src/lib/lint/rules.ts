@@ -188,6 +188,7 @@ export const circularDependency: LintRule = (ctx) => {
       nodeId: cycle[0],
       message: `Circular dependency: ${labels.join(' → ')}`,
       recommendation: 'Break the cycle by introducing an event/queue edge or extracting shared logic into a separate service.',
+      path: cycle,
     }]
   })
 }
@@ -257,18 +258,26 @@ export const deepSyncChain: LintRule = (ctx) => {
     syncOut.get(e.source)!.push({ target: e.target })
   }
 
-  // Track max sync depth per node across all DFS traversals.
+  // Track max sync depth per node across all DFS traversals, plus the path (entry..node)
+  // that produced that max — display-only, doesn't affect which nodes get flagged or at what depth.
   const maxDepth = new Map<string, number>()
+  const bestPath = new Map<string, string[]>()
   const visiting = new Set<string>()
+  const currentPath: string[] = []
 
   function dfs(id: string, depth: number): void {
     if (visiting.has(id)) return // cycle — bail without recording; circularDependency reports cycles
     visiting.add(id)
+    currentPath.push(id)
     if (depth >= DEEP_SYNC_THRESHOLD) {
       const prev = maxDepth.get(id) ?? 0
-      if (depth > prev) maxDepth.set(id, depth)
+      if (depth > prev) {
+        maxDepth.set(id, depth)
+        bestPath.set(id, [...currentPath])
+      }
     }
     for (const { target } of syncOut.get(id) ?? []) dfs(target, depth + 1)
+    currentPath.pop()
     visiting.delete(id)
   }
 
@@ -284,6 +293,7 @@ export const deepSyncChain: LintRule = (ctx) => {
       nodeId,
       message: `${label} is reachable via a synchronous chain of ${depth} hops`,
       recommendation: 'Consider introducing an async queue or event bus to decouple services and avoid cascading latency.',
+      path: bestPath.get(nodeId),
     }
   })
 }

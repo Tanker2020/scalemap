@@ -61,6 +61,22 @@
   color: #F1F5F9;
 }
 
+.summary {
+  padding: 8px 14px;
+  font-size: 11px;
+  color: #94A3B8;
+  border-bottom: 1px solid #2A2E38;
+  line-height: 1.4;
+}
+
+.summaryError {
+  color: #EF4444;
+}
+
+.summaryWarn {
+  color: #F59E0B;
+}
+
 .filters {
   display: flex;
   gap: 6px;
@@ -106,7 +122,79 @@
   padding: 8px;
   display: flex;
   flex-direction: column;
+  gap: 8px;
+}
+
+/* ─── Rule groups ──────────────────────────────────────────────────────────── */
+
+.group {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #22262F;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #12151B;
+}
+
+.groupHeader {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-left: 2px solid var(--group-accent, #F59E0B);
+  color: #E2E8F0;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.groupHeader:hover {
+  background: #171B22;
+}
+
+.groupIcon {
+  color: var(--group-accent, #F59E0B);
+  flex-shrink: 0;
+}
+
+.groupTitle {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #CBD5E1;
+}
+
+.groupCount {
+  font-size: 10px;
+  font-weight: 700;
+  color: #94A3B8;
+  background: #1A1D25;
+  border-radius: 8px;
+  padding: 0 6px;
+  line-height: 15px;
+}
+
+.groupChevron {
+  color: #64748B;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.groupChevronCollapsed {
+  transform: rotate(-90deg);
+}
+
+.groupBody {
+  display: flex;
+  flex-direction: column;
   gap: 6px;
+  padding: 0 6px 6px;
+  overflow: hidden;
 }
 
 .issue {
@@ -161,6 +249,63 @@
   color: #64748B;
 }
 
+/* ─── Chain path visualization (circularDependency / deepSyncChain) ──────────── */
+
+.pathStrip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.pathHop {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.pathArrow {
+  color: #475569;
+  font-size: 10px;
+  margin: 0 1px;
+}
+
+.pathChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 88px;
+  padding: 2px 6px;
+  background: #1A1D25;
+  border: 1px solid #2A2E38;
+  border-radius: 9px;
+  color: #CBD5E1;
+  font-family: inherit;
+  font-size: 9px;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.pathChip:hover {
+  background: #22262F;
+  border-color: #4A9EFF;
+  color: #F1F5F9;
+}
+
+.pathChipLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pathMore {
+  padding: 2px 6px;
+  font-size: 9px;
+  color: #64748B;
+  font-style: italic;
+}
+
 .empty {
   display: flex;
   flex-direction: column;
@@ -170,9 +315,20 @@
   text-align: center;
 }
 
+.emptyGlow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #22C55E22 0%, transparent 70%);
+  border: 1px solid #22C55E33;
+  margin-bottom: 6px;
+}
+
 .emptyIcon {
   color: #22C55E;
-  margin-bottom: 4px;
 }
 
 .emptyTitle {

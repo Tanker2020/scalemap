@@ -264,3 +264,17 @@
   border-style: dashed;
   box-shadow: 0 0 0 1px #F59E0B22, 0 4px 18px rgba(0,0,0,0.55);
 }
+
+/* Diagnostics-panel "look here" pulse — a transient ring distinct from .selected, triggered by
+   clicking an issue in DiagnosticsPanel.tsx. Self-clears after ~2.2s (see BaseNode.tsx). Uses the
+   node's own accent color so it doesn't compete with severity colors already on the badge/dot. */
+@keyframes diagnosticPulseAnim {
+  0%   { box-shadow: 0 0 0 0px color-mix(in srgb, var(--accent, #4A9EFF) 55%, transparent), 0 4px 18px rgba(0,0,0,0.55); }
+  70%  { box-shadow: 0 0 0 10px color-mix(in srgb, var(--accent, #4A9EFF) 0%, transparent), 0 4px 18px rgba(0,0,0,0.55); }
+  100% { box-shadow: 0 0 0 0px color-mix(in srgb, var(--accent, #4A9EFF) 0%, transparent), 0 4px 18px rgba(0,0,0,0.55); }
+}
+
+.node.diagnosticPulse {
+  animation: diagnosticPulseAnim 1.1s ease-out 2;
+  border-color: var(--accent, #4A9EFF);
+}

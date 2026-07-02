@@ -37,6 +37,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
   const running    = useSimulationStore(s => s.running)
   const isConnectSource = useUiStore(s => s.connectSourceId === id)
   const lintIssues = useDiagnosticsStore(s => s.byNodeId.get(id))
+  const isHighlighted = useUiStore(s => s.highlightedNodeIds.includes(id))
 
   const utilization  = metrics?.utilization ?? 0
   const circuitState = metrics?.circuitState ?? 'closed'
@@ -99,6 +100,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
         selected ? styles.selected : '',
         isConnectSource ? styles.connectSource : '',
         isCircuitOpen ? styles.circuitOpen : isCircuitHalf ? styles.circuitHalfOpen : isSaturated ? styles.saturated : isCritical ? styles.critical : '',
+        isHighlighted ? styles.diagnosticPulse : '',
       ].filter(Boolean).join(' ')}
       style={{
         '--accent': colors.accent,

@@ -18,6 +18,7 @@ interface UiStore {
   reportsPanelOpen: boolean
   diagnosticsOpen: boolean
   packetEditorOpen: boolean
+  highlightedNodeIds: string[]   // transient "look here" pulse driven by the diagnostics panel
 
   setActiveTool: (tool: ActiveTool) => void
   setSelectedNode: (id: string | null) => void
@@ -32,6 +33,7 @@ interface UiStore {
   setReportsPanelOpen: (open: boolean) => void
   setDiagnosticsOpen: (open: boolean) => void
   setPacketEditorOpen: (open: boolean) => void
+  setHighlightedNodes: (ids: string[]) => void
 }
 
 export const useUiStore = create<UiStore>((set) => ({
@@ -49,6 +51,7 @@ export const useUiStore = create<UiStore>((set) => ({
   reportsPanelOpen: false,
   diagnosticsOpen: false,
   packetEditorOpen: false,
+  highlightedNodeIds: [],
 
   setActiveTool: (tool) => set({ activeTool: tool, connectSourceId: null }),
   setSelectedNode: (id) => set({ selectedNodeId: id, selectedEdgeId: null }),
@@ -63,4 +66,5 @@ export const useUiStore = create<UiStore>((set) => ({
   setReportsPanelOpen: (open) => set({ reportsPanelOpen: open }),
   setDiagnosticsOpen: (open) => set({ diagnosticsOpen: open }),
   setPacketEditorOpen: (open) => set({ packetEditorOpen: open }),
+  setHighlightedNodes: (ids) => set({ highlightedNodeIds: ids }),
 }))

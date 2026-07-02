@@ -10,6 +10,7 @@ export interface LintIssue {
   edgeId?: string                  // edge the issue concerns, if any
   message: string
   recommendation: string
+  path?: string[]                  // ordered node ids for chain-shaped issues (cycle / deep sync chain)
 }
 
 // Precomputed graph view passed to every rule, so rules stay pure and don't rebuild adjacency.
