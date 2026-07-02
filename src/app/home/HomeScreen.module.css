@@ -56,7 +56,7 @@
   color: var(--color-text-secondary);
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
-  font-family: var(--font);
+  font-family: var(--font-mono);
 }
 
 .actionBtn:hover:not(:disabled) {
@@ -111,7 +111,7 @@
   border: none;
   border-bottom: 1px solid var(--color-toolbar-border);
   cursor: pointer;
-  font-family: var(--font);
+  font-family: var(--font-mono);
   transition: background 0.1s;
 }
 
@@ -174,7 +174,7 @@
   border: 1px solid var(--color-node-border);
   border-radius: 10px;
   cursor: pointer;
-  font-family: var(--font);
+  font-family: var(--font-mono);
   text-align: left;
   transition: background 0.15s, border-color 0.15s;
 }

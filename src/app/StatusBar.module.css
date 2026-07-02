@@ -34,7 +34,7 @@
 .btn {
   background: none;
   border: none;
-  font-family: var(--font);
+  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--color-text-muted);
   cursor: pointer;

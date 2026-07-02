@@ -5,20 +5,10 @@
 }
 
 :root {
-  --font: 'JetBrains Mono', monospace;
-  --color-canvas: #0D0F12;
-  --color-surface: #0F1117;
-  --color-toolbar: #111318;
-  --color-toolbar-border: #1E2128;
-  --color-node-base: #161920;
-  --color-node-border: #2A2E38;
-  --color-text-primary: #F1F5F9;
-  --color-text-secondary: #94A3B8;
-  --color-text-muted: #64748B;
-  --color-success: #22C55E;
-  --color-warning: #F59E0B;
-  --color-danger: #EF4444;
-  --color-accent: #4A9EFF;
+  /* Color, font, spacing, and motion custom properties are set at runtime by App.tsx's
+     theme bootstrap (src/App.tsx, useThemeBootstrap) from src/lib/theme.ts — DARK_COLORS by
+     default until the bootstrap effect runs on first render. Do not hardcode values here;
+     theme.ts is the single source of truth. */
 }
 
 html, body, #root {
@@ -28,7 +18,7 @@ html, body, #root {
 }
 
 body {
-  font-family: var(--font);
+  font-family: var(--font-body);
   font-size: 13px;
   background: var(--color-canvas);
   color: var(--color-text-primary);
@@ -36,15 +26,20 @@ body {
   user-select: none;
 }
 
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+}
+
 button {
-  font-family: var(--font);
+  font-family: var(--font-body);
   cursor: pointer;
   border: none;
   background: none;
 }
 
 input, textarea, select {
-  font-family: var(--font);
+  font-family: var(--font-body);
   outline: none;
 }
 

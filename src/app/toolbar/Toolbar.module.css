@@ -303,7 +303,7 @@
   border-radius: 4px;
   color: #64748B;
   font-size: 10px;
-  font-family: var(--font);
+  font-family: var(--font-mono);
   letter-spacing: 0.04em;
   transition: background 0.1s, color 0.1s, border-color 0.1s;
   cursor: pointer;
@@ -395,7 +395,7 @@
   background: #1A1D22;
   border: 1px solid #2A2E38;
   border-radius: 3px;
-  font-family: var(--font);
+  font-family: var(--font-mono);
   font-size: 9px;
   color: #475569;
 }

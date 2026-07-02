@@ -51,7 +51,7 @@
   border: none;
   border-bottom: 1px solid var(--accent, #475569);
   outline: none;
-  font-family: var(--font);
+  font-family: var(--font-mono);
 }
 
 .collapseBtn {

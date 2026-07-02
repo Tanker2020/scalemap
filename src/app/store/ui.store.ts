@@ -18,6 +18,7 @@ interface UiStore {
   reportsPanelOpen: boolean
   diagnosticsOpen: boolean
   packetEditorOpen: boolean
+  themeMode: 'dark' | 'light'
 
   setActiveTool: (tool: ActiveTool) => void
   setSelectedNode: (id: string | null) => void
@@ -32,6 +33,7 @@ interface UiStore {
   setReportsPanelOpen: (open: boolean) => void
   setDiagnosticsOpen: (open: boolean) => void
   setPacketEditorOpen: (open: boolean) => void
+  setThemeMode: (mode: 'dark' | 'light') => void
 }
 
 export const useUiStore = create<UiStore>((set) => ({
@@ -49,6 +51,7 @@ export const useUiStore = create<UiStore>((set) => ({
   reportsPanelOpen: false,
   diagnosticsOpen: false,
   packetEditorOpen: false,
+  themeMode: (localStorage.getItem('scalemap-theme-mode') as 'dark' | 'light') ?? 'dark',
 
   setActiveTool: (tool) => set({ activeTool: tool, connectSourceId: null }),
   setSelectedNode: (id) => set({ selectedNodeId: id, selectedEdgeId: null }),
@@ -63,4 +66,8 @@ export const useUiStore = create<UiStore>((set) => ({
   setReportsPanelOpen: (open) => set({ reportsPanelOpen: open }),
   setDiagnosticsOpen: (open) => set({ diagnosticsOpen: open }),
   setPacketEditorOpen: (open) => set({ packetEditorOpen: open }),
+  setThemeMode: (mode) => {
+    localStorage.setItem('scalemap-theme-mode', mode)
+    set({ themeMode: mode })
+  },
 }))
