@@ -24,7 +24,7 @@ Nodes/edges CRUD, undo-redo, packet registry, drag/drop.
 | File | Role |
 |---|---|
 | `src/app/store/canvas.store.ts` (249 lines) | Nodes/edges state, history/future undo stack, packet registry |
-| `src/app/canvas/Canvas.tsx` | React Flow wrapper, registers node/edge types |
+| `src/app/canvas/Canvas.tsx` | React Flow wrapper, registers node/edge types — `MiniMap`/`Background` are configured via inline props (not `Canvas.module.css`), so their colors are `var(--color-*)` CSS-variable strings passed directly as prop values rather than class-based; touch alongside `Canvas.module.css` if the canvas-chrome palette changes again (design-system task 9) |
 | `src/app/canvas/nodes/BaseNode.tsx` | Compute/network/storage node rendering |
 | `src/app/canvas/nodes/GroupNode.tsx` | Container node rendering (VPC/subnet/cluster/etc) — deliberately static: same 12px corner-radius family as `BaseNode` (visual resemblance), but no breathing glow/hover-lift/per-category saturation, so containers stay recessive relative to the nodes placed inside them (design-system task 7) |
 | `src/app/canvas/edges/BaseEdge.tsx` | Edge rendering |
