@@ -155,3 +155,45 @@ describe('simulated-time release scheduling', () => {
     expect(released).toBe(false)
   })
 })
+
+describe('acquire/release symmetry under pool clamping (#4)', () => {
+  beforeEach(() => clearBackpressureState())
+
+  it('never leaves activeWorkers above maxThreads after a batch that exceeds the pool', () => {
+    const maxThreads = 5
+    const acquired = acquireWorkers('node-1', /* requested */ 8, maxThreads)
+    expect(acquired).toBeLessThanOrEqual(maxThreads)
+    expect(getActiveWorkers('node-1')).toBe(acquired)
+  })
+
+  it('releasing exactly `acquired` times returns activeWorkers to zero, never negative', () => {
+    const maxThreads = 5
+    const acquired = acquireWorkers('node-1', 8, maxThreads)
+    for (let i = 0; i < acquired; i++) scheduleWorkerRelease('node-1', 0, 0)
+    drainScheduledReleases(1)
+    expect(getActiveWorkers('node-1')).toBe(0)
+  })
+
+  it('acquiring across multiple small per-particle calls admits at most maxThreads total', () => {
+    // Mirrors the fixed particleEngine.ts call pattern: one acquireWorkers(nodeId, 1, max) call
+    // per actually-minted particle, rather than one call requesting the whole batch size.
+    const maxThreads = 3
+    let totalAdmitted = 0
+    for (let i = 0; i < 10; i++) {
+      totalAdmitted += acquireWorkers('node-1', 1, maxThreads)
+    }
+    expect(getActiveWorkers('node-1')).toBe(maxThreads)
+    expect(totalAdmitted).toBe(maxThreads)
+
+    for (let i = 0; i < totalAdmitted; i++) scheduleWorkerRelease('node-1', 0, 0)
+    drainScheduledReleases(1)
+    expect(getActiveWorkers('node-1')).toBe(0)
+  })
+
+  it('does not go negative if released more times than acquired (defensive floor)', () => {
+    acquireWorkers('node-1', 2, 10)
+    for (let i = 0; i < 5; i++) scheduleWorkerRelease('node-1', 0, 0)
+    drainScheduledReleases(1)
+    expect(getActiveWorkers('node-1')).toBe(0)
+  })
+})

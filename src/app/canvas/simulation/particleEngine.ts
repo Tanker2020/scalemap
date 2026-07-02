@@ -16,14 +16,14 @@ import {
   forceOpenBreakersForNode, resetBreakersIfRecovered, getAllBreakers, clearBreakers,
 } from './particleEngine/circuitBreakers'
 import {
-  getActiveWorkers, acquireWorkers, releaseWorkerNow, scheduleWorkerRelease,
+  acquireWorkers, releaseWorkerNow, scheduleWorkerRelease,
   getActiveConnections, acquireConnection, scheduleConnectionRelease,
   getWarmInstances, getWarmLastActivity, setWarmInstances, setWarmLastActivity,
   clearBackpressureState, scheduleGenericRelease, drainScheduledReleases,
 } from './particleEngine/backpressure'
 import {
-  effectiveMultiplier as chaosEffectiveMultiplier, getChaosFailures,
-  clearChaosState,
+  trafficMultiplier as chaosTrafficMultiplier, advanceChaosSchedule as chaosAdvanceSchedule,
+  getChaosFailures, clearChaosState,
 } from './particleEngine/chaos'
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -550,13 +550,22 @@ function sampleOriginLatency(sourceNodeId: string, sourceNodeType: NodeType): nu
 }
 
 // ─── Traffic mode: effective spawn multiplier ─────────────────────────────────
-// Delegates to chaos.ts (moved there in Task 0 -- pure code motion, no behavior change).
+// Delegates to chaos.ts (split further in Warning doc W2 / #5 -- pure read vs. impure schedule
+// advance, code motion only from the Task 0 split, no behavior change beyond call-site cadence).
 // now = wall-clock-ish rAF timestamp (drives spike/chaos timers, unchanged from before the
 // split); _simulatedTimeMs = pause/speed-immune sim clock (drives the ramp branch only) --
 // these are two different clocks in the original code and must stay that way here.
 
+// Pure — safe to call any number of times per frame (spawnParticles, updateAllNodeMetrics, and
+// per-arrival glow calculations in handleParticleArrival all read through this).
 function effectiveMultiplier(now: number): number {
-  return chaosEffectiveMultiplier(now, _trafficMode, _globalMultiplier, _simulatedTimeMs, _nodesMap, _onEvent)
+  return chaosTrafficMultiplier(now, _trafficMode, _globalMultiplier, _simulatedTimeMs, _nodesMap)
+}
+
+// Impure — advances chaos/spike schedule state and emits chaos_failure/chaos_recovery events.
+// Must be called exactly once per frame, from loop(), before spawnParticles runs.
+function advanceChaosSchedule(now: number): void {
+  chaosAdvanceSchedule(now, _trafficMode, _simulatedTimeMs, _nodesMap, _onEvent)
 }
 
 // ─── Circuit breaker helpers ──────────────────────────────────────────────────
@@ -722,6 +731,23 @@ function spawnParticles(now: number, delta: number) {
       }
     }
 
+    // Consumer-edge gating: an edge whose SOURCE is a queue-type node models that queue's
+    // consumer draining it — it must not spawn traffic "from nothing." Without this gate the
+    // edge free-runs at its own configured RPS regardless of what (if anything) has actually
+    // arrived in the queue, so a queue with zero producers still emits consumer-side traffic.
+    // Minimum-viable fix per issue #6: hard-gate on depth <= 0, zeroing effectiveRps explicitly
+    // (not freezing it — consistent with C3's "always write effectiveRps" bookkeeping fix) rather
+    // than modeling full delivery-guarantee semantics (dedup, differentiated redelivery), which is
+    // out of scope here.
+    if (downstreamFactor > 0 && sourceNodeId && ep.sourceNodeType
+        && ['queue', 'pubsub', 'eventBus', 'stream'].includes(ep.sourceNodeType)) {
+      const depth = state.queueDepths.get(sourceNodeId) ?? 0
+      if (depth <= 0) {
+        ep.effectiveRps = 0
+        continue
+      }
+    }
+
     const rps = ep.rps * mult * downstreamFactor
     ep.effectiveRps = rps
     const particlesPerSec = rps / PARTICLE_REQUEST_RATIO
@@ -735,19 +761,15 @@ function spawnParticles(now: number, delta: number) {
     // than MAX_PARTICLES concurrent particles regardless of how far offered load exceeds it.
     if (atCap) continue
 
-    // Thread pool gate: request edges on compute source nodes must acquire a worker thread.
-    // A slow downstream holds threads until its response arrives; exhaustion causes local 503s
-    // at the source (CPU stays low, I/O blocks the pool) — no scalar stall pressure needed.
-    if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
-      const active = getActiveWorkers(sourceNodeId)
-      const maxThreads = effectiveConfig(sourceNodeId, ep.sourceNodeType as NodeType).maxConcurrency ?? 200
-      if (active >= maxThreads) {
-        spawnErrorFlash(sourceNodeId)
-        _droppedCounts.set(sourceNodeId, (_droppedCounts.get(sourceNodeId) ?? 0) + n)
-        continue
-      }
-      acquireWorkers(sourceNodeId, n, maxThreads)
-    }
+    // Thread pool gate: request edges on compute source nodes must acquire a worker thread per
+    // particle actually minted below — NOT once per batch requesting `n`. Acquiring here would let
+    // `acquireWorkers` admit up to `n` slots while the per-particle loop below may mint fewer than
+    // `n` (MAX_PARTICLES global cap truncating mid-batch), leaking the difference forever since no
+    // particle/arrival exists for the un-minted slots to ever release. See issue #4.
+    const isThreadPoolEdge = ep.edgeType === 'request' && !!sourceNodeId && !!ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)
+    const maxThreads = isThreadPoolEdge
+      ? effectiveConfig(sourceNodeId!, ep.sourceNodeType as NodeType).maxConcurrency ?? 200
+      : 0
 
     if (!state.particles.has(ep.id)) state.particles.set(ep.id, [])
     const arr = state.particles.get(ep.id)!
@@ -764,6 +786,19 @@ function spawnParticles(now: number, delta: number) {
       : undefined
     const targetNodeId = _edgesData.find(e => e.id === ep.id)?.target
     for (let i = 0; i < n && total < MAX_PARTICLES; i++) {
+      // Acquire exactly one thread-pool worker per particle actually minted, after the
+      // MAX_PARTICLES cap check above — 1:1 with the scheduleWorkerRelease call each minted
+      // particle's arrival handler later makes. Reject overflow explicitly (fast-fail 503-style
+      // drop) instead of silently under-acquiring and minting anyway.
+      if (isThreadPoolEdge) {
+        const admitted = acquireWorkers(sourceNodeId!, 1, maxThreads)
+        if (admitted === 0) {
+          spawnErrorFlash(sourceNodeId!)
+          _droppedCounts.set(sourceNodeId!, (_droppedCounts.get(sourceNodeId!) ?? 0) + 1)
+          continue
+        }
+      }
+
       const pid = ++_particleIdCounter
       // Custom mode: roll a templateId once from this edge's source-node distribution. The
       // template then drives payload size, particle colour, and (for HTTP) the method.
@@ -2425,6 +2460,14 @@ export function stopSimulation() {
 
 export function updateSpeed(speed: number) {
   _speed = speed
+}
+
+// Number of particles currently in flight on a given edge. Read-only test/debug accessor —
+// `state.particles` is otherwise module-private (mutated only inside the rAF loop, per the
+// particle-state architecture rule), but tests need a way to assert "no particle was minted"
+// without reaching into canvas pixel-picking (pickParticleAtPoint requires real layout geometry).
+export function getParticleCountForEdge(edgeId: string): number {
+  return state.particles.get(edgeId)?.length ?? 0
 }
 
 // Elapsed SIMULATION time in seconds (pause/speed/lag-proof). Consumers that record a replay-
