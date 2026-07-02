@@ -790,7 +790,6 @@ function spawnParticles(now: number, delta: number) {
     const reqConfig = ep.edgeType === 'request'
       ? (_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.config as RequestEdgeConfig | undefined
       : undefined
-    const targetNodeId = _edgesData.find(e => e.id === ep.id)?.target
     // Edge-level partition / stochastic packet loss (issue #11): unlike the deterministic
     // capacity/health/circuit drops above (which gate the whole edge's spawn rate), a partition
     // drops each particle independently per its lossRate — both endpoint nodes stay healthy,
@@ -840,8 +839,10 @@ function spawnParticles(now: number, delta: number) {
       }
       arr.push(p)
       _particleById.set(pid, p)
-      // Attribute this hop's response bytes to the node that serves it (its egress).
-      if (targetNodeId) _egressBytesAccum.set(targetNodeId, (_egressBytesAccum.get(targetNodeId) ?? 0) + payloadBytes)
+      // payloadBytes is sampled now (needed on the Particle object for RequestInspector display)
+      // but NOT billed to the target's egress here — attributing it at mint time would bill bytes
+      // for particles later dropped, timed out, or circuit-rejected before ever arriving. Egress
+      // is instead accumulated in handleParticleArrival, only on the successful-arrival path (#15).
       total++
     }
   }
@@ -1220,6 +1221,10 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
         state.nodeConcurrency.set(targetNodeId, Math.max(0, c - 1))
       })
       recordBreakerResultLocal(ep.id, false, config, now)
+      // Bill this hop's response bytes to the node that actually served it — only now that
+      // arrival succeeded, not at spawn (a lambda that never gets here due to a concurrency
+      // drop above must not have been billed; see GitHub issue #15).
+      _egressBytesAccum.set(targetNodeId, (_egressBytesAccum.get(targetNodeId) ?? 0) + particle.payloadBytes)
       trackRequest(targetNodeId, targetNodeType, config)
       // Release source thread: blocked for the full lambda execution time + response transit
       if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
@@ -1275,6 +1280,8 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       particle.originLatencyMs = 0
       recordLatency(targetNodeId, dbLatency)
       recordBreakerResultLocal(ep.id, false, config, now)
+      // Bill on successful arrival only — see GitHub issue #15.
+      _egressBytesAccum.set(targetNodeId, (_egressBytesAccum.get(targetNodeId) ?? 0) + particle.payloadBytes)
       trackRequest(targetNodeId, targetNodeType, config)
       if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
         scheduleWorkerRelease(sourceNodeId, dbLatency + ep.geoLatencyMs, _simulatedTimeMs)
@@ -1305,6 +1312,9 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
   }
 
   recordBreakerResultLocal(ep.id, false, config, now)
+  // Bill on successful arrival only — covers plain compute, queue-type, LB/gateway, and
+  // orchestration-cluster targets, all of which share this fallthrough path. See GitHub issue #15.
+  _egressBytesAccum.set(targetNodeId, (_egressBytesAccum.get(targetNodeId) ?? 0) + particle.payloadBytes)
   trackRequest(targetNodeId, targetNodeType, config)
 
   // Release source thread after target finishes processing and response transits back.
