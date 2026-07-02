@@ -1526,6 +1526,20 @@ export function enterReplay() {
   useReplayStore.getState().startReplay(_particleFrames.map(f => f.elapsedS))
 }
 
+// Force-redraw the current replay frame, bypassing the _lastReplayIndexDrawn dedup guard.
+// getEdgePoint() recomputes each particle's screen position from the edge SVG's live
+// getScreenCTM() every call, so the *positions* are always viewport-correct -- but the guard in
+// loop()'s paused branch only re-invokes drawReplayFrame when the scrubber index changes, not
+// when the user pans/zooms. Panning without this left the last-drawn dots frozen in stale screen
+// coordinates while the edges visually moved underneath them. Call this from a viewport-change
+// listener (Canvas.tsx's onMove) while paused/replaying.
+export function redrawCurrentReplayFrame(): void {
+  if (!_canvas) return
+  const { isReplaying, replayIndex } = useReplayStore.getState()
+  if (!isReplaying) return
+  drawReplayFrame(_canvas, replayIndex)
+}
+
 // ─── Per-frame metrics update ────────────────────────────────────────────────
 
 const METRICS_THROTTLE = 4

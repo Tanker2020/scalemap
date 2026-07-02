@@ -25,7 +25,7 @@ import { SimulationOverlay } from './simulation/SimulationOverlay'
 import { PlaybackScrubber } from './simulation/PlaybackScrubber'
 import { RequestInspector } from './simulation/RequestInspector'
 import { ContextMenu } from '../sidebar/ContextMenu'
-import { injectBurst } from './simulation/particleEngine'
+import { injectBurst, pickParticleAtPoint, redrawCurrentReplayFrame } from './simulation/particleEngine'
 import { GROUPING_TYPES, type NodeType } from '../../lib/nodeConfig'
 import type { NodeData } from '../../lib/nodeConfig'
 import styles from './Canvas.module.css'
@@ -84,7 +84,7 @@ function CanvasInner() {
     activeTool, setActiveTool,
     connectSourceId, setConnectSource,
   } = useUiStore()
-  const { running } = useSimulationStore()
+  const { running, setInspectedRequest } = useSimulationStore()
   const { setDirty } = useFileStore()
 
   const isHand = activeTool === 'hand'
@@ -315,10 +315,23 @@ function CanvasInner() {
     }
   }, [running, edges, isConnect, connectSourceId, setConnectSource, onConnect, setDirty])
 
-  const onPaneClick = useCallback(() => {
+  // Keep replay-frame particle dots glued to their edges while panning/zooming paused.
+  // getEdgePoint() itself is always viewport-correct; the redraw just needs to be re-triggered
+  // on every pan/zoom tick, not only when the scrubber index changes (see redrawCurrentReplayFrame).
+  const onMove = useCallback(() => { redrawCurrentReplayFrame() }, [])
+
+  const onPaneClick = useCallback((event: React.MouseEvent) => {
     closeContextMenu()
     if (isConnect) setConnectSource(null)
-  }, [closeContextMenu, isConnect, setConnectSource])
+    // Click-to-inspect a particle while simulating. React Flow only fires onPaneClick for a
+    // genuine click (it suppresses this after a pan-drag), so no manual drag-distance check
+    // is needed here — unlike the old overlay-canvas handler this replaces.
+    if (running && wrapperRef.current) {
+      const rect = wrapperRef.current.getBoundingClientRect()
+      const snap = pickParticleAtPoint(event.clientX, event.clientY, rect)
+      setInspectedRequest(snap ?? null)
+    }
+  }, [closeContextMenu, isConnect, setConnectSource, running, setInspectedRequest])
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -382,6 +395,7 @@ function CanvasInner() {
         onNodeContextMenu={onNodeContextMenu}
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
+        onMove={onMove}
         onNodeDragStop={onNodeDragStopHandler}
         onDrop={onDrop}
         onDragOver={onDragOver}
