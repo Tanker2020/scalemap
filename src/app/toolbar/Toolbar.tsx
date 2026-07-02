@@ -294,16 +294,20 @@ function downloadBlob(content: string, filename: string, type: string) {
 export function Toolbar() {
   const { undo, redo } = useCanvasStore()
   const { running, paused, setRunning, setPaused, activeScript, setActiveScript, runs, simulationMode, globalMultiplier } = useSimulationStore()
-  const { activeTool, setActiveTool, setSimConfigOpen, simConfigOpen, reportsPanelOpen, setReportsPanelOpen, setDiagnosticsOpen, packetEditorOpen, setPacketEditorOpen, themeMode, setThemeMode } = useUiStore()
+  const { activeTool, setActiveTool, setSimConfigOpen, simConfigOpen, dockOpen, dockTab, openDockTab, setDockOpen, packetEditorOpen, setPacketEditorOpen, themeMode, setThemeMode } = useUiStore()
   const packetMode = useCanvasStore(s => s.packetMode)
   const diagnosticsCount = useDiagnosticsStore(s => s.diagnostics.length)
   const { showHome, setShowHome, fileName } = useFileStore()
 
+  // Re-runs the linter and opens the dock on the Diagnostics tab. If the dock is already open
+  // on Diagnostics, clicking again just re-runs (dock stays open) rather than toggling closed —
+  // "Diagnostics" here is primarily an action (run the linter), the dock visibility is a
+  // secondary effect, unlike Inspect/Dock-on-Reports which are pure visibility toggles.
   const runDiagnostics = useCallback(() => {
     const { nodes, edges } = useCanvasStore.getState()
     useDiagnosticsStore.getState().setDiagnostics(lintGraph(nodes, edges))
-    setDiagnosticsOpen(true)
-  }, [setDiagnosticsOpen])
+    openDockTab('diagnostics')
+  }, [openDockTab])
   const [scriptPreviewOpen, setScriptPreviewOpen] = useState(false)
   const [simSettingsOpen, setSimSettingsOpen] = useState(false)
   const simWrapRef = useRef<HTMLDivElement>(null)
@@ -427,54 +431,69 @@ export function Toolbar() {
 
           <div className={styles.spacer} />
 
-          {/* Inspect button — purple pill */}
-          <button
-            className={`${styles.btnInspect} ${simConfigOpen ? styles.btnInspectActive : ''}`}
-            onClick={() => setSimConfigOpen(!simConfigOpen)}
-            title="Simulation Inspector — configure capacity, latency, SLOs and watch live metrics for every node"
-          >
-            <SlidersHorizontal size={12} />
-            Inspect
-          </button>
+          {/* Panels group — Inspect / Dock / Packets are persistent-UI toggles, visually
+              distinct from the one-shot actions (Undo/Redo/Export) to their left and the
+              Simulate action-button to their right. Previously Reports and Diagnostics were
+              two independent toggles that could both be open at once, stacking directly on
+              top of each other at the same right-edge position — they're now one Dock button
+              with two tabs (see UtilityDock.tsx), so there is exactly one right-edge overlay
+              slot instead of three uncoordinated ones. */}
+          <div className={styles.panelGroup}>
+            <span className={styles.panelGroupLabel}>Panels</span>
 
-          {/* Reports button */}
-          <button
-            className={`${styles.btnReports} ${reportsPanelOpen ? styles.btnReportsActive : ''}`}
-            onClick={() => setReportsPanelOpen(!reportsPanelOpen)}
-            title="View simulation run reports"
-          >
-            <ClipboardList size={12} />
-            Reports
-            {runs.length > 0 && (
-              <span className={styles.reportsBadge}>{runs.length}</span>
-            )}
-          </button>
+            <button
+              className={`${styles.btnInspect} ${simConfigOpen ? styles.btnInspectActive : ''}`}
+              onClick={() => setSimConfigOpen(!simConfigOpen)}
+              title="Simulation Inspector — configure capacity, latency, SLOs and watch live metrics for every node"
+            >
+              <SlidersHorizontal size={12} />
+              Inspect
+            </button>
 
-          {/* Packet editor button — define request templates + traffic mix */}
-          <button
-            className={`${styles.btnReports} ${packetEditorOpen ? styles.btnReportsActive : ''}`}
-            onClick={() => setPacketEditorOpen(!packetEditorOpen)}
-            title="Packet templates — define request types and per-node traffic distribution"
-          >
-            <Package size={12} />
-            Packets
-            {packetMode === 'custom' && (
-              <span className={styles.reportsBadge}>on</span>
-            )}
-          </button>
+            {/* Dock button — opens the unified Diagnostics/Reports dock. Clicking re-runs
+                diagnostics and switches to that tab even if the dock is already open on
+                Reports, so this single button covers what used to be two. */}
+            <button
+              className={`${styles.btnReports} ${dockOpen ? styles.btnReportsActive : ''}`}
+              onClick={() => {
+                if (dockOpen && dockTab === 'reports') { setDockOpen(false); return }
+                openDockTab('reports')
+              }}
+              title="Reports & Diagnostics dock — simulation run history and architectural lint results"
+            >
+              <ClipboardList size={12} />
+              Dock
+              {(runs.length > 0 || diagnosticsCount > 0) && (
+                <span className={styles.reportsBadge}>{runs.length + diagnosticsCount}</span>
+              )}
+            </button>
 
-          {/* Run Diagnostics button — on-demand architectural linter */}
-          <button
-            className={styles.btnDiagnostics}
-            onClick={runDiagnostics}
-            title="Run architectural diagnostics — detect anti-patterns in the current design"
-          >
-            <ShieldCheck size={12} />
-            Diagnostics
-            {diagnosticsCount > 0 && (
-              <span className={styles.diagnosticsBadge}>{diagnosticsCount}</span>
-            )}
-          </button>
+            {/* Packet editor button — define request templates + traffic mix */}
+            <button
+              className={`${styles.btnReports} ${packetEditorOpen ? styles.btnReportsActive : ''}`}
+              onClick={() => setPacketEditorOpen(!packetEditorOpen)}
+              title="Packet templates — define request types and per-node traffic distribution"
+            >
+              <Package size={12} />
+              Packets
+              {packetMode === 'custom' && (
+                <span className={styles.reportsBadge}>on</span>
+              )}
+            </button>
+
+            {/* Run Diagnostics — architectural linter action, opens the Dock on its tab */}
+            <button
+              className={styles.btnDiagnostics}
+              onClick={runDiagnostics}
+              title="Run architectural diagnostics — detect anti-patterns in the current design"
+            >
+              <ShieldCheck size={12} />
+              Diagnostics
+              {diagnosticsCount > 0 && (
+                <span className={styles.diagnosticsBadge}>{diagnosticsCount}</span>
+              )}
+            </button>
+          </div>
 
           {/* Active ScaleScript pill */}
           {activeScript && (

@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo } from 'react'
-import { X, ShieldCheck, AlertCircle, AlertTriangle } from 'lucide-react'
+import { useState, useMemo } from 'react'
+import { ShieldCheck, AlertCircle, AlertTriangle } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
 import { useUiStore } from '../store/ui.store'
 import { useDiagnosticsStore } from '../store/diagnostics.store'
@@ -14,18 +14,18 @@ const SEVERITY_COLOR: Record<LintIssue['severity'], string> = {
   warn:  '#F59E0B',
 }
 
+/**
+ * Diagnostics tab body — mounted inside UtilityDock (src/app/dock/UtilityDock.tsx), which
+ * owns the shared right-edge shell (position, header, tab strip, Escape-to-close). This
+ * component only renders the filter chips + issue list; it no longer manages its own
+ * fixed-position chrome or close button (previously duplicated ReportsPanel's, which is how
+ * the two ended up stacking on top of each other at the same right-edge position).
+ */
 export function DiagnosticsPanel() {
   const diagnostics = useDiagnosticsStore(s => s.diagnostics)
-  const setDiagnosticsOpen = useUiStore(s => s.setDiagnosticsOpen)
   const setSelectedNode = useUiStore(s => s.setSelectedNode)
   const nodes = useCanvasStore(s => s.nodes)
   const [filter, setFilter] = useState<SeverityFilter>('all')
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setDiagnosticsOpen(false) }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [setDiagnosticsOpen])
 
   const nodeById = useMemo(() => new Map(nodes.map(n => [n.id, n])), [nodes])
 
@@ -43,18 +43,7 @@ export function DiagnosticsPanel() {
   }
 
   return (
-    <aside className={styles.panel}>
-      <div className={styles.header}>
-        <div className={styles.title}>
-          <ShieldCheck size={14} />
-          <span>Diagnostics</span>
-          {live.length > 0 && <span className={styles.count}>{live.length}</span>}
-        </div>
-        <button className={styles.closeBtn} onClick={() => setDiagnosticsOpen(false)} title="Close (Esc)">
-          <X size={13} />
-        </button>
-      </div>
-
+    <>
       {live.length > 0 && (
         <div className={styles.filters}>
           <button
@@ -122,6 +111,6 @@ export function DiagnosticsPanel() {
           })
         )}
       </div>
-    </aside>
+    </>
   )
 }

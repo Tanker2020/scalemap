@@ -19,8 +19,7 @@ import { StatusBar } from './app/StatusBar'
 import { HomeScreen } from './app/home/HomeScreen'
 import { MetricsDrawer } from './app/analytics/MetricsDrawer'
 import { SimConfigPanel } from './app/simulation/SimConfigPanel'
-import { ReportsPanel } from './app/reports/ReportsPanel'
-import { DiagnosticsPanel } from './app/diagnostics/DiagnosticsPanel'
+import { UtilityDock } from './app/dock/UtilityDock'
 import { PacketEditor } from './app/simulation/PacketEditor'
 import { useFileStore } from './app/store/file.store'
 import { useCanvasStore } from './app/store/canvas.store'
@@ -61,8 +60,7 @@ export default function App() {
   const showHome = useFileStore(s => s.showHome)
   const running = useSimulationStore(s => s.running)
   const simConfigOpen = useUiStore(s => s.simConfigOpen)
-  const reportsPanelOpen = useUiStore(s => s.reportsPanelOpen)
-  const diagnosticsOpen = useUiStore(s => s.diagnosticsOpen)
+  const dockOpen = useUiStore(s => s.dockOpen)
   const packetEditorOpen = useUiStore(s => s.packetEditorOpen)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
@@ -145,12 +143,27 @@ export default function App() {
                 </motion.div>
               )}
             </AnimatePresence>
+            {/* UtilityDock is a normal flex child here (not position: fixed) so it reserves
+                its own space in the row and shifts Properties/Inspector left instead of
+                floating on top of them — see UtilityDock.module.css for the rationale. */}
+            <AnimatePresence>
+              {dockOpen && (
+                <motion.div
+                  key="dock"
+                  style={{ display: 'flex' }}
+                  initial={{ opacity: 0, x: 16 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 16 }}
+                  transition={{ duration: 0.18, ease: 'easeOut' }}
+                >
+                  <UtilityDock />
+                </motion.div>
+              )}
+            </AnimatePresence>
           </>
         )}
       </div>
       <StatusBar onToggleDrawer={() => setDrawerOpen(o => !o)} drawerOpen={drawerOpen} />
-      {reportsPanelOpen && <ReportsPanel />}
-      {diagnosticsOpen && <DiagnosticsPanel />}
       <AnimatePresence>
         {packetEditorOpen && <PacketEditor key="packet-editor" />}
       </AnimatePresence>
