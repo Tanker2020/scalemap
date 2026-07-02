@@ -748,6 +748,23 @@ function spawnParticles(now: number, delta: number) {
       }
     }
 
+    // Consumer-edge gating: an edge whose SOURCE is a queue-type node models that queue's
+    // consumer draining it — it must not spawn traffic "from nothing." Without this gate the
+    // edge free-runs at its own configured RPS regardless of what (if anything) has actually
+    // arrived in the queue, so a queue with zero producers still emits consumer-side traffic.
+    // Minimum-viable fix per issue #6: hard-gate on depth <= 0, zeroing effectiveRps explicitly
+    // (not freezing it — consistent with C3's "always write effectiveRps" bookkeeping fix) rather
+    // than modeling full delivery-guarantee semantics (dedup, differentiated redelivery), which is
+    // out of scope here.
+    if (downstreamFactor > 0 && sourceNodeId && ep.sourceNodeType
+        && ['queue', 'pubsub', 'eventBus', 'stream'].includes(ep.sourceNodeType)) {
+      const depth = state.queueDepths.get(sourceNodeId) ?? 0
+      if (depth <= 0) {
+        ep.effectiveRps = 0
+        continue
+      }
+    }
+
     const rps = ep.rps * mult * downstreamFactor
     ep.effectiveRps = rps
     const particlesPerSec = rps / PARTICLE_REQUEST_RATIO
