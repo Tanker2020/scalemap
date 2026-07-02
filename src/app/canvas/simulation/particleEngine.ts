@@ -11,6 +11,20 @@ import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventTy
 import { useReplayStore } from '../../store/replay.store'
 import { NODE_SIM_DEFAULTS } from '../../simulation/defaults'
 import { CLOUD_REGISTRY, type CloudProvider } from '../../../lib/cloudRegistry'
+import {
+  getBreaker, recordBreakerResult, checkBreakerTransition,
+  forceOpenBreakersForNode, resetBreakersIfRecovered, getAllBreakers, clearBreakers,
+} from './particleEngine/circuitBreakers'
+import {
+  getActiveWorkers, acquireWorkers, releaseWorkerNow, scheduleWorkerRelease,
+  getActiveConnections, acquireConnection, scheduleConnectionRelease,
+  getWarmInstances, getWarmLastActivity, setWarmInstances, setWarmLastActivity,
+  clearBackpressureState,
+} from './particleEngine/backpressure'
+import {
+  effectiveMultiplier as chaosEffectiveMultiplier, getChaosFailures,
+  clearChaosState,
+} from './particleEngine/chaos'
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -41,12 +55,6 @@ interface ErrorFlash {
   x: number
   y: number
   startTime: number
-}
-
-interface CircuitBreakerEntry {
-  state: CircuitState
-  openedAt: number
-  errorWindow: number[]
 }
 
 interface RetryEntry {
@@ -103,9 +111,6 @@ const _droppedCounts = new Map<string, number>()
 // Cumulative dead-lettered message counts per node (event edges, retries exhausted)
 const _deadLetterCounts = new Map<string, number>()
 
-// In-flight synchronous request threads held at source nodes (request-edge thread pool model)
-const _activeWorkers = new Map<string, number>()
-
 // ─── Live egress bandwidth accounting ────────────────────────────────────────
 // Per-node bytes egressed (response payloads) since the last metrics flush. The primary spawn
 // loop attributes each particle's sampled payload to its TARGET node — the node that responds.
@@ -132,9 +137,6 @@ const _saturatedNodes = new Set<string>()
 // Stream edges currently in lossless-TCP backpressure (consumer lag exceeded) — tracked
 // so the edge_backpressure event only fires once per onset, not every frame.
 const _streamBackpressureEdges = new Set<string>()
-
-// Circuit breakers per edge (client-side: each directed edge owns its own breaker)
-const _circuitBreakers = new Map<string, CircuitBreakerEntry>()
 
 // ─── Callbacks ────────────────────────────────────────────────────────────────
 
@@ -394,22 +396,6 @@ const _clientErrorCounts = new Map<string, number>()
 // wall clock. (Frame-delta baselines and inter-frame scheduling still use performance.now().)
 let _simulatedTimeMs = 0
 
-// Spike mode state
-let _spikeNextAt = 0
-let _spikeEndAt  = 0
-
-// Chaos mode failure entry — mode determines how the failure manifests
-interface ChaosEntry {
-  expiry: number
-  mode: 'crash' | 'latency' | 'partial'
-  dropRate: number  // fraction of arriving requests that fail (1.0 = crash, 0.9 = latency, 0.5–0.8 = partial)
-}
-const _chaosFailures = new Map<string, ChaosEntry>()
-let _chaosNextFailAt = 0
-
-// Connection pool tracking (7a)
-const _activeConnections = new Map<string, number>()
-
 // In-flight request counter used by LAC load balancer routing
 const _lbActiveRequests = new Map<string, number>()
 
@@ -423,9 +409,8 @@ const _nodeHealthStates = new Map<string, 'healthy' | 'degraded' | 'down'>()
 const _recoveryUntil    = new Map<string, number>()
 const HEALTH_RECOVERY_LOCK_MS = 8_000  // 8s minimum in 'degraded' after exiting 'down'
 
-// Lambda warm instance tracking (7b)
-const _warmInstances    = new Map<string, number>()  // nodeId → warm count
-const _warmLastActivity = new Map<string, number>()  // nodeId → last request ts
+// Lambda warm instance tracking (7b) — state lives in backpressure.ts; this constant governs
+// the idle-expiry check at the call site.
 const LAMBDA_WARM_IDLE_MS = 5 * 60 * 1000           // 5 min idle = cold
 
 // K8s / ECS auto-scale state (7g)
@@ -565,138 +550,24 @@ function sampleOriginLatency(sourceNodeId: string, sourceNodeType: NodeType): nu
 }
 
 // ─── Traffic mode: effective spawn multiplier ─────────────────────────────────
+// Delegates to chaos.ts (moved there in Task 0 -- pure code motion, no behavior change).
+// now = wall-clock-ish rAF timestamp (drives spike/chaos timers, unchanged from before the
+// split); _simulatedTimeMs = pause/speed-immune sim clock (drives the ramp branch only) --
+// these are two different clocks in the original code and must stay that way here.
 
 function effectiveMultiplier(now: number): number {
-  switch (_trafficMode) {
-    case 'steady':
-      return _globalMultiplier
-
-    case 'ramp': {
-      // Ramp progresses in simulation time, so it survives pauses and tracks playback speed
-      // (2× speed reaches full load in half the wall-clock time, not a fixed 2 real minutes).
-      const elapsed = _simulatedTimeMs
-      const rampMs  = 120_000   // 2-min ramp to observe cascade effects
-      return _globalMultiplier * Math.min(1, elapsed / rampMs)
-    }
-
-    case 'spike': {
-      if (now >= _spikeEndAt) {
-        if (_spikeNextAt === 0) _spikeNextAt = now + 30_000
-        if (now >= _spikeNextAt) {
-          _spikeEndAt  = now + 10_000    // 10s burst
-          _spikeNextAt = _spikeEndAt + 30_000  // 30s cooldown
-        }
-      }
-      const inSpike = now < _spikeEndAt
-      return _globalMultiplier * (inSpike ? 8 : 1)  // 8× flash crowd
-    }
-
-    case 'chaos': {
-      if (_chaosNextFailAt === 0) _chaosNextFailAt = now + 5_000 + Math.random() * 10_000
-      if (now >= _chaosNextFailAt) {
-        const nonGroupNodes = [..._nodesMap.values()].filter(n => !GROUPING_TYPES.has(n.type as NodeType))
-        if (nonGroupNodes.length > 0) {
-          const victim = nonGroupNodes[Math.floor(Math.random() * nonGroupNodes.length)]
-          const failDuration = 5_000 + Math.random() * 15_000  // 5–20s failures
-          const wasAlreadyFailed = _chaosFailures.has(victim.id)
-          const modeRoll = Math.random()
-          const mode: ChaosEntry['mode'] = modeRoll < 0.4 ? 'crash' : modeRoll < 0.7 ? 'latency' : 'partial'
-          const dropRate = mode === 'crash' ? 1.0 : mode === 'latency' ? 0.9 : 0.5 + Math.random() * 0.3
-          _chaosFailures.set(victim.id, { expiry: now + failDuration, mode, dropRate })
-          if (!wasAlreadyFailed) {
-            const label = (victim.data as NodeData).label ?? victim.id
-            const modeLabel = mode === 'crash' ? 'crash' : mode === 'latency' ? 'latency spike' : 'partial failure'
-            _onEvent('chaos_failure', victim.id, `${label} ${modeLabel} (chaos)`, 'warn')
-          }
-        }
-        _chaosNextFailAt = now + 5_000 + Math.random() * 10_000
-      }
-      // Emit recovery events for expired failures
-      for (const [id, entry] of _chaosFailures) {
-        if (now > entry.expiry) {
-          const node = _nodesMap.get(id)
-          const label = node ? (node.data as NodeData).label ?? id : id
-          _chaosFailures.delete(id)
-          _onEvent('chaos_recovery', id, `${label} recovered`, 'info')
-        }
-      }
-      if (_spikeNextAt === 0) _spikeNextAt = now + 8_000
-      if (now >= _spikeNextAt) {
-        _spikeEndAt  = now + 5_000
-        _spikeNextAt = _spikeEndAt + 8_000 + Math.random() * 8_000
-      }
-      const inSpike = now < _spikeEndAt
-      return _globalMultiplier * (inSpike ? 6 : 1)  // 6× chaos spikes
-    }
-  }
+  return chaosEffectiveMultiplier(now, _trafficMode, _globalMultiplier, _simulatedTimeMs, _nodesMap, _onEvent)
 }
 
 // ─── Circuit breaker helpers ──────────────────────────────────────────────────
+// Delegates to circuitBreakers.ts (moved there in Task 0 -- pure code motion, no behavior change).
 
-function getBreaker(edgeId: string): CircuitBreakerEntry {
-  let b = _circuitBreakers.get(edgeId)
-  if (!b) {
-    b = { state: 'closed', openedAt: 0, errorWindow: [] }
-    _circuitBreakers.set(edgeId, b)
-  }
-  return b
+function recordBreakerResultLocal(edgeId: string, isError: boolean, config: NodeSimConfig, now: number) {
+  recordBreakerResult(edgeId, isError, config, now, _edgesData, _nodesMap, _upstreamPressure, _stallSources, _onEvent)
 }
 
-function recordBreakerResult(edgeId: string, isError: boolean, config: NodeSimConfig, now: number) {
-  const b = getBreaker(edgeId)
-  const cb = config.circuitBreaker
-  if (!cb) return
-
-  b.errorWindow.push(isError ? 1 : 0)
-  if (b.errorWindow.length > 20) b.errorWindow.splice(0, b.errorWindow.length - 20)
-
-  const edgeData     = _edgesData.find(e => e.id === edgeId)
-  const targetNodeId = edgeData?.target
-  const srcLabel     = edgeData?.source ? ((_nodesMap.get(edgeData.source)?.data as NodeData)?.label ?? edgeData.source) : edgeId
-  const tgtLabel     = targetNodeId    ? ((_nodesMap.get(targetNodeId)?.data    as NodeData)?.label ?? targetNodeId)    : edgeId
-
-  if (b.state === 'closed') {
-    const errRate = b.errorWindow.reduce((s, v) => s + v, 0) / b.errorWindow.length
-    if (errRate >= cb.errorThreshold && b.errorWindow.length >= 10) {
-      b.state    = 'open'
-      b.openedAt = now
-      const cbCausedBy = targetNodeId && (_upstreamPressure.get(targetNodeId) ?? 0) > 0.2
-        ? _stallSources.get(targetNodeId)
-        : undefined
-      _onEvent('circuit_open', targetNodeId, `Circuit open: ${srcLabel} → ${tgtLabel}`, 'critical', undefined, cbCausedBy)
-    }
-  } else if (b.state === 'half-open') {
-    if (!isError) {
-      b.state       = 'closed'
-      b.errorWindow = []
-      _onEvent('circuit_close', targetNodeId, `Circuit closed: ${srcLabel} → ${tgtLabel}`, 'info')
-    } else {
-      b.state    = 'open'
-      b.openedAt = now
-    }
-  }
-}
-
-function checkBreakerTransition(edgeId: string, config: NodeSimConfig, now: number): CircuitState {
-  const b = getBreaker(edgeId)
-  const cb = config.circuitBreaker
-  if (!cb) return 'closed'
-
-  const edgeData     = _edgesData.find(e => e.id === edgeId)
-  const targetNodeId = edgeData?.target
-
-  // Don't allow reset while the target node's health is 'down' — CB must stay open
-  if (
-    b.state === 'open' &&
-    (targetNodeId === undefined || _nodeHealthStates.get(targetNodeId) !== 'down') &&
-    now - b.openedAt > cb.resetMs
-  ) {
-    b.state = 'half-open'
-    const srcLabel = edgeData?.source ? ((_nodesMap.get(edgeData.source)?.data as NodeData)?.label ?? edgeData.source) : edgeId
-    const tgtLabel = targetNodeId    ? ((_nodesMap.get(targetNodeId)?.data    as NodeData)?.label ?? targetNodeId)    : edgeId
-    _onEvent('circuit_half_open', targetNodeId, `Circuit half-open: ${srcLabel} → ${tgtLabel} (testing)`, 'warn')
-  }
-  return b.state
+function checkBreakerTransitionLocal(edgeId: string, config: NodeSimConfig, now: number): CircuitState {
+  return checkBreakerTransition(edgeId, config, now, _edgesData, _nodesMap, _nodeHealthStates, _onEvent)
 }
 
 // ─── Health helpers ───────────────────────────────────────────────────────────
@@ -755,7 +626,7 @@ function spawnParticles(now: number, delta: number) {
     const sourceNodeId = _edgesData.find(e => e.id === ep.id)?.source
     let downstreamFactor = 1.0
     if (sourceNodeId) {
-      const chaosEntry = _chaosFailures.get(sourceNodeId)
+      const chaosEntry = getChaosFailures().get(sourceNodeId)
       if (_nodeHealthStates.get(sourceNodeId) === 'down') {
         downstreamFactor = 0
       } else if (chaosEntry) {
@@ -770,7 +641,7 @@ function spawnParticles(now: number, delta: number) {
           downstreamFactor = Math.max(0, downstreamFactor * Math.max(0.1, 1 - stall * 0.8))
         }
       } else {
-        const breaker = _circuitBreakers.get(ep.id)
+        const breaker = getBreaker(ep.id)
         if (breaker?.state === 'open' && ep.edgeType !== 'event' && ep.edgeType !== 'stream') {
           downstreamFactor = 0         // circuit open: no traffic; periodic scan handles probing
         } else if (breaker?.state === 'half-open' && ep.edgeType !== 'event' && ep.edgeType !== 'stream') {
@@ -858,14 +729,14 @@ function spawnParticles(now: number, delta: number) {
     // A slow downstream holds threads until its response arrives; exhaustion causes local 503s
     // at the source (CPU stays low, I/O blocks the pool) — no scalar stall pressure needed.
     if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
-      const active = _activeWorkers.get(sourceNodeId) ?? 0
+      const active = getActiveWorkers(sourceNodeId)
       const maxThreads = effectiveConfig(sourceNodeId, ep.sourceNodeType as NodeType).maxConcurrency ?? 200
       if (active >= maxThreads) {
         spawnErrorFlash(sourceNodeId)
         _droppedCounts.set(sourceNodeId, (_droppedCounts.get(sourceNodeId) ?? 0) + n)
         continue
       }
-      _activeWorkers.set(sourceNodeId, Math.min(maxThreads, active + n))
+      acquireWorkers(sourceNodeId, n, maxThreads)
     }
 
     if (!state.particles.has(ep.id)) state.particles.set(ep.id, [])
@@ -932,7 +803,7 @@ function handleRequestTimeout(ep: EdgePath, now: number, _particle: Particle) {
     _upstreamPressure.set(sourceNodeId, Math.min(1, existing + perParticle))
 
     if (ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
-      _activeWorkers.set(sourceNodeId, Math.max(0, (_activeWorkers.get(sourceNodeId) ?? 1) - 1))
+      releaseWorkerNow(sourceNodeId)
     }
 
     const srcLabel = (_nodesMap.get(sourceNodeId)?.data as NodeData)?.label ?? sourceNodeId
@@ -942,7 +813,7 @@ function handleRequestTimeout(ep: EdgePath, now: number, _particle: Particle) {
   if (targetNodeId) {
     const targetType = _nodesMap.get(targetNodeId)?.type as NodeType | undefined
     const config = targetType ? effectiveConfig(targetNodeId, targetType) : null
-    if (config) recordBreakerResult(ep.id, true, config, now)
+    if (config) recordBreakerResultLocal(ep.id, true, config, now)
   }
 }
 
@@ -979,7 +850,7 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
     // Release the source's worker thread immediately — a 503/rejection is a fast response,
     // so the thread is freed right away (unlike a slow success that holds it for latency ms).
     if (ep.edgeType === 'request' && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
-      _activeWorkers.set(sourceNodeId, Math.max(0, (_activeWorkers.get(sourceNodeId) ?? 1) - 1))
+      releaseWorkerNow(sourceNodeId)
     }
 
     // Emit cascade event once pressure is significant
@@ -1024,7 +895,7 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
         )
         const healthyEdges = lbOutEdges.filter(e => {
           const tgtId = _edgesData.find(d => d.id === e.id)?.target
-          return _circuitBreakers.get(e.id)?.state !== 'open'
+          return getBreaker(e.id)?.state !== 'open'
             && (tgtId === undefined || _nodeHealthStates.get(tgtId) !== 'down')
         })
         const pool = healthyEdges.length > 0 ? healthyEdges : lbOutEdges
@@ -1140,9 +1011,9 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
   const config = effectiveConfig(targetNodeId, targetNodeType)
 
   // Chaos failure: mode-specific drop rate, feeds circuit breakers so they trip naturally
-  const chaosEntry = _chaosFailures.get(targetNodeId)
+  const chaosEntry = getChaosFailures().get(targetNodeId)
   if (chaosEntry && Math.random() < chaosEntry.dropRate) {
-    recordBreakerResult(ep.id, true, config, now)
+    recordBreakerResultLocal(ep.id, true, config, now)
     dropParticle(ep, targetNodeId, particle)
     return
   }
@@ -1166,7 +1037,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
     const tpl = _packetTemplates[particle.templateId]
     if (tpl?.protocol === 'http') {
       if (tpl.statusCode >= 500) {
-        recordBreakerResult(ep.id, true, config, now)
+        recordBreakerResultLocal(ep.id, true, config, now)
         dropParticle(ep, targetNodeId, particle)
         return
       }
@@ -1178,25 +1049,23 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
 
   // Connection pool check (7a) — databases and caches
   if (config.connectionPool) {
-    const active = _activeConnections.get(targetNodeId) ?? 0
+    const active = getActiveConnections(targetNodeId)
     if (active >= config.connectionPool.max) {
       dropParticle(ep, targetNodeId, particle)
       const label = ((_nodesMap.get(targetNodeId))?.data as NodeData)?.label ?? targetNodeId
       _onEvent('connection_pool_exhausted', targetNodeId, `${label} connection pool exhausted (${active}/${config.connectionPool.max})`, 'critical', { utilization: 1, errorRate: 1 })
       return
     }
-    _activeConnections.set(targetNodeId, active + 1)
-    const releaseDelay = Math.max(50, effectiveProcessingMs(targetNodeId, config)) / _speed
-    setTimeout(() => {
-      _activeConnections.set(targetNodeId, Math.max(0, (_activeConnections.get(targetNodeId) ?? 1) - 1))
-    }, releaseDelay)
+    acquireConnection(targetNodeId, config.connectionPool.max)
+    const releaseDelay = Math.max(50, effectiveProcessingMs(targetNodeId, config))
+    scheduleConnectionRelease(targetNodeId, releaseDelay, _speed)
   }
 
   // Check circuit breaker state (keyed on edge — client-side breaker)
-  const breakerState = checkBreakerTransition(ep.id, config, now)
+  const breakerState = checkBreakerTransitionLocal(ep.id, config, now)
   if (breakerState === 'open') {
     dropParticle(ep, targetNodeId, particle)
-    recordBreakerResult(ep.id, true, config, now)
+    recordBreakerResultLocal(ep.id, true, config, now)
     return
   }
   if (breakerState === 'half-open' && Math.random() > 0.1) {
@@ -1216,7 +1085,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       _onEvent('connection_pool_exhausted', targetNodeId,
         `${label} queue full (${Math.round(depth)}/${cap}) — dropping`, 'critical',
         { utilization: 1, errorRate: 1 })
-      recordBreakerResult(ep.id, true, config, now)
+      recordBreakerResultLocal(ep.id, true, config, now)
       dropParticle(ep, targetNodeId, particle)
       return
     }
@@ -1259,13 +1128,13 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       const maxC = config.maxConcurrency ?? 10
       if (cur >= maxC) {
         dropParticle(ep, targetNodeId, particle)
-        recordBreakerResult(ep.id, true, config, now)
+        recordBreakerResultLocal(ep.id, true, config, now)
         return
       }
       // Cold start: warm instances expire after 5 min idle
-      const lastAct  = _warmLastActivity.get(targetNodeId) ?? 0
+      const lastAct  = getWarmLastActivity(targetNodeId)
       const maxWarm  = config.maxWarmInstances ?? 5
-      const warm     = now - lastAct > LAMBDA_WARM_IDLE_MS ? 0 : (_warmInstances.get(targetNodeId) ?? 0)
+      const warm     = now - lastAct > LAMBDA_WARM_IDLE_MS ? 0 : getWarmInstances(targetNodeId)
       let effectiveLatency = sampledLatency  // already includes origin + geo offsets
       if (cur >= warm && config.coldStart) {
         // Pay cold-start penalty
@@ -1274,8 +1143,8 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
         const label = ((_nodesMap.get(targetNodeId))?.data as NodeData)?.label ?? targetNodeId
         _onEvent('lambda_cold_start', targetNodeId, `${label} cold start (+${Math.round(effectiveLatency - sampledLatency)}ms)`, 'warn', { p90LatencyMs: effectiveLatency })
       }
-      _warmInstances.set(targetNodeId, Math.min(maxWarm, warm + 1))
-      _warmLastActivity.set(targetNodeId, now)
+      setWarmInstances(targetNodeId, Math.min(maxWarm, warm + 1))
+      setWarmLastActivity(targetNodeId, now)
       state.nodeConcurrency.set(targetNodeId, cur + 1)
       const healthMult = _nodeHealthStates.get(targetNodeId) === 'degraded'
         ? (1 + degradedDepth(_smoothedMetrics.get(targetNodeId)?.healthScore ?? 0.67))
@@ -1286,13 +1155,11 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
         const c = state.nodeConcurrency.get(targetNodeId) ?? 0
         state.nodeConcurrency.set(targetNodeId, Math.max(0, c - 1))
       }, delay)
-      recordBreakerResult(ep.id, false, config, now)
+      recordBreakerResultLocal(ep.id, false, config, now)
       trackRequest(targetNodeId, targetNodeType, config)
       // Release source thread: blocked for the full lambda execution time + response transit
       if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
-        setTimeout(() => {
-          _activeWorkers.set(sourceNodeId, Math.max(0, (_activeWorkers.get(sourceNodeId) ?? 1) - 1))
-        }, (effectiveLatency + ep.geoLatencyMs) / _speed)
+        scheduleWorkerRelease(sourceNodeId, effectiveLatency + ep.geoLatencyMs, _speed)
       }
       forwardToOutbound(targetNodeId, targetNodeType, particle.templateId)
       return
@@ -1323,7 +1190,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       if (Math.max(readUtil, writeUtil) >= 1.0 + config.errorRate) {
         _dbSaturationReason.set(targetNodeId, writeUtil >= readUtil ? 'write' : 'read')
         dropParticle(ep, targetNodeId, particle)
-        recordBreakerResult(ep.id, true, config, now)
+        recordBreakerResultLocal(ep.id, true, config, now)
         return
       }
 
@@ -1343,12 +1210,10 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       }
       particle.originLatencyMs = 0
       recordLatency(targetNodeId, dbLatency)
-      recordBreakerResult(ep.id, false, config, now)
+      recordBreakerResultLocal(ep.id, false, config, now)
       trackRequest(targetNodeId, targetNodeType, config)
       if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
-        setTimeout(() => {
-          _activeWorkers.set(sourceNodeId, Math.max(0, (_activeWorkers.get(sourceNodeId) ?? 1) - 1))
-        }, (dbLatency + ep.geoLatencyMs) / _speed)
+        scheduleWorkerRelease(sourceNodeId, dbLatency + ep.geoLatencyMs, _speed)
       }
       forwardToOutbound(targetNodeId, targetNodeType, particle.templateId)
       return
@@ -1357,7 +1222,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
     // Other non-queue nodes: drop if at capacity
     if (utilization >= 1.0 + config.errorRate) {
       dropParticle(ep, targetNodeId, particle)
-      recordBreakerResult(ep.id, true, config, now)
+      recordBreakerResultLocal(ep.id, true, config, now)
       return
     }
   }
@@ -1368,23 +1233,21 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       && !['k8sCluster', 'ecsCluster', 'dockerCompose'].includes(targetNodeType)
       && targetNodeType !== 'lambda') {
     const outEdges = _edgePaths.filter(e => _edgesData.find(d => d.id === e.id)?.source === targetNodeId)
-    if (outEdges.length > 0 && outEdges.every(e => _circuitBreakers.get(e.id)?.state === 'open')) {
-      recordBreakerResult(ep.id, true, config, now)
+    if (outEdges.length > 0 && outEdges.every(e => getBreaker(e.id)?.state === 'open')) {
+      recordBreakerResultLocal(ep.id, true, config, now)
       dropParticle(ep, targetNodeId, particle)
       return
     }
   }
 
-  recordBreakerResult(ep.id, false, config, now)
+  recordBreakerResultLocal(ep.id, false, config, now)
   trackRequest(targetNodeId, targetNodeType, config)
 
   // Release source thread after target finishes processing and response transits back.
   // This is what causes thread-pool exhaustion: a slow target holds threads at the source
   // until the response arrives, not until the request is sent.
   if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
-    setTimeout(() => {
-      _activeWorkers.set(sourceNodeId, Math.max(0, (_activeWorkers.get(sourceNodeId) ?? 1) - 1))
-    }, (sampledLatency + ep.geoLatencyMs) / _speed)
+    scheduleWorkerRelease(sourceNodeId, sampledLatency + ep.geoLatencyMs, _speed)
   }
 
   // Load balancer / API gateway: round-robin or least-connections routing
@@ -1401,7 +1264,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       // never silently blackholes traffic when there is no healthy option.
       const availableEdges = outEdges.filter(e => {
         const tgtId = _edgesData.find(d => d.id === e.id)?.target
-        return _circuitBreakers.get(e.id)?.state !== 'open'
+        return getBreaker(e.id)?.state !== 'open'
           && (tgtId === undefined || _nodeHealthStates.get(tgtId) !== 'down')
       })
       const routingEdges = availableEdges.length > 0 ? availableEdges : outEdges
@@ -1742,8 +1605,8 @@ function updateAllNodeMetrics(now: number, delta: number) {
           const label = (node.data as NodeData).label ?? nodeId
           _onEvent('autoscale_scaledin', nodeId, `${label} scaled in → ${newCap} RPS`, 'info')
         }
-        if (config.selfHealing && _chaosFailures.has(nodeId)) {
-          const expiry = _chaosFailures.get(nodeId)?.expiry ?? 0
+        if (config.selfHealing && getChaosFailures().has(nodeId)) {
+          const expiry = getChaosFailures().get(nodeId)?.expiry ?? 0
           if (now > expiry) {
             const restarts = _restartCounts.get(nodeId) ?? 0
             const cooldown = _restartCooldown.get(nodeId) ?? 0
@@ -1801,7 +1664,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
       }
     }
 
-    if (_chaosFailures.has(nodeId)) utilization = 1
+    if (getChaosFailures().has(nodeId)) utilization = 1
 
     // Downstream stall: when this node's requests to a downstream node are being dropped,
     // threads pile up waiting for responses → effective utilization rises upstream
@@ -1828,7 +1691,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
     // Circuit state: worst state across all inbound edges (open > half-open > closed)
     const inboundEdgeStates = _edgesData
       .filter(e => e.target === nodeId)
-      .map(e => _circuitBreakers.get(e.id)?.state ?? 'closed')
+      .map(e => getBreaker(e.id)?.state ?? 'closed')
     const circuitState: CircuitState = inboundEdgeStates.includes('open')
       ? 'open'
       : inboundEdgeStates.includes('half-open')
@@ -1931,19 +1794,14 @@ function updateAllNodeMetrics(now: number, delta: number) {
     // Event/stream edges are async and fire-and-forget — the sender has no feedback loop
     // telling it the target is unreachable, so those edges stay visually active and
     // particles are dropped on arrival instead of being suppressed at the source.
+    // Delegates to circuitBreakers.ts (moved there in Task 0 — pure code motion).
     if (healthState === 'down') {
-      const label = (node.data as NodeData).label ?? nodeId
-      for (const e of _edgesData.filter(ed => ed.target === nodeId)) {
-        const edgePath = _edgePaths.find(ep => ep.id === e.id)
-        if (edgePath?.edgeType === 'event' || edgePath?.edgeType === 'stream') continue
-        const breaker = getBreaker(e.id)
-        if (breaker.state !== 'open') {
-          breaker.state    = 'open'
-          breaker.openedAt = now
-          const srcLabel = (_nodesMap.get(e.source)?.data as NodeData)?.label ?? e.source
-          _onEvent('circuit_open', nodeId, `Circuit open: ${srcLabel} → ${label} (health: down)`, 'critical')
-        }
-      }
+      const inboundRequestEdges = _edgesData.filter(ed => {
+        if (ed.target !== nodeId) return false
+        const edgePath = _edgePaths.find(ep => ep.id === ed.id)
+        return edgePath?.edgeType !== 'event' && edgePath?.edgeType !== 'stream'
+      })
+      forceOpenBreakersForNode(nodeId, inboundRequestEdges, now, _nodesMap, _onEvent)
     }
 
     // Emit health state transition events (distinct from saturation events)
@@ -2060,21 +1918,8 @@ function updateAllNodeMetrics(now: number, delta: number) {
   // checkBreakerTransition only fires on particle arrival, but spawnParticles emits 0 particles
   // on open circuits — creating a deadlock where the circuit can never self-recover.
   // This periodic scan breaks that deadlock without relying on incoming traffic.
-  for (const [edgeId, breaker] of _circuitBreakers) {
-    if (breaker.state !== 'open') continue
-    const edgeData    = _edgesData.find(e => e.id === edgeId)
-    if (!edgeData) continue
-    const targetId    = edgeData.target
-    if (_nodeHealthStates.get(targetId) === 'down') continue
-    const tgtType     = _nodesMap.get(targetId)?.type as NodeType | undefined
-    if (!tgtType) continue
-    const cb          = effectiveConfig(targetId, tgtType).circuitBreaker
-    if (!cb || now - breaker.openedAt <= cb.resetMs) continue
-    breaker.state     = 'half-open'
-    const srcLabel    = (_nodesMap.get(edgeData.source)?.data as NodeData)?.label ?? edgeData.source
-    const tgtLabel    = (_nodesMap.get(targetId)?.data    as NodeData)?.label ?? targetId
-    _onEvent('circuit_half_open', targetId, `Circuit half-open: ${srcLabel} → ${tgtLabel} (testing)`, 'warn')
-  }
+  // Delegates to circuitBreakers.ts (moved there in Task 0 — pure code motion).
+  resetBreakersIfRecovered(now, _edgesData, _nodesMap, _nodeHealthStates, effectiveConfig, _onEvent)
 }
 
 // ─── Retry queue processing ───────────────────────────────────────────────────
@@ -2159,7 +2004,7 @@ function advanceAndDraw(canvas: HTMLCanvasElement, now: number, delta: number) {
   }
 
   // Draw circuit-open overlay (amber ⊘)
-  for (const [nodeId, breaker] of _circuitBreakers) {
+  for (const [nodeId, breaker] of getAllBreakers()) {
     if (breaker.state === 'closed') continue
     const rect = getNodeCanvasRect(nodeId)
     if (!rect) continue
@@ -2485,10 +2330,7 @@ export function startSimulation(
   if (state.rafId !== null) cancelAnimationFrame(state.rafId)
 
   _simStartTime    = performance.now()
-  _spikeNextAt     = 0
-  _spikeEndAt      = 0
-  _chaosNextFailAt = 0
-  _chaosFailures.clear()
+  clearChaosState()
   _simulatedTimeMs = 0
   _egressBytesAccum.clear()
   _lastEgressFlushAt = 0
@@ -2498,18 +2340,15 @@ export function startSimulation(
   _downstreamStallPressure.clear()
   _saturatedNodes.clear()
   _streamBackpressureEdges.clear()
-  _circuitBreakers.clear()
+  clearBreakers()
   _smoothedMetrics.clear()
-  _activeConnections.clear()
+  clearBackpressureState()
   _lbActiveRequests.clear()
-  _activeWorkers.clear()
   _nodeHealthStates.clear()
   _recoveryUntil.clear()
   _stallSources.clear()
   _particleById.clear()
   _particleIdCounter = 0
-  _warmInstances.clear()
-  _warmLastActivity.clear()
   _currentCapacity.clear()
   _scaleOutPending.clear()
   _scaleInCooldown.clear()
@@ -2523,6 +2362,7 @@ export function startSimulation(
 
 export function stopSimulation() {
   if (state.rafId !== null) { cancelAnimationFrame(state.rafId); state.rafId = null }
+  clearChaosState()
   state.particles.clear()
   state.nodeGlows.clear()
   state.roundRobinIndex.clear()
@@ -2533,16 +2373,14 @@ export function stopSimulation() {
   _upstreamPressure.clear()
   _downstreamStallPressure.clear()
   _streamBackpressureEdges.clear()
-  _circuitBreakers.clear()
-  _activeConnections.clear()
+  clearBreakers()
+  clearBackpressureState()
   _lbActiveRequests.clear()
   _nodeHealthStates.clear()
   _recoveryUntil.clear()
   _stallSources.clear()
   _particleById.clear()
   _particleIdCounter = 0
-  _warmInstances.clear()
-  _warmLastActivity.clear()
   _currentCapacity.clear()
   _scaleOutPending.clear()
   _scaleInCooldown.clear()
@@ -2554,7 +2392,6 @@ export function stopSimulation() {
   _simulatedTimeMs = 0
   _egressBytesAccum.clear()
   _lastEgressFlushAt = 0
-  _activeWorkers.clear()
   _smoothedMetrics.clear()
   _particleFrames.length = 0
   _edgeIndexMap.clear()
@@ -2583,8 +2420,7 @@ export function getSimulatedElapsedS(): number {
 
 export function updateTrafficMode(mode: TrafficMode) {
   _trafficMode = mode
-  _spikeNextAt = 0; _spikeEndAt = 0
-  _chaosFailures.clear(); _chaosNextFailAt = 0
+  clearChaosState()
 }
 
 export function updateGlobalMultiplier(mult: number) {

@@ -37,14 +37,17 @@ The particle physics loop and everything that reads its output.
 
 | File | Role |
 |---|---|
-| `src/app/canvas/simulation/particleEngine.ts` (**2,617 lines**) | rAF particle loop — circuit breakers, retries, queueing, chaos mode |
+| `src/app/canvas/simulation/particleEngine.ts` (**~2,450 lines**) | rAF loop, `spawnParticles`, `handleParticleArrival`, `updateAllNodeMetrics` orchestration, `buildSnapshot` — imports the three sub-modules below rather than owning their state directly |
+| `src/app/canvas/simulation/particleEngine/circuitBreakers.ts` (169 lines) | `CircuitBreakerEntry`, `getBreaker`/`getAllBreakers`, `recordBreakerResult`, `checkBreakerTransition`, `forceOpenBreakersForNode`, `resetBreakersIfRecovered`, `clearBreakers` |
+| `src/app/canvas/simulation/particleEngine/backpressure.ts` (96 lines) | `_activeWorkers`/`_activeConnections`/lambda warm-instance maps, `acquireWorkers`/`releaseWorkerNow`/`scheduleWorkerRelease`, `acquireConnection`/`scheduleConnectionRelease`, `clearBackpressureState` |
+| `src/app/canvas/simulation/particleEngine/chaos.ts` (114 lines) | `effectiveMultiplier`, spike/chaos state (`ChaosEntry`, `getChaosFailures`), `clearChaosState` |
 | `src/app/canvas/simulation/SimulationOverlay.tsx` | Canvas overlay, batches engine output up to `simulation.store` |
 | `src/app/canvas/simulation/useDisplayMetrics.ts` | Live-vs-replay metric resolution hook |
 | `src/app/canvas/simulation/PlaybackScrubber.tsx`, `RequestInspector.tsx` | Replay UI, single-particle inspector |
 | `src/app/store/simulation.store.ts` (257 lines) | `NodeMetrics`, events, SLO status, inspected request |
 | `src/app/store/replay.store.ts`, `metricsHistory.store.ts` | 300-frame health snapshot ring buffer, per-node timeseries |
 
-**Blast radius — this is the highest-conflict area in the repo.** `particleEngine.ts` is 2.6k lines in one file with no internal module split (circuit breakers, thread/queue backpressure, chaos anomalies, token buckets all live in the same file per the ideas in `SRE_Critique.txt`). Anyone touching simulation realism ends up in this same file. **Recommendation:** if more than one person is actively extending simulation behavior, split `particleEngine.ts` internally along the lines already implied by its own state maps — e.g. `particleEngine/circuitBreakers.ts`, `particleEngine/backpressure.ts`, `particleEngine/chaos.ts`, `particleEngine/tokenBuckets.ts` — each exporting pure functions the main rAF loop calls, rather than one shared file. `useDisplayMetrics` has 7 callers (`BaseNode.tsx`, `PropertiesPanel.tsx`, `SimConfigPanel.tsx`) — safe to extend (new fields), risky to change its signature.
+**Blast radius — still the highest-conflict area in the repo, now split into four files.** `particleEngine.ts` was 2,617 lines in one file with no internal module split; it has since been split (pure code motion, no behavior change) along the lines its own state maps already implied: `particleEngine/circuitBreakers.ts`, `particleEngine/backpressure.ts`, and `particleEngine/chaos.ts` each export pure(r) functions that the main rAF loop in `particleEngine.ts` calls, passing in the node/edge snapshots and callbacks those functions need rather than the sub-modules importing engine-internal state directly. (`tokenBuckets.ts` was considered but not created — no current logic owns token-bucket state yet; add it only when a fix actually needs it.) The four files are still a fan-in of one (only `particleEngine.ts` imports from the three sub-modules; nothing outside the `particleEngine/` directory imports them directly yet), so this split reduces *internal* merge conflict between concurrent changes to breaker/backpressure/chaos logic, not the file's external blast radius. `useDisplayMetrics` has 7 callers (`BaseNode.tsx`, `PropertiesPanel.tsx`, `SimConfigPanel.tsx`) — safe to extend (new fields), risky to change its signature.
 
 ### C. Structural linter
 Self-contained, already well-factored for parallel work.
@@ -121,7 +124,7 @@ in-flight changes.
 
 If splitting a sprint's work across people to avoid stepping on each other:
 
-1. **Simulation realism** (per `SRE_Critique.txt`'s blueprints — circuit breakers on edges, thread-pool exhaustion, token-bucket gateways, chaos gray-failures) → §1B, and should be the *first* candidate for splitting `particleEngine.ts` into sub-modules before more than one person works there concurrently.
+1. **Simulation realism** (per `SRE_Critique.txt`'s blueprints — circuit breakers on edges, thread-pool exhaustion, token-bucket gateways, chaos gray-failures) → §1B. `particleEngine.ts` has been split into `particleEngine/circuitBreakers.ts`, `particleEngine/backpressure.ts`, and `particleEngine/chaos.ts`, so separate fixes to breaker/backpressure/chaos logic can now land in disjoint files instead of one shared 2.6k-line file.
 2. **Lint rules** → §1C, already safe for concurrent work, no changes needed.
 3. **Packet editor bug fixes** → §1E, isolated to `PacketEditor.tsx` + the packet slice of `canvas.store.ts`.
 4. **Cost/pricing model work** → §1D, isolated unless changing `costModel.ts` function signatures.
