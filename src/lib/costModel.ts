@@ -8,7 +8,7 @@
 // its own behavior, so nothing is multiplied globally.
 
 import type { Node } from '@xyflow/react'
-import type { NodeData } from './nodeConfig'
+import { NODE_CONFIG, type NodeData, type NodeCategory, type NodeType } from './nodeConfig'
 import type { NodeMetrics } from '../app/store/simulation.store'
 import {
   getServiceSpec,
@@ -147,6 +147,34 @@ export function computeCost(
     totalMonthlyUsd,
     perNode,
   }
+}
+
+export interface CategoryCostBreakdown {
+  category: NodeCategory
+  monthlyUsd: number
+  share: number // 0..1 of totalMonthlyUsd
+}
+
+// Group an existing CostSummary's perNode breakdown by NODE_CONFIG category (compute/network/
+// storage/messaging/caching/orchestration). Pure aggregation over already-computed numbers —
+// does not touch the pricing math in computeCost()/nodeCost() above. `nodes` is only needed to
+// resolve each perNode entry's category (NodeCostBreakdown doesn't carry node type).
+export function computeCostByCategory(
+  summary: CostSummary,
+  nodes: Node<NodeData>[],
+): CategoryCostBreakdown[] {
+  const nodeTypeById = new Map(nodes.map(n => [n.id, n.type]))
+  const totals = new Map<NodeCategory, number>()
+  for (const n of summary.perNode) {
+    const type = nodeTypeById.get(n.nodeId)
+    const category = type ? NODE_CONFIG[type as NodeType]?.category : undefined
+    if (!category) continue
+    totals.set(category, (totals.get(category) ?? 0) + n.monthlyUsd)
+  }
+  const total = summary.totalMonthlyUsd
+  return [...totals.entries()]
+    .map(([category, monthlyUsd]) => ({ category, monthlyUsd, share: total > 0 ? monthlyUsd / total : 0 }))
+    .sort((a, b) => b.monthlyUsd - a.monthlyUsd)
 }
 
 // Compact currency formatter for UI ($0.00, $12.3k, etc.).
