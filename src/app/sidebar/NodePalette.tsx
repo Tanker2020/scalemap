@@ -47,6 +47,11 @@ export function NodePalette() {
               const config = NODE_CONFIG[nodeType]
               const colors = CATEGORY_COLORS[config.category]
               const accentColor = themeMode === 'light' ? colors.foreground.light : colors.accent
+              // Same fix as BaseNode.tsx: CATEGORY_COLORS.bg/.border are dark-only, and repeated
+              // down a dense sidebar list the raw dark chip reads as "still dark mode" in light
+              // mode. Soft-tint the chip from the (already theme-swapped) accent color instead.
+              const chipBg     = themeMode === 'light' ? `color-mix(in srgb, ${accentColor} 12%, var(--color-node-base))` : colors.bg
+              const chipBorder = themeMode === 'light' ? `color-mix(in srgb, ${accentColor} 35%, transparent)` : colors.border
               const Icon = config.icon
               return (
                 <div
@@ -58,7 +63,7 @@ export function NodePalette() {
                 >
                   <div
                     className={styles.itemIcon}
-                    style={{ background: colors.bg, border: `1px solid ${colors.border}`, color: accentColor }}
+                    style={{ background: chipBg, border: `1px solid ${chipBorder}`, color: accentColor }}
                   >
                     <Icon size={12} strokeWidth={1.5} />
                   </div>

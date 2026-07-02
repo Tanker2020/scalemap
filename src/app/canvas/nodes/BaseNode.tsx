@@ -25,6 +25,11 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
   const Icon = config.icon
   const themeMode = useUiStore(s => s.themeMode)
   const accentColor = themeMode === 'light' ? colors.foreground.light : colors.accent
+  // CATEGORY_COLORS.bg/.border have no light-mode variant (dark navy/teal/etc squares) — fine as
+  // a single icon chip on a canvas, but reads as "still dark mode" when the raw dark value is
+  // used verbatim in light mode. Blend a soft tint of the (already-swapped) accent color instead.
+  const iconChipBg     = themeMode === 'light' ? `color-mix(in srgb, ${accentColor} 12%, var(--color-node-base))` : colors.bg
+  const iconChipBorder = themeMode === 'light' ? `color-mix(in srgb, ${accentColor} 35%, transparent)` : colors.border
 
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(nodeData.label)
@@ -108,8 +113,8 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
       style={{
         '--accent': accentColor,
         '--node-accent': accentColor,
-        '--node-bg': colors.bg,
-        '--node-border': colors.border,
+        '--node-bg': iconChipBg,
+        '--node-border': iconChipBorder,
         ...(saturationBorderColor && {
           '--saturation-border': saturationBorderColor,
         }),
