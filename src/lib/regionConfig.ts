@@ -51,6 +51,20 @@ export function interRegionLatencyMs(fromId: string, toId: string): number {
   return ZONE_LATENCY_MS[from.zone][to.zone]
 }
 
+// ±10% of base latency, small relative to processing-latency variance
+const GEO_JITTER_FRACTION = 0.1
+
+// Jittered wrapper around interRegionLatencyMs for simulation use — interRegionLatencyMs
+// itself stays pure/deterministic for callers relying on stable cost/region-metadata display.
+// Optionally coupling jitter magnitude to link-congestion state (e.g. O1's edge-partition
+// primitive) is a plausible follow-up; not implemented here.
+export function sampleInterRegionLatencyMs(fromId: string, toId: string): number {
+  const base = interRegionLatencyMs(fromId, toId)
+  if (base === 0) return 0 // same-region: no jitter on a floor of zero
+  const jitter = base * GEO_JITTER_FRACTION * (Math.random() * 2 - 1)
+  return Math.max(0, base + jitter)
+}
+
 export const REGIONS_BY_ZONE = {
   AMER: WORLD_REGIONS.filter(r => r.zone === 'AMER'),
   EMEA: WORLD_REGIONS.filter(r => r.zone === 'EMEA'),
