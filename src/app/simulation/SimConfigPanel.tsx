@@ -63,7 +63,7 @@ function NumericStepper({
 // ─── Util mini-bar ────────────────────────────────────────────────────────────
 
 function UtilBar({ value }: { value: number }) {
-  const color = value >= 0.8 ? '#EF4444' : value >= 0.5 ? '#F59E0B' : '#22C55E'
+  const color = value >= 0.8 ? 'var(--color-danger)' : value >= 0.5 ? 'var(--color-warning)' : 'var(--color-success)'
   return (
     <div className={styles.utilBar}>
       <div className={styles.utilFill} style={{ width: `${Math.min(1, value) * 100}%`, background: color }} />
@@ -152,7 +152,7 @@ function EventDetailOverlay({
           </div>
           <div className={styles.detailOverlayRow}>
             <span className={styles.detailOverlayRowLabel}>Detail</span>
-            <span className={styles.detailOverlayRowVal} style={{ color: '#CBD5E1' }}>{ev.message}</span>
+            <span className={styles.detailOverlayRowVal} style={{ color: 'var(--color-text-secondary)' }}>{ev.message}</span>
           </div>
           {snap && (snap.p90LatencyMs !== undefined || snap.utilization !== undefined || snap.errorRate !== undefined) && (
             <div className={styles.detailOverlayMetrics}>
@@ -165,7 +165,7 @@ function EventDetailOverlay({
               {snap.utilization !== undefined && (
                 <div className={styles.detailOverlayMetric}>
                   <span className={styles.detailOverlayMetricLabel}>Utilization</span>
-                  <span className={styles.detailOverlayMetricVal} style={{ color: snap.utilization >= 1 ? '#EF4444' : snap.utilization >= 0.8 ? '#F59E0B' : '#22C55E' }}>
+                  <span className={styles.detailOverlayMetricVal} style={{ color: snap.utilization >= 1 ? 'var(--color-danger)' : snap.utilization >= 0.8 ? 'var(--color-warning)' : 'var(--color-success-text)' }}>
                     {Math.round(snap.utilization * 100)}%
                   </span>
                 </div>
@@ -173,7 +173,7 @@ function EventDetailOverlay({
               {snap.errorRate !== undefined && (
                 <div className={styles.detailOverlayMetric}>
                   <span className={styles.detailOverlayMetricLabel}>Error Rate</span>
-                  <span className={styles.detailOverlayMetricVal} style={{ color: snap.errorRate > 0.01 ? '#EF4444' : '#22C55E' }}>
+                  <span className={styles.detailOverlayMetricVal} style={{ color: snap.errorRate > 0.01 ? 'var(--color-danger)' : 'var(--color-success-text)' }}>
                     {(snap.errorRate * 100).toFixed(2)}%
                   </span>
                 </div>
@@ -190,11 +190,11 @@ export function EventCard({ ev }: { ev: SimEvent }) {
   const [detailOpen, setDetailOpen] = useState(false)
   const meta = EVENT_META[ev.type] ?? { label: ev.type, icon: '●' }
   const severityColor =
-    ev.severity === 'critical' ? '#EF4444' :
-    ev.severity === 'warn'     ? '#F59E0B' : '#4A9EFF'
+    ev.severity === 'critical' ? 'var(--color-danger)' :
+    ev.severity === 'warn'     ? 'var(--color-warning)' : 'var(--color-accent)'
   const severityBg =
-    ev.severity === 'critical' ? '#EF444408' :
-    ev.severity === 'warn'     ? '#F59E0B08' : '#4A9EFF06'
+    ev.severity === 'critical' ? 'color-mix(in srgb, var(--color-danger) 3%, transparent)' :
+    ev.severity === 'warn'     ? 'color-mix(in srgb, var(--color-warning) 3%, transparent)' : 'color-mix(in srgb, var(--color-accent) 2%, transparent)'
 
   const { nodes } = useCanvasStore()
   const node        = ev.nodeId ? nodes.find(n => n.id === ev.nodeId) : undefined
@@ -254,6 +254,7 @@ function NodeRow({
   const metrics     = dm ? { utilization: dm.utilization } : null
   const bottlenecks = useSimulationStore(s => s.bottlenecks)
   const sloStatus   = useSimulationStore(s => s.sloStatus.get(nodeId))
+  const themeMode   = useUiStore(s => s.themeMode)
 
   const node = nodes.find(n => n.id === nodeId)
   if (!node) return null
@@ -262,14 +263,15 @@ function NodeRow({
   const config = NODE_CONFIG[nodeType]
   const data = node.data as NodeData
   const colors = config ? CATEGORY_COLORS[config.category] : CATEGORY_COLORS.compute
+  const accentColor = themeMode === 'light' ? colors.foreground.light : colors.accent
 
   const util = metrics?.utilization ?? 0
   const isSaturated = bottlenecks.has(nodeId)
   const sloFailed = sloStatus?.passing === false
 
-  let healthColor = '#2A2E38'
+  let healthColor = 'var(--color-node-border)'
   if (running && metrics) {
-    healthColor = isSaturated ? '#EF4444' : util >= 0.5 ? '#F59E0B' : '#22C55E'
+    healthColor = isSaturated ? 'var(--color-danger)' : util >= 0.5 ? 'var(--color-warning)' : 'var(--color-success)'
   }
 
   return (
@@ -278,7 +280,7 @@ function NodeRow({
       onClick={onClick}
     >
       <span className={styles.healthDot} style={{ background: healthColor }} />
-      <span className={styles.nodeIcon} style={{ color: colors.accent }}>
+      <span className={styles.nodeIcon} style={{ color: accentColor }}>
         {config?.icon && <config.icon size={11} />}
       </span>
       <span className={styles.nodeLabel}>{data.label || nodeType}</span>
@@ -288,7 +290,7 @@ function NodeRow({
           {sloFailed && <span className={styles.sloFail}>SLO</span>}
         </div>
       ) : (
-        <span className={styles.nodeTypeBadge} style={{ color: colors.accent }}>{nodeType}</span>
+        <span className={styles.nodeTypeBadge} style={{ color: accentColor }}>{nodeType}</span>
       )}
     </button>
   )
@@ -368,7 +370,7 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
                 value={eff.forcedHealthState ?? 'auto'}
                 onChange={e => setNodeConfig(nodeId, { forcedHealthState: e.target.value as 'auto' | 'healthy' | 'degraded' | 'down' })}
                 style={{
-                  background: '#0D0F12', color: '#F1F5F9', border: '1px solid #2A2E38',
+                  background: 'var(--color-canvas)', color: 'var(--color-text-primary)', border: '1px solid var(--color-node-border)',
                   borderRadius: 4, padding: '2px 6px', fontSize: 11, fontFamily: 'inherit',
                   cursor: 'pointer', width: '100%',
                 }}
@@ -387,7 +389,7 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
                 value={eff.lbRouting ?? 'round-robin'}
                 onChange={e => setNodeConfig(nodeId, { lbRouting: e.target.value as 'round-robin' | 'least-connections' })}
                 style={{
-                  background: '#0D0F12', color: '#F1F5F9', border: '1px solid #2A2E38',
+                  background: 'var(--color-canvas)', color: 'var(--color-text-primary)', border: '1px solid var(--color-node-border)',
                   borderRadius: 4, padding: '2px 6px', fontSize: 11, fontFamily: 'inherit',
                   cursor: 'pointer', width: '100%',
                 }}
@@ -559,7 +561,7 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
             </div>
           </div>
           {nodeType === 'dbSql' && (
-            <div style={{ fontSize: 10, color: '#475569', marginTop: 4, paddingLeft: 2 }}>
+            <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 4, paddingLeft: 2 }}>
               SQL locking: high write utilization adds up to +50ms to read latency
             </div>
           )}
@@ -605,7 +607,7 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
                 value={eff.retryConfig.jitter}
                 onChange={e => setNodeConfig(nodeId, { retryConfig: { ...eff.retryConfig!, jitter: e.target.value as 'full' | 'equal' } })}
                 style={{
-                  background: '#0D0F12', color: '#F1F5F9', border: '1px solid #2A2E38',
+                  background: 'var(--color-canvas)', color: 'var(--color-text-primary)', border: '1px solid var(--color-node-border)',
                   borderRadius: 4, padding: '2px 6px', fontSize: 11, fontFamily: 'inherit',
                   cursor: 'pointer', width: '100%',
                 }}
@@ -616,7 +618,7 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
             </div>
           </div>
           {eff.retryConfig.maxRetries === 0 && (
-            <div style={{ fontSize: 10, color: '#475569', marginTop: 4, paddingLeft: 2 }}>
+            <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 4, paddingLeft: 2 }}>
               Retries disabled — dropped requests are permanently lost
             </div>
           )}
@@ -690,7 +692,7 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
         const origins: TrafficOrigin[] = eff.trafficOrigins ?? []
         const totalWeight = Math.round(origins.reduce((s, o) => s + o.weight, 0) * 100)
         const selectStyle: React.CSSProperties = {
-          background: '#0D0F12', color: '#F1F5F9', border: '1px solid #2A2E38',
+          background: 'var(--color-canvas)', color: 'var(--color-text-primary)', border: '1px solid var(--color-node-border)',
           borderRadius: 4, padding: '2px 4px', fontSize: 10, fontFamily: 'inherit',
           cursor: 'pointer', flex: 1, minWidth: 0,
         }
@@ -726,27 +728,27 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
                   onChange={v => updateOrigins(origins.map((o, j) => j === i ? { ...o, weight: v / 100 } : o))}
                   min={1} max={100} step={5}
                 />
-                <span style={{ fontSize: 10, color: '#94A3B8' }}>%</span>
+                <span style={{ fontSize: 10, color: 'var(--color-text-secondary)' }}>%</span>
                 <NumericStepper
                   value={origin.baseLatencyMs}
                   onChange={v => updateOrigins(origins.map((o, j) => j === i ? { ...o, baseLatencyMs: v } : o))}
                   min={0} step={5}
                 />
-                <span style={{ fontSize: 10, color: '#94A3B8' }}>ms</span>
+                <span style={{ fontSize: 10, color: 'var(--color-text-secondary)' }}>ms</span>
                 <button
                   onClick={() => updateOrigins(origins.filter((_, j) => j !== i))}
-                  style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', padding: '0 2px', fontSize: 13, lineHeight: 1 }}
+                  style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', padding: '0 2px', fontSize: 13, lineHeight: 1 }}
                 >×</button>
               </div>
             ))}
             {totalWeight !== 100 && origins.length > 0 && (
-              <div style={{ fontSize: 10, color: '#F59E0B', marginBottom: 4 }}>
+              <div style={{ fontSize: 10, color: 'var(--color-warning)', marginBottom: 4 }}>
                 Weights sum to {totalWeight}% — should be 100%
               </div>
             )}
             <button
               onClick={() => updateOrigins([...origins, { regionId: 'us-east-1', weight: 0.5, baseLatencyMs: 15 }])}
-              style={{ fontSize: 10, color: '#4A9EFF', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0' }}
+              style={{ fontSize: 10, color: 'var(--color-accent)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0' }}
             >
               + Add origin
             </button>
@@ -768,6 +770,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
   const sloStatus  = useSimulationStore(s => s.sloStatus.get(nodeId))
   const historyMap = useMetricsHistoryStore(s => s.history)
   const { nodes }  = useCanvasStore()
+  const themeMode  = useUiStore(s => s.themeMode)
   const [graphOverlay, setGraphOverlay] = useState<{ metric: GraphMetric } | null>(null)
   const openGraph = useCallback((metric: GraphMetric) => setGraphOverlay({ metric }), [])
 
@@ -775,6 +778,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
   const nodeType = node?.type as NodeType | undefined
   const config   = nodeType ? NODE_CONFIG[nodeType] : undefined
   const colors   = config ? CATEGORY_COLORS[config.category] : CATEGORY_COLORS.compute
+  const accentColor = themeMode === 'light' ? colors.foreground.light : colors.accent
   const data     = node?.data as NodeData | undefined
 
   const nodeHistory = historyMap.get(nodeId) ?? []
@@ -801,7 +805,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
   }
 
   const util = metrics.utilization
-  const utilColor = util >= 0.8 ? '#EF4444' : util >= 0.5 ? '#F59E0B' : colors.accent
+  const utilColor = util >= 0.8 ? 'var(--color-danger)' : util >= 0.5 ? 'var(--color-warning)' : accentColor
   const isBottleneck = bottlenecks.has(nodeId)
   const isQueue  = nodeType && ['queue', 'pubsub', 'stream', 'eventBus'].includes(nodeType)
   const isLambda = nodeType === 'lambda'
@@ -810,19 +814,19 @@ function LiveSection({ nodeId }: { nodeId: string }) {
     <div className={styles.liveContent}>
       {isBottleneck && (
         <div className={styles.liveAlert} style={{
-          borderColor: util >= 1 ? '#EF444466' : '#F59E0B66',
-          color: util >= 1 ? '#FCA5A5' : '#FCD34D',
+          borderColor: util >= 1 ? 'color-mix(in srgb, var(--color-danger) 40%, transparent)' : 'color-mix(in srgb, var(--color-warning) 40%, transparent)',
+          color: util >= 1 ? 'var(--color-danger)' : 'var(--color-warning)',
         }}>
           {util >= 1 ? '● Saturated — dropping requests' : '▲ High utilization'}
         </div>
       )}
       {metrics.circuitState === 'open' && (
-        <div className={styles.liveAlert} style={{ borderColor: '#F59E0B66', color: '#FCD34D' }}>
+        <div className={styles.liveAlert} style={{ borderColor: 'color-mix(in srgb, var(--color-warning) 40%, transparent)', color: 'var(--color-warning)' }}>
           ⊘ Circuit open — rejecting requests
         </div>
       )}
       {metrics.dbSaturation && (
-        <div className={styles.liveAlert} style={{ borderColor: '#EF444466', color: '#FCA5A5' }}>
+        <div className={styles.liveAlert} style={{ borderColor: 'color-mix(in srgb, var(--color-danger) 40%, transparent)', color: 'var(--color-danger)' }}>
           ● {metrics.dbSaturation === 'write' ? 'Write' : 'Read'} capacity exhausted
         </div>
       )}
@@ -846,7 +850,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
         {metrics.errorRate > 0 && (
           <button className={`${styles.liveStat} ${styles.liveStatClickable}`} onClick={() => openGraph('errorRate')} title="Click to view error rate history">
             <span className={styles.liveStatLabel}>Errors</span>
-            <span className={styles.liveStatVal} style={{ color: '#EF4444' }}>{(metrics.errorRate * 100).toFixed(1)}</span>
+            <span className={styles.liveStatVal} style={{ color: 'var(--color-danger)' }}>{(metrics.errorRate * 100).toFixed(1)}</span>
             <span className={styles.liveStatUnit}>%</span>
           </button>
         )}
@@ -874,7 +878,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
         {metrics.consumerLagMs !== undefined && (
           <div className={styles.liveStat} title="Time to drain the current backlog at the consumer's current rate">
             <span className={styles.liveStatLabel}>Lag</span>
-            <span className={styles.liveStatVal} style={{ color: metrics.consumerLagMs > 5000 ? '#EF4444' : metrics.consumerLagMs > 1000 ? '#F59E0B' : '#22C55E' }}>
+            <span className={styles.liveStatVal} style={{ color: metrics.consumerLagMs > 5000 ? 'var(--color-danger)' : metrics.consumerLagMs > 1000 ? 'var(--color-warning)' : 'var(--color-success-text)' }}>
               {metrics.consumerLagMs === Infinity ? '∞'
                 : metrics.consumerLagMs >= 60000 ? `${(metrics.consumerLagMs / 60000).toFixed(1)}m`
                 : metrics.consumerLagMs >= 1000  ? `${(metrics.consumerLagMs / 1000).toFixed(1)}s`
@@ -888,7 +892,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
         {(metrics.droppedRequests ?? 0) > 0 && (
           <div className={styles.liveStat}>
             <span className={styles.liveStatLabel}>Dropped</span>
-            <span className={styles.liveStatVal} style={{ color: '#EF4444' }}>
+            <span className={styles.liveStatVal} style={{ color: 'var(--color-danger)' }}>
               {metrics.droppedRequests! >= 1000
                 ? `${(metrics.droppedRequests! / 1000).toFixed(1)}k`
                 : metrics.droppedRequests}
@@ -914,7 +918,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
           </div>
           <div className={styles.latencyStat}>
             <span className={styles.liveStatLabel}>P99</span>
-            <span className={styles.latencyVal} style={{ color: '#F59E0B' }}>{Math.round(metrics.p99LatencyMs)}ms</span>
+            <span className={styles.latencyVal} style={{ color: 'var(--color-warning)' }}>{Math.round(metrics.p99LatencyMs)}ms</span>
           </div>
         </div>
       )}
@@ -929,7 +933,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
       {rpsHistory.length > 1 && (
         <button className={`${styles.sparkWrap} ${styles.sparkClickable}`} onClick={() => openGraph('inRps')} title="Click to expand traffic chart">
           <span className={styles.sparkLabel}>Traffic (60s) ↗</span>
-          <Sparkline data={rpsHistory} color="#22C55E" height={26} />
+          <Sparkline data={rpsHistory} color="var(--color-success)" height={26} />
         </button>
       )}
 
@@ -953,7 +957,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
             <div className={styles.sloRow}>
               <span className={styles.sloRowLabel}>P90 Latency</span>
               <span className={styles.sloTarget}>&lt; {nodeSlo.maxP90LatencyMs}ms</span>
-              <span style={{ color: metrics.p90LatencyMs > nodeSlo.maxP90LatencyMs ? '#EF4444' : '#22C55E' }}>
+              <span style={{ color: metrics.p90LatencyMs > nodeSlo.maxP90LatencyMs ? 'var(--color-danger)' : 'var(--color-success-text)' }}>
                 {metrics.p90LatencyMs > 0 ? `${Math.round(metrics.p90LatencyMs)}ms` : '—'}
               </span>
             </div>
@@ -962,7 +966,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
             <div className={styles.sloRow}>
               <span className={styles.sloRowLabel}>Error Rate</span>
               <span className={styles.sloTarget}>&lt; {(nodeSlo.maxErrorRate * 100).toFixed(1)}%</span>
-              <span style={{ color: metrics.errorRate > nodeSlo.maxErrorRate ? '#EF4444' : '#22C55E' }}>
+              <span style={{ color: metrics.errorRate > nodeSlo.maxErrorRate ? 'var(--color-danger)' : 'var(--color-success-text)' }}>
                 {(metrics.errorRate * 100).toFixed(1)}%
               </span>
             </div>
@@ -971,7 +975,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
             <div className={styles.sloRow}>
               <span className={styles.sloRowLabel}>Utilization</span>
               <span className={styles.sloTarget}>&lt; {Math.round(nodeSlo.maxUtilization * 100)}%</span>
-              <span style={{ color: util > nodeSlo.maxUtilization ? '#EF4444' : '#22C55E' }}>
+              <span style={{ color: util > nodeSlo.maxUtilization ? 'var(--color-danger)' : 'var(--color-success-text)' }}>
                 {Math.round(util * 100)}%
               </span>
             </div>
@@ -987,6 +991,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
 function DetailContent({ nodeId }: { nodeId: string }) {
   const { nodes } = useCanvasStore()
   const running   = useSimulationStore(s => s.running)
+  const themeMode = useUiStore(s => s.themeMode)
 
   const node = nodes.find(n => n.id === nodeId)
   if (!node) return null
@@ -995,17 +1000,18 @@ function DetailContent({ nodeId }: { nodeId: string }) {
   const config   = NODE_CONFIG[nodeType]
   const data     = node.data as NodeData
   const colors   = config ? CATEGORY_COLORS[config.category] : CATEGORY_COLORS.compute
+  const accentColor = themeMode === 'light' ? colors.foreground.light : colors.accent
 
   return (
     <div className={styles.detailInner}>
       {/* Node identity header */}
       <div className={styles.detailHead}>
-        <span className={styles.detailIcon} style={{ color: colors.accent }}>
+        <span className={styles.detailIcon} style={{ color: accentColor }}>
           {config?.icon && <config.icon size={14} />}
         </span>
         <div>
           <div className={styles.detailLabel}>{data.label || nodeType}</div>
-          <div className={styles.detailType} style={{ color: colors.accent }}>{nodeType}</div>
+          <div className={styles.detailType} style={{ color: accentColor }}>{nodeType}</div>
         </div>
       </div>
 

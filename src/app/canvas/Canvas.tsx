@@ -417,6 +417,7 @@ function CanvasInner() {
         nodesDraggable={!running}
         nodesConnectable={!running && isConnect}
         nodesFocusable={!running}
+        deleteKeyCode={running ? null : ['Backspace', 'Delete']}
         connectionRadius={80}
         elevateEdgesOnSelect
         proOptions={{ hideAttribution: true }}
