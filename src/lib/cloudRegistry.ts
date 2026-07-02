@@ -261,3 +261,39 @@ export function getServiceSpec(nodeType: string, provider: CloudProvider): Cloud
   if (provider === 'generic') return undefined
   return CLOUD_REGISTRY[nodeType]?.[provider]
 }
+
+// ─── Provider-aware label rewrite ───────────────────────────────────────────────
+// When a node's cloud provider changes, its on-canvas label should switch to that
+// provider's branded product name (CLOUD_REGISTRY[nodeType][provider].serviceName)
+// — e.g. loadBalancer + aws → "ALB / NLB". This must never clobber a label the user
+// typed themselves.
+//
+// Rule: rewrite `currentLabel` only if it exactly matches a label we ourselves would
+// have generated for this node type — either the generic NODE_CONFIG default label,
+// or the serviceName for ANY provider this node type maps to (covers switching
+// aws → gcp → azure, each hop still counts as "not yet customized"). The instant the
+// user types something else in the Identity/Label field, that string no longer
+// matches any known default, so subsequent provider switches leave it alone.
+//
+// Missing mappings (node type has no CLOUD_REGISTRY entry, or 'generic' selected)
+// fall back to the generic default label rather than leaving stale/undefined text.
+export function resolveProviderLabel(
+  nodeType: string,
+  provider: CloudProvider,
+  currentLabel: string,
+  genericLabel: string,
+): string {
+  const knownDefaults = new Set<string>([genericLabel])
+  const perProvider = CLOUD_REGISTRY[nodeType]
+  if (perProvider) {
+    for (const p of REAL_PROVIDERS) {
+      const svc = perProvider[p]?.serviceName
+      if (svc) knownDefaults.add(svc)
+    }
+  }
+  // User has customized the label — never touch it.
+  if (!knownDefaults.has(currentLabel)) return currentLabel
+
+  const spec = getServiceSpec(nodeType, provider)
+  return spec?.serviceName ?? genericLabel
+}
