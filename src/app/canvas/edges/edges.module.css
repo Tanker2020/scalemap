@@ -5,9 +5,9 @@
 }
 
 .edgeLabel {
-  font-family: var(--font);
+  font-family: var(--font-mono);
   font-size: 10px;
-  fill: #64748B;
+  fill: var(--color-text-muted);
 }
 
 @keyframes dashFlow {

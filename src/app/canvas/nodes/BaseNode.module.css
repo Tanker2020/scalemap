@@ -4,30 +4,44 @@
   gap: 9px;
   padding: 10px 12px;
   min-width: 148px;
-  background: var(--color-node-base);
-  border: 1px solid var(--color-node-border);
-  border-radius: 8px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--node-accent, var(--color-accent)) 8%, var(--color-node-base)), var(--color-node-base));
+  border: 1px solid color-mix(in srgb, var(--node-accent, var(--color-accent)) 35%, transparent);
+  border-radius: 12px;
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
   cursor: default;
   position: relative;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s, transform var(--motion-hover-ms, 175ms) ease, box-shadow var(--motion-hover-ms, 175ms) ease;
+}
+
+.node:hover {
+  transform: translateY(-1px);
+}
+
+/* Breathing glow — healthy/active nodes only, per the Restrained motion tier */
+.node[data-healthy='true'] {
+  animation: breathe var(--motion-breathe-ms, 3000ms) ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%, 100%   { box-shadow: 0 0 8px color-mix(in srgb, var(--node-accent, var(--color-accent)) 40%, transparent), 0 4px 18px rgba(0, 0, 0, 0.55); }
+  50%        { box-shadow: 0 0 16px color-mix(in srgb, var(--node-accent, var(--color-accent)) 70%, transparent), 0 4px 18px rgba(0, 0, 0, 0.55); }
 }
 
 .node.selected {
-  border-color: var(--accent, #4A9EFF);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #4A9EFF) 12%, transparent),
+  border-color: var(--accent, var(--color-accent));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, var(--color-accent)) 12%, transparent),
               0 4px 18px rgba(0, 0, 0, 0.55);
 }
 
 /* Saturation states — simulation overlay, does NOT change NodeData.status */
 .node.critical {
-  border-color: #F59E0B;
-  box-shadow: 0 0 0 1px #F59E0B33, 0 4px 18px rgba(0,0,0,0.55);
+  border-color: var(--color-warning);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-warning) 20%, transparent), 0 4px 18px rgba(0,0,0,0.55);
 }
 
 @keyframes saturatedPulse {
-  0%, 100% { border-color: #EF4444; box-shadow: 0 0 0 1px #EF444433, 0 4px 18px rgba(0,0,0,0.55); }
-  50%       { border-color: #F87171; box-shadow: 0 0 0 3px #EF444422, 0 0 14px #EF444444, 0 4px 18px rgba(0,0,0,0.55); }
+  0%, 100% { border-color: var(--color-danger); box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-danger) 20%, transparent), 0 4px 18px rgba(0,0,0,0.55); }
+  50%       { border-color: color-mix(in srgb, var(--color-danger) 70%, white); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-danger) 13%, transparent), 0 0 14px color-mix(in srgb, var(--color-danger) 27%, transparent), 0 4px 18px rgba(0,0,0,0.55); }
 }
 
 .node.saturated {
@@ -36,12 +50,12 @@
 
 @keyframes connectPulse {
   0%, 100% {
-    box-shadow: 0 0 0 0px #22C55E44, 0 4px 18px rgba(0,0,0,0.55);
-    border-color: #22C55E;
+    box-shadow: 0 0 0 0px color-mix(in srgb, var(--color-success) 27%, transparent), 0 4px 18px rgba(0,0,0,0.55);
+    border-color: var(--color-success);
   }
   50% {
-    box-shadow: 0 0 0 5px #22C55E18, 0 0 10px #22C55E33, 0 4px 18px rgba(0,0,0,0.55);
-    border-color: #4ADE80;
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-success) 9%, transparent), 0 0 10px color-mix(in srgb, var(--color-success) 20%, transparent), 0 4px 18px rgba(0,0,0,0.55);
+    border-color: color-mix(in srgb, var(--color-success) 70%, white);
   }
 }
 
@@ -53,8 +67,8 @@
 .handle {
   width: 10px;
   height: 10px;
-  background: var(--accent, #4A9EFF);
-  border: 2px solid #0D0F12;
+  background: var(--accent, var(--color-accent));
+  border: 2px solid var(--color-canvas);
   border-radius: 50%;
   opacity: 0;
   transition: transform 0.1s;
@@ -68,11 +82,16 @@
   border-radius: 6px;
   background: var(--node-bg, #0D1F35);
   border: 1px solid var(--node-border, #1A3A5C);
-  color: var(--accent, #4A9EFF);
+  color: var(--accent, var(--color-accent));
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+/* Category-color halo around the node's lucide icon glyph */
+.nodeIcon {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--node-accent, var(--color-accent)) 50%, transparent));
 }
 
 .body {
@@ -83,7 +102,7 @@
 .label {
   font-size: 12px;
   font-weight: 600;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -93,14 +112,14 @@
 .labelInput {
   font-size: 12px;
   font-weight: 600;
-  color: #E2E8F0;
+  color: var(--color-text-primary);
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--accent, #4A9EFF);
+  border-bottom: 1px solid var(--accent, var(--color-accent));
   width: 100%;
   padding: 0;
   outline: none;
-  font-family: var(--font);
+  font-family: var(--font-body);
 }
 
 .subtitle {
@@ -122,16 +141,16 @@
   line-height: 1;
   padding: 2px 4px;
   border-radius: 3px;
-  color: var(--prov-color, #94A3B8);
-  background: color-mix(in srgb, var(--prov-color, #94A3B8) 15%, transparent);
-  border: 1px solid color-mix(in srgb, var(--prov-color, #94A3B8) 50%, transparent);
+  color: var(--prov-color, var(--color-text-secondary));
+  background: color-mix(in srgb, var(--prov-color, var(--color-text-secondary)) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--prov-color, var(--color-text-secondary)) 50%, transparent);
 }
 
 /* Universal utilization bar — replaces the old messaging-only queueBar */
 .utilBar {
   margin-top: 5px;
   height: 3px;
-  background: #1A1D22;
+  background: var(--color-canvas-dots);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -152,7 +171,7 @@
 
 .droppedCount {
   font-size: 9px;
-  color: #EF444488;
+  color: color-mix(in srgb, var(--color-danger) 53%, transparent);
   margin-top: 3px;
   letter-spacing: 0.01em;
 }
@@ -176,9 +195,9 @@
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #F59E0B22;
-  border: 1px solid #F59E0B66;
-  color: #F59E0B;
+  background: color-mix(in srgb, var(--color-warning) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 40%, transparent);
+  color: var(--color-warning);
   font-size: 9px;
   font-weight: 700;
   display: flex;
@@ -196,9 +215,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in srgb, var(--lint-color, #F59E0B) 18%, transparent);
-  border: 1px solid color-mix(in srgb, var(--lint-color, #F59E0B) 55%, transparent);
-  color: var(--lint-color, #F59E0B);
+  background: color-mix(in srgb, var(--lint-color, var(--color-warning)) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lint-color, var(--color-warning)) 55%, transparent);
+  color: var(--lint-color, var(--color-warning));
   cursor: help;
 }
 
@@ -212,9 +231,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #EF444422;
-  border: 1px solid #EF444466;
-  color: #EF4444;
+  background: color-mix(in srgb, var(--color-danger) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 40%, transparent);
+  color: var(--color-danger);
   cursor: help;
 }
 
@@ -228,9 +247,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #F59E0B22;
-  border: 1px solid #F59E0B88;
-  color: #F59E0B;
+  background: color-mix(in srgb, var(--color-warning) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 53%, transparent);
+  color: var(--color-warning);
   cursor: help;
 }
 
@@ -243,16 +262,16 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #F59E0B11;
-  border: 1px dashed #F59E0B55;
-  color: #F59E0B88;
+  background: color-mix(in srgb, var(--color-warning) 7%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--color-warning) 33%, transparent);
+  color: color-mix(in srgb, var(--color-warning) 53%, transparent);
   cursor: help;
 }
 
 /* Circuit breaker node states */
 @keyframes circuitOpenPulse {
-  0%, 100% { border-color: #F59E0B; box-shadow: 0 0 0 1px #F59E0B33, 0 4px 18px rgba(0,0,0,0.55); }
-  50%       { border-color: #FCD34D; box-shadow: 0 0 0 3px #F59E0B22, 0 0 12px #F59E0B44, 0 4px 18px rgba(0,0,0,0.55); }
+  0%, 100% { border-color: var(--color-warning); box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-warning) 20%, transparent), 0 4px 18px rgba(0,0,0,0.55); }
+  50%       { border-color: color-mix(in srgb, var(--color-warning) 70%, white); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-warning) 13%, transparent), 0 0 12px color-mix(in srgb, var(--color-warning) 27%, transparent), 0 4px 18px rgba(0,0,0,0.55); }
 }
 
 .node.circuitOpen {
@@ -260,7 +279,7 @@
 }
 
 .node.circuitHalfOpen {
-  border-color: #F59E0B;
+  border-color: var(--color-warning);
   border-style: dashed;
-  box-shadow: 0 0 0 1px #F59E0B22, 0 4px 18px rgba(0,0,0,0.55);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-warning) 13%, transparent), 0 4px 18px rgba(0,0,0,0.55);
 }

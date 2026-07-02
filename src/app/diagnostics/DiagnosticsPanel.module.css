@@ -7,8 +7,8 @@
   z-index: 40;
   display: flex;
   flex-direction: column;
-  background: #0F1116;
-  border-left: 1px solid #2A2E38;
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-node-border);
   box-shadow: -8px 0 28px rgba(0, 0, 0, 0.5);
   font-family: var(--font, 'JetBrains Mono', monospace);
 }
@@ -18,7 +18,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 12px 14px;
-  border-bottom: 1px solid #2A2E38;
+  border-bottom: 1px solid var(--color-node-border);
 }
 
 .title {
@@ -27,15 +27,15 @@
   gap: 7px;
   font-size: 13px;
   font-weight: 600;
-  color: #F1F5F9;
+  color: var(--color-text-primary);
 }
 
 .count {
   font-size: 10px;
   font-weight: 700;
-  color: #F59E0B;
-  background: #2A1A00;
-  border: 1px solid #F59E0B66;
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 40%, transparent);
   border-radius: 9px;
   padding: 0 6px;
   line-height: 16px;
@@ -51,21 +51,21 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: 4px;
-  color: #64748B;
+  color: var(--color-text-muted);
   cursor: pointer;
   transition: background 0.1s, color 0.1s;
 }
 
 .closeBtn:hover {
-  background: #1A1D25;
-  color: #F1F5F9;
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
 }
 
 .filters {
   display: flex;
   gap: 6px;
   padding: 10px 14px;
-  border-bottom: 1px solid #2A2E38;
+  border-bottom: 1px solid var(--color-node-border);
 }
 
 .chip {
@@ -73,10 +73,10 @@
   align-items: center;
   gap: 5px;
   padding: 4px 9px;
-  background: #161920;
-  border: 1px solid #2A2E38;
+  background: var(--color-node-base);
+  border: 1px solid var(--color-node-border);
   border-radius: 5px;
-  color: #94A3B8;
+  color: var(--color-text-secondary);
   font-family: inherit;
   font-size: 11px;
   cursor: pointer;
@@ -84,20 +84,20 @@
 }
 
 .chip:hover {
-  background: #1A1D25;
-  color: #F1F5F9;
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
 }
 
 .chipActive {
-  border-color: var(--chip-accent, #4A9EFF);
-  color: #F1F5F9;
-  background: #1A1D25;
+  border-color: var(--chip-accent, var(--color-accent));
+  color: var(--color-text-primary);
+  background: var(--color-surface-hover);
 }
 
 .chipCount {
   font-size: 9px;
   font-weight: 700;
-  color: #64748B;
+  color: var(--color-text-muted);
 }
 
 .body {
@@ -113,8 +113,8 @@
   display: flex;
   gap: 9px;
   padding: 10px 11px;
-  background: #14171D;
-  border: 1px solid #22262F;
+  background: var(--color-surface);
+  border: 1px solid var(--color-node-border);
   border-radius: 7px;
   text-align: left;
   cursor: pointer;
@@ -123,8 +123,8 @@
 }
 
 .issue:hover {
-  background: #1A1D25;
-  border-color: #3A3F4B;
+  background: var(--color-surface-hover);
+  border-color: var(--color-text-muted);
 }
 
 .issueIcon {
@@ -142,13 +142,13 @@
 .issueMsg {
   font-size: 12px;
   font-weight: 600;
-  color: #F1F5F9;
+  color: var(--color-text-primary);
   line-height: 1.4;
 }
 
 .issueRec {
   font-size: 11px;
-  color: #94A3B8;
+  color: var(--color-text-secondary);
   line-height: 1.5;
 }
 
@@ -158,7 +158,7 @@
   gap: 4px;
   margin-top: 2px;
   font-size: 10px;
-  color: #64748B;
+  color: var(--color-text-muted);
 }
 
 .empty {
@@ -171,18 +171,18 @@
 }
 
 .emptyIcon {
-  color: #22C55E;
+  color: var(--color-success);
   margin-bottom: 4px;
 }
 
 .emptyTitle {
   font-size: 13px;
   font-weight: 600;
-  color: #F1F5F9;
+  color: var(--color-text-primary);
 }
 
 .emptySub {
   font-size: 11px;
-  color: #64748B;
+  color: var(--color-text-muted);
   line-height: 1.5;
 }

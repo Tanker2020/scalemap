@@ -6,6 +6,8 @@ import {
 } from '@xyflow/react'
 import type { EdgeData } from '../../../lib/nodeConfig'
 import { useCanvasStore } from '../../store/canvas.store'
+import { useUiStore } from '../../store/ui.store'
+import { CATEGORY_COLORS } from '../../../lib/theme'
 import styles from './edges.module.css'
 
 const PARALLEL_GAP = 22  // px between sibling edges in the same corridor
@@ -34,28 +36,37 @@ type EdgeConfig = {
   className?: string
 }
 
-const EDGE_CONFIG: Record<string, EdgeConfig> = {
-  request: {
-    color: '#4A9EFF55',
-    markerEnd: 'url(#arrow-request)',
-    markerStart: 'url(#arrow-request)',
-  },
-  stream: {
-    color: '#A78BFA66',
-    strokeDasharray: '6 4',
-    animated: true,
-    markerEnd: 'url(#arrow-stream)',
-    className: styles.streamPath,
-  },
-  event: {
-    color: '#2DD4BF55',
-    strokeDasharray: '2 4',
-    markerEnd: 'url(#arrow-event)',
-  },
-  dependency: {
-    color: '#47556955',
-    strokeWidth: 1,
-  },
+// Edge colors are theme-dependent: dark mode uses each category's vivid `accent` at low alpha
+// (calibrated against the near-black canvas), light mode uses the muted `foreground.light`
+// variant at higher alpha (a straight accent+low-alpha swap reads as a barely-visible pale wash
+// against the near-white canvas — exactly the "can't tell lines from nodes" bug this fixes).
+function buildEdgeConfig(themeMode: 'dark' | 'light'): Record<string, EdgeConfig> {
+  const tint = (accent: string, foregroundLight: string, darkAlpha: string, lightAlpha: string) =>
+    themeMode === 'light' ? `${foregroundLight}${lightAlpha}` : `${accent}${darkAlpha}`
+
+  return {
+    request: {
+      color: tint(CATEGORY_COLORS.compute.accent, CATEGORY_COLORS.compute.foreground.light, '55', 'cc'),
+      markerEnd: 'url(#arrow-request)',
+      markerStart: 'url(#arrow-request)',
+    },
+    stream: {
+      color: tint(CATEGORY_COLORS.messaging.accent, CATEGORY_COLORS.messaging.foreground.light, '66', 'dd'),
+      strokeDasharray: '6 4',
+      animated: true,
+      markerEnd: 'url(#arrow-stream)',
+      className: styles.streamPath,
+    },
+    event: {
+      color: tint(CATEGORY_COLORS.network.accent, CATEGORY_COLORS.network.foreground.light, '55', 'cc'),
+      strokeDasharray: '2 4',
+      markerEnd: 'url(#arrow-event)',
+    },
+    dependency: {
+      color: themeMode === 'light' ? '#475569aa' : '#47556955',
+      strokeWidth: 1,
+    },
+  }
 }
 
 export function ScalemapEdge({
@@ -66,7 +77,9 @@ export function ScalemapEdge({
 }: EdgeProps<Edge<EdgeData>>) {
   const edgeData = data as EdgeData | undefined
   const edgeType = edgeData?.edgeType ?? 'request'
-  const cfg = EDGE_CONFIG[edgeType] ?? EDGE_CONFIG.request
+  const themeMode = useUiStore(s => s.themeMode)
+  const edgeConfig = buildEdgeConfig(themeMode)
+  const cfg = edgeConfig[edgeType] ?? edgeConfig.request
 
   // Fan parallel edges apart: find siblings sharing this unordered {source,target} corridor and
   // this edge's index among them, then bow by a perpendicular offset. Single edges are unchanged.
@@ -93,7 +106,7 @@ export function ScalemapEdge({
 
   return (
     <>
-      <EdgeDefs />
+      <EdgeDefs themeMode={themeMode} />
       {/* Invisible wide hit area for easy clicking */}
       <path
         d={edgePath}
@@ -130,18 +143,19 @@ export function ScalemapEdge({
   )
 }
 
-function EdgeDefs() {
+function EdgeDefs({ themeMode }: { themeMode: 'dark' | 'light' }) {
+  const cfg = buildEdgeConfig(themeMode)
   return (
     <svg style={{ position: 'absolute', width: 0, height: 0 }}>
       <defs>
         <marker id="arrow-request" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-          <path d="M0,0 L0,6 L6,3 z" fill="#4A9EFF55" />
+          <path d="M0,0 L0,6 L6,3 z" fill={cfg.request.color} />
         </marker>
         <marker id="arrow-stream" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-          <path d="M0,0 L0,6 L6,3 z" fill="#A78BFA66" />
+          <path d="M0,0 L0,6 L6,3 z" fill={cfg.stream.color} />
         </marker>
         <marker id="arrow-event" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-          <path d="M0,0 L0,6 L6,3 z" fill="#2DD4BF55" />
+          <path d="M0,0 L0,6 L6,3 z" fill={cfg.event.color} />
         </marker>
       </defs>
     </svg>
