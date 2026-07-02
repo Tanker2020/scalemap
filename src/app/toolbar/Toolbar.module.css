@@ -30,7 +30,7 @@
   padding: 5px 11px;
   background: #1E2430;
   border: 1px solid #3A4255;
-  border-radius: 5px;
+  border-radius: 6px;
   color: #CBD5E1;
   font-size: 11px;
   font-weight: 600;
@@ -42,7 +42,7 @@
 .btnPrimary:hover {
   background: #263044;
   border-color: #4A9EFF66;
-  color: #F1F5F9;
+  color: var(--color-text-primary);
 }
 
 /* Export dropdown trigger */
@@ -64,8 +64,8 @@
   padding: 5px 10px;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 5px;
-  color: #94A3B8;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
   font-size: 11px;
   letter-spacing: 0.02em;
   transition: background 0.1s, border-color 0.1s, color 0.1s;
@@ -149,10 +149,10 @@
   align-items: center;
   gap: 5px;
   padding: 5px 9px;
-  background: #161920;
+  background: var(--color-node-base);
   border: 1px solid var(--color-node-border);
-  border-radius: 5px;
-  color: #64748B;
+  border-radius: 6px;
+  color: var(--color-text-muted);
   font-size: 11px;
   letter-spacing: 0.02em;
   transition: background 0.1s, border-color 0.1s, color 0.1s;
@@ -190,8 +190,8 @@
   top: calc(100% + 6px);
   left: 0;
   min-width: 200px;
-  background: #111318;
-  border: 1px solid #2A2E38;
+  background: var(--color-toolbar);
+  border: 1px solid var(--color-node-border);
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65), 0 2px 8px rgba(0, 0, 0, 0.4);
   overflow: hidden;
@@ -210,7 +210,7 @@
   text-align: left;
   cursor: pointer;
   transition: background 0.1s;
-  border-bottom: 1px solid #1A1D22;
+  border-bottom: 1px solid var(--color-canvas-dots);
 }
 
 .dropdownItem:last-child {
@@ -223,7 +223,7 @@
 
 .dropdownItemIcon {
   font-size: 14px;
-  color: #4A9EFF;
+  color: var(--color-accent);
   line-height: 1;
   flex-shrink: 0;
 }
@@ -251,8 +251,8 @@
   top: calc(100% + 6px);
   right: 0;
   width: 240px;
-  background: #111318;
-  border: 1px solid #2A2E38;
+  background: var(--color-toolbar);
+  border: 1px solid var(--color-node-border);
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65), 0 2px 8px rgba(0, 0, 0, 0.4);
   z-index: 1000;
@@ -267,7 +267,7 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #475569;
-  border-bottom: 1px solid #1A1D22;
+  border-bottom: 1px solid var(--color-canvas-dots);
 }
 
 .settingsSection {
@@ -285,7 +285,7 @@
 
 .settingsDivider {
   height: 1px;
-  background: #1A1D22;
+  background: var(--color-canvas-dots);
   margin: 0;
 }
 
@@ -298,10 +298,10 @@
 .settingsChip {
   flex: 1;
   padding: 5px 0;
-  background: #161920;
-  border: 1px solid #2A2E38;
-  border-radius: 4px;
-  color: #64748B;
+  background: var(--color-node-base);
+  border: 1px solid var(--color-node-border);
+  border-radius: 6px;
+  color: var(--color-text-muted);
   font-size: 10px;
   font-family: var(--font-mono);
   letter-spacing: 0.04em;
@@ -334,9 +334,9 @@
   flex-direction: column;
   align-items: flex-start;
   padding: 7px 9px;
-  background: #161920;
-  border: 1px solid #2A2E38;
-  border-radius: 5px;
+  background: var(--color-node-base);
+  border: 1px solid var(--color-node-border);
+  border-radius: 6px;
   text-align: left;
   cursor: pointer;
   transition: background 0.1s, border-color 0.1s;
@@ -384,17 +384,17 @@
 .settingsPanelFooter {
   padding: 7px 13px;
   font-size: 9px;
-  color: #2A2E38;
-  border-top: 1px solid #1A1D22;
+  color: var(--color-node-border);
+  border-top: 1px solid var(--color-canvas-dots);
   letter-spacing: 0.03em;
 }
 
 .kbd {
   display: inline-block;
   padding: 1px 4px;
-  background: #1A1D22;
-  border: 1px solid #2A2E38;
-  border-radius: 3px;
+  background: var(--color-canvas-dots);
+  border: 1px solid var(--color-node-border);
+  border-radius: 4px;
   font-family: var(--font-mono);
   font-size: 9px;
   color: #475569;
@@ -409,7 +409,7 @@
   padding: 5px 12px;
   background: linear-gradient(135deg, #4C1D95, #6D28D9);
   border: 1px solid #A78BFA55;
-  border-radius: 5px;
+  border-radius: 6px;
   color: #DDD6FE;
   font-size: 11px;
   font-weight: 600;
@@ -482,10 +482,10 @@
   align-items: center;
   gap: 5px;
   padding: 5px 10px;
-  background: #161920;
+  background: var(--color-node-base);
   border: 1px solid var(--color-node-border);
-  border-radius: 5px;
-  color: #64748B;
+  border-radius: 6px;
+  color: var(--color-text-muted);
   font-size: 11px;
   letter-spacing: 0.02em;
   cursor: pointer;
@@ -525,10 +525,10 @@
   align-items: center;
   gap: 5px;
   padding: 5px 10px;
-  background: #161920;
+  background: var(--color-node-base);
   border: 1px solid var(--color-node-border);
-  border-radius: 5px;
-  color: #64748B;
+  border-radius: 6px;
+  color: var(--color-text-muted);
   font-size: 11px;
   letter-spacing: 0.02em;
   cursor: pointer;
@@ -544,7 +544,7 @@
 .diagnosticsBadge {
   font-size: 8px;
   font-weight: 700;
-  color: #F59E0B;
+  color: var(--color-warning);
   background: #2A1A00;
   border: 1px solid #F59E0B66;
   border-radius: 9px;
@@ -563,7 +563,7 @@
   gap: 0;
   background: #0D1A2E;
   border: 1px solid #4A9EFF33;
-  border-radius: 5px;
+  border-radius: 6px;
   overflow: hidden;
 }
 
@@ -600,7 +600,7 @@
 }
 
 .scriptClose:hover {
-  color: '#EF4444';
+  color: var(--color-danger);
 }
 
 /* Script preview modal */
@@ -617,9 +617,9 @@
 .scriptModalBox {
   width: 500px;
   max-height: 70vh;
-  background: #111318;
-  border: 1px solid #2A2E38;
-  border-radius: 10px;
+  background: var(--color-toolbar);
+  border: 1px solid var(--color-node-border);
+  border-radius: 12px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -634,7 +634,7 @@
   font-size: 11px;
   font-weight: 700;
   color: #CBD5E1;
-  border-bottom: 1px solid #1A1D22;
+  border-bottom: 1px solid var(--color-canvas-dots);
 }
 
 .scriptModalHeader button {
@@ -648,7 +648,7 @@
 .scriptModalBody {
   padding: 12px 14px;
   font-size: 10px;
-  color: #64748B;
+  color: var(--color-text-muted);
   overflow-y: auto;
   line-height: 1.6;
   white-space: pre-wrap;

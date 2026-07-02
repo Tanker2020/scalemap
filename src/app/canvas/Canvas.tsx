@@ -417,15 +417,15 @@ function CanvasInner() {
         {gridEnabled && (
           <Background
             variant={BackgroundVariant.Dots}
-            color="#1A1D22"
+            color="var(--color-canvas-dots)"
             gap={24}
             size={1}
           />
         )}
         <MiniMap
-          style={{ background: '#111318', border: '1px solid #2A2E38' }}
-          maskColor="#0D0F1288"
-          nodeColor={(n) => GROUPING_TYPES.has(n.type as NodeType) ? '#1A2035' : '#2A2E38'}
+          style={{ background: 'var(--color-toolbar)', border: '1px solid var(--color-node-border)' }}
+          maskColor="color-mix(in srgb, var(--color-canvas) 53%, transparent)"
+          nodeColor={(n) => GROUPING_TYPES.has(n.type as NodeType) ? 'var(--color-node-base)' : 'var(--color-node-border)'}
           zoomable
           pannable
         />

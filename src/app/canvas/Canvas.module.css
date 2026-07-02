@@ -23,8 +23,8 @@
   opacity: 1 !important;
   width: 12px !important;
   height: 12px !important;
-  background: #4A9EFF !important;
-  border: 2px solid #0D0F12 !important;
+  background: var(--color-accent) !important;
+  border: 2px solid var(--color-canvas) !important;
   transition: transform 0.1s !important;
 }
 
@@ -43,7 +43,7 @@
   bottom: 60px;
   left: 50%;
   transform: translateX(-50%);
-  background: #161920;
+  background: var(--color-node-base);
   border: 1px solid #22C55E44;
   color: #86EFAC;
   font-size: 11px;
@@ -99,7 +99,7 @@
   top: 12px;
   left: 50%;
   transform: translateX(-50%);
-  background: #0D0F12CC;
+  background: color-mix(in srgb, var(--color-canvas) 80%, transparent);
   border: 1px solid #A78BFA44;
   color: #C4B5FD;
   font-size: 10px;
