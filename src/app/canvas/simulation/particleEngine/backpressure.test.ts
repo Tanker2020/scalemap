@@ -3,6 +3,7 @@ import {
   getActiveWorkers, setActiveWorkers, getActiveConnections, setActiveConnections,
   getWarmInstances, setWarmInstances, getWarmLastActivity, setWarmLastActivity,
   acquireWorkers, releaseWorkerNow, acquireConnection, clearBackpressureState,
+  scheduleWorkerRelease, scheduleConnectionRelease, scheduleGenericRelease, drainScheduledReleases,
 } from './backpressure'
 
 describe('backpressure', () => {
@@ -64,5 +65,93 @@ describe('backpressure', () => {
     expect(getActiveConnections('node-1')).toBe(0)
     expect(getWarmInstances('node-1')).toBe(0)
     expect(getWarmLastActivity('node-1')).toBe(0)
+  })
+})
+
+describe('simulated-time release scheduling', () => {
+  beforeEach(() => clearBackpressureState())
+
+  it('does not release a worker before the scheduled simulated time has elapsed', () => {
+    acquireWorkers('node-1', 1, 10)
+    scheduleWorkerRelease('node-1', /* delayMs */ 500, /* simNowMs */ 0)
+    drainScheduledReleases(/* simNowMs */ 300)
+    expect(getActiveWorkers('node-1')).toBe(1)
+  })
+
+  it('releases a worker once simulated time passes the scheduled point, regardless of wall clock', () => {
+    acquireWorkers('node-1', 1, 10)
+    scheduleWorkerRelease('node-1', 500, 0)
+    drainScheduledReleases(600)
+    expect(getActiveWorkers('node-1')).toBe(0)
+  })
+
+  it('releases a worker exactly at the scheduled simulated time (boundary inclusive)', () => {
+    acquireWorkers('node-1', 1, 10)
+    scheduleWorkerRelease('node-1', 500, 0)
+    drainScheduledReleases(500)
+    expect(getActiveWorkers('node-1')).toBe(0)
+  })
+
+  it('does not release a connection before the scheduled simulated time has elapsed', () => {
+    acquireConnection('node-1', 5)
+    scheduleConnectionRelease('node-1', 200, 1_000)
+    drainScheduledReleases(1_100)
+    expect(getActiveConnections('node-1')).toBe(1)
+  })
+
+  it('releases a connection once simulated time passes the scheduled point', () => {
+    acquireConnection('node-1', 5)
+    scheduleConnectionRelease('node-1', 200, 1_000)
+    drainScheduledReleases(1_200)
+    expect(getActiveConnections('node-1')).toBe(0)
+  })
+
+  it('a paused simulation (no drain calls) never releases, no matter how much wall-clock time passes', async () => {
+    acquireWorkers('node-1', 1, 10)
+    scheduleWorkerRelease('node-1', 500, 0)
+    // Simulate "pause" by simply not calling drainScheduledReleases — real wall-clock time
+    // elapses (previously a live setTimeout would still fire here), but simulated time does not
+    // advance while paused, so no drain call happens and nothing should release.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(getActiveWorkers('node-1')).toBe(1)
+  })
+
+  it('mid-flight speed changes do not need rescaling — delay is already expressed in simulated ms', () => {
+    // A "speed change" has no separate representation any more: callers always pass a
+    // simulated-time delay, and _simulatedTimeMs itself advances faster/slower with speed
+    // elsewhere in the loop. Scheduling the same nominal delay at two different sim-time
+    // scales fires at the correct simulated instant either way.
+    acquireWorkers('node-1', 1, 10)
+    scheduleWorkerRelease('node-1', 500, 1_000) // e.g. simulated clock already at 1000ms
+    drainScheduledReleases(1_499)
+    expect(getActiveWorkers('node-1')).toBe(1)
+    drainScheduledReleases(1_500)
+    expect(getActiveWorkers('node-1')).toBe(0)
+  })
+
+  it('scheduleGenericRelease invokes the provided callback once simulated time elapses', () => {
+    let released = false
+    scheduleGenericRelease('node-1', 100, 0, () => { released = true })
+    drainScheduledReleases(50)
+    expect(released).toBe(false)
+    drainScheduledReleases(100)
+    expect(released).toBe(true)
+  })
+
+  it('clearBackpressureState wipes pending releases so a stale one cannot fire in the next run', () => {
+    acquireWorkers('node-1', 1, 10)
+    scheduleWorkerRelease('node-1', 500, 0)
+    clearBackpressureState()
+    acquireWorkers('node-1', 1, 10)   // fresh run, same node id
+    drainScheduledReleases(10_000)    // far past the old run's schedule
+    expect(getActiveWorkers('node-1')).toBe(1) // only the fresh-run acquire should be active
+  })
+
+  it('clearBackpressureState wipes pending generic releases too', () => {
+    let released = false
+    scheduleGenericRelease('node-1', 500, 0, () => { released = true })
+    clearBackpressureState()
+    drainScheduledReleases(10_000)
+    expect(released).toBe(false)
   })
 })

@@ -19,7 +19,7 @@ import {
   getActiveWorkers, acquireWorkers, releaseWorkerNow, scheduleWorkerRelease,
   getActiveConnections, acquireConnection, scheduleConnectionRelease,
   getWarmInstances, getWarmLastActivity, setWarmInstances, setWarmLastActivity,
-  clearBackpressureState,
+  clearBackpressureState, scheduleGenericRelease, drainScheduledReleases,
 } from './particleEngine/backpressure'
 import {
   effectiveMultiplier as chaosEffectiveMultiplier, getChaosFailures,
@@ -600,9 +600,9 @@ const THREAD_POOL_TYPES = new Set<string>(['ec2', 'container', 'pod', 'k8sCluste
 function trackRequest(nodeId: string, nodeType: NodeType, config: NodeSimConfig) {
   if (_LB_SKIP_TYPES.has(nodeType) || GROUPING_TYPES.has(nodeType)) return
   _lbActiveRequests.set(nodeId, (_lbActiveRequests.get(nodeId) ?? 0) + 1)
-  setTimeout(() => {
+  scheduleGenericRelease(nodeId, Math.max(50, effectiveProcessingMs(nodeId, config)), _simulatedTimeMs, () => {
     _lbActiveRequests.set(nodeId, Math.max(0, (_lbActiveRequests.get(nodeId) ?? 1) - 1))
-  }, Math.max(50, effectiveProcessingMs(nodeId, config)) / _speed)
+  })
 }
 
 // ─── Spawning ────────────────────────────────────────────────────────────────
@@ -1058,7 +1058,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
     }
     acquireConnection(targetNodeId, config.connectionPool.max)
     const releaseDelay = Math.max(50, effectiveProcessingMs(targetNodeId, config))
-    scheduleConnectionRelease(targetNodeId, releaseDelay, _speed)
+    scheduleConnectionRelease(targetNodeId, releaseDelay, _simulatedTimeMs)
   }
 
   // Check circuit breaker state (keyed on edge — client-side breaker)
@@ -1149,17 +1149,17 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       const healthMult = _nodeHealthStates.get(targetNodeId) === 'degraded'
         ? (1 + degradedDepth(_smoothedMetrics.get(targetNodeId)?.healthScore ?? 0.67))
         : 1
-      const delay = Math.max(50, effectiveLatency * healthMult) / _speed
+      const delay = Math.max(50, effectiveLatency * healthMult)
       recordLatency(targetNodeId, effectiveLatency)
-      setTimeout(() => {
+      scheduleGenericRelease(targetNodeId, delay, _simulatedTimeMs, () => {
         const c = state.nodeConcurrency.get(targetNodeId) ?? 0
         state.nodeConcurrency.set(targetNodeId, Math.max(0, c - 1))
-      }, delay)
+      })
       recordBreakerResultLocal(ep.id, false, config, now)
       trackRequest(targetNodeId, targetNodeType, config)
       // Release source thread: blocked for the full lambda execution time + response transit
       if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
-        scheduleWorkerRelease(sourceNodeId, effectiveLatency + ep.geoLatencyMs, _speed)
+        scheduleWorkerRelease(sourceNodeId, effectiveLatency + ep.geoLatencyMs, _simulatedTimeMs)
       }
       forwardToOutbound(targetNodeId, targetNodeType, particle.templateId)
       return
@@ -1213,7 +1213,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       recordBreakerResultLocal(ep.id, false, config, now)
       trackRequest(targetNodeId, targetNodeType, config)
       if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
-        scheduleWorkerRelease(sourceNodeId, dbLatency + ep.geoLatencyMs, _speed)
+        scheduleWorkerRelease(sourceNodeId, dbLatency + ep.geoLatencyMs, _simulatedTimeMs)
       }
       forwardToOutbound(targetNodeId, targetNodeType, particle.templateId)
       return
@@ -1247,7 +1247,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
   // This is what causes thread-pool exhaustion: a slow target holds threads at the source
   // until the response arrives, not until the request is sent.
   if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
-    scheduleWorkerRelease(sourceNodeId, sampledLatency + ep.geoLatencyMs, _speed)
+    scheduleWorkerRelease(sourceNodeId, sampledLatency + ep.geoLatencyMs, _simulatedTimeMs)
   }
 
   // Load balancer / API gateway: round-robin or least-connections routing
@@ -2141,6 +2141,11 @@ function loop(now: number) {
 
     // Advance the simulation clock by the processed (clamped) delta, scaled by playback speed.
     _simulatedTimeMs += delta * _speed
+
+    // Drain pool/concurrency releases scheduled in simulated time (C2 fix) before spawning this
+    // frame's particles, so releases due this frame are visible to this frame's spawn decisions —
+    // mirrors processRetryQueue's existing drain-then-spawn ordering.
+    drainScheduledReleases(_simulatedTimeMs)
 
     processRetryQueue(now)
     spawnParticles(now, delta)
