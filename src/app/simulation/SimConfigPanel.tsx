@@ -205,13 +205,18 @@ export function EventCard({ ev }: { ev: SimEvent }) {
 
   return (
     <>
-      <button
-        className={styles.eventCard}
-        style={{ background: severityBg, borderLeftColor: severityColor }}
+      <motion.button
+        className={`${styles.eventCard} ${ev.severity === 'critical' ? styles.eventCardCritical : ''}`}
+        style={{ background: severityBg, borderLeftColor: severityColor, '--severity-color': severityColor } as React.CSSProperties}
         onClick={() => setDetailOpen(true)}
+        initial={{ opacity: 0, x: -8 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={{ duration: 0.2, ease: 'easeOut' }}
       >
         <div className={styles.eventCardHead}>
-          <span className={styles.eventCardDot} style={{ color: severityColor }}>◉</span>
+          <span className={styles.eventCardDot} style={{ color: severityColor }}>
+            {meta.icon}
+          </span>
           <span className={styles.eventCardType} style={{ color: severityColor }}>{meta.label.toUpperCase()}</span>
           {nodeLabel && <span className={styles.eventCardNodeName}>{nodeLabel}</span>}
           <span className={styles.eventCardTime}>+{ev.elapsedS}s</span>
@@ -225,7 +230,7 @@ export function EventCard({ ev }: { ev: SimEvent }) {
             {snap.errorRate    !== undefined && <span className={styles.eventMetricPill}>Err: {(snap.errorRate * 100).toFixed(1)}%</span>}
           </div>
         )}
-      </button>
+      </motion.button>
       {detailOpen && (
         <EventDetailOverlay
           ev={ev} meta={meta} nodeLabel={nodeLabel} nodeType={nodeType}

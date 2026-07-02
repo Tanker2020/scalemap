@@ -725,7 +725,8 @@
   width: 100%;
   text-align: left;
   cursor: pointer;
-  transition: opacity 0.1s, transform 0.1s;
+  position: relative;
+  transition: opacity 0.1s, transform 0.1s, box-shadow 0.1s;
 }
 
 .eventCard:hover {
@@ -737,6 +738,18 @@
   color: var(--color-accent);
 }
 
+/* Critical events breathe with the same ring-pulse idiom BaseNode uses for
+   saturated nodes — ties the log's "alive" feel back to the canvas language
+   rather than inventing a new motion vocabulary. */
+@keyframes eventCriticalPulse {
+  0%, 100% { box-shadow: 0 0 0 0px color-mix(in srgb, var(--severity-color) 22%, transparent); }
+  50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--severity-color) 10%, transparent); }
+}
+
+.eventCardCritical {
+  animation: eventCriticalPulse 1.8s ease-in-out infinite;
+}
+
 .eventCardHead {
   display: flex;
   align-items: center;
@@ -744,9 +757,11 @@
 }
 
 .eventCardDot {
-  font-size: 9px;
+  font-size: 10px;
   flex-shrink: 0;
   line-height: 1;
+  width: 13px;
+  text-align: center;
 }
 
 .eventCardType {

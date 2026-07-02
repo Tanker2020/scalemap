@@ -226,6 +226,120 @@
   gap: 2px;
 }
 
+/* ── Timeline spine ──────────────────────────────── */
+/* A persistent vertical wire down the left edge of each minute group, with a
+   tick per event run. This is the feed's signature element: events read as
+   pulses traveling down a live circuit rather than rows in a plain list,
+   echoing the canvas's own wire/particle metaphor. */
+
+.spine {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 14px;
+}
+
+.spine::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 2px;
+  bottom: 2px;
+  width: 1px;
+  background: var(--color-toolbar-border);
+}
+
+.spineRow {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+}
+
+.spineTick {
+  position: absolute;
+  left: -14px;
+  top: 9px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px var(--color-canvas);
+  z-index: 1;
+}
+
+@keyframes spineTickPulse {
+  0%, 100% { box-shadow: 0 0 0 2px var(--color-canvas), 0 0 0 2px color-mix(in srgb, var(--severity-color) 40%, transparent); }
+  50%      { box-shadow: 0 0 0 2px var(--color-canvas), 0 0 0 5px color-mix(in srgb, var(--severity-color) 18%, transparent); }
+}
+
+.spineTickCritical {
+  animation: spineTickPulse 1.8s ease-in-out infinite;
+}
+
+.spineContent {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Repeated-event runs ─────────────────────────── */
+/* Consecutive same-type/same-node events collapse into one card with a
+   toggleable "×N" header, so chaos-mode volume stays scannable instead of
+   flooding the feed with near-duplicate rows. */
+
+.runWrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.runHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 9px;
+  border-left: 3px solid;
+  background: transparent;
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+
+.runCount {
+  font-size: 8px;
+  font-weight: 700;
+  border: 1px solid;
+  border-radius: 8px;
+  padding: 0 5px;
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+
+.runLabel {
+  font-size: 8px;
+  color: var(--color-text-muted);
+  flex: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.runChevron {
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+
+.runExpanded {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 2px;
+  border-left: 1px dashed var(--color-toolbar-border);
+  margin-left: 10px;
+}
+
 /* ── Footer ──────────────────────────────────────── */
 
 .footer {
@@ -334,6 +448,15 @@
   background: var(--color-toolbar) !important;
 }
 
+@keyframes incidentCriticalPulse {
+  0%, 100% { box-shadow: 0 0 0 0px color-mix(in srgb, var(--severity-color) 18%, transparent); }
+  50%      { box-shadow: 0 0 0 3px color-mix(in srgb, var(--severity-color) 8%, transparent); }
+}
+
+.incidentCardCritical {
+  animation: incidentCriticalPulse 2s ease-in-out infinite;
+}
+
 .incidentHead {
   display: flex;
   align-items: center;
@@ -375,7 +498,7 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 3px;
+  gap: 0;
   padding-left: 2px;
 }
 
@@ -384,9 +507,25 @@
   font-weight: 600;
 }
 
-.incidentArrow {
-  font-size: 9px;
-  color: var(--color-text-muted);
+.incidentChainDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-right: 5px;
+}
+
+.incidentChainLink {
+  display: flex;
+  align-items: center;
+}
+
+.incidentChainWire {
+  width: 10px;
+  height: 1px;
+  background: var(--color-text-muted);
+  opacity: 0.5;
+  margin: 0 5px 0 2px;
 }
 
 .incidentChainNode {
