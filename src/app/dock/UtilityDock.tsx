@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import { X, ShieldCheck, ClipboardList } from 'lucide-react'
 import { useUiStore, type DockTab } from '../store/ui.store'
 import { useDiagnosticsStore } from '../store/diagnostics.store'
@@ -7,7 +7,6 @@ import { useSimulationStore } from '../store/simulation.store'
 import { useCanvasStore } from '../store/canvas.store'
 import { DiagnosticsPanel } from '../diagnostics/DiagnosticsPanel'
 import { ReportsPanel } from '../reports/ReportsPanel'
-import { panelTransition } from '../../lib/motion'
 import styles from './UtilityDock.module.css'
 
 /**
@@ -20,6 +19,11 @@ import styles from './UtilityDock.module.css'
  * strip; only one tab's content is ever mounted-visible at a time, so the two panels can no
  * longer collide. Each panel's own internal logic (filters, run detail overlay, etc.) is
  * untouched — only their outer chrome (position/header/close button) moved up into this file.
+ *
+ * Rendered as a plain flex child of App.tsx's .body row (same convention as SimConfigPanel/
+ * PropertiesPanel — see UtilityDock.module.css) so it reserves its own width in the layout
+ * instead of floating on top of the Properties/Inspector column. App.tsx owns the mount/
+ * unmount enter-exit motion, matching how it already wraps SimConfigPanel/PropertiesPanel.
  */
 // Mounted by App.tsx only while useUiStore.dockOpen is true (mirrors the PacketEditor
 // mount pattern) so AnimatePresence sees a real mount/unmount transition.
@@ -49,13 +53,7 @@ export function UtilityDock() {
   ]
 
   return (
-    <motion.aside
-      className={styles.dock}
-      initial={{ opacity: 0, x: 16 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: 16 }}
-      transition={panelTransition}
-    >
+    <aside className={styles.dock}>
       <div className={styles.header}>
         <div className={styles.tabs}>
           {tabs.map(({ key, label, icon: Icon, count }) => (
@@ -102,6 +100,6 @@ export function UtilityDock() {
           )}
         </AnimatePresence>
       </div>
-    </motion.aside>
+    </aside>
   )
 }

@@ -1,15 +1,17 @@
+/* A normal flex child of App.tsx's .body row (same pattern as PropertiesPanel's .sidebar),
+   not position: fixed. Earlier this dock — like the two independent panels it replaced — was
+   fixed to the right edge, which meant it silently rendered on top of the Properties/Inspector
+   column instead of sharing the row with it (Properties panel is itself a flex child, so
+   "open Dock while a node is selected" hid Properties completely behind the dock). Making the
+   dock a flex sibling lets the row layout reserve space for both, so they sit side by side. */
 .dock {
-  position: fixed;
-  top: 43px;            /* below toolbar (42px + 1px border) */
-  right: 0;
-  bottom: 28px;          /* above status bar */
   width: 340px;
-  z-index: 40;
+  min-width: 340px;
   display: flex;
   flex-direction: column;
   background: var(--color-surface);
   border-left: 1px solid var(--color-node-border);
-  box-shadow: -8px 0 28px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
 }
 
