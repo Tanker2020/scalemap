@@ -77,7 +77,7 @@ src/
         useDisplayMetrics.ts     # Live vs replay metrics resolution for a node
     simulation/
       SimConfigPanel.tsx         # Per-node capacity/latency/retry/SLO configuration
-      PacketEditor.tsx           # Packet template CRUD — actively buggy, see Roadmap
+      PacketEditor.tsx           # Interactive "packet anatomy" card editor (redesigned 2026-07-02) — click-to-flip protocol fields, draggable payload-size bar
       CostTracker.tsx            # Renders costModel.ts output
       EventLogPanel.tsx          # Severity-colored event timeline
       defaults.ts                # NODE_SIM_DEFAULTS for all node types
@@ -197,7 +197,6 @@ Rust (`src-tauri/Cargo.toml`): `tauri`, `tauri-plugin-opener`, `tauri-plugin-dia
 
 ## Known Issues / Roadmap
 
-- **`PacketEditor.tsx` is actively buggy** (per commit `93c193a`, "still has bugs"). Verify current behavior before extending it rather than assuming the CRUD flows work end-to-end.
 - **No test coverage.** `vitest` and Testing Library are installed but there isn't a single `*.test.ts(x)` file yet. New non-trivial logic (lint rules, cost model, ScaleScript resolver) is a good place to start.
 - **Terraform import doesn't exist.** If this is picked back up, decide whether to keep parsing client-side or reintroduce a Rust-side `hcl-rs` sidecar before writing code.
 - **`ReportsPanel.tsx` exports aren't persisted to disk** — wire up a Tauri command instead of leaving it browser-only.

@@ -76,11 +76,12 @@ Self-contained, already well-factored for parallel work.
 ### E. Packet system (Flyweight templates)
 | File | Role |
 |---|---|
-| `src/app/simulation/PacketEditor.tsx` | Template CRUD UI (**actively buggy per CLAUDE.md — verify before extending**) |
-| `src/app/store/canvas.store.ts` (packet slice only, lines ~27–103) | Template storage, `packetMode` toggle |
-| `nodeConfig.ts` packet types (`PacketTemplate`, `PacketMode`, `PacketRegistry`, etc.) | Shared types |
+| `src/app/simulation/PacketEditor.tsx` | **Redesigned (2026-07-02) as an interactive "packet anatomy" card** — no longer a plain form. Structure: modal shell (manifest list + sliding Generic/Custom segmented toggle, unchanged data flow) → `PacketCard` (header strip with inline-editable name + protocol badge + delete, `PayloadBody` — a draggable/click-to-expand bar whose width is a log-scaled function of `sizeKb`, doubling as the color-override picker) → per-protocol `Pin` rows (`HttpPins`/`EventPins`/`StreamPins`/`DbPins`), where each field is a click-to-flip chip (framer-motion `rotateY`, cross-fades instead under `useReducedMotion()`) rather than a labeled input row. All 4 protocols' fields are unchanged in substance, only presentation. Verified via Playwright: add/edit/delete for all 4 protocols, mode toggle, light+dark, and `prefers-reduced-motion` emulation all confirmed working end-to-end. Fixed a real bug found during the pre-work verification pass: `PROTOCOL_COLOR` hardcoded the pre-harmonization palette (`#4A9EFF`/`#2DD4BF`/`#A78BFA`/`#F5A623`) with no light-mode variant — protocol badges/dots never matched the rest of the app's harmonized `CATEGORY_COLORS` hues or adapted to the theme toggle; now derives dark/light pairs per protocol matching the compute/network/messaging/storage hue families |
+| `src/app/simulation/PacketEditor.module.css` | Styles for the above — new: `.card`/`.cardHeader`/`.payloadTrack`/`.payloadFill`/`.pin`/`.pinFlip`/`.pinFace`/`.pinEdit`/`.modeSlider`/`.swatchRow`, all theme-token-driven (`var(--color-*)`, `color-mix()`) per the design-system convention, no hardcoded hex except the curated payload color-swatch values (`#5B9CF6`/`#3FC7B8`/`#9C8CE0`/`#E0A552`/`#EF4444`/`#22C55E` — intentional fixed palette choices, same category as `PacketEditor.tsx`'s own harmonized protocol colors, not a hardcoding violation of the theme-token rule which governs chrome/surface colors) |
+| `src/app/store/canvas.store.ts` (packet slice only, lines ~27–103) | Template storage, `packetMode` toggle — untouched by the redesign, same CRUD actions (`addPacketTemplate`/`updatePacketTemplate`/`removePacketTemplate`/`setPacketMode`) |
+| `nodeConfig.ts` packet types (`PacketTemplate`, `PacketMode`, `PacketRegistry`, etc.) | Shared types — untouched, no data-model changes were needed for the visual redesign |
 
-**Blast radius:** `PacketRegistry` type has 5 callers spanning `canvas.store.ts` and `serializer.ts` — packet-format changes must update both together or `.scalemap` file round-tripping breaks silently.
+**Blast radius:** `PacketRegistry` type has 5 callers spanning `canvas.store.ts` and `serializer.ts` — packet-format changes must update both together or `.scalemap` file round-tripping breaks silently. The redesign only touched `PacketEditor.tsx`/`.module.css` (presentation layer) — `canvas.store.ts`'s packet slice and `nodeConfig.ts`'s packet types are unchanged, so `particleEngine.ts` (which reads `PacketTemplate` to size/color/route particles) and `serializer.ts` (round-tripping) are unaffected.
 
 ### F. Terraform export / Vault templates / ScaleScript / Serialization
 Each is a narrow, single-direction module with few callers — good isolated-PR candidates.
@@ -128,7 +129,7 @@ If splitting a sprint's work across people to avoid stepping on each other:
 
 1. **Simulation realism** (per `SRE_Critique.txt`'s blueprints — circuit breakers on edges, thread-pool exhaustion, token-bucket gateways, chaos gray-failures) → §1B. `particleEngine.ts` has been split into `particleEngine/circuitBreakers.ts`, `particleEngine/backpressure.ts`, and `particleEngine/chaos.ts`, so separate fixes to breaker/backpressure/chaos logic can now land in disjoint files instead of one shared 2.6k-line file.
 2. **Lint rules** → §1C, already safe for concurrent work, no changes needed.
-3. **Packet editor bug fixes** → §1E, isolated to `PacketEditor.tsx` + the packet slice of `canvas.store.ts`.
+3. **Packet editor** → §1E, isolated to `PacketEditor.tsx`/`.module.css` + the packet slice of `canvas.store.ts`. Redesigned 2026-07-02 into an interactive card visualization (no longer just "bug fixes" — see §1E for details); still isolated and safe for concurrent work since the data model didn't change.
 4. **Cost/pricing model work** → §1D, isolated unless changing `costModel.ts` function signatures.
 5. **Terraform/Vault/ScaleScript/Rust persistence** → §1F/G, narrowest blast radius in the repo, good for onboarding or solo side-quests.
 
