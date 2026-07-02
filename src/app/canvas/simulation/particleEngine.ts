@@ -2226,6 +2226,10 @@ function loop(now: number) {
     // mirrors processRetryQueue's existing drain-then-spawn ordering.
     drainScheduledReleases(_simulatedTimeMs)
 
+    // Advance chaos/spike schedule state exactly once per frame (W2/#5 fix) — must run before any
+    // trafficMultiplier reads this frame (spawnParticles, updateAllNodeMetrics, per-arrival glow).
+    advanceChaosSchedule(now)
+
     processRetryQueue(now)
     spawnParticles(now, delta)
     advanceAndDraw(_canvas, now, delta)

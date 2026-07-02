@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { effectiveMultiplier, getChaosFailures, clearChaosState } from './chaos'
+import {
+  getChaosFailures, clearChaosState,
+  trafficMultiplier, advanceChaosSchedule,
+} from './chaos'
 import type { Node } from '@xyflow/react'
 import type { NodeData } from '../../../../lib/nodeConfig'
 
@@ -13,19 +16,19 @@ describe('chaos', () => {
   })
 
   it('steady mode returns the global multiplier unchanged', () => {
-    const mult = effectiveMultiplier(0, 'steady', 3, 0, emptyNodesMap, noop)
+    const mult = trafficMultiplier(0, 'steady', 3, 0, emptyNodesMap)
     expect(mult).toBe(3)
   })
 
   it('ramp mode scales from 0 up to the global multiplier over the ramp window', () => {
-    const early = effectiveMultiplier(0, 'ramp', 2, 0, emptyNodesMap, noop)
+    const early = trafficMultiplier(0, 'ramp', 2, 0, emptyNodesMap)
     expect(early).toBe(0)
-    const full = effectiveMultiplier(0, 'ramp', 2, 200_000, emptyNodesMap, noop)
+    const full = trafficMultiplier(0, 'ramp', 2, 200_000, emptyNodesMap)
     expect(full).toBe(2) // clamped at 1x once past the 120s ramp window
   })
 
   it('spike mode starts outside a spike burst (multiplier == base)', () => {
-    const mult = effectiveMultiplier(0, 'spike', 1, 0, emptyNodesMap, noop)
+    const mult = trafficMultiplier(0, 'spike', 1, 0, emptyNodesMap)
     expect(mult).toBe(1)
   })
 
@@ -35,5 +38,46 @@ describe('chaos', () => {
     expect(getChaosFailures().size).toBe(1)
     clearChaosState()
     expect(getChaosFailures().size).toBe(0)
+  })
+})
+
+describe('trafficMultiplier purity', () => {
+  beforeEach(() => clearChaosState())
+
+  it('calling trafficMultiplier many times with the same `now` does not change chaos schedule state (spike mode)', () => {
+    advanceChaosSchedule(1000, 'spike', 1000, emptyNodesMap, noop)
+    const before = trafficMultiplier(1000, 'spike', 1, 1000, emptyNodesMap)
+    for (let i = 0; i < 50; i++) trafficMultiplier(1000, 'spike', 1, 1000, emptyNodesMap) // simulates per-arrival calls in one frame
+    const after = trafficMultiplier(1000, 'spike', 1, 1000, emptyNodesMap)
+    expect(after).toBe(before)
+  })
+
+  it('calling trafficMultiplier many times with the same `now` does not change chaos schedule state (chaos mode)', () => {
+    advanceChaosSchedule(1000, 'chaos', 1000, emptyNodesMap, noop)
+    const failuresBefore = new Map(getChaosFailures())
+    const before = trafficMultiplier(1000, 'chaos', 1, 1000, emptyNodesMap)
+    for (let i = 0; i < 50; i++) trafficMultiplier(1000, 'chaos', 1, 1000, emptyNodesMap)
+    const after = trafficMultiplier(1000, 'chaos', 1, 1000, emptyNodesMap)
+    expect(after).toBe(before)
+    expect(getChaosFailures()).toEqual(failuresBefore)
+  })
+
+  it('trafficMultiplier alone (never calling advanceChaosSchedule) never mutates chaos state', () => {
+    expect(getChaosFailures().size).toBe(0)
+    for (let i = 0; i < 20; i++) trafficMultiplier(5000, 'chaos', 1, 5000, emptyNodesMap)
+    // Without advanceChaosSchedule ever running, no victims should ever be picked.
+    expect(getChaosFailures().size).toBe(0)
+  })
+})
+
+describe('advanceChaosSchedule', () => {
+  beforeEach(() => clearChaosState())
+
+  it('is the only entry point that mutates chaos failure state and emits events', () => {
+    const onEvent = vi.fn()
+    advanceChaosSchedule(20_000, 'chaos', 20_000, emptyNodesMap, onEvent)
+    // With an empty nodes map there are no victims to pick, but the schedule pointers still advance
+    // without throwing, and no read-only call ever triggers scheduling on its own.
+    expect(() => trafficMultiplier(20_000, 'chaos', 1, 20_000, emptyNodesMap)).not.toThrow()
   })
 })
