@@ -236,7 +236,9 @@ export const unbalancedLoadBalancer: LintRule = (ctx) => {
 // ─── Rule I — Deep Sync Chain ─────────────────────────────────────────────────
 // 5+ sequential synchronous hops from an entry node creates a cumulative latency ceiling
 // and makes the entire chain brittle — one slow hop degrades all callers.
-// BFS from each entry, following only request/dependency-typed edges.
+// Longest-path DFS from each entry, following only request/dependency-typed edges, with a
+// `visiting` cycle guard (mirrors detectCycles' pattern below) since longest-path is only
+// well-defined on a DAG — a cycle just stops that branch; circularDependency owns reporting it.
 const DEEP_SYNC_THRESHOLD = 5
 
 export const deepSyncChain: LintRule = (ctx) => {
@@ -250,28 +252,23 @@ export const deepSyncChain: LintRule = (ctx) => {
     syncOut.get(e.source)!.push({ target: e.target })
   }
 
-  // Track max sync depth per node across all BFS traversals.
+  // Track max sync depth per node across all DFS traversals.
   const maxDepth = new Map<string, number>()
+  const visiting = new Set<string>()
+
+  function dfs(id: string, depth: number): void {
+    if (visiting.has(id)) return // cycle — bail without recording; circularDependency reports cycles
+    visiting.add(id)
+    if (depth >= DEEP_SYNC_THRESHOLD) {
+      const prev = maxDepth.get(id) ?? 0
+      if (depth > prev) maxDepth.set(id, depth)
+    }
+    for (const { target } of syncOut.get(id) ?? []) dfs(target, depth + 1)
+    visiting.delete(id)
+  }
 
   const entryNodes = ctx.nodes.filter(n => isEntry(n.type as NodeType))
-  for (const entry of entryNodes) {
-    const queue: { id: string; depth: number }[] = [{ id: entry.id, depth: 0 }]
-    const seen = new Map<string, number>()
-    seen.set(entry.id, 0)
-    while (queue.length > 0) {
-      const { id, depth } = queue.shift()!
-      for (const { target } of syncOut.get(id) ?? []) {
-        const newDepth = depth + 1
-        if ((seen.get(target) ?? Infinity) <= newDepth) continue
-        seen.set(target, newDepth)
-        queue.push({ id: target, depth: newDepth })
-        if (newDepth >= DEEP_SYNC_THRESHOLD) {
-          const prev = maxDepth.get(target) ?? 0
-          if (newDepth > prev) maxDepth.set(target, newDepth)
-        }
-      }
-    }
-  }
+  for (const entry of entryNodes) dfs(entry.id, 0)
 
   return Array.from(maxDepth.entries()).map(([nodeId, depth]) => {
     const label = labelOf(ctx.nodeById.get(nodeId)?.data, nodeId)
