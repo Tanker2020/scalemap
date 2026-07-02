@@ -3,10 +3,11 @@ import type { Node, Edge } from '@xyflow/react'
 import { useCanvasStore } from '../../store/canvas.store'
 import { useSimulationStore, type SimEventType, type NodeMetrics, type SimulationRun } from '../../store/simulation.store'
 import { useMetricsHistoryStore } from '../../store/metricsHistory.store'
+import { useCostHistoryStore } from '../../store/costHistory.store'
 import { useReplayStore } from '../../store/replay.store'
 import { DEFAULT_SLO } from '../../simulation/defaults'
 import type { NodeData, NodeType } from '../../../lib/nodeConfig'
-import { computeCost } from '../../../lib/costModel'
+import { computeCost, computeCostByCategory } from '../../../lib/costModel'
 import {
   startSimulation,
   stopSimulation,
@@ -168,11 +169,29 @@ export function SimulationOverlay({ width, height }: Props) {
   useEffect(() => {
     if (!running) return
     const { record, recordSystem } = useMetricsHistoryStore.getState()
+    const { record: recordCost } = useCostHistoryStore.getState()
 
     const interval = setInterval(() => {
       const { nodeMetrics, addEvent: addEv, setSloStatus: setSlo, paused } = useSimulationStore.getState()
       // Don't record history or fire SLO events while paused — analytics must be frozen
       if (paused) return
+
+      // Cost sample: same cadence as the metrics/SLO recording above, so the cost-over-time
+      // chart in CostTracker shares a time axis with everything else. computeCost() is pure
+      // and already O(nodes) — cheap enough to run once per second alongside the metrics pass.
+      const costSummary = computeCost(nodes as Node<NodeData>[], nodeMetrics)
+      if (costSummary.perNode.length > 0) {
+        const byCategory: Record<string, number> = {}
+        for (const c of computeCostByCategory(costSummary, nodes as Node<NodeData>[])) {
+          byCategory[c.category] = c.monthlyUsd
+        }
+        recordCost({
+          t: performance.now(),
+          totalHourlyUsd: costSummary.totalHourlyUsd,
+          totalMonthlyUsd: costSummary.totalMonthlyUsd,
+          byCategory,
+        })
+      }
       // Simulation-time coordinate so health frames line up with the engine's particle
       // keyframes on the replay scrubber (which correlates the two via elapsedS).
       const elapsedS = Math.round(getSimulatedElapsedS())

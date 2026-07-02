@@ -3,6 +3,7 @@ import { FilePlus, FolderOpen, ChevronDown, MousePointer2, Hand, Zap, SlidersHor
 import { useCanvasStore } from '../store/canvas.store'
 import { useSimulationStore, type TrafficMode } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
+import { useCostHistoryStore } from '../store/costHistory.store'
 import { useUiStore } from '../store/ui.store'
 import { useDiagnosticsStore } from '../store/diagnostics.store'
 import { useFileStore } from '../store/file.store'
@@ -313,6 +314,7 @@ export function Toolbar() {
     if (useSimulationStore.getState().running) return
     useSimulationStore.getState().reset()
     useMetricsHistoryStore.getState().clearHistory()
+    useCostHistoryStore.getState().clearHistory()
     useCanvasStore.setState({ nodes: [], edges: [], history: [], future: [] })
     useFileStore.getState().setFilePath(null)
     useFileStore.getState().setShowHome(false)

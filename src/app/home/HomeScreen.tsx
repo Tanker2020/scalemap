@@ -4,6 +4,7 @@ import { useCanvasStore } from '../store/canvas.store'
 import { useFileStore } from '../store/file.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
+import { useCostHistoryStore } from '../store/costHistory.store'
 import { useUiStore } from '../store/ui.store'
 import { getRecentFiles, loadDiagram, type RecentFile } from '../../lib/tauri'
 import { deserialize } from '../../lib/serializer'
@@ -55,6 +56,7 @@ export function HomeScreen() {
   const resetSim = () => {
     useSimulationStore.getState().reset()
     useMetricsHistoryStore.getState().clearHistory()
+    useCostHistoryStore.getState().clearHistory()
   }
 
   const openNew = () => {
