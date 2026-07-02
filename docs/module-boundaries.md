@@ -111,7 +111,7 @@ in-flight changes.
 
 | File | Why it's a hub | Fan-in (CodeGraph-verified) |
 |---|---|---|
-| `src/lib/nodeConfig.ts` (368 lines) | `NODE_CONFIG` registry — every node type's icon/category/label | **31 files import it** — the single largest fan-in in the repo |
+| `src/lib/nodeConfig.ts` (~380 lines) | `NODE_CONFIG` registry — every node type's icon/category/label | **31 files import it** — the single largest fan-in in the repo. `NodeSimConfig` gained two append-only optional fields (`consistencyLevel`, `replicationLagMs`, GitHub #12) — fan-in count unchanged (no new importers), verified via `grep -rln "from '.*nodeConfig'" src` before/after |
 | `src/lib/theme.ts` (28 lines) | `COLORS`/`CATEGORY_COLORS` — small file, but touched by any node/edge visual change | Node rendering, group nodes, panels |
 | `src/app/store/simulation.store.ts` | `NodeMetrics`/`SimEvent`/`SloStatus` shape — anyone adding a new metric touches this | particleEngine, BaseNode, SimConfigPanel, ReportsPanel |
 | `src/app/canvas/simulation/particleEngine.ts` | See §1B — also a hub in the sense that *any* new sim behavior lands here today | N/A (internal, but everyone's diff passes through it) |

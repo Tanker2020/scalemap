@@ -434,6 +434,40 @@ const _restartCooldown  = new Map<string, number>()  // nodeId → next allowed 
 // ─── Database read/write saturation tracking ─────────────────────────────────
 const _dbSaturationReason = new Map<string, 'read' | 'write'>()
 
+// ─── CAP-theorem modeling: replica-set availability (GitHub #12) ─────────────
+// First-pass scope: a fixed replica count of 3 (matching ONE/QUORUM/ALL semantics) without a
+// separate replica-count field, no leader election, and no split-brain simulation — those are
+// explicitly out of scope for this pass (see optimization-issues-spec.md Task O2). "Reachable"
+// is approximated from the DB node's inbound edges (its links to upstream callers/regions):
+// each inbound edge stands in for one replica's connectivity, so an edge-level partition
+// (O1's isEdgePartitioned) on that link makes the corresponding replica unreachable this frame.
+const REPLICA_COUNT = 3
+
+// Counts how many of the modeled 3 replicas are reachable for a DB node, given active edge
+// partitions on its inbound links. Inbound edges beyond 3 are ignored (capped); fewer than 3
+// inbound edges treats the missing links as always-reachable (no partition primitive to check),
+// so a single-producer DB is never spuriously starved by this model.
+function reachableReplicaCount(targetNodeId: string, nowSimMs: number): number {
+  const inEdgeIds = _edgesData.filter(e => e.target === targetNodeId).map(e => e.id).slice(0, REPLICA_COUNT)
+  const partitionedCount = inEdgeIds.filter(id => isEdgePartitioned(id, nowSimMs)).length
+  const modeledLinks = Math.max(inEdgeIds.length, 0)
+  // Replicas with no corresponding inbound link are assumed reachable (nothing to partition).
+  const alwaysReachable = REPLICA_COUNT - modeledLinks
+  return alwaysReachable + Math.max(0, modeledLinks - partitionedCount)
+}
+
+// Gates read/write availability per consistency level given how many of the 3 modeled replicas
+// are currently reachable. ONE: any single replica is enough; QUORUM: a majority (2 of 3); ALL:
+// every replica must be reachable (most consistent, least available under partition — the
+// CAP tradeoff this task exists to surface).
+function isConsistencyLevelAvailable(level: 'ONE' | 'QUORUM' | 'ALL', reachable: number): boolean {
+  switch (level) {
+    case 'ONE':    return reachable >= 1
+    case 'QUORUM': return reachable >= 2
+    case 'ALL':    return reachable >= REPLICA_COUNT
+  }
+}
+
 // ─── K8s hierarchy state ──────────────────────────────────────────────────────
 // Per-pod HPA replica state — starts at k8sPod.replicas, modified by HPA logic.
 const _podReplicas          = new Map<string, number>()
@@ -1247,6 +1281,23 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
 
     // Database nodes: separate read/write capacity limits + SQL locking penalty
     if (config.dbConfig && (targetNodeType === 'dbSql' || targetNodeType === 'dbNoSql')) {
+      // CAP-theorem gate (GitHub #12): when a consistency level is configured, availability is
+      // gated on how many of the modeled 3 replicas are reachable under active edge partitions,
+      // before any capacity/utilization check — an unreachable replica set can't serve reads or
+      // writes regardless of how much headroom the capacity model thinks it has.
+      if (config.consistencyLevel) {
+        const reachable = reachableReplicaCount(targetNodeId, _simulatedTimeMs)
+        if (!isConsistencyLevelAvailable(config.consistencyLevel, reachable)) {
+          const label = (_nodesMap.get(targetNodeId)?.data as NodeData)?.label ?? targetNodeId
+          _onEvent('connection_pool_exhausted', targetNodeId,
+            `${label} unavailable — only ${reachable}/${REPLICA_COUNT} replicas reachable (${config.consistencyLevel} consistency)`,
+            'critical', { utilization: 1, errorRate: 1 })
+          dropParticle(ep, targetNodeId, particle)
+          recordBreakerResultLocal(ep.id, true, config, now)
+          return
+        }
+      }
+
       // For request edges with a configured method distribution, GET = read and
       // POST/PUT/DELETE = write — overrides the manual readPercentage slider.
       const reqConfig = ep.edgeType === 'request'
@@ -1287,6 +1338,14 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       if (targetNodeType === 'dbSql') {
         const lockingPenalty = Math.pow(writeUtil, 2) * 50  // up to +50ms at 100% write util
         dbLatency += lockingPenalty  // applies to both reads AND writes under SQL contention
+      }
+      // Replication lag (GitHub #12): a read served by a non-primary replica sees the
+      // replica's lag as added latency/staleness. Reuses isReadParticle's own id-modulo sampling
+      // (independent of the read/write lane roll above) to decide "landed on a non-primary
+      // replica" without a new distribution, per the task's de-scoping note. Primary-affinity
+      // roughly 1/REPLICA_COUNT of reads land on the primary and pay no lag.
+      if (isRead && config.replicationLagMs && particle.id % REPLICA_COUNT !== 0) {
+        dbLatency += sampleLatencyMs(config.replicationLagMs, config.replicationLagMs * 2)
       }
       particle.originLatencyMs = 0
       recordLatency(targetNodeId, dbLatency)

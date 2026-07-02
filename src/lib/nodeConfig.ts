@@ -122,6 +122,16 @@ export interface NodeSimConfig {
     readLatencyMs: number   // e.g. dbSql: 2ms,   dbNoSql: 1ms
     writeLatencyMs: number  // e.g. dbSql: 15ms,  dbNoSql: 5ms
   }
+
+  // ─── CAP-theorem modeling (GitHub #12) ─────────────────────────────────────
+  // DB nodes only (dbSql, dbNoSql); undefined = today's single-bucket behavior (unchanged).
+  // When set, the engine models a fixed replica set of 3 and gates read/write availability
+  // on how many replicas remain reachable under active edge partitions (see O1's
+  // isEdgePartitioned in particleEngine/chaos.ts). Scope note: this models consistency-level
+  // config, replication lag, and partition-aware availability only — NOT leader election or
+  // split-brain simulation (explicitly de-scoped; see optimization-issues-spec.md Task O2).
+  consistencyLevel?: 'ONE' | 'QUORUM' | 'ALL'   // ONE: >=1/3 replicas reachable; QUORUM: >=2/3; ALL: 3/3
+  replicationLagMs?: number                      // extra latency applied to reads served by a non-primary replica; undefined = 0 (no lag modeled)
 }
 
 // User-entered pricing parameters. Rates live in cloudRegistry.ts; this holds only the

@@ -43,6 +43,13 @@ export interface CostSummary {
 
 const BYTES_PER_GB = 1024 ** 3
 
+// CAP-theorem modeling (GitHub #12): a DB node with a configured consistencyLevel is modeled as
+// a fixed 3-replica set (see particleEngine.ts's REPLICA_COUNT) — storage and compute costs scale
+// with replica count, so a QUORUM/ALL/ONE-consistency DB costs ~3x a single-bucket DB of the same
+// size. Additive only: nodes without consistencyLevel set are entirely unaffected (multiplier 1).
+const REPLICA_COST_MULTIPLIER = 3
+const REPLICATED_COST_KINDS = new Set<CostKind>(['instanceHourly', 'storageGbMonth'])
+
 // GB egressed per month, projected from the LIVE bandwidth the particle engine measures
 // (bytes/sec of actual responses leaving the node) held steady over a month.
 function egressGbPerMonth(egressBytesPerSec: number): number {
@@ -57,6 +64,12 @@ function nodeCost(node: Node<NodeData>, metrics?: NodeMetrics): NodeCostBreakdow
   const inRps = Math.max(0, metrics?.inRps ?? 0)
   const components: CostComponentResult[] = []
 
+  // Replica-set cost scaling (GitHub #12) — see REPLICA_COST_MULTIPLIER above. Read-only lookup
+  // of the DB node's configured consistency level; undefined for every non-DB / unconfigured node,
+  // so this is a strict no-op (multiplier 1) unless the user has explicitly opted into modeling
+  // replication for that node.
+  const replicaMultiplier = data.simConfig?.consistencyLevel ? REPLICA_COST_MULTIPLIER : 1
+
   const spec = getServiceSpec(type, provider)
 
   if (spec) {
@@ -66,7 +79,8 @@ function nodeCost(node: Node<NodeData>, metrics?: NodeMetrics): NodeCostBreakdow
         case 'instanceHourly': {
           const count = cost.instanceCount ?? comp.defaultCount
           const rate = cost.instanceRateUsdHr ?? comp.defaultRateUsdHr
-          components.push({ kind: comp.kind, label: comp.label, monthlyUsd: count * rate * HOURS_PER_MONTH })
+          const mult = REPLICATED_COST_KINDS.has(comp.kind) ? replicaMultiplier : 1
+          components.push({ kind: comp.kind, label: comp.label, monthlyUsd: count * rate * HOURS_PER_MONTH * mult })
           break
         }
         case 'requestsPerMillion': {
@@ -86,7 +100,8 @@ function nodeCost(node: Node<NodeData>, metrics?: NodeMetrics): NodeCostBreakdow
         case 'storageGbMonth': {
           const tier = comp.tiers.find(t => t.id === cost.storageTierId) ?? comp.tiers[0]
           const gb = cost.storageGb ?? 0
-          components.push({ kind: comp.kind, label: `${comp.label} (${tier.label})`, monthlyUsd: gb * tier.storageGbMonth })
+          const mult = REPLICATED_COST_KINDS.has(comp.kind) ? replicaMultiplier : 1
+          components.push({ kind: comp.kind, label: `${comp.label} (${tier.label})`, monthlyUsd: gb * tier.storageGbMonth * mult })
           break
         }
         case 'fixedMonthly': {
@@ -98,7 +113,7 @@ function nodeCost(node: Node<NodeData>, metrics?: NodeMetrics): NodeCostBreakdow
   } else if (cost.instanceRateUsdHr != null) {
     // Generic / unmapped node — still bill a user-supplied hourly rate if one was entered.
     const count = cost.instanceCount ?? 1
-    components.push({ kind: 'instanceHourly', label: 'Instance', monthlyUsd: count * cost.instanceRateUsdHr * HOURS_PER_MONTH })
+    components.push({ kind: 'instanceHourly', label: 'Instance', monthlyUsd: count * cost.instanceRateUsdHr * HOURS_PER_MONTH * replicaMultiplier })
   }
 
   if (components.length === 0) return null
