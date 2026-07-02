@@ -89,8 +89,12 @@ export const CATEGORY_COLORS = {
     bg: '#0D1F35', border: '#1A3A5C',
   },
   grouping: {
-    accent: '#475569',
-    foreground: { light: '#475569' }, // grouping renders on transparent bg, contrast not applicable
+    accent: '#8391A5',                // 5.49:1 on dark card — was #475569 (2.32:1, failed AA);
+                                       // grouping's accent is used as a foreground/icon-stroke
+                                       // color on BaseNode/GroupNode, not only a transparent-bg
+                                       // tint, so it needs the same AA guarantee every other
+                                       // category gets (task-1 review caught the original value)
+    foreground: { light: '#475569' }, // 7.58:1 on white — already passing, unaffected
     bg: 'transparent', border: '#2A2E38',
   },
 } as const

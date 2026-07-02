@@ -41,9 +41,12 @@ describe('WCAG AA contrast — light mode', () => {
     expect(contrastRatio(LIGHT_COLORS.successText, LIGHT_COLORS.nodeBase)).toBeGreaterThanOrEqual(4.5)
   })
 
-  it('every category foreground color passes normal-text AA on the light card surface', () => {
+  it('every category foreground color, including grouping, passes normal-text AA on the light card surface', () => {
+    // No exemptions: every CATEGORY_COLORS entry's foreground is used as a text/icon-stroke
+    // color somewhere (BaseNode/GroupNode), so every one must independently pass AA — an earlier
+    // version of this plan exempted `grouping` on the assumption it only ever renders on a
+    // transparent background, which turned out to be false (task-1 review caught it).
     for (const key of Object.keys(CATEGORY_COLORS) as (keyof typeof CATEGORY_COLORS)[]) {
-      if (key === 'grouping') continue // transparent bg, exempt — never rendered as text on a solid card
       const fg = CATEGORY_COLORS[key].foreground.light
       expect(contrastRatio(fg, LIGHT_COLORS.nodeBase)).toBeGreaterThanOrEqual(4.5)
     }
@@ -56,9 +59,8 @@ describe('WCAG AA contrast — dark mode', () => {
     expect(contrastRatio(DARK_COLORS.textSecondary, DARK_COLORS.nodeBase)).toBeGreaterThanOrEqual(4.5)
   })
 
-  it('every category accent color passes normal-text AA on the dark card surface', () => {
+  it('every category accent color, including grouping, passes normal-text AA on the dark card surface', () => {
     for (const key of Object.keys(CATEGORY_COLORS) as (keyof typeof CATEGORY_COLORS)[]) {
-      if (key === 'grouping') continue
       const accent = CATEGORY_COLORS[key].accent
       expect(contrastRatio(accent, DARK_COLORS.nodeBase)).toBeGreaterThanOrEqual(4.5)
     }
