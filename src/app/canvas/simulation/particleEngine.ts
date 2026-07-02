@@ -6,7 +6,7 @@ import type {
 } from '../../../lib/nodeConfig'
 import { GROUPING_TYPES, DEFAULT_EVENT_EDGE_CONFIG, edgeAcceptsProtocol } from '../../../lib/nodeConfig'
 import { useCanvasStore } from '../../store/canvas.store'
-import { interRegionLatencyMs } from '../../../lib/regionConfig'
+import { sampleInterRegionLatencyMs } from '../../../lib/regionConfig'
 import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventType, type CircuitState, type RequestSnapshot, type TemplateInfo } from '../../store/simulation.store'
 import { useReplayStore } from '../../store/replay.store'
 import { NODE_SIM_DEFAULTS } from '../../simulation/defaults'
@@ -23,7 +23,7 @@ import {
 } from './particleEngine/backpressure'
 import {
   trafficMultiplier as chaosTrafficMultiplier, advanceChaosSchedule as chaosAdvanceSchedule,
-  getChaosFailures, clearChaosState,
+  getChaosFailures, clearChaosState, isEdgePartitioned, edgePartitionLossRate,
 } from './particleEngine/chaos'
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -441,10 +441,16 @@ let _canvasRect: DOMRect | null = null
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 
+// Single source of truth for classifying a particle's DB read/write lane from its stable ID
+// modulo. Shared by isReadParticle (capacity accounting) and buildSnapshot (inspector display)
+// so the two can never disagree on the same particle id — see GitHub issue #16.
+export function particleReadWriteLane(id: number, readPercentage: number): 'read' | 'write' {
+  return (id % 100) < readPercentage * 100 ? 'read' : 'write'
+}
+
 // Determines whether a particle represents a DB read (vs write) using its stable ID modulo.
-// Mirrors the `seed = p.id % 97` pattern in buildSnapshot for consistent method labelling.
 function isReadParticle(particleId: number, edgeReadPct: number): boolean {
-  return (particleId % 100) < Math.round(edgeReadPct * 100)
+  return particleReadWriteLane(particleId, edgeReadPct) === 'read'
 }
 
 // Walk the parentId ancestor chain to find the nearest namespace and cluster containers.
@@ -785,7 +791,20 @@ function spawnParticles(now: number, delta: number) {
       ? (_edgesData.find(e => e.id === ep.id)?.data as EdgeData | undefined)?.config as RequestEdgeConfig | undefined
       : undefined
     const targetNodeId = _edgesData.find(e => e.id === ep.id)?.target
+    // Edge-level partition / stochastic packet loss (issue #11): unlike the deterministic
+    // capacity/health/circuit drops above (which gate the whole edge's spawn rate), a partition
+    // drops each particle independently per its lossRate — both endpoint nodes stay healthy,
+    // only this link's traffic is (probabilistically) lost in transit.
+    const edgeLossRate = isEdgePartitioned(ep.id, _simulatedTimeMs) ? edgePartitionLossRate(ep.id, _simulatedTimeMs) : 0
     for (let i = 0; i < n && total < MAX_PARTICLES; i++) {
+      if (edgeLossRate > 0 && Math.random() < edgeLossRate) {
+        if (sourceNodeId) {
+          spawnErrorFlash(sourceNodeId)
+          _droppedCounts.set(sourceNodeId, (_droppedCounts.get(sourceNodeId) ?? 0) + 1)
+        }
+        continue
+      }
+
       // Acquire exactly one thread-pool worker per particle actually minted, after the
       // MAX_PARTICLES cap check above — 1:1 with the scheduleWorkerRelease call each minted
       // particle's arrival handler later makes. Reject overflow explicitly (fast-fail 503-style
@@ -2257,7 +2276,7 @@ function buildSnapshot(p: Particle): RequestSnapshot {
   const edgeType = (edge?.data as EdgeData | undefined)?.edgeType ?? 'request'
 
   const seed = p.id % 97
-  const METHODS     = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH']
+  const WRITE_METHODS = ['POST', 'PUT', 'DELETE', 'PATCH']
   const PATHS       = ['/api/v1/data', '/api/v1/users', '/api/v1/orders', '/health', '/api/v1/events', '/api/v1/records']
   const STREAM_OPS  = ['PUBLISH', 'CONSUME', 'EMIT', 'SUBSCRIBE']
 
@@ -2276,10 +2295,15 @@ function buildSnapshot(p: Particle): RequestSnapshot {
   })() : undefined
 
   // Method/path: prefer the template, else fall back to today's deterministic placeholders.
+  // The read-vs-write (GET-vs-other) classification below goes through the same
+  // particleReadWriteLane helper isReadParticle uses for DB capacity accounting, so the
+  // inspector's displayed method always agrees with the lane that actually drove the
+  // simulation for this particle (see GitHub issue #16).
+  const edgeReadPct = (edge?.data as EdgeData | undefined)?.readPercentage ?? 0.8
   const httpTpl = tpl?.protocol === 'http' ? tpl as HttpTemplate : undefined
   const method  = httpTpl ? httpTpl.method
     : isStream ? STREAM_OPS[seed % STREAM_OPS.length]
-    : (p.method ?? METHODS[seed % METHODS.length])
+    : (p.method ?? (particleReadWriteLane(p.id, edgeReadPct) === 'read' ? 'GET' : WRITE_METHODS[seed % WRITE_METHODS.length]))
   const path    = httpTpl ? httpTpl.path : PATHS[(seed * 3) % PATHS.length]
 
   return {
@@ -2380,7 +2404,7 @@ export function startSimulation(
     const srcRegionId  = resolveRegionId(edge.source)
     const tgtRegionId  = resolveRegionId(edge.target)
     const geoLatencyMs = srcRegionId && tgtRegionId && srcRegionId !== tgtRegionId
-      ? interRegionLatencyMs(srcRegionId, tgtRegionId)
+      ? sampleInterRegionLatencyMs(srcRegionId, tgtRegionId)
       // One side has a region, the other doesn't — apply a conservative default so
       // the latency cost of leaving/entering a defined region is not silently ignored.
       : (srcRegionId || tgtRegionId) && !(srcRegionId && tgtRegionId) ? 50 : 0
