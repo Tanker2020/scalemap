@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   getChaosFailures, clearChaosState,
   trafficMultiplier, advanceChaosSchedule,
+  triggerEdgePartition, isEdgePartitioned, triggerRegionPartition,
 } from './chaos'
 import type { Node } from '@xyflow/react'
 import type { NodeData } from '../../../../lib/nodeConfig'
@@ -79,5 +80,49 @@ describe('advanceChaosSchedule', () => {
     // With an empty nodes map there are no victims to pick, but the schedule pointers still advance
     // without throwing, and no read-only call ever triggers scheduling on its own.
     expect(() => trafficMultiplier(20_000, 'chaos', 1, 20_000, emptyNodesMap)).not.toThrow()
+  })
+})
+
+describe('edge-level partition chaos', () => {
+  beforeEach(() => clearChaosState())
+
+  it('an edge with an active partition reports isEdgePartitioned = true', () => {
+    triggerEdgePartition('edge-1', /* durationMs */ 5000, /* now */ 0)
+    expect(isEdgePartitioned('edge-1', 100)).toBe(true)
+  })
+
+  it('the partition clears after its duration elapses', () => {
+    triggerEdgePartition('edge-1', 5000, 0)
+    expect(isEdgePartitioned('edge-1', 6000)).toBe(false)
+  })
+
+  it('partitioning an edge does not affect node-keyed chaos state', () => {
+    expect(getChaosFailures().size).toBe(0)
+    triggerEdgePartition('edge-1', 5000, 0)
+    // Edge partitions are a parallel, edge-keyed structure — asserting on the only node-keyed
+    // chaos state this module exposes (_chaosFailures via getChaosFailures()) confirms triggering
+    // an edge partition has zero side effects on node health/failure tracking.
+    expect(getChaosFailures().size).toBe(0)
+    expect(isEdgePartitioned('edge-1', 100)).toBe(true)
+  })
+
+  it('an edge with no partition reports isEdgePartitioned = false', () => {
+    expect(isEdgePartitioned('never-partitioned', 0)).toBe(false)
+  })
+
+  it('triggerRegionPartition partitions every crossing edge for the same duration', () => {
+    triggerRegionPartition(['edge-a', 'edge-b', 'edge-c'], 5000, 0)
+    expect(isEdgePartitioned('edge-a', 100)).toBe(true)
+    expect(isEdgePartitioned('edge-b', 100)).toBe(true)
+    expect(isEdgePartitioned('edge-c', 100)).toBe(true)
+    expect(isEdgePartitioned('edge-a', 6000)).toBe(false)
+    expect(isEdgePartitioned('edge-b', 6000)).toBe(false)
+    expect(isEdgePartitioned('edge-c', 6000)).toBe(false)
+  })
+
+  it('clearChaosState clears edge partitions', () => {
+    triggerEdgePartition('edge-1', 5000, 0)
+    clearChaosState()
+    expect(isEdgePartitioned('edge-1', 100)).toBe(false)
   })
 })

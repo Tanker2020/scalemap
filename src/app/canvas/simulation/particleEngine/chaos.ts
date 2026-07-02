@@ -147,9 +147,55 @@ export function trafficMultiplier(
   }
 }
 
+// ─── Edge-level chaos: link partition / stochastic packet loss (GitHub #11) ────
+// Parallel, edge-keyed structure — deliberately NOT merged into the node-keyed
+// _chaosFailures map above, since a partition is a property of a link, not a node:
+// both endpoint nodes stay healthy while the edge between them drops traffic.
+
+interface EdgePartitionEntry {
+  partitionedUntilSimMs: number
+  lossRate: number  // fraction of particles dropped per hop while the partition is active (1.0 = fully severed)
+}
+const _edgePartitions = new Map<string, EdgePartitionEntry>()
+
+// Sever (or degrade) a single edge for durationMs of simulated time. lossRate defaults to 1.0
+// (fully severed / hard partition); pass a lower value to model lossy-but-not-down links.
+export function triggerEdgePartition(edgeId: string, durationMs: number, nowSimMs: number, lossRate = 1.0): void {
+  _edgePartitions.set(edgeId, { partitionedUntilSimMs: nowSimMs + durationMs, lossRate })
+}
+
+// Read-only; lazily clears expired entries. Safe to call any number of times per frame,
+// mirroring trafficMultiplier's purity contract (no schedule advancement happens here beyond
+// deleting already-expired entries, which has no observable effect on future reads).
+export function isEdgePartitioned(edgeId: string, nowSimMs: number): boolean {
+  const entry = _edgePartitions.get(edgeId)
+  if (!entry) return false
+  if (nowSimMs >= entry.partitionedUntilSimMs) {
+    _edgePartitions.delete(edgeId)
+    return false
+  }
+  return true
+}
+
+// Returns the configured loss rate for a currently-active partition, or 0 if the edge isn't
+// partitioned. Lets call sites do stochastic per-hop dropping instead of the deterministic
+// all-or-nothing cut that isEdgePartitioned alone would imply.
+export function edgePartitionLossRate(edgeId: string, nowSimMs: number): number {
+  if (!isEdgePartitioned(edgeId, nowSimMs)) return 0
+  return _edgePartitions.get(edgeId)?.lossRate ?? 1.0
+}
+
+// A region partition is expressed as triggering edge-partition on every edge crossing the
+// region boundary — no separate "region" state needed; the primitive is edge-level, region
+// partitioning is a caller-side convenience that enumerates crossing edges once.
+export function triggerRegionPartition(crossingEdgeIds: string[], durationMs: number, nowSimMs: number): void {
+  for (const id of crossingEdgeIds) triggerEdgePartition(id, durationMs, nowSimMs)
+}
+
 export function clearChaosState(): void {
   _spikeNextAt     = 0
   _spikeEndAt      = 0
   _chaosNextFailAt = 0
   _chaosFailures.clear()
+  _edgePartitions.clear()
 }
