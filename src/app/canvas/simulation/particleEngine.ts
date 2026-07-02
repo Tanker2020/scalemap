@@ -332,6 +332,17 @@ function computePercentile(samples: number[], p: number): number {
   return sorted[Math.max(0, Math.min(i, sorted.length - 1))]
 }
 
+// Queueing-theoretic (M/M/1-style) saturation latency multiplier: latency should blow up
+// hyperbolically as utilization (rho) approaches 1, not plateau at a fixed ceiling. Replaces the
+// old capped polynomial (`1 + ((util-0.7)/0.3)^2 * 3`, which topped out at 4x at 100% utilization
+// and only applied to compute node types) with `1 / (1 - rho)`, clamped at rho=0.99 purely for
+// numerical safety (never divide by zero/near-zero) — applied uniformly across compute, storage,
+// and messaging node types (see the `isCompute`/`isStorage`/`isMessaging` gate at its call site).
+export function saturationLatencyMultiplier(rawUtilization: number): number {
+  const clamped = Math.min(rawUtilization, 0.99)
+  return 1 / (1 - clamped)
+}
+
 // ─── Color helpers ────────────────────────────────────────────────────────────
 
 function edgeColor(edgeType: string): string {
@@ -1749,10 +1760,14 @@ function updateAllNodeMetrics(now: number, delta: number) {
     // Apply upstream cascade pressure to error rate
     const cascadePressure = _upstreamPressure.get(nodeId) ?? 0
 
-    // CPU saturation → non-linear latency amplification for compute nodes (7d)
-    const isCompute = ['ec2', 'container', 'pod', 'lambda'].includes(nodeType)
-    const cpuFactor = (isCompute && utilization > 0.7)
-      ? 1 + Math.pow((Math.min(utilization, 1) - 0.7) / 0.3, 2) * 3  // up to 4× at 100% util
+    // Saturation → queueing-theoretic (1/(1-rho)) latency amplification (7d). Applies to compute,
+    // storage, and messaging node types alike — previously gated to compute only, which meant
+    // DB/queue nodes never showed amplified latency near saturation no matter how overloaded.
+    const isCompute   = ['ec2', 'container', 'pod', 'lambda'].includes(nodeType)
+    const isStorage   = ['dbSql', 'dbNoSql', 'objectStorage', 'fileStorage'].includes(nodeType)
+    const isMessaging = ['queue', 'eventBus', 'pubsub', 'stream'].includes(nodeType)
+    const cpuFactor = (isCompute || isStorage || isMessaging)
+      ? saturationLatencyMultiplier(rawUtilization)
       : 1
 
     // Compute latency percentiles from ring buffer
