@@ -64,7 +64,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
   const commitEdit = useCallback(() => {
     setEditing(false)
     if (editValue.trim() && editValue !== nodeData.label) {
-      updateNodeData(id, { label: editValue.trim() })
+      updateNodeData(id, { label: editValue.trim(), labelCustomized: true })
     } else {
       setEditValue(nodeData.label)
     }

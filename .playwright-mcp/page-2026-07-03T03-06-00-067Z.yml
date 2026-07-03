@@ -1,0 +1,217 @@
+- generic [ref=f3e3]:
+  - generic [ref=f3e4]:
+    - button "New" [ref=f3e5] [cursor=pointer]:
+      - img [ref=f3e6]
+      - text: New
+    - button "Open" [ref=f3e9] [cursor=pointer]:
+      - img [ref=f3e10]
+      - text: Open
+    - button "Save" [ref=f3e113] [cursor=pointer]:
+      - img [ref=f3e114]
+      - text: Save
+    - button "Export" [ref=f3e119] [cursor=pointer]:
+      - img [ref=f3e120]
+      - text: Export
+      - img [ref=f3e123]
+    - button "Import" [ref=f3e126] [cursor=pointer]:
+      - img [ref=f3e127]
+      - text: Import
+      - img [ref=f3e130]
+    - button "Provider" [ref=f3e133] [cursor=pointer]:
+      - img [ref=f3e134]
+      - text: Provider
+      - img [ref=f3e136]
+    - button "Select" [ref=f3e13] [cursor=pointer]:
+      - img [ref=f3e14]
+      - text: Select
+    - button "Hand" [ref=f3e16] [cursor=pointer]:
+      - img [ref=f3e17]
+      - text: Hand
+    - button "Connect" [ref=f3e22] [cursor=pointer]:
+      - img [ref=f3e23]
+      - text: Connect
+    - button "Switch to light mode" [ref=f3e26] [cursor=pointer]:
+      - img [ref=f3e27]
+    - button "Undo" [ref=f3e139] [cursor=pointer]
+    - button "Redo" [ref=f3e140] [cursor=pointer]
+    - generic [ref=f3e141]:
+      - generic [ref=f3e142]: Panels
+      - button "Inspect" [ref=f3e143] [cursor=pointer]:
+        - img [ref=f3e144]
+        - text: Inspect
+      - button "Dock" [ref=f3e145] [cursor=pointer]:
+        - img [ref=f3e146]
+        - text: Dock
+      - button "Packets" [ref=f3e149] [cursor=pointer]:
+        - img [ref=f3e150]
+        - text: Packets
+      - button "Diagnostics" [ref=f3e154] [cursor=pointer]:
+        - img [ref=f3e155]
+        - text: Diagnostics
+    - generic [ref=f3e159]:
+      - button "Simulate" [ref=f3e160] [cursor=pointer]: Simulate
+      - button "Simulation settings — speed, traffic mode, volume" [ref=f3e162] [cursor=pointer]:
+        - img [ref=f3e163]
+  - generic [ref=f3e33]:
+    - complementary [ref=f3e165]:
+      - generic [ref=f3e166]:
+        - img [ref=f3e167]
+        - text: Node Palette
+      - textbox "Search nodes..." [ref=f3e173]
+      - generic [ref=f3e174]:
+        - generic [ref=f3e175]:
+          - generic [ref=f3e176]: Compute
+          - generic "Drag to add EC2 / VM" [ref=f3e177]:
+            - img [ref=f3e179]
+            - generic [ref=f3e182]: EC2 / VM
+          - generic "Drag to add Lambda" [ref=f3e183]:
+            - img [ref=f3e185]
+            - generic [ref=f3e187]: Lambda
+          - generic "Drag to add Pod" [ref=f3e188]:
+            - img [ref=f3e190]
+            - generic [ref=f3e192]: Pod
+        - generic [ref=f3e193]:
+          - generic [ref=f3e194]: Network
+          - generic "Drag to add Load Balancer" [ref=f3e195]:
+            - img [ref=f3e197]
+            - generic [ref=f3e201]: Load Balancer
+          - generic "Drag to add API Gateway" [ref=f3e202]:
+            - img [ref=f3e204]
+            - generic [ref=f3e207]: API Gateway
+          - generic "Drag to add CDN" [ref=f3e208]:
+            - img [ref=f3e210]
+            - generic [ref=f3e214]: CDN
+          - generic "Drag to add DNS" [ref=f3e215]:
+            - img [ref=f3e217]
+            - generic [ref=f3e220]: DNS
+          - generic "Drag to add Firewall" [ref=f3e221]:
+            - img [ref=f3e223]
+            - generic [ref=f3e225]: Firewall
+          - generic "Drag to add VPN" [ref=f3e226]:
+            - img [ref=f3e228]
+            - generic [ref=f3e231]: VPN
+        - generic [ref=f3e232]:
+          - generic [ref=f3e233]: Storage
+          - generic "Drag to add Database (SQL)" [ref=f3e234]:
+            - img [ref=f3e236]
+            - generic [ref=f3e240]: Database (SQL)
+          - generic "Drag to add Database (NoSQL)" [ref=f3e241]:
+            - img [ref=f3e243]
+            - generic [ref=f3e247]: Database (NoSQL)
+          - generic "Drag to add Object Storage" [ref=f3e248]:
+            - img [ref=f3e250]
+            - generic [ref=f3e253]: Object Storage
+          - generic "Drag to add File Storage" [ref=f3e254]:
+            - img [ref=f3e256]
+            - generic [ref=f3e258]: File Storage
+        - generic [ref=f3e259]:
+          - generic [ref=f3e260]: Messaging
+          - generic "Drag to add Message Queue" [ref=f3e261]:
+            - img [ref=f3e263]
+            - generic [ref=f3e264]: Message Queue
+          - generic "Drag to add Event Bus" [ref=f3e265]:
+            - img [ref=f3e267]
+            - generic [ref=f3e273]: Event Bus
+          - generic "Drag to add Pub/Sub Topic" [ref=f3e274]:
+            - img [ref=f3e276]
+            - generic [ref=f3e282]: Pub/Sub Topic
+          - generic "Drag to add Stream (Kafka)" [ref=f3e283]:
+            - img [ref=f3e285]
+            - generic [ref=f3e287]: Stream (Kafka)
+        - generic [ref=f3e288]:
+          - generic [ref=f3e289]: Caching
+          - generic "Drag to add Redis" [ref=f3e290]:
+            - img [ref=f3e292]
+            - generic [ref=f3e296]: Redis
+          - generic "Drag to add Memcached" [ref=f3e297]:
+            - img [ref=f3e299]
+            - generic [ref=f3e303]: Memcached
+          - generic "Drag to add CDN Cache" [ref=f3e304]:
+            - img [ref=f3e306]
+            - generic [ref=f3e310]: CDN Cache
+        - generic [ref=f3e311]:
+          - generic [ref=f3e312]: Orchestration
+          - generic "Drag to add K8s Cluster" [ref=f3e313]:
+            - img [ref=f3e315]
+            - generic [ref=f3e318]: K8s Cluster
+          - generic "Drag to add ECS Cluster" [ref=f3e319]:
+            - img [ref=f3e321]
+            - generic [ref=f3e324]: ECS Cluster
+          - generic "Drag to add Docker Compose" [ref=f3e325]:
+            - img [ref=f3e327]
+            - generic [ref=f3e331]: Docker Compose
+        - generic [ref=f3e332]:
+          - generic [ref=f3e333]: Grouping
+          - generic "Drag to add VPC" [ref=f3e334]:
+            - img [ref=f3e336]
+            - generic [ref=f3e338]: VPC
+          - generic "Drag to add Subnet" [ref=f3e339]:
+            - img [ref=f3e341]
+            - generic [ref=f3e343]: Subnet
+          - generic "Drag to add Availability Zone" [ref=f3e344]:
+            - img [ref=f3e346]
+            - generic [ref=f3e348]: Availability Zone
+          - generic "Drag to add Region" [ref=f3e349]:
+            - img [ref=f3e351]
+            - generic [ref=f3e353]: Region
+          - generic "Drag to add Namespace" [ref=f3e354]:
+            - img [ref=f3e356]
+            - generic [ref=f3e358]: Namespace
+    - application [ref=f3e361]:
+      - generic [ref=f3e363] [cursor=pointer]:
+        - generic:
+          - generic:
+            - img:
+              - group "Edge from lb-cdn to lb-alb":
+                - img
+            - img:
+              - group "Edge from lb-alb to lb-ec1" [ref=f3e364]:
+                - img
+            - img:
+              - group "Edge from lb-alb to lb-ec2" [ref=f3e367]:
+                - img
+            - img:
+              - group "Edge from lb-ec1 to lb-db" [ref=f3e370]:
+                - img
+            - img:
+              - group "Edge from lb-ec2 to lb-db" [ref=f3e373]:
+                - img
+          - generic:
+            - group [ref=f3e376]:
+              - generic [ref=f3e377]:
+                - img [ref=f3e383]
+                - generic [ref=f3e387]:
+                  - generic [ref=f3e388]: CloudFront
+                  - generic [ref=f3e389]: CDN layer
+            - group [ref=f3e392]:
+              - generic [ref=f3e393]:
+                - img [ref=f3e399]
+                - generic [ref=f3e403]:
+                  - generic [ref=f3e404]: App Load Balancer
+                  - generic [ref=f3e405]: ALB
+            - group [ref=f3e408]:
+              - generic [ref=f3e409]:
+                - img [ref=f3e415]
+                - generic [ref=f3e418]:
+                  - generic [ref=f3e419]: app-server-1
+                  - generic [ref=f3e420]: t3.medium
+            - group [ref=f3e423]:
+              - generic [ref=f3e424]:
+                - img [ref=f3e430]
+                - generic [ref=f3e433]:
+                  - generic [ref=f3e434]: app-server-2
+                  - generic [ref=f3e435]: t3.medium
+            - group [ref=f3e438]:
+              - generic [ref=f3e439]:
+                - img [ref=f3e445]
+                - generic [ref=f3e449]:
+                  - generic [ref=f3e450]: RDS Postgres
+                  - generic [ref=f3e451]: db.t3.large
+      - img
+      - img "Mini Map" [ref=f3e455]
+    - complementary [ref=f3e463]:
+      - generic [ref=f3e464]:
+        - button "Properties" [ref=f3e465] [cursor=pointer]
+        - button "Analytics" [ref=f3e466] [cursor=pointer]
+      - generic [ref=f3e467]: Select a node or edge to view its properties
+  - generic [ref=f3e112]: ● unsaved

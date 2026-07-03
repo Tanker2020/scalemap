@@ -1,14 +1,73 @@
 import {
   getBezierPath,
+  useInternalNode,
+  Position,
   EdgeLabelRenderer,
   type EdgeProps,
   type Edge,
+  type InternalNode,
+  type Node,
 } from '@xyflow/react'
 import type { EdgeData } from '../../../lib/nodeConfig'
 import { useCanvasStore } from '../../store/canvas.store'
 import { useUiStore } from '../../store/ui.store'
 import { CATEGORY_COLORS } from '../../../lib/theme'
 import styles from './edges.module.css'
+
+// BaseNode renders 4 unlabeled handles (Top/Left target, Bottom/Right source) so a node can
+// receive/send connections from any side. Without per-handle ids, React Flow can't tell which
+// physical handle a given edge actually uses and always resolves the same fixed pair — which
+// forces a large S-shaped loop whenever the target ends up above or beside the source instead of
+// below it. Floating-edge geometry sidesteps the ambiguity entirely: recompute the attachment
+// point + side from the two nodes' live rectangles every render, so the curve always leaves
+// toward wherever the other node actually is. https://reactflow.dev/examples/edges/floating-edges
+function getNodeIntersection(intersectionNode: InternalNode<Node>, targetNode: InternalNode<Node>) {
+  const { width, height } = intersectionNode.measured
+  const intersectionNodePosition = intersectionNode.internals.positionAbsolute
+  const targetPosition = targetNode.internals.positionAbsolute
+  const w = (width ?? 0) / 2
+  const h = (height ?? 0) / 2
+
+  const x2 = intersectionNodePosition.x + w
+  const y2 = intersectionNodePosition.y + h
+  const x1 = targetPosition.x + (targetNode.measured.width ?? 0) / 2
+  const y1 = targetPosition.y + (targetNode.measured.height ?? 0) / 2
+
+  const xx1 = (x1 - x2) / (2 * w) - (y1 - y2) / (2 * h)
+  const yy1 = (x1 - x2) / (2 * w) + (y1 - y2) / (2 * h)
+  const a = 1 / (Math.abs(xx1) + Math.abs(yy1) || 1)
+  const xx3 = a * xx1
+  const yy3 = a * yy1
+
+  return { x: w * (xx3 + yy3) + x2, y: h * (-xx3 + yy3) + y2 }
+}
+
+function getEdgePosition(node: InternalNode<Node>, intersectionPoint: { x: number; y: number }) {
+  const n = node.internals.positionAbsolute
+  const nx = Math.round(n.x)
+  const ny = Math.round(n.y)
+  const px = Math.round(intersectionPoint.x)
+  const py = Math.round(intersectionPoint.y)
+
+  if (px <= nx + 1) return Position.Left
+  if (px >= nx + (node.measured.width ?? 0) - 1) return Position.Right
+  if (py <= ny + 1) return Position.Top
+  if (py >= ny + (node.measured.height ?? 0) - 1) return Position.Bottom
+  return Position.Top
+}
+
+function getFloatingEdgeParams(source: InternalNode<Node>, target: InternalNode<Node>) {
+  const sourceIntersection = getNodeIntersection(source, target)
+  const targetIntersection = getNodeIntersection(target, source)
+  return {
+    sourceX: sourceIntersection.x,
+    sourceY: sourceIntersection.y,
+    targetX: targetIntersection.x,
+    targetY: targetIntersection.y,
+    sourcePosition: getEdgePosition(source, sourceIntersection),
+    targetPosition: getEdgePosition(target, targetIntersection),
+  }
+}
 
 const PARALLEL_GAP = 22  // px between sibling edges in the same corridor
 
@@ -71,8 +130,9 @@ function buildEdgeConfig(themeMode: 'dark' | 'light'): Record<string, EdgeConfig
 
 export function ScalemapEdge({
   id, source, target,
-  sourceX, sourceY, targetX, targetY,
-  sourcePosition, targetPosition,
+  sourceX: fallbackSourceX, sourceY: fallbackSourceY,
+  targetX: fallbackTargetX, targetY: fallbackTargetY,
+  sourcePosition: fallbackSourcePosition, targetPosition: fallbackTargetPosition,
   data, selected,
 }: EdgeProps<Edge<EdgeData>>) {
   const edgeData = data as EdgeData | undefined
@@ -80,6 +140,20 @@ export function ScalemapEdge({
   const themeMode = useUiStore(s => s.themeMode)
   const edgeConfig = buildEdgeConfig(themeMode)
   const cfg = edgeConfig[edgeType] ?? edgeConfig.request
+
+  // Recompute attachment points/sides from the nodes' current rectangles rather than trusting
+  // the handle-derived props above — see getFloatingEdgeParams for why those props aren't
+  // reliable here. Falls back to the handle-derived props only if internals aren't ready yet
+  // (e.g. the very first render before node measurement completes).
+  const sourceNode = useInternalNode(source)
+  const targetNode = useInternalNode(target)
+  const floating = sourceNode && targetNode ? getFloatingEdgeParams(sourceNode, targetNode) : null
+  const sourceX = floating?.sourceX ?? fallbackSourceX
+  const sourceY = floating?.sourceY ?? fallbackSourceY
+  const targetX = floating?.targetX ?? fallbackTargetX
+  const targetY = floating?.targetY ?? fallbackTargetY
+  const sourcePosition = floating?.sourcePosition ?? fallbackSourcePosition
+  const targetPosition = floating?.targetPosition ?? fallbackTargetPosition
 
   // Fan parallel edges apart: find siblings sharing this unordered {source,target} corridor and
   // this edge's index among them, then bow by a perpendicular offset. Single edges are unchanged.

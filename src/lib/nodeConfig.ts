@@ -238,6 +238,12 @@ export interface NodeData extends Record<string, unknown> {
   provider?: CloudProvider  // cloud provider mapping; undefined ≡ 'generic'
   cost?: NodeCostConfig     // user-entered pricing parameters
   packetDistribution?: PacketDistributionEntry[]  // custom-mode traffic profile (entry/source nodes)
+  // True once the user has hand-edited this node's label (inline rename or Properties panel).
+  // Gates provider-driven label sync — vault templates and freshly-dropped nodes ship with a
+  // display label that's neither the generic default nor a real service name (e.g. "App Load
+  // Balancer"), so without this flag resolveProviderLabel's string heuristic mistook them for
+  // user-customized names and silently refused to ever sync the label to the chosen provider.
+  labelCustomized?: boolean
 }
 
 // ─── Per-edge-type configuration ───────────────────────────────────────────────

@@ -1,0 +1,123 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - button "New" [ref=e5] [cursor=pointer]:
+      - img [ref=e6]
+      - text: New
+    - button "Open" [ref=e9] [cursor=pointer]:
+      - img [ref=e10]
+      - text: Open
+    - button "Save" [ref=e113] [cursor=pointer]:
+      - img [ref=e114]
+      - text: Save
+    - button "Export" [ref=e119] [cursor=pointer]:
+      - img [ref=e120]
+      - text: Export
+      - img [ref=e123]
+    - button "Import" [ref=e126] [cursor=pointer]:
+      - img [ref=e127]
+      - text: Import
+      - img [ref=e130]
+    - button "Provider" [ref=e133] [cursor=pointer]:
+      - img [ref=e134]
+      - text: Provider
+      - img [ref=e136]
+    - button "Select" [ref=e13] [cursor=pointer]:
+      - img [ref=e14]
+      - text: Select
+    - button "Hand" [ref=e16] [cursor=pointer]:
+      - img [ref=e17]
+      - text: Hand
+    - button "Connect" [ref=e22] [cursor=pointer]:
+      - img [ref=e23]
+      - text: Connect
+    - button "Switch to light mode" [ref=e26] [cursor=pointer]:
+      - img [ref=e27]
+    - button "Undo" [ref=e139] [cursor=pointer]
+    - button "Redo" [ref=e140] [cursor=pointer]
+    - generic [ref=e141]:
+      - generic [ref=e142]: Panels
+      - button "Inspect" [ref=e143] [cursor=pointer]:
+        - img [ref=e144]
+        - text: Inspect
+      - button "Dock" [ref=e145] [cursor=pointer]:
+        - img [ref=e146]
+        - text: Dock
+      - button "Packets" [ref=e149] [cursor=pointer]:
+        - img [ref=e150]
+        - text: Packets
+      - button "Diagnostics" [ref=e154] [cursor=pointer]:
+        - img [ref=e155]
+        - text: Diagnostics
+    - generic [ref=e159]:
+      - button "Simulate" [ref=e160] [cursor=pointer]: Simulate
+      - button "Simulation settings — speed, traffic mode, volume" [ref=e162] [cursor=pointer]:
+        - img [ref=e163]
+  - generic [ref=e33]:
+    - generic [ref=e165]:
+      - button "Compute" [ref=e166] [cursor=pointer]:
+        - img [ref=e167]
+      - button "Network" [ref=e170] [cursor=pointer]:
+        - img [ref=e171]
+      - button "Storage" [ref=e175] [cursor=pointer]:
+        - img [ref=e176]
+      - button "Messaging" [ref=e180] [cursor=pointer]:
+        - img [ref=e181]
+      - button "Caching" [ref=e182] [cursor=pointer]:
+        - img [ref=e183]
+      - button "Orchestration" [ref=e187] [cursor=pointer]:
+        - img [ref=e188]
+      - button "Grouping" [ref=e191] [cursor=pointer]:
+        - img [ref=e192]
+    - application [ref=e196]:
+      - generic [ref=e198] [cursor=pointer]:
+        - generic:
+          - generic:
+            - img:
+              - group "Edge from lb-cdn to lb-alb":
+                - img
+            - img:
+              - group "Edge from lb-alb to lb-ec1" [ref=e199]:
+                - img
+            - img:
+              - group "Edge from lb-alb to lb-ec2" [ref=e202]:
+                - img
+            - img:
+              - group "Edge from lb-ec1 to lb-db" [ref=e205]:
+                - img
+            - img:
+              - group "Edge from lb-ec2 to lb-db" [ref=e208]:
+                - img
+          - generic:
+            - group [ref=e211]:
+              - generic [ref=e212]:
+                - img [ref=e218]
+                - generic [ref=e222]:
+                  - generic [ref=e223]: CloudFront
+                  - generic [ref=e224]: CDN layer
+            - group [ref=e227]:
+              - generic [ref=e228]:
+                - img [ref=e234]
+                - generic [ref=e238]:
+                  - generic [ref=e239]: App Load Balancer
+                  - generic [ref=e240]: ALB
+            - group [ref=e243]:
+              - generic [ref=e244]:
+                - img [ref=e250]
+                - generic [ref=e253]:
+                  - generic [ref=e254]: app-server-1
+                  - generic [ref=e255]: t3.medium
+            - group [ref=e258]:
+              - generic [ref=e259]:
+                - img [ref=e265]
+                - generic [ref=e268]:
+                  - generic [ref=e269]: app-server-2
+                  - generic [ref=e270]: t3.medium
+            - group [ref=e273]:
+              - generic [ref=e274]:
+                - img [ref=e280]
+                - generic [ref=e284]:
+                  - generic [ref=e285]: RDS Postgres
+                  - generic [ref=e286]: db.t3.large
+      - img
+      - img "Mini Map" [ref=e290]
+  - generic [ref=e112]: ● unsaved

@@ -11,6 +11,7 @@ import {
 } from '@xyflow/react'
 import { NODE_CONFIG, GROUPING_TYPES, defaultEdgeConfig } from '../../lib/nodeConfig'
 import type { NodeData, EdgeData, NodeType, EdgeType, PacketTemplate, PacketMode, PacketRegistry, PacketDistributionEntry, NewPacketTemplate } from '../../lib/nodeConfig'
+import { CLOUD_REGISTRY, providerLabelForNode, type CloudProvider } from '../../lib/cloudRegistry'
 
 interface CanvasSnapshot {
   nodes: Node<NodeData>[]
@@ -40,6 +41,7 @@ interface CanvasStore {
 
   addNode: (type: NodeType, position: { x: number; y: number }, parentId?: string) => void
   updateNodeData: (id: string, data: Partial<NodeData>) => void
+  applyProviderToAll: (provider: CloudProvider) => void
   duplicateNode: (id: string) => void
   removeNodes: (ids: string[]) => void
   updateEdgeData: (id: string, data: Partial<EdgeData>) => void
@@ -144,6 +146,24 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     get().pushHistory()
     set(s => ({
       nodes: s.nodes.map(n => n.id === id ? { ...n, data: { ...n.data, ...data } } : n),
+    }))
+  },
+
+  // Bulk provider switch across the whole graph — skips nodes with no cloud-service mapping
+  // (grouping containers, generic nodes with no CLOUD_REGISTRY entry) and respects the same
+  // labelCustomized gate as the per-node Properties panel control, so hand-renamed nodes keep
+  // their name. Pushes a single history entry so the whole sweep undoes in one step.
+  applyProviderToAll: (provider) => {
+    get().pushHistory()
+    set(s => ({
+      nodes: s.nodes.map(n => {
+        const nodeType = n.type as NodeType
+        if (!CLOUD_REGISTRY[nodeType]) return n
+        const data = n.data as NodeData
+        const genericLabel = NODE_CONFIG[nodeType]?.label ?? nodeType
+        const nextLabel = providerLabelForNode(nodeType, provider, data.label, genericLabel, data.labelCustomized)
+        return { ...n, data: { ...data, provider, label: nextLabel } }
+      }),
     }))
   },
 

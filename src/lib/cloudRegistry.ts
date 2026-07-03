@@ -297,3 +297,21 @@ export function resolveProviderLabel(
   const spec = getServiceSpec(nodeType, provider)
   return spec?.serviceName ?? genericLabel
 }
+
+// Call-site wrapper for provider switches once a node tracks NodeData.labelCustomized.
+// The string-matching resolveProviderLabel above treats vault-template display names (e.g.
+// "App Load Balancer", set directly by src/lib/vault/templates.ts, never touched by a user) as
+// "customized" purely because they don't exactly equal the generic default or a service name —
+// so it refused to ever sync them. With an explicit flag we don't need to guess: an unset/false
+// flag means the label is still whatever we generated, so always resync it to the current
+// provider's mapping; true means the user actually typed something, so never touch it.
+export function providerLabelForNode(
+  nodeType: string,
+  provider: CloudProvider,
+  currentLabel: string,
+  genericLabel: string,
+  labelCustomized: boolean | undefined,
+): string {
+  if (labelCustomized) return currentLabel
+  return getServiceSpec(nodeType, provider)?.serviceName ?? genericLabel
+}

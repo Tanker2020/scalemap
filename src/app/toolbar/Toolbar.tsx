@@ -1,6 +1,7 @@
 import { useCallback, useState, useRef, useEffect } from 'react'
-import { FilePlus, FolderOpen, ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, Save, Upload, Download, ClipboardList, ShieldCheck, Package, Sun, Moon } from 'lucide-react'
+import { FilePlus, FolderOpen, ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, Save, Upload, Download, ClipboardList, ShieldCheck, Package, Sun, Moon, Cloud } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
+import type { CloudProvider } from '../../lib/cloudRegistry'
 import { useSimulationStore, type TrafficMode } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
 import { useCostHistoryStore } from '../store/costHistory.store'
@@ -206,6 +207,63 @@ function ImportMenu() {
   )
 }
 
+// ─── Provider menu ────────────────────────────────────────────────────────────
+
+const PROVIDER_OPTIONS: { key: CloudProvider; label: string }[] = [
+  { key: 'generic', label: 'Generic' },
+  { key: 'aws',     label: 'AWS' },
+  { key: 'gcp',     label: 'GCP' },
+  { key: 'azure',   label: 'Azure' },
+]
+
+function ProviderMenu() {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const running = useSimulationStore(s => s.running)
+  const nodeCount = useCanvasStore(s => s.nodes.length)
+  const applyProviderToAll = useCanvasStore(s => s.applyProviderToAll)
+
+  useEffect(() => {
+    if (!open) return
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const handlePick = useCallback((provider: CloudProvider) => {
+    setOpen(false)
+    applyProviderToAll(provider)
+  }, [applyProviderToAll])
+
+  return (
+    <div ref={ref} className={styles.dropdownWrap}>
+      <button
+        className={`${styles.btnPrimary} ${styles.btnDropdown}`}
+        onClick={() => setOpen(o => !o)}
+        disabled={running || nodeCount === 0}
+        title={running ? 'Editing locked while simulation is running' : 'Apply a cloud provider to every node in the diagram'}
+      >
+        <Cloud size={12} /> Provider <ChevronDown size={10} className={open ? styles.chevronOpen : ''} />
+      </button>
+      {open && (
+        <div className={styles.dropdownMenu}>
+          {PROVIDER_OPTIONS.map(({ key, label }) => (
+            <button key={key} className={styles.dropdownItem} onClick={() => handlePick(key)}>
+              <span className={styles.dropdownItemIcon}>⬡</span>
+              <span>
+                <span className={styles.dropdownItemLabel}>{label}</span>
+                <span className={styles.dropdownItemDesc}>Map every node to {label}, undoable in one step</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Simulation settings popover ─────────────────────────────────────────────
 
 function SimSettings({ open }: { open: boolean }) {
@@ -375,6 +433,7 @@ export function Toolbar() {
           <SaveButton fileName={fileName} />
           <ExportMenu fileName={fileName} />
           <ImportMenu />
+          <ProviderMenu />
         </>
       )}
 

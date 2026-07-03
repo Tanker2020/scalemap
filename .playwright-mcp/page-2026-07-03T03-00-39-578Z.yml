@@ -1,0 +1,86 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - button "New" [ref=e5] [cursor=pointer]:
+      - img [ref=e6]
+      - text: New
+    - button "Open" [ref=e9] [cursor=pointer]:
+      - img [ref=e10]
+      - text: Open
+    - button "Select" [ref=e13] [cursor=pointer]:
+      - img [ref=e14]
+      - text: Select
+    - button "Hand" [ref=e16] [cursor=pointer]:
+      - img [ref=e17]
+      - text: Hand
+    - button "Connect" [ref=e22] [cursor=pointer]:
+      - img [ref=e23]
+      - text: Connect
+    - button "Switch to light mode" [ref=e26] [cursor=pointer]:
+      - img [ref=e27]
+  - generic [ref=e35]:
+    - generic [ref=e36]:
+      - generic [ref=e37]: scalemap
+      - generic [ref=e38]: Infrastructure visualization
+    - generic [ref=e39]:
+      - button "New Diagram Start from scratch" [ref=e40] [cursor=pointer]:
+        - img [ref=e41]
+        - generic [ref=e44]: New Diagram
+        - generic [ref=e45]: Start from scratch
+      - button "Import Terraform Coming soon" [disabled] [ref=e46]:
+        - img [ref=e47]
+        - generic [ref=e50]: Import Terraform
+        - generic [ref=e51]: Coming soon
+    - generic [ref=e52]:
+      - generic [ref=e53]:
+        - text: Template Vault
+        - generic [ref=e54]: 6 templates
+      - generic [ref=e55]:
+        - button "network 4 nodes Basic VPC + EC2 Single-region VPC with public subnet, EC2 instance, and Route 53" [ref=e56] [cursor=pointer]:
+          - generic [ref=e57]:
+            - generic [ref=e58]:
+              - img [ref=e59]
+              - text: network
+            - generic [ref=e64]: 4 nodes
+          - generic [ref=e65]: Basic VPC + EC2
+          - generic [ref=e66]: Single-region VPC with public subnet, EC2 instance, and Route 53
+        - button "web 5 nodes Load Balanced Cluster ALB distributing traffic across EC2 instances with RDS backend" [ref=e67] [cursor=pointer]:
+          - generic [ref=e68]:
+            - generic [ref=e69]:
+              - img [ref=e70]
+              - text: web
+            - generic [ref=e73]: 5 nodes
+          - generic [ref=e74]: Load Balanced Cluster
+          - generic [ref=e75]: ALB distributing traffic across EC2 instances with RDS backend
+        - button "serverless 5 nodes Serverless Stack API Gateway fronting Lambda functions with DynamoDB and S3" [ref=e76] [cursor=pointer]:
+          - generic [ref=e77]:
+            - generic [ref=e78]:
+              - img [ref=e79]
+              - text: serverless
+            - generic [ref=e81]: 5 nodes
+          - generic [ref=e82]: Serverless Stack
+          - generic [ref=e83]: API Gateway fronting Lambda functions with DynamoDB and S3
+        - button "serverless 7 nodes Event-Driven Pipeline EventBridge routing to SQS queues consumed by Lambda workers" [ref=e84] [cursor=pointer]:
+          - generic [ref=e85]:
+            - generic [ref=e86]:
+              - img [ref=e87]
+              - text: serverless
+            - generic [ref=e89]: 7 nodes
+          - generic [ref=e90]: Event-Driven Pipeline
+          - generic [ref=e91]: EventBridge routing to SQS queues consumed by Lambda workers
+        - button "k8s 8 nodes Kubernetes Microservices EKS cluster with service pods, Redis cache, and RDS Postgres" [ref=e92] [cursor=pointer]:
+          - generic [ref=e93]:
+            - generic [ref=e94]:
+              - img [ref=e95]
+              - text: k8s
+            - generic [ref=e98]: 8 nodes
+          - generic [ref=e99]: Kubernetes Microservices
+          - generic [ref=e100]: EKS cluster with service pods, Redis cache, and RDS Postgres
+        - button "data 6 nodes Data Pipeline Kinesis streaming ingestion, Lambda processing, S3 data lake + Redshift" [ref=e101] [cursor=pointer]:
+          - generic [ref=e102]:
+            - generic [ref=e103]:
+              - img [ref=e104]
+              - text: data
+            - generic [ref=e108]: 6 nodes
+          - generic [ref=e109]: Data Pipeline
+          - generic [ref=e110]: Kinesis streaming ingestion, Lambda processing, S3 data lake + Redshift
+  - generic [ref=e112]: untitled · not yet saved
