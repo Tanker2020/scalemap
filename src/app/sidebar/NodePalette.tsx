@@ -29,6 +29,12 @@ export function NodePalette() {
     if (running) { setPinned(false); setHoverOpen(false) }
   }, [running])
 
+  // NodePalette unmounts when the app navigates back to the home screen; clear any
+  // pending close-flyout timer so it doesn't fire setHoverOpen on an unmounted component.
+  useEffect(() => {
+    return () => clearCloseTimer()
+  }, [])
+
   const open = !running && (pinned || hoverOpen)
 
   const filtered = useMemo(() => {
