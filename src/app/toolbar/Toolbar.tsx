@@ -52,12 +52,12 @@ function ProviderMenu() {
   return (
     <div ref={ref} className={styles.dropdownWrap}>
       <button
-        className={`${styles.btnPrimary} ${styles.btnDropdown}`}
+        className={`${styles.btnPrimary} ${styles.btnDropdown} ${styles.btnProvider}`}
         onClick={() => setOpen(o => !o)}
         disabled={running || nodeCount === 0}
         title={running ? 'Editing locked while simulation is running' : 'Apply a cloud provider to every node in the diagram'}
       >
-        <Cloud size={12} /> Provider <ChevronDown size={10} className={open ? styles.chevronOpen : ''} />
+        <Cloud size={12} /> <span className={styles.panelBtnLabel}>Provider</span> <ChevronDown size={10} className={open ? styles.chevronOpen : ''} />
       </button>
       {open && (
         <div className={styles.dropdownMenu}>
@@ -258,7 +258,7 @@ export function Toolbar() {
                 title="Simulation Inspector — configure capacity, latency, SLOs and watch live metrics for every node"
               >
                 <SlidersHorizontal size={12} />
-                Inspect
+                <span className={styles.panelBtnLabel}>Inspect</span>
               </button>
 
               <button
@@ -270,7 +270,7 @@ export function Toolbar() {
                 title="Reports & Diagnostics dock — simulation run history and architectural lint results"
               >
                 <ClipboardList size={12} />
-                Dock
+                <span className={styles.panelBtnLabel}>Dock</span>
                 {(runs.length > 0 || diagnosticsCount > 0) && (
                   <span className={styles.reportsBadge}>{runs.length + diagnosticsCount}</span>
                 )}
@@ -282,7 +282,7 @@ export function Toolbar() {
                 title="Packet templates — define request types and per-node traffic distribution"
               >
                 <Package size={12} />
-                Packets
+                <span className={styles.panelBtnLabel}>Packets</span>
                 {packetMode === 'custom' && (
                   <span className={styles.reportsBadge}>on</span>
                 )}
@@ -294,7 +294,7 @@ export function Toolbar() {
                 title="Run architectural diagnostics — detect anti-patterns in the current design"
               >
                 <ShieldCheck size={12} />
-                Diagnostics
+                <span className={styles.panelBtnLabel}>Diagnostics</span>
                 {diagnosticsCount > 0 && (
                   <span className={styles.diagnosticsBadge}>{diagnosticsCount}</span>
                 )}

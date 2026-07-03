@@ -904,12 +904,47 @@
 }
 
 /* ── Narrow-window safety net ───────────────────────
-   .toolbarMain has overflow-x: hidden as a hard guarantee against ever scrolling — these two
-   breakpoints shed the lowest-priority content before that hidden overflow would otherwise clip
-   anything. Undo/Redo have a Cmd+Z / Cmd+Shift+Z keyboard fallback already in their tooltips, so
-   hiding the buttons doesn't remove the capability. The ScaleScript pill is informational (the
-   script itself keeps running); losing its toolbar visibility at extreme widths is an acceptable
-   trade for guaranteeing no clipped/unreachable Simulate button. */
+   .toolbarMain has overflow-x: clip as a hard guarantee against ever scrolling/clipping the
+   Simulate button — these breakpoints shed content, in ascending order of visual cost, before
+   that clip would otherwise cut anything off or let it overlap .themeToggleFixed (the fixed-
+   width sibling living outside .toolbarMain, at the far right of the toolbar). Undo/Redo have a
+   Cmd+Z / Cmd+Shift+Z keyboard fallback already in their tooltips, so hiding the buttons doesn't
+   remove the capability. The ScaleScript pill is informational (the script itself keeps
+   running); losing its toolbar visibility at extreme widths is an acceptable trade. The Panels
+   group's "Panels" caption is decorative (the icons+labels are still self-explanatory without
+   it), and its four text labels (Inspect/Dock/Packets/Diagnostics) collapse to the same
+   icon-only treatment already used for Select/Hand/Connect — titles/tooltips still carry the
+   full label. Breakpoints were tuned empirically against a continuous 640-1440px width scan
+   with a real diagram loaded (Load Balanced Cluster vault template) checking .toolbarMain's
+   scrollWidth vs clientWidth and the Simulate button/chevron's bounding rect against
+   .themeToggleFixed's, not against any fixed target number. */
+@media (max-width: 1180px) {
+  .panelGroupLabel {
+    display: none;
+  }
+}
+
+@media (max-width: 1060px) {
+  .panelBtnLabel {
+    display: none;
+  }
+
+  /* Once the labels are gone these buttons are icon-only — their padding was sized for
+     icon+text (10-12px horizontal) and left excess whitespace once just an icon remains,
+     so tighten it to match .btnToolIcon's icon-only padding. */
+  .panelGroup .btnInspect,
+  .panelGroup .btnReports,
+  .panelGroup .btnDiagnostics {
+    padding: 5px 7px;
+    gap: 0;
+  }
+
+  .btnProvider {
+    padding: 5px 7px;
+    gap: 0;
+  }
+}
+
 @media (max-width: 1000px) {
   .undoRedoGroup {
     display: none;
