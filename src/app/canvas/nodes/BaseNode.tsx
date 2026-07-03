@@ -38,7 +38,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
   // Replay-aware: while scrubbing this resolves to the recorded metrics at the cursor.
   const m = useDisplayMetrics(id)
   const metrics = m
-    ? { utilization: m.utilization, errorRate: m.errorRate, circuitState: m.circuitState, healthState: m.healthState, droppedRequests: m.droppedRequests }
+    ? { utilization: m.utilization, errorRate: m.errorRate, healthState: m.healthState, droppedRequests: m.droppedRequests }
     : null
   const isBottleneck = useSimulationStore(s => s.bottlenecks.has(id))
   const running    = useSimulationStore(s => s.running)
@@ -47,9 +47,6 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
   const isHighlighted = useUiStore(s => s.highlightedNodeIds.includes(id))
 
   const utilization  = metrics?.utilization ?? 0
-  const circuitState = metrics?.circuitState ?? 'closed'
-  const isCircuitOpen = running && circuitState === 'open'
-  const isCircuitHalf = running && circuitState === 'half-open'
   const isSaturated  = utilization >= 1.0
 
   // Hysteresis: enter critical at 82%, exit at 70% — prevents flickering near threshold
@@ -109,7 +106,7 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
         styles.node,
         selected ? styles.selected : '',
         isConnectSource ? styles.connectSource : '',
-        isCircuitOpen ? styles.circuitOpen : isCircuitHalf ? styles.circuitHalfOpen : isSaturated ? styles.saturated : isCritical ? styles.critical : '',
+        isSaturated ? styles.saturated : isCritical ? styles.critical : '',
         isHighlighted ? styles.diagnosticPulse : '',
       ].filter(Boolean).join(' ')}
       style={{
@@ -198,15 +195,8 @@ export function BaseNode({ id, type, data, selected }: NodeProps) {
             {lintIssues.length > 9 ? '9+' : lintIssues.length}
           </div>
         )}
-        {/* Circuit breaker badge */}
-        {isCircuitOpen && (
-          <div className={styles.circuitBadge} title="Circuit open — rejecting all requests">⊘</div>
-        )}
-        {isCircuitHalf && (
-          <div className={styles.circuitHalfBadge} title="Circuit half-open — testing recovery">⊘</div>
-        )}
         {/* Bottleneck badge — simulation-driven, does not mutate NodeData.status */}
-        {running && isCritical && !isCircuitOpen && !isCircuitHalf && (
+        {running && isCritical && (
           <div
             className={styles.bottleneckBadge}
             title={isSaturated ? 'Saturated — requests being dropped' : 'High utilization — approaching capacity'}

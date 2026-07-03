@@ -237,53 +237,6 @@
   cursor: help;
 }
 
-/* Circuit breaker open — amber ⊘ */
-.circuitBadge {
-  font-size: 10px;
-  font-weight: 700;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: color-mix(in srgb, var(--color-warning) 13%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-warning) 53%, transparent);
-  color: var(--color-warning);
-  cursor: help;
-}
-
-.circuitHalfBadge {
-  font-size: 10px;
-  font-weight: 700;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: color-mix(in srgb, var(--color-warning) 7%, transparent);
-  border: 1px dashed color-mix(in srgb, var(--color-warning) 33%, transparent);
-  color: color-mix(in srgb, var(--color-warning) 53%, transparent);
-  cursor: help;
-}
-
-/* Circuit breaker node states */
-@keyframes circuitOpenPulse {
-  0%, 100% { border-color: var(--color-warning); box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-warning) 20%, transparent), 0 4px 18px rgba(0,0,0,0.55); }
-  50%       { border-color: color-mix(in srgb, var(--color-warning) 70%, white); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-warning) 13%, transparent), 0 0 12px color-mix(in srgb, var(--color-warning) 27%, transparent), 0 4px 18px rgba(0,0,0,0.55); }
-}
-
-.node.circuitOpen {
-  animation: circuitOpenPulse 1.6s ease-in-out infinite;
-}
-
-.node.circuitHalfOpen {
-  border-color: var(--color-warning);
-  border-style: dashed;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-warning) 13%, transparent), 0 4px 18px rgba(0,0,0,0.55);
-}
-
 /* Diagnostics-panel "look here" pulse — a transient ring distinct from .selected, triggered by
    clicking an issue in DiagnosticsPanel.tsx. Self-clears after ~2.2s (see BaseNode.tsx). Uses the
    node's own accent color so it doesn't compete with severity colors already on the badge/dot. */
