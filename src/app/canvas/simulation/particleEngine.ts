@@ -685,6 +685,11 @@ const MAX_PARTICLES = 500
 function spawnParticles(now: number, delta: number) {
   let total = 0
   for (const arr of state.particles.values()) total += arr.length
+  // Edges whose half-open trial was freshly authorized this frame (set just below, in the
+  // per-edge loop) — read right after `n` is computed for that same edge to force exactly
+  // one particle to mint, overriding the edge's own batch-rate math. Rebuilt every call;
+  // never read across frames.
+  const halfOpenTrialEdgesThisFrame = new Set<string>()
   // Gates only the visual particle-minting step below, never the effectiveRps bookkeeping loop —
   // under sustained overload the per-edge rate math must keep running every frame so inRps/outRps/
   // utilization/queue-depth integration (all of which read ep.effectiveRps) keep tracking offered
@@ -726,8 +731,16 @@ function spawnParticles(now: number, delta: number) {
           downstreamFactor = 0         // circuit open: no traffic; periodic scan handles probing
           breakerFactor = 0
         } else if (breaker?.state === 'half-open' && ep.edgeType !== 'event' && ep.edgeType !== 'stream') {
-          downstreamFactor = 0.1       // probe rate: small trickle tests recovery
-          breakerFactor = 0.1
+          if (breaker.trialPending) {
+            downstreamFactor = 0       // a trial is already in flight — hold everything else back
+          } else {
+            breaker.trialPending = true
+            downstreamFactor = 1       // let the forced n=1 override below size exactly one particle
+            halfOpenTrialEdgesThisFrame.add(ep.id)
+          }
+          breakerFactor = 0            // half-open still counts as ~fully rejected for the caller's
+                                        // errorRate — only one internal probe gets through, so from
+                                        // the caller's perspective its offered load is still shed
         } else if (ep.edgeType !== 'request' && _saturatedNodes.has(sourceNodeId)) {
           // Partial degradation: saturated node forwards at reduced rate (stream/event edges only)
           const stall = _downstreamStallPressure.get(sourceNodeId) ?? 0
@@ -823,7 +836,12 @@ function spawnParticles(now: number, delta: number) {
     ep.effectiveRps = rps
     const particlesPerSec = rps / PARTICLE_REQUEST_RATIO
     const spawnChance = particlesPerSec * (delta / 1000) * _speed
-    const n = Math.floor(spawnChance) + (Math.random() < (spawnChance % 1) ? 1 : 0)
+    let n = Math.floor(spawnChance) + (Math.random() < (spawnChance % 1) ? 1 : 0)
+    // A freshly authorized half-open trial must mint exactly once this frame regardless of
+    // the edge's own rate math — a low-rps edge can legitimately round spawnChance down to 0,
+    // which would otherwise leave trialPending stuck true forever with nothing left to ever
+    // resolve it (every later frame sees trialPending=true → downstreamFactor=0 → n=0 again).
+    if (halfOpenTrialEdgesThisFrame.has(ep.id)) n = 1
     if (n === 0) continue
 
     // Visual particle cap: effectiveRps bookkeeping above always runs; only the actual minting
@@ -1198,10 +1216,11 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
     recordBreakerResultLocal(ep.id, true, config, now)
     return
   }
-  if (breakerState === 'half-open' && Math.random() > 0.1) {
-    dropParticle(ep, targetNodeId, particle)
-    return
-  }
+  // A particle reaching here on a half-open edge IS the one trial the spawn-side gate
+  // authorized (particleEngine.ts's spawnParticles) — no additional admission throttle.
+  // It proceeds through the normal downstream checks below exactly like a closed-breaker
+  // particle would; recordBreakerResultLocal on its eventual success/drop resolves
+  // half-open → closed/open (see circuitBreakers.ts's recordBreakerResult).
 
   const isQueue = ['queue', 'pubsub', 'stream', 'eventBus'].includes(targetNodeType)
 

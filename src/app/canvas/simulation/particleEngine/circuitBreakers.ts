@@ -10,6 +10,11 @@ export interface CircuitBreakerEntry {
   state: CircuitState
   openedAt: number
   errorWindow: number[]
+  // While state === 'half-open': whether the one allowed trial request has already been
+  // authorized/is in flight for this half-open window. Only meaningful in that state — reset
+  // to false whenever the breaker enters half-open, and whenever it leaves half-open (closed
+  // or reopened) so the next half-open window starts clean.
+  trialPending: boolean
 }
 
 const _circuitBreakers = new Map<string, CircuitBreakerEntry>()
@@ -17,7 +22,7 @@ const _circuitBreakers = new Map<string, CircuitBreakerEntry>()
 export function getBreaker(edgeId: string): CircuitBreakerEntry {
   let b = _circuitBreakers.get(edgeId)
   if (!b) {
-    b = { state: 'closed', openedAt: 0, errorWindow: [] }
+    b = { state: 'closed', openedAt: 0, errorWindow: [], trialPending: false }
     _circuitBreakers.set(edgeId, b)
   }
   return b
@@ -75,6 +80,7 @@ export function recordBreakerResult(
       onEvent('circuit_open', targetNodeId, `Circuit open: ${srcLabel} → ${tgtLabel}`, 'critical', undefined, cbCausedBy)
     }
   } else if (b.state === 'half-open') {
+    b.trialPending = false // the trial resolved one way or the other — clear it either way
     if (!isError) {
       b.state       = 'closed'
       b.errorWindow = []
@@ -109,6 +115,7 @@ export function checkBreakerTransition(
     now - b.openedAt > cb.resetMs
   ) {
     b.state = 'half-open'
+    b.trialPending = false // fresh half-open window — no trial authorized yet
     const srcLabel = edgeData?.source ? ((nodesMap.get(edgeData.source)?.data as NodeData)?.label ?? edgeData.source) : edgeId
     const tgtLabel = targetNodeId    ? ((nodesMap.get(targetNodeId)?.data    as NodeData)?.label ?? targetNodeId)    : edgeId
     onEvent('circuit_half_open', targetNodeId, `Circuit half-open: ${srcLabel} → ${tgtLabel} (testing)`, 'warn')

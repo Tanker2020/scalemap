@@ -92,6 +92,45 @@ describe('circuitBreakers', () => {
     expect(getBreaker('e1').state).toBe('half-open')
   })
 
+  it('getBreaker creates a fresh breaker with trialPending false', () => {
+    const b = getBreaker('e1')
+    expect(b.trialPending).toBe(false)
+  })
+
+  it('checkBreakerTransition resets trialPending to false when opening into half-open', () => {
+    const edgesData = [makeEdge('e1', 'a', 'b')]
+    const nodesMap = new Map([['a', makeNode('a', 'A')], ['b', makeNode('b', 'B')]])
+    const nodeHealthStates = new Map<string, 'healthy' | 'degraded' | 'down'>()
+    const b = getBreaker('e1')
+    b.state = 'open'
+    b.openedAt = 0
+    b.trialPending = true // stale from a previous half-open window
+    checkBreakerTransition('e1', configWithBreaker, 5000, edgesData, nodesMap, nodeHealthStates, noop)
+    expect(getBreaker('e1').trialPending).toBe(false)
+  })
+
+  it('recordBreakerResult clears trialPending when a half-open trial succeeds (closes)', () => {
+    const edgesData = [makeEdge('e1', 'a', 'b')]
+    const nodesMap = new Map([['a', makeNode('a', 'A')], ['b', makeNode('b', 'B')]])
+    const b = getBreaker('e1')
+    b.state = 'half-open'
+    b.trialPending = true
+    recordBreakerResult('e1', false, configWithBreaker, 100, edgesData, nodesMap, new Map(), new Map(), noop)
+    expect(getBreaker('e1').state).toBe('closed')
+    expect(getBreaker('e1').trialPending).toBe(false)
+  })
+
+  it('recordBreakerResult clears trialPending when a half-open trial fails (reopens)', () => {
+    const edgesData = [makeEdge('e1', 'a', 'b')]
+    const nodesMap = new Map([['a', makeNode('a', 'A')], ['b', makeNode('b', 'B')]])
+    const b = getBreaker('e1')
+    b.state = 'half-open'
+    b.trialPending = true
+    recordBreakerResult('e1', true, configWithBreaker, 100, edgesData, nodesMap, new Map(), new Map(), noop)
+    expect(getBreaker('e1').state).toBe('open')
+    expect(getBreaker('e1').trialPending).toBe(false)
+  })
+
   // ─── C1: config-less node types must never latch a breaker open forever ─────
   describe('force-open on config-less node types (C1)', () => {
     const configNoBreaker: NodeSimConfig = {
