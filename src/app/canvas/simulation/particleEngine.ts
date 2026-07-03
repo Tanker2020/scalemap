@@ -858,6 +858,9 @@ function spawnParticles(now: number, delta: number) {
     // of Particle objects (and the thread-pool acquisition that models their in-flight cost) is
     // skipped once the global visual cap is reached, so the canvas never renders/animates more
     // than MAX_PARTICLES concurrent particles regardless of how far offered load exceeds it.
+    // Note: this can still skip a half-open trial forced to n=1 above, leaving trialPending
+    // stuck true until the system-wide cap clears — accepted as self-correcting (it resolves
+    // the moment total < MAX_PARTICLES) and only reachable under an already-maxed-out diagram.
     if (atCap) continue
 
     // Thread pool gate: request edges on compute source nodes must acquire a worker thread per
