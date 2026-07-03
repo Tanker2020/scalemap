@@ -1539,11 +1539,27 @@ export function enterReplay() {
 // when the user pans/zooms. Panning without this left the last-drawn dots frozen in stale screen
 // coordinates while the edges visually moved underneath them. Call this from a viewport-change
 // listener (Canvas.tsx's onMove) while paused/replaying.
+//
+// Deferred to the next animation frame rather than drawing synchronously: React Flow's onMove
+// (backed by d3-zoom's onPanZoom) fires synchronously from the zoom gesture's own event handler,
+// BEFORE React re-renders and commits the new `transform` style onto .react-flow__viewport. A
+// synchronous drawReplayFrame() here therefore reads getScreenCTM() one transform-tick stale --
+// self-correcting after the gesture ends, but during a fast continuous trackpad pan/zoom (which
+// fires onMove far more often than a mouse) every single redraw lags behind by one step, producing
+// a consistently-visible multi-pixel gap between the particle dot and its edge. Pushing the read to
+// requestAnimationFrame guarantees it runs after the browser has painted that tick's transform, and
+// naturally coalesces bursts of onMove calls within one frame into a single up-to-date redraw.
+let _replayRedrawRaf: number | null = null
 export function redrawCurrentReplayFrame(): void {
   if (!_canvas) return
-  const { isReplaying, replayIndex } = useReplayStore.getState()
-  if (!isReplaying) return
-  drawReplayFrame(_canvas, replayIndex)
+  if (_replayRedrawRaf !== null) return // already scheduled for this frame
+  _replayRedrawRaf = requestAnimationFrame(() => {
+    _replayRedrawRaf = null
+    if (!_canvas) return
+    const { isReplaying, replayIndex } = useReplayStore.getState()
+    if (!isReplaying) return
+    drawReplayFrame(_canvas, replayIndex)
+  })
 }
 
 // ─── Per-frame metrics update ────────────────────────────────────────────────
@@ -2579,6 +2595,7 @@ export function startSimulation(
 
 export function stopSimulation() {
   if (state.rafId !== null) { cancelAnimationFrame(state.rafId); state.rafId = null }
+  if (_replayRedrawRaf !== null) { cancelAnimationFrame(_replayRedrawRaf); _replayRedrawRaf = null }
   clearChaosState()
   state.particles.clear()
   state.nodeGlows.clear()
