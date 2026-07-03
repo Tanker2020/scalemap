@@ -59,6 +59,24 @@
   color: var(--color-text-primary);
 }
 
+.btnPrimary:disabled,
+.btnTool:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btnPrimary:disabled:hover,
+.btnTool:disabled:hover {
+  background: var(--color-surface);
+  border-color: var(--color-node-border);
+  color: var(--color-text-secondary);
+}
+
+.btnTool:disabled:hover {
+  background: transparent;
+  border-color: transparent;
+}
+
 /* Export dropdown trigger */
 .btnDropdown {
   gap: 6px;
