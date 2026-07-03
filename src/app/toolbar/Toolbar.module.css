@@ -15,7 +15,17 @@
   gap: 4px;
   flex: 1;
   min-width: 0;
-  overflow-x: hidden;
+  /* overflow-x: hidden (not "clip" below) would force the UA to compute overflow-y as auto too
+     — per spec, if one axis is non-visible and the other is visible, the visible one becomes
+     auto — turning .toolbarMain into a clipping/scroll container that silently clipped every
+     absolutely-positioned popover anchored inside it (FileMenu/ProviderMenu's .dropdownMenu,
+     .dropdownSubmenu, SimSettings' .settingsPanel) to .toolbarMain's own ~33px-tall box, no
+     matter their z-index (clipping happens before stacking is considered). overflow-x: clip
+     does NOT participate in that visible->auto pairing rule, so overflow-y: visible actually
+     stays visible and popovers escape the clip box vertically while horizontal clipping (the
+     "never scrolls" guarantee) is preserved. */
+  overflow-x: clip;
+  overflow-y: visible;
 }
 
 .toolbarMain > * {
@@ -270,7 +280,12 @@
   border: 1px solid var(--color-node-border);
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65), 0 2px 8px rgba(0, 0, 0, 0.4);
-  overflow: hidden;
+  /* overflow: hidden previously clipped .dropdownItem's hover background to the container's
+     rounded corners, but it ALSO clipped .dropdownSubmenu (Export/Import's nested flyout,
+     which escapes to the right via `left: 100%` on .dropdownSubWrap) — the submenu was
+     entirely unclickable as a result. Corner-clipping is moved onto the first/last
+     .dropdownItem directly (below) so the menu itself no longer needs to clip its own
+     overflow, letting the submenu escape to the right uninterrupted. */
   z-index: 1000;
   animation: dropIn 0.12s ease;
 }
@@ -289,8 +304,15 @@
   border-bottom: 1px solid var(--color-canvas-dots);
 }
 
+.dropdownItem:first-child {
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}
+
 .dropdownItem:last-child {
   border-bottom: none;
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
 }
 
 .dropdownItem:hover {
