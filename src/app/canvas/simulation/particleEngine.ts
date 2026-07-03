@@ -384,6 +384,11 @@ interface EdgePath {
   rps: number
   geoLatencyMs: number  // inter-region hop penalty; 0 for same-region or no region tags
   effectiveRps?: number // live actual RPS flowing over this edge, updated every frame
+  offeredRps?: number         // ungated rps * mult, before any downstream gate is applied
+  breakerRejectedRps?: number // portion of offeredRps shed specifically by this edge's own
+                              // circuit breaker (open/half-open), before other gates (queue
+                              // backpressure, idle-RPS, stall) apply on top — feeds the
+                              // caller-side errorRate contribution in updateAllNodeMetrics
 }
 
 let _edgePaths: EdgePath[] = []
@@ -696,6 +701,10 @@ function spawnParticles(now: number, delta: number) {
     // Models: a dead or circuit-open node can't forward traffic, so its outbound edges go dark.
     const sourceNodeId = _edgesData.find(e => e.id === ep.id)?.source
     let downstreamFactor = 1.0
+    // Captured only by the breaker branch below (open/half-open) — stays 1 for every other
+    // path (chaos, saturated-forward, no breaker config), meaning "nothing rejected by a
+    // breaker specifically." Read by the offeredRps/breakerRejectedRps bookkeeping below.
+    let breakerFactor = 1.0
     if (sourceNodeId) {
       const chaosEntry = getChaosFailures().get(sourceNodeId)
       if (_nodeHealthStates.get(sourceNodeId) === 'down') {
@@ -715,8 +724,10 @@ function spawnParticles(now: number, delta: number) {
         const breaker = getBreaker(ep.id)
         if (breaker?.state === 'open' && ep.edgeType !== 'event' && ep.edgeType !== 'stream') {
           downstreamFactor = 0         // circuit open: no traffic; periodic scan handles probing
+          breakerFactor = 0
         } else if (breaker?.state === 'half-open' && ep.edgeType !== 'event' && ep.edgeType !== 'stream') {
           downstreamFactor = 0.1       // probe rate: small trickle tests recovery
+          breakerFactor = 0.1
         } else if (ep.edgeType !== 'request' && _saturatedNodes.has(sourceNodeId)) {
           // Partial degradation: saturated node forwards at reduced rate (stream/event edges only)
           const stall = _downstreamStallPressure.get(sourceNodeId) ?? 0
@@ -806,6 +817,8 @@ function spawnParticles(now: number, delta: number) {
       }
     }
 
+    ep.offeredRps = ep.rps * mult
+    ep.breakerRejectedRps = breakerFactor < 1 ? ep.offeredRps * (1 - breakerFactor) : 0
     const rps = ep.rps * mult * downstreamFactor
     ep.effectiveRps = rps
     const particlesPerSec = rps / PARTICLE_REQUEST_RATIO
@@ -1614,6 +1627,14 @@ function updateAllNodeMetrics(now: number, delta: number) {
     const outEdges = _edgePaths.filter(ep => ep.edgeType !== 'dependency' && _edgesData.find(d => d.id === ep.id)?.source === nodeId)
     const inRps  = inEdges.reduce((s, e) => s + (e.effectiveRps ?? (e.rps * mult)), 0)
     const outRps = outEdges.reduce((s, e) => s + (e.effectiveRps ?? (e.rps * mult)), 0)
+    // Caller-side rejection: how much of this node's own offered outbound load is being
+    // shed by a breaker it's calling through. Computed from offeredRps/breakerRejectedRps
+    // (Task 1's bookkeeping) rather than relying on particles actually arriving and being
+    // dropped — under sustained-open, spawning is suppressed at the source, so almost
+    // nothing ever arrives to trigger the existing discrete-drop path.
+    const outOfferedRps  = outEdges.reduce((s, e) => s + (e.offeredRps ?? e.effectiveRps ?? (e.rps * mult)), 0)
+    const outRejectedRps = outEdges.reduce((s, e) => s + (e.breakerRejectedRps ?? 0), 0)
+    const breakerRejectionRate = outOfferedRps > 0 ? Math.min(1, outRejectedRps / outOfferedRps) : 0
 
     const config = effectiveConfig(nodeId, nodeType)
     const isQueue = ['queue', 'pubsub', 'stream', 'eventBus'].includes(nodeType)
@@ -1911,7 +1932,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
     const clientErrorRps = (clientErrors * PARTICLE_REQUEST_RATIO) / egressWindowSec
     const clientErrorRate = inRps > 0 ? Math.min(1, clientErrorRps / inRps) : 0
 
-    const rawErrorRate = Math.min(1, baseErrorRate + cascadePressure * 0.15 + clientErrorRate)
+    const rawErrorRate = Math.min(1, baseErrorRate + cascadePressure * 0.15 + clientErrorRate + breakerRejectionRate)
 
     const activeRequests = _lbActiveRequests.get(nodeId)
 
