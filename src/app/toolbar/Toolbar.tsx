@@ -1,5 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from 'react'
-import { ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, ClipboardList, ShieldCheck, Package, Sun, Moon, Cloud } from 'lucide-react'
+import { ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, ClipboardList, ShieldCheck, Package, Sun, Moon, Cloud, Lock } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
 import type { CloudProvider } from '../../lib/cloudRegistry'
 import { useSimulationStore, type TrafficMode } from '../store/simulation.store'
@@ -202,225 +202,210 @@ export function Toolbar() {
 
   return (
     <div className={styles.toolbar}>
-      <FileMenu fileName={fileName} />
-      {!showHome && <ProviderMenu />}
+      <div className={styles.toolbarMain}>
+        <FileMenu fileName={fileName} />
+        {!showHome && !running && <ProviderMenu />}
 
-      <div className={styles.sep} />
+        <div className={styles.sep} />
 
-      {/* Tools */}
-      <button
-        className={`${styles.btnTool} ${styles.btnToolIcon} ${activeTool === 'select' ? styles.active : ''}`}
-        onClick={() => setActiveTool('select')}
-        title="Select (V)"
-      >
-        <MousePointer2 size={14} />
-      </button>
-      <button
-        className={`${styles.btnTool} ${styles.btnToolIcon} ${activeTool === 'hand' ? styles.active : ''}`}
-        onClick={() => setActiveTool('hand')}
-        title="Hand (H)"
-      >
-        <Hand size={14} />
-      </button>
-      <button
-        className={`${styles.btnTool} ${styles.btnToolIcon} ${activeTool === 'connect' ? styles.active : ''}`}
-        onClick={() => setActiveTool('connect')}
-        title="Connect (C)"
-      >
-        <Zap size={14} />
-      </button>
+        {/* Tools — icon-only, always visible regardless of showHome/running: Hand-tool panning
+            must stay available even while a simulation is running. */}
+        <button
+          className={`${styles.btnTool} ${styles.btnToolIcon} ${activeTool === 'select' ? styles.active : ''}`}
+          onClick={() => setActiveTool('select')}
+          title="Select (V)"
+        >
+          <MousePointer2 size={14} />
+        </button>
+        <button
+          className={`${styles.btnTool} ${styles.btnToolIcon} ${activeTool === 'hand' ? styles.active : ''}`}
+          onClick={() => setActiveTool('hand')}
+          title="Hand (H)"
+        >
+          <Hand size={14} />
+        </button>
+        <button
+          className={`${styles.btnTool} ${styles.btnToolIcon} ${activeTool === 'connect' ? styles.active : ''}`}
+          onClick={() => setActiveTool('connect')}
+          title="Connect (C)"
+        >
+          <Zap size={14} />
+        </button>
 
-      <div className={styles.sep} />
+        {!showHome && !running && (
+          <div className={styles.undoRedoGroup}>
+            <div className={styles.sep} />
+            <button className={styles.btnTool} onClick={() => undo()} title="Undo (Cmd+Z)">Undo</button>
+            <button className={styles.btnTool} onClick={() => redo()} title="Redo (Cmd+Shift+Z)">Redo</button>
+          </div>
+        )}
+        {!showHome && running && (
+          <span className={styles.lockedBadge} title="Provider, Undo, and Redo are locked while a simulation is running">
+            <Lock size={11} />
+          </span>
+        )}
+
+        {!showHome && (
+          <>
+            <div className={styles.spacer} />
+
+            <div className={styles.panelGroup}>
+              <span className={styles.panelGroupLabel}>Panels</span>
+
+              <button
+                className={`${styles.btnInspect} ${simConfigOpen ? styles.btnInspectActive : ''}`}
+                onClick={() => setSimConfigOpen(!simConfigOpen)}
+                title="Simulation Inspector — configure capacity, latency, SLOs and watch live metrics for every node"
+              >
+                <SlidersHorizontal size={12} />
+                Inspect
+              </button>
+
+              <button
+                className={`${styles.btnReports} ${dockOpen ? styles.btnReportsActive : ''}`}
+                onClick={() => {
+                  if (dockOpen && dockTab === 'reports') { setDockOpen(false); return }
+                  openDockTab('reports')
+                }}
+                title="Reports & Diagnostics dock — simulation run history and architectural lint results"
+              >
+                <ClipboardList size={12} />
+                Dock
+                {(runs.length > 0 || diagnosticsCount > 0) && (
+                  <span className={styles.reportsBadge}>{runs.length + diagnosticsCount}</span>
+                )}
+              </button>
+
+              <button
+                className={`${styles.btnReports} ${packetEditorOpen ? styles.btnReportsActive : ''}`}
+                onClick={() => setPacketEditorOpen(!packetEditorOpen)}
+                title="Packet templates — define request types and per-node traffic distribution"
+              >
+                <Package size={12} />
+                Packets
+                {packetMode === 'custom' && (
+                  <span className={styles.reportsBadge}>on</span>
+                )}
+              </button>
+
+              <button
+                className={styles.btnDiagnostics}
+                onClick={runDiagnostics}
+                title="Run architectural diagnostics — detect anti-patterns in the current design"
+              >
+                <ShieldCheck size={12} />
+                Diagnostics
+                {diagnosticsCount > 0 && (
+                  <span className={styles.diagnosticsBadge}>{diagnosticsCount}</span>
+                )}
+              </button>
+            </div>
+
+            {activeScript && (
+              <div className={styles.scriptPill}>
+                <button
+                  className={styles.scriptName}
+                  onClick={() => setScriptPreviewOpen(o => !o)}
+                  title="Click to preview ScaleScript"
+                >
+                  ⚙ {activeScript.name}
+                </button>
+                <button
+                  className={styles.scriptClose}
+                  onClick={() => {
+                    setActiveScript(null)
+                  }}
+                  title="Clear ScaleScript"
+                >×</button>
+              </div>
+            )}
+
+            {scriptPreviewOpen && activeScript && (
+              <div className={styles.scriptModal} onClick={() => setScriptPreviewOpen(false)}>
+                <div className={styles.scriptModalBox} onClick={e => e.stopPropagation()}>
+                  <div className={styles.scriptModalHeader}>
+                    <span>{activeScript.name}</span>
+                    <button onClick={() => setScriptPreviewOpen(false)}>×</button>
+                  </div>
+                  <pre className={styles.scriptModalBody}>{JSON.stringify(activeScript, null, 2)}</pre>
+                </div>
+              </div>
+            )}
+
+            <div ref={simWrapRef} className={styles.simSplitGroup}>
+              <div className={styles.simSplitBtn}>
+                {!running ? (
+                  <button
+                    className={`${styles.btnSimulate} ${styles.btnSimMain}`}
+                    onClick={handleStartSim}
+                    title="Start simulation (Space)"
+                  >
+                    <span className={styles.playIcon} />
+                    Simulate
+                  </button>
+                ) : paused ? (
+                  <button
+                    className={`${styles.btnSimulate} ${styles.btnResume} ${styles.btnSimMain}`}
+                    onClick={handleResume}
+                    title="Resume simulation"
+                  >
+                    <span className={styles.playIcon} />
+                    Resume
+                  </button>
+                ) : (
+                  <button
+                    className={`${styles.btnSimulate} ${styles.simulating} ${styles.btnSimMain}`}
+                    onClick={handlePause}
+                    title="Freeze simulation — particles stop, metrics freeze. Click Resume to continue."
+                  >
+                    <span className={styles.pauseIcon}>
+                      <span className={styles.pauseBar} />
+                      <span className={styles.pauseBar} />
+                    </span>
+                    Pause
+                  </button>
+                )}
+                <button
+                  className={[
+                    styles.btnSimChevron,
+                    running && !paused ? styles.btnSimChevronSimulating : '',
+                    running && paused ? styles.btnSimChevronResume : '',
+                    simSettingsOpen ? styles.btnSimChevronOpen : '',
+                  ].filter(Boolean).join(' ')}
+                  onClick={() => setSimSettingsOpen(o => !o)}
+                  title="Simulation settings — speed, traffic mode, volume"
+                >
+                  {isNonDefault && (
+                    <span className={styles.settingsBadge}>{modeLabel} · {globalMultiplier}×</span>
+                  )}
+                  <ChevronDown size={11} className={simSettingsOpen ? styles.chevronOpen : ''} />
+                </button>
+              </div>
+
+              {running && (
+                <button
+                  className={styles.btnEnd}
+                  onClick={handleEnd}
+                  title="End simulation and capture run report"
+                >
+                  <span className={styles.stopIcon} />
+                  End
+                </button>
+              )}
+
+              <SimSettings open={simSettingsOpen} />
+            </div>
+          </>
+        )}
+      </div>
 
       <button
-        className={styles.btnTool}
+        className={styles.themeToggleFixed}
         onClick={() => setThemeMode(themeMode === 'dark' ? 'light' : 'dark')}
         title={themeMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
       >
         {themeMode === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
       </button>
-
-      {!showHome && (
-        <>
-          <div className={styles.sep} />
-          <button
-            className={styles.btnTool}
-            onClick={() => undo()}
-            disabled={running}
-            title={running ? 'Editing locked while simulation is running' : 'Undo (Cmd+Z)'}
-          >Undo</button>
-          <button
-            className={styles.btnTool}
-            onClick={() => redo()}
-            disabled={running}
-            title={running ? 'Editing locked while simulation is running' : 'Redo (Cmd+Shift+Z)'}
-          >Redo</button>
-
-          <div className={styles.spacer} />
-
-          {/* Panels group — Inspect / Dock / Packets are persistent-UI toggles, visually
-              distinct from the one-shot actions (Undo/Redo/Export) to their left and the
-              Simulate action-button to their right. Previously Reports and Diagnostics were
-              two independent toggles that could both be open at once, stacking directly on
-              top of each other at the same right-edge position — they're now one Dock button
-              with two tabs (see UtilityDock.tsx), so there is exactly one right-edge overlay
-              slot instead of three uncoordinated ones. */}
-          <div className={styles.panelGroup}>
-            <span className={styles.panelGroupLabel}>Panels</span>
-
-            <button
-              className={`${styles.btnInspect} ${simConfigOpen ? styles.btnInspectActive : ''}`}
-              onClick={() => setSimConfigOpen(!simConfigOpen)}
-              title="Simulation Inspector — configure capacity, latency, SLOs and watch live metrics for every node"
-            >
-              <SlidersHorizontal size={12} />
-              Inspect
-            </button>
-
-            {/* Dock button — opens the unified Diagnostics/Reports dock. Clicking re-runs
-                diagnostics and switches to that tab even if the dock is already open on
-                Reports, so this single button covers what used to be two. */}
-            <button
-              className={`${styles.btnReports} ${dockOpen ? styles.btnReportsActive : ''}`}
-              onClick={() => {
-                if (dockOpen && dockTab === 'reports') { setDockOpen(false); return }
-                openDockTab('reports')
-              }}
-              title="Reports & Diagnostics dock — simulation run history and architectural lint results"
-            >
-              <ClipboardList size={12} />
-              Dock
-              {(runs.length > 0 || diagnosticsCount > 0) && (
-                <span className={styles.reportsBadge}>{runs.length + diagnosticsCount}</span>
-              )}
-            </button>
-
-            {/* Packet editor button — define request templates + traffic mix */}
-            <button
-              className={`${styles.btnReports} ${packetEditorOpen ? styles.btnReportsActive : ''}`}
-              onClick={() => setPacketEditorOpen(!packetEditorOpen)}
-              title="Packet templates — define request types and per-node traffic distribution"
-            >
-              <Package size={12} />
-              Packets
-              {packetMode === 'custom' && (
-                <span className={styles.reportsBadge}>on</span>
-              )}
-            </button>
-
-            {/* Run Diagnostics — architectural linter action, opens the Dock on its tab */}
-            <button
-              className={styles.btnDiagnostics}
-              onClick={runDiagnostics}
-              title="Run architectural diagnostics — detect anti-patterns in the current design"
-            >
-              <ShieldCheck size={12} />
-              Diagnostics
-              {diagnosticsCount > 0 && (
-                <span className={styles.diagnosticsBadge}>{diagnosticsCount}</span>
-              )}
-            </button>
-          </div>
-
-          {/* Active ScaleScript pill */}
-          {activeScript && (
-            <div className={styles.scriptPill}>
-              <button
-                className={styles.scriptName}
-                onClick={() => setScriptPreviewOpen(o => !o)}
-                title="Click to preview ScaleScript"
-              >
-                ⚙ {activeScript.name}
-              </button>
-              <button
-                className={styles.scriptClose}
-                onClick={() => {
-                  setActiveScript(null)
-                }}
-                title="Clear ScaleScript"
-              >×</button>
-            </div>
-          )}
-
-          {/* Script preview modal */}
-          {scriptPreviewOpen && activeScript && (
-            <div className={styles.scriptModal} onClick={() => setScriptPreviewOpen(false)}>
-              <div className={styles.scriptModalBox} onClick={e => e.stopPropagation()}>
-                <div className={styles.scriptModalHeader}>
-                  <span>{activeScript.name}</span>
-                  <button onClick={() => setScriptPreviewOpen(false)}>×</button>
-                </div>
-                <pre className={styles.scriptModalBody}>{JSON.stringify(activeScript, null, 2)}</pre>
-              </div>
-            </div>
-          )}
-
-          {/* Simulation split button group */}
-          <div ref={simWrapRef} className={styles.simSplitGroup}>
-            <div className={styles.simSplitBtn}>
-              {!running ? (
-                <button
-                  className={`${styles.btnSimulate} ${styles.btnSimMain}`}
-                  onClick={handleStartSim}
-                  title="Start simulation (Space)"
-                >
-                  <span className={styles.playIcon} />
-                  Simulate
-                </button>
-              ) : paused ? (
-                <button
-                  className={`${styles.btnSimulate} ${styles.btnResume} ${styles.btnSimMain}`}
-                  onClick={handleResume}
-                  title="Resume simulation"
-                >
-                  <span className={styles.playIcon} />
-                  Resume
-                </button>
-              ) : (
-                <button
-                  className={`${styles.btnSimulate} ${styles.simulating} ${styles.btnSimMain}`}
-                  onClick={handlePause}
-                  title="Freeze simulation — particles stop, metrics freeze. Click Resume to continue."
-                >
-                  <span className={styles.pauseIcon}>
-                    <span className={styles.pauseBar} />
-                    <span className={styles.pauseBar} />
-                  </span>
-                  Pause
-                </button>
-              )}
-              <button
-                className={[
-                  styles.btnSimChevron,
-                  running && !paused ? styles.btnSimChevronSimulating : '',
-                  running && paused ? styles.btnSimChevronResume : '',
-                  simSettingsOpen ? styles.btnSimChevronOpen : '',
-                ].filter(Boolean).join(' ')}
-                onClick={() => setSimSettingsOpen(o => !o)}
-                title="Simulation settings — speed, traffic mode, volume"
-              >
-                {isNonDefault && (
-                  <span className={styles.settingsBadge}>{modeLabel} · {globalMultiplier}×</span>
-                )}
-                <ChevronDown size={11} className={simSettingsOpen ? styles.chevronOpen : ''} />
-              </button>
-            </div>
-
-            {running && (
-              <button
-                className={styles.btnEnd}
-                onClick={handleEnd}
-                title="End simulation and capture run report"
-              >
-                <span className={styles.stopIcon} />
-                End
-              </button>
-            )}
-
-            <SimSettings open={simSettingsOpen} />
-          </div>
-        </>
-      )}
     </div>
   )
 }
