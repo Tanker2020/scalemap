@@ -138,6 +138,10 @@ export function FileMenu({ fileName }: Props) {
       >
         <FilePlus size={12} /> File <ChevronDown size={10} className={open ? styles.chevronOpen : ''} />
       </button>
+      {/* New/Import dim inline rather than vanish (unlike Provider/Undo/Redo in Toolbar.tsx,
+          which unmount entirely while running) — deliberate, not an inconsistency: this menu is
+          closed by default during a run, so the dimmed state is rarely seen, whereas
+          Provider/Undo/Redo occupy always-visible toolbar space that's worth reclaiming. */}
       {open && (
         <div className={styles.dropdownMenu}>
           <button
