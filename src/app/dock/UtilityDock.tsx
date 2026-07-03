@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { X, ShieldCheck, ClipboardList } from 'lucide-react'
 import { useUiStore, type DockTab } from '../store/ui.store'
 import { useDiagnosticsStore } from '../store/diagnostics.store'
@@ -10,27 +10,34 @@ import { ReportsPanel } from '../reports/ReportsPanel'
 import styles from './UtilityDock.module.css'
 
 /**
- * Unified right-edge dock for Diagnostics + Reports.
+ * Unified bottom-right drawer for Diagnostics + Reports.
  *
  * Previously these were two independent `position: fixed; right: 0` overlays
  * (DiagnosticsPanel, ReportsPanel), each toggled by its own Toolbar button with no
  * coordination — a user could open both and have them render stacked on top of each other
- * at the exact same screen position. This shell owns the single right-edge slot and a tab
- * strip; only one tab's content is ever mounted-visible at a time, so the two panels can no
- * longer collide. Each panel's own internal logic (filters, run detail overlay, etc.) is
- * untouched — only their outer chrome (position/header/close button) moved up into this file.
+ * at the exact same screen position. This shell owns the single dock slot and a tab strip;
+ * only one tab's content is ever mounted-visible at a time, so the two panels can no longer
+ * collide. Each panel's own internal logic (filters, run detail overlay, etc.) is untouched —
+ * only their outer chrome (position/header/close button) moved up into this file.
  *
- * Rendered as a plain flex child of App.tsx's .body row (same convention as SimConfigPanel/
- * PropertiesPanel — see UtilityDock.module.css) so it reserves its own width in the layout
- * instead of floating on top of the Properties/Inspector column. App.tsx owns the mount/
- * unmount enter-exit motion, matching how it already wraps SimConfigPanel/PropertiesPanel.
+ * `position: fixed`, self-gated on `dockOpen` (2026-07-02 canvas-first-overlay pass — see
+ * docs/superpowers/specs/2026-07-02-canvas-first-overlay-layout-design.md). This supersedes the
+ * earlier "must be a flex child, not fixed" rule recorded in docs/module-boundaries.md: that
+ * rule was about two *uncoordinated* fixed panels sharing the same right-edge slot. This dock
+ * now anchors bottom-right while PropertiesPanel/SimConfigPanel anchor top-right (different
+ * corners), and caps its own max-height (UtilityDock.module.css) to reduce the chance it reaches
+ * the other panel's corner. That cap shares the same formula as the top panel's, so it's not a
+ * hard geometric guarantee: at very short window heights (roughly ≤580px tall) with both panels
+ * open and both filled with enough content to hit their max-height cap, they could occupy the
+ * same vertical span. In normal desktop use this doesn't happen — flagged here so nobody assumes
+ * it's structurally impossible.
  */
-// Mounted by App.tsx only while useUiStore.dockOpen is true (mirrors the PacketEditor
-// mount pattern) so AnimatePresence sees a real mount/unmount transition.
 export function UtilityDock() {
+  const dockOpen = useUiStore(s => s.dockOpen)
   const dockTab = useUiStore(s => s.dockTab)
   const setDockOpen = useUiStore(s => s.setDockOpen)
   const openDockTab = useUiStore(s => s.openDockTab)
+  const reduceMotion = useReducedMotion()
 
   const nodes = useCanvasStore(s => s.nodes)
   const diagnostics = useDiagnosticsStore(s => s.diagnostics)
@@ -53,7 +60,15 @@ export function UtilityDock() {
   ]
 
   return (
-    <aside className={styles.dock}>
+    <AnimatePresence>
+      {dockOpen && (
+        <motion.aside
+          className={styles.dock}
+          initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 8 }}
+          animate={reduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+          exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 8 }}
+          transition={{ duration: reduceMotion ? 0 : 0.15 }}
+        >
       <div className={styles.header}>
         <div className={styles.tabs}>
           {tabs.map(({ key, label, icon: Icon, count }) => (
@@ -100,6 +115,8 @@ export function UtilityDock() {
           )}
         </AnimatePresence>
       </div>
-    </aside>
+        </motion.aside>
+      )}
+    </AnimatePresence>
   )
 }

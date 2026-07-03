@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import { useCanvasStore } from '../store/canvas.store'
 import { useUiStore } from '../store/ui.store'
 import { useSimulationStore } from '../store/simulation.store'
@@ -685,9 +685,10 @@ function NodePanel({ nodeId }: { nodeId: string }) {
 // ─── Main panel ───────────────────────────────────────────────────────────────
 
 export function PropertiesPanel() {
-  const { selectedNodeId, selectedEdgeId, rightTab, setRightTab } = useUiStore()
+  const { selectedNodeId, selectedEdgeId, rightTab, setRightTab, simConfigOpen } = useUiStore()
   const { nodes, edges, updateEdgeData, changeEdgeType } = useCanvasStore()
   const { setEdgeRps, getEdgeRps, running } = useSimulationStore()
+  const reduceMotion = useReducedMotion()
 
   // Auto-switch to Analytics when simulation starts
   useEffect(() => {
@@ -696,31 +697,30 @@ export function PropertiesPanel() {
 
   const selectedNode = nodes.find(n => n.id === selectedNodeId)
   const selectedEdge = edges.find(e => e.id === selectedEdgeId)
+  // SimConfigPanel (the Inspector) takes over this same floating corner while it's open — see
+  // Step 5 below. rightTab === 'analytics' counts as "something to show" on its own: a running
+  // simulation auto-switches to it above, so system-wide stats stay visible through a run even
+  // with nothing selected — this must keep working now that the panel can fully unmount.
+  const shouldShow = !simConfigOpen && (!!selectedNode || !!selectedEdge || rightTab === 'analytics')
 
-  if (rightTab === 'analytics') {
-    return (
-      <aside className={styles.sidebar}>
+  let contentKey: 'analytics' | 'node' | 'edge' = 'analytics'
+  let content: React.ReactNode = null
+
+  if (shouldShow && rightTab === 'analytics') {
+    contentKey = 'analytics'
+    content = (
+      <>
         <TabBar />
         <AnalyticsPane />
-      </aside>
+      </>
     )
-  }
-
-  if (!selectedNode && !selectedEdge) {
-    return (
-      <aside className={styles.sidebar}>
-        <TabBar />
-        <div className={styles.empty}>Select a node or edge to view its properties</div>
-      </aside>
-    )
-  }
-
-  if (selectedNode) {
-    return (
-      <aside className={styles.sidebar}>
+  } else if (shouldShow && selectedNode) {
+    contentKey = 'node'
+    content = (
+      <>
         <TabBar />
         <NodePanel nodeId={selectedNode.id} />
-      </aside>
+      </>
     )
   }
 
@@ -744,8 +744,9 @@ export function PropertiesPanel() {
     const tgtRegion = resolveEdgeRegion(selectedEdge.target)
     const hasPartialRegion = (!!srcRegion) !== (!!tgtRegion)
 
-    return (
-      <aside className={styles.sidebar}>
+    contentKey = 'edge'
+    content = (
+      <>
         <TabBar />
         <div className={styles.header}>
           <span className={styles.typeBadge} style={{ color: 'var(--color-accent)', borderColor: 'color-mix(in srgb, var(--color-accent) 27%, transparent)' }}>
@@ -874,9 +875,24 @@ export function PropertiesPanel() {
           />
         </motion.div>
         </AnimatePresence>
-      </aside>
+      </>
     )
   }
 
-  return null
+  return (
+    <AnimatePresence>
+      {shouldShow && (
+        <motion.aside
+          key={contentKey}
+          className={styles.sidebar}
+          initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 6 }}
+          animate={reduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+          exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 6 }}
+          transition={{ duration: reduceMotion ? 0 : 0.15 }}
+        >
+          {content}
+        </motion.aside>
+      )}
+    </AnimatePresence>
+  )
 }

@@ -1,10 +1,21 @@
 /* ── Side tray shell ─────────────────────────────────────────────────────────── */
 
+/* position: fixed, top-right — 2026-07-02 canvas-first-overlay pass. Same anchor point as
+   PropertiesPanel.module.css's .sidebar; safe to share because the two are mutually exclusive
+   (SimConfigPanel shows only while simConfigOpen, PropertiesPanel only while !simConfigOpen —
+   see both components' self-gating) and never render at the same time. */
 .tray {
+  position: fixed;
+  top: 58px;
+  right: 16px;
   width: 480px;
   min-width: 480px;
+  max-height: calc(100vh - 42px - 28px - 32px);
+  z-index: 500;
   background: var(--color-surface);
-  border-left: 1px solid var(--color-node-border);
+  border: 1px solid var(--color-node-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
   display: flex;
   flex-direction: column;
   overflow: hidden;
