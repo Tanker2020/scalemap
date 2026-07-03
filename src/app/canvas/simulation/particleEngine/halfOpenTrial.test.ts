@@ -98,3 +98,59 @@ describe('half-open admits exactly one trial request', () => {
     expect(sawAParticle).toBe(true)
   })
 })
+
+describe('half-open trial is not stranded by an empty-queue source gate', () => {
+  const queueNodes: Node<NodeData>[] = [
+    { id: 'q', type: 'queue', position: { x: 0, y: 0 }, data: { label: 'q', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
+    { id: 'srv', type: 'ec2', position: { x: 200, y: 0 }, data: { label: 'srv', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
+  ]
+  const queueEdges: Edge<EdgeData>[] = [
+    { id: 'e1', source: 'q', target: 'srv', type: 'request', data: { label: '', edgeType: 'request', throughput: 0, latency: 0 } },
+  ]
+
+  let rafCallback: ((t: number) => void) | null = null
+  let rafSpy: ReturnType<typeof vi.spyOn>
+  let cafSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    clearBreakers()
+    rafCallback = null
+    rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => {
+      rafCallback = cb as unknown as (t: number) => void
+      return 1
+    })
+    cafSpy = vi.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {})
+    useSimulationStore.getState().setRunning(true)
+    useSimulationStore.getState().setPaused(false)
+    useSimulationStore.getState().setEdgeRps('e1', 100_000)
+    // Queue depth is left unset — defaults to 0, i.e. the queue is momentarily empty.
+  })
+
+  afterEach(() => {
+    stopSimulation()
+    useSimulationStore.getState().setRunning(false)
+    rafSpy.mockRestore()
+    cafSpy.mockRestore()
+  })
+
+  it('still mints the trial when the half-open edge sources from an empty queue', () => {
+    setCallbacks(() => {}, () => {}, () => {})
+
+    const canvas = makeFakeCanvas()
+    startSimulation(canvas, queueNodes, queueEdges, 1)
+    // Force half-open AFTER startSimulation: startSimulation calls clearBreakers() as part
+    // of its reset, which would otherwise wipe this out from under us.
+    getBreaker('e1').state = 'half-open'
+
+    let t = performance.now()
+    let sawAParticle = false
+    for (let i = 0; i < 20; i++) {
+      const cb = rafCallback!
+      rafCallback = null
+      t += 16
+      cb(t)
+      if (getParticleCountForEdge('e1') >= 1) sawAParticle = true
+    }
+    expect(sawAParticle).toBe(true)
+  })
+})

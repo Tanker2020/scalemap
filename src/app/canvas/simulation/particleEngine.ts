@@ -824,7 +824,7 @@ function spawnParticles(now: number, delta: number) {
     if (downstreamFactor > 0 && sourceNodeId && ep.sourceNodeType
         && ['queue', 'pubsub', 'eventBus', 'stream'].includes(ep.sourceNodeType)) {
       const depth = state.queueDepths.get(sourceNodeId) ?? 0
-      if (depth <= 0) {
+      if (depth <= 0 && !halfOpenTrialEdgesThisFrame.has(ep.id)) {
         ep.effectiveRps = 0
         continue
       }
