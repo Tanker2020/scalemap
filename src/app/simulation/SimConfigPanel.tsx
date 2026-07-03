@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import { X, Search, SlidersHorizontal, ChevronUp, ChevronDown, Activity, Bell } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
 import { useUiStore } from '../store/ui.store'
@@ -1043,13 +1043,14 @@ function DetailContent({ nodeId }: { nodeId: string }) {
 // ─── Main panel (side tray) ───────────────────────────────────────────────────
 
 export function SimConfigPanel() {
-  const { setSimConfigOpen, simConfigPanelNodeId, setSimConfigPanelNode } = useUiStore()
+  const { simConfigOpen, setSimConfigOpen, simConfigPanelNodeId, setSimConfigPanelNode } = useUiStore()
   const { nodes } = useCanvasStore()
   const running   = useSimulationStore(s => s.running)
   const events    = useSimulationStore(s => s.events)
   const [search, setSearch] = useState('')
   const [eventLogOpen, setEventLogOpen] = useState(false)
   const lastSeenEventsRef = useRef(0)
+  const reduceMotion = useReducedMotion()
 
   const unreadEvents = events.length - lastSeenEventsRef.current
 
@@ -1078,7 +1079,15 @@ export function SimConfigPanel() {
   }, [nonGroupNodes, search])
 
   return (
-    <aside className={styles.tray}>
+    <AnimatePresence>
+      {simConfigOpen && (
+        <motion.aside
+          className={styles.tray}
+          initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 6 }}
+          animate={reduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+          exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 6 }}
+          transition={{ duration: reduceMotion ? 0 : 0.15 }}
+        >
       {/* Header */}
       <div className={styles.trayHeader}>
         <div className={styles.trayTitle}>
@@ -1173,6 +1182,8 @@ export function SimConfigPanel() {
           </AnimatePresence>
         </div>
       </div>
-    </aside>
+        </motion.aside>
+      )}
+    </AnimatePresence>
   )
 }

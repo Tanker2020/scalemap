@@ -59,7 +59,6 @@ export default function App() {
   useThemeBootstrap()
   const showHome = useFileStore(s => s.showHome)
   const running = useSimulationStore(s => s.running)
-  const simConfigOpen = useUiStore(s => s.simConfigOpen)
   const dockOpen = useUiStore(s => s.dockOpen)
   const packetEditorOpen = useUiStore(s => s.packetEditorOpen)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -118,31 +117,8 @@ export default function App() {
               <Canvas />
               <MetricsDrawer open={drawerOpen} onToggle={() => setDrawerOpen(o => !o)} />
             </div>
-            <AnimatePresence mode="wait">
-              {simConfigOpen ? (
-                <motion.div
-                  key="inspector"
-                  style={{ display: 'flex' }}
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 20 }}
-                  transition={{ duration: 0.18, ease: 'easeOut' }}
-                >
-                  <SimConfigPanel />
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="properties"
-                  style={{ display: 'flex' }}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -10 }}
-                  transition={{ duration: 0.15 }}
-                >
-                  <PropertiesPanel />
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <SimConfigPanel />
+            <PropertiesPanel />
             {/* UtilityDock is a normal flex child here (not position: fixed) so it reserves
                 its own space in the row and shifts Properties/Inspector left instead of
                 floating on top of them — see UtilityDock.module.css for the rationale. */}
