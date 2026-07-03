@@ -441,25 +441,25 @@ export function Toolbar() {
 
       {/* Tools */}
       <button
-        className={`${styles.btnTool} ${activeTool === 'select' ? styles.active : ''}`}
+        className={`${styles.btnTool} ${styles.btnToolIcon} ${activeTool === 'select' ? styles.active : ''}`}
         onClick={() => setActiveTool('select')}
         title="Select (V)"
       >
-        <MousePointer2 size={12} /> Select
+        <MousePointer2 size={14} />
       </button>
       <button
-        className={`${styles.btnTool} ${activeTool === 'hand' ? styles.active : ''}`}
+        className={`${styles.btnTool} ${styles.btnToolIcon} ${activeTool === 'hand' ? styles.active : ''}`}
         onClick={() => setActiveTool('hand')}
         title="Hand (H)"
       >
-        <Hand size={12} /> Hand
+        <Hand size={14} />
       </button>
       <button
-        className={`${styles.btnTool} ${activeTool === 'connect' ? styles.active : ''}`}
+        className={`${styles.btnTool} ${styles.btnToolIcon} ${activeTool === 'connect' ? styles.active : ''}`}
         onClick={() => setActiveTool('connect')}
         title="Connect (C)"
       >
-        <Zap size={12} /> Connect
+        <Zap size={14} />
       </button>
 
       <div className={styles.sep} />
