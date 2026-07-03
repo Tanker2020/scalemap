@@ -127,6 +127,21 @@ rule.
 
 **Blast radius:** low. `UtilityDock` has 1 caller (`App.tsx`), which now just mounts it unconditionally (no ternary/`AnimatePresence` wrapper at the call site — the mount-gating moved inside `UtilityDock.tsx` itself). `DiagnosticsPanel`/`ReportsPanel` are each imported only by `UtilityDock.tsx`.
 
+### I. Toolbar declutter — 2026-07-02, in progress (`docs/superpowers/plans/2026-07-02-toolbar-declutter.md`)
+
+A 5-task plan reducing the top toolbar's button count/visual noise. Task 1 (icon-only
+Select/Hand/Connect tool buttons) and Task 2 (this section) are complete; later tasks
+continue modifying `Toolbar.tsx`/`Toolbar.module.css` — read the plan doc before assuming
+the toolbar's structure is final.
+
+| File | Role |
+|---|---|
+| `src/app/toolbar/Toolbar.tsx` | Main toolbar shell — tool cluster, theme toggle, Undo/Redo, Panels group, ScaleScript pill, Simulate/Pause/End split button, `ProviderMenu`/`SimSettings` (still defined here). No longer owns file-menu state/handlers (moved to `FileMenu.tsx`, Task 2) |
+| `src/app/toolbar/FileMenu.tsx` (new, Task 2) | Single `File ▾` dropdown consolidating what were four separate toolbar pieces — standalone New/Open buttons plus `SaveButton`/`ExportMenu`/`ImportMenu` inline components. Owns all file-operation handlers (`handleNew`/`handleOpen`/`handleSave`/`handleTf`/`handleExportScript`/`handleImportScript`) and the `downloadBlob` helper, previously split across `Toolbar.tsx`'s three components plus its own `handleNew`. Export/Import render as inline sub-panels (`submenu` state) rather than separate dropdowns. Running-state gating unchanged in effect but corrected in scope: **New and Import disable while a simulation runs (editing lock); Save and Export stay enabled** (Export/Save don't mutate the diagram, so there's no reason to lock them — this was previously inconsistent across the three original components). Takes `fileName` as a prop from `useFileStore`; everything else it reads directly via store hooks/`getState()` |
+| `src/app/toolbar/Toolbar.module.css` | Shared by both files (`FileMenu.tsx` imports `styles` from here rather than getting its own CSS module) — `.dropdownItem:disabled`, `.dropdownSubWrap`, `.submenuChevron`, `.dropdownSubmenu` added for the new inline Export/Import sub-panels (Task 2) |
+
+**Blast radius:** `FileMenu.tsx` has 1 caller (`Toolbar.tsx`). Moving the four file-operation pieces out shrank `Toolbar.tsx` by ~190 lines and removed its need to import `serialize`/`exportTerraform`/`parseScaleScript`/`applyScaleScript`/`exportScaleScript`/`NodeData`/`NodeSlo`/`EdgeData`/`useMetricsHistoryStore`/`useCostHistoryStore` — those now live only in `FileMenu.tsx`. `Toolbar.tsx` still owns `ProviderMenu`, `SimSettings`, and the main `Toolbar()` shell; expect further shrinkage as later tasks in the plan continue extracting pieces.
+
 ---
 
 ## 2. Shared "hub" files (everyone touches these — high conflict risk)
