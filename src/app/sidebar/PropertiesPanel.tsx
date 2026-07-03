@@ -8,7 +8,7 @@ import { useDisplayMetrics, useDisplayMetricsMap } from '../canvas/simulation/us
 import { NODE_CONFIG, GROUPING_TYPES, edgeAcceptsProtocol, type NodeStatus, type EdgeType, type NodeType, type NodeData as ND, type NodeCostConfig, type PacketProtocol } from '../../lib/nodeConfig'
 import { REGIONS_BY_ZONE, WORLD_REGIONS } from '../../lib/regionConfig'
 import { CATEGORY_COLORS } from '../../lib/theme'
-import { CLOUD_REGISTRY, getServiceSpec, providerLabelForNode, type CloudProvider, type CostComponentSpec } from '../../lib/cloudRegistry'
+import { CLOUD_REGISTRY, getServiceSpec, resolveProviderLabel, type CloudProvider, type CostComponentSpec } from '../../lib/cloudRegistry'
 import { Sparkline } from './Sparkline'
 import { EventCard } from '../simulation/SimConfigPanel'
 import { MetricGraphOverlay, type GraphMetric } from '../analytics/MetricGraphOverlay'
@@ -331,7 +331,7 @@ function NodePanel({ nodeId }: { nodeId: string }) {
             className={styles.field}
             placeholder="Label"
             value={data.label}
-            onChange={e => updateNodeData(selectedNode.id, { label: e.target.value, labelCustomized: true })}
+            onChange={e => updateNodeData(selectedNode.id, { label: e.target.value })}
           />
           {showSubtitle ? (
             <input
@@ -387,7 +387,7 @@ function NodePanel({ nodeId }: { nodeId: string }) {
                     onChange={e => {
                       const nextProvider = e.target.value as CloudProvider
                       const genericLabel = config?.label ?? nodeType
-                      const nextLabel = providerLabelForNode(nodeType, nextProvider, data.label, genericLabel, data.labelCustomized)
+                      const nextLabel = resolveProviderLabel(nodeType, nextProvider, data.label, genericLabel)
                       updateNodeData(selectedNode.id, { provider: nextProvider, label: nextLabel })
                     }}>
                     <option value="generic">Generic</option>
