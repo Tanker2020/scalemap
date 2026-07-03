@@ -25,8 +25,12 @@ import styles from './UtilityDock.module.css'
  * earlier "must be a flex child, not fixed" rule recorded in docs/module-boundaries.md: that
  * rule was about two *uncoordinated* fixed panels sharing the same right-edge slot. This dock
  * now anchors bottom-right while PropertiesPanel/SimConfigPanel anchor top-right (different
- * corners), and caps its own max-height (UtilityDock.module.css) so it can never grow tall
- * enough to reach the other panel's corner — coordinated by construction, not by accident.
+ * corners), and caps its own max-height (UtilityDock.module.css) to reduce the chance it reaches
+ * the other panel's corner. That cap shares the same formula as the top panel's, so it's not a
+ * hard geometric guarantee: at very short window heights (roughly ≤580px tall) with both panels
+ * open and both filled with enough content to hit their max-height cap, they could occupy the
+ * same vertical span. In normal desktop use this doesn't happen — flagged here so nobody assumes
+ * it's structurally impossible.
  */
 export function UtilityDock() {
   const dockOpen = useUiStore(s => s.dockOpen)
