@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence } from 'framer-motion'
 import { DARK_COLORS, LIGHT_COLORS, FONT_DISPLAY, FONT_BODY, FONT_MONO, SPACING, MOTION } from './lib/theme'
 import '@fontsource/space-grotesk/400.css'
 import '@fontsource/space-grotesk/500.css'
@@ -59,7 +59,6 @@ export default function App() {
   useThemeBootstrap()
   const showHome = useFileStore(s => s.showHome)
   const running = useSimulationStore(s => s.running)
-  const dockOpen = useUiStore(s => s.dockOpen)
   const packetEditorOpen = useUiStore(s => s.packetEditorOpen)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
@@ -119,23 +118,7 @@ export default function App() {
             </div>
             <SimConfigPanel />
             <PropertiesPanel />
-            {/* UtilityDock is a normal flex child here (not position: fixed) so it reserves
-                its own space in the row and shifts Properties/Inspector left instead of
-                floating on top of them — see UtilityDock.module.css for the rationale. */}
-            <AnimatePresence>
-              {dockOpen && (
-                <motion.div
-                  key="dock"
-                  style={{ display: 'flex' }}
-                  initial={{ opacity: 0, x: 16 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 16 }}
-                  transition={{ duration: 0.18, ease: 'easeOut' }}
-                >
-                  <UtilityDock />
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <UtilityDock />
           </>
         )}
       </div>
