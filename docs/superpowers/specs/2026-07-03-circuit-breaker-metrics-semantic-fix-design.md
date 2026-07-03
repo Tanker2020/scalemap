@@ -173,10 +173,15 @@ breaker check `:1182-1191`)
   }
   ```
   Immediately below, where `n` (particle count for this edge this frame) is
-  computed (`:813-814`), clamp: when this edge's breaker is half-open and a
-  trial was just authorized this frame, force `n = Math.min(n, 1)` so exactly
-  one particle mints regardless of the batch-rate math — the throttle down to
-  "one trial" is enforced at the count, not the rate.
+  computed (`:813-814`), override: when this edge's breaker just had its trial
+  authorized this frame (the `breaker.trialPending = true` branch above just
+  ran), force `n = 1` unconditionally — not `Math.min(n, 1)`. A low-rps edge's
+  normal batch-rate math can legitimately compute `spawnChance < 1` and round
+  down to `n = 0` some frames; clamping only the ceiling would leave the trial
+  never actually minting, permanently stuck with `trialPending = true` and
+  `downstreamFactor = 0` on every later frame (nothing left to resolve the
+  trial and clear the flag). Forcing exactly `n = 1` the frame a trial is
+  authorized guarantees it always mints, regardless of the edge's own rate.
 - `handleParticleArrival` breaker check (`:1182-1191`): remove the
   `Math.random() > 0.1` admission drop entirely — a particle reaching this
   point on a half-open edge IS the one authorized trial, so it always
@@ -206,8 +211,12 @@ breaker check `:1182-1191`)
   if (inRps < IDLE_RPS_THRESHOLD) {
     if (backlog > 0) {
       // Still draining accepted work — trickle outbound proportional to the
-      // decaying backlog instead of snapping to 0 alongside inbound.
-      const maxBacklogRef = Math.max(1, effectiveConfig(sourceNodeId, ep.sourceNodeType).maxConcurrency ?? 20)
+      // decaying backlog instead of snapping to 0 alongside inbound. `?? 200`
+      // matches the existing thread-pool fallback used for this same class of
+      // source node elsewhere in this file (`:829`, `:2171`), so an ec2/
+      // container/pod source without an explicit maxConcurrency config drains
+      // against the same assumed pool size its thread-pool gate already uses.
+      const maxBacklogRef = Math.max(1, effectiveConfig(sourceNodeId, ep.sourceNodeType).maxConcurrency ?? 200)
       downstreamFactor *= Math.max(inRps / IDLE_RPS_THRESHOLD, Math.min(1, backlog / maxBacklogRef))
     } else {
       downstreamFactor *= inRps / IDLE_RPS_THRESHOLD
