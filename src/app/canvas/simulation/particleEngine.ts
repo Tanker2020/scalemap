@@ -13,7 +13,7 @@ import { NODE_SIM_DEFAULTS } from '../../simulation/defaults'
 import { CLOUD_REGISTRY, type CloudProvider } from '../../../lib/cloudRegistry'
 import {
   getBreaker, recordBreakerResult, checkBreakerTransition,
-  forceOpenBreakersForNode, resetBreakersIfRecovered, getAllBreakers, clearBreakers,
+  forceOpenBreakersForNode, resetBreakersIfRecovered, clearBreakers,
 } from './particleEngine/circuitBreakers'
 import {
   acquireWorkers, releaseWorkerNow, scheduleWorkerRelease,
@@ -25,6 +25,7 @@ import {
   trafficMultiplier as chaosTrafficMultiplier, advanceChaosSchedule as chaosAdvanceSchedule,
   getChaosFailures, clearChaosState, isEdgePartitioned, edgePartitionLossRate,
 } from './particleEngine/chaos'
+import { drawCircuitOverlay } from './particleEngine/circuitVisual'
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -2222,38 +2223,8 @@ function advanceAndDraw(canvas: HTMLCanvasElement, now: number, delta: number) {
     ctx.restore()
   }
 
-  // Draw circuit-open overlay (amber ⊘)
-  for (const [nodeId, breaker] of getAllBreakers()) {
-    if (breaker.state === 'closed') continue
-    const rect = getNodeCanvasRect(nodeId)
-    if (!rect) continue
-    const [nx, ny, nw, nh] = rect
-    const cx = nx + nw / 2
-    const cy = ny + nh / 2
-
-    ctx.save()
-    ctx.globalAlpha = breaker.state === 'open' ? 0.7 : 0.4
-    ctx.strokeStyle = '#F59E0B'
-    ctx.lineWidth   = breaker.state === 'open' ? 2 : 1.5
-    if (breaker.state === 'half-open') ctx.setLineDash([4, 3])
-    roundRectPath(ctx, nx, ny, nw, nh, 8)
-    ctx.stroke()
-    ctx.setLineDash([])
-
-    if (breaker.state === 'open') {
-      // Draw ⊘ symbol
-      const r = 8
-      ctx.beginPath()
-      ctx.arc(cx, cy - nh / 2 + 8, r, 0, Math.PI * 2)
-      ctx.strokeStyle = '#F59E0B'
-      ctx.stroke()
-      ctx.beginPath()
-      ctx.moveTo(cx - r * 0.7, cy - nh / 2 + 8 - r * 0.7)
-      ctx.lineTo(cx + r * 0.7, cy - nh / 2 + 8 + r * 0.7)
-      ctx.stroke()
-    }
-    ctx.restore()
-  }
+  // Draw circuit-breaker edge overlay (neon sheath along open/half-open edges)
+  drawCircuitOverlay(ctx, now, getEdgePoint)
 
   // Advance particles
   const dt = delta * _speed
