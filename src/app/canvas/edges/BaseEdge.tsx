@@ -11,6 +11,7 @@ import {
 import type { EdgeData } from '../../../lib/nodeConfig'
 import { useCanvasStore } from '../../store/canvas.store'
 import { useUiStore } from '../../store/ui.store'
+import { useSimulationStore } from '../../store/simulation.store'
 import { CATEGORY_COLORS } from '../../../lib/theme'
 import styles from './edges.module.css'
 
@@ -140,6 +141,13 @@ export function ScalemapEdge({
   const themeMode = useUiStore(s => s.themeMode)
   const edgeConfig = buildEdgeConfig(themeMode)
   const cfg = edgeConfig[edgeType] ?? edgeConfig.request
+  // While a simulation runs, editing is locked and clicking an edge exists only to intercept
+  // click-to-inspect-a-particle (Canvas.tsx's onPaneClick + pickParticleAtPoint) before it ever
+  // reaches the pane — since particles travel exactly along this path, every attempted particle
+  // click landed on this hit-stroke instead. Dropping pointer events here (mirroring the
+  // nodesDraggable/nodesConnectable/nodesFocusable running-gate already used for nodes) lets
+  // clicks fall through to the pane, restoring click-to-inspect without touching that logic.
+  const running = useSimulationStore(s => s.running)
 
   // Recompute attachment points/sides from the nodes' current rectangles rather than trusting
   // the handle-derived props above — see getFloatingEdgeParams for why those props aren't
@@ -187,7 +195,7 @@ export function ScalemapEdge({
         stroke="transparent"
         strokeWidth={16}
         fill="none"
-        style={{ cursor: 'pointer' }}
+        style={{ cursor: running ? 'default' : 'pointer', pointerEvents: running ? 'none' : 'stroke' }}
       />
       <path
         id={id}
@@ -198,7 +206,10 @@ export function ScalemapEdge({
         strokeDasharray={cfg.strokeDasharray}
         markerEnd={cfg.markerEnd}
         markerStart={cfg.markerStart}
-        style={{ filter: selected ? `drop-shadow(0 0 4px ${cfg.color})` : undefined }}
+        style={{
+          filter: selected ? `drop-shadow(0 0 4px ${cfg.color})` : undefined,
+          pointerEvents: running ? 'none' : 'stroke',
+        }}
       />
       {edgeData?.label && (
         <EdgeLabelRenderer>
@@ -206,7 +217,7 @@ export function ScalemapEdge({
             style={{
               position: 'absolute',
               transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
-              pointerEvents: 'all',
+              pointerEvents: running ? 'none' : 'all',
             }}
           >
             <span className={styles.edgeLabel}>{edgeData.label}</span>
