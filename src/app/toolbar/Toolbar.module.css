@@ -7,6 +7,20 @@
   border-bottom: 1px solid var(--color-toolbar-border);
   height: 42px;
   flex-shrink: 0;
+  /* At real laptop widths the full button set (file actions + tools + panels + sim controls)
+     can exceed the window's width — with no overflow handling here, the rightmost buttons
+     (Simulate/Pause/End) render past the window edge and become unclickable. Scroll rather
+     than clip/squish so every button stays reachable and legible regardless of window width. */
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.toolbar::-webkit-scrollbar { height: 4px; }
+.toolbar::-webkit-scrollbar-track { background: transparent; }
+.toolbar::-webkit-scrollbar-thumb { background: var(--color-node-border); border-radius: 2px; }
+
+.toolbar > * {
+  flex-shrink: 0;
 }
 
 .sep {
