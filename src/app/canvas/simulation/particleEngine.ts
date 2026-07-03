@@ -763,8 +763,18 @@ function spawnParticles(now: number, delta: number) {
         // Without this, all downstream nodes fire at 100% for the first metrics cycle (~200ms).
         const inRps = _smoothedMetrics.get(sourceNodeId)?.inRps ?? 0
         if (inRps < IDLE_RPS_THRESHOLD) {
-          // Soft fade: 0 RPS → 0%, 5 RPS → 100%. Saturates immediately above the threshold.
-          downstreamFactor *= inRps / IDLE_RPS_THRESHOLD
+          const backlog = _lbActiveRequests.get(sourceNodeId) ?? 0
+          if (backlog > 0) {
+            // Still draining accepted work (e.g. inbound just got breaker-gated) — trickle
+            // outbound proportional to the decaying backlog instead of snapping to 0 in the
+            // same tick as inbound. `?? 200` matches the thread-pool fallback already used for
+            // this class of source node elsewhere in this file (maxConcurrency default below).
+            const maxBacklogRef = Math.max(1, effectiveConfig(sourceNodeId, ep.sourceNodeType).maxConcurrency ?? 200)
+            downstreamFactor *= Math.max(inRps / IDLE_RPS_THRESHOLD, Math.min(1, backlog / maxBacklogRef))
+          } else {
+            // Soft fade: 0 RPS → 0%, 5 RPS → 100%. Saturates immediately above the threshold.
+            downstreamFactor *= inRps / IDLE_RPS_THRESHOLD
+          }
         }
         // Above the threshold: no scaling — configured outbound flows freely.
       }
