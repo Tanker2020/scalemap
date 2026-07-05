@@ -15,6 +15,7 @@ import {
   getBreaker, recordBreakerResult, checkBreakerTransition,
   forceOpenBreakersForNode, resetBreakersIfRecovered, clearBreakers,
 } from './particleEngine/circuitBreakers'
+import { availableBackendEdges } from './particleEngine/lbRouting'
 import {
   acquireWorkers, releaseWorkerNow, scheduleWorkerRelease,
   getActiveConnections, acquireConnection, scheduleConnectionRelease,
@@ -1054,14 +1055,17 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
         const lbOutEdges = _edgePaths.filter(e =>
           _edgesData.find(d => d.id === e.id)?.source === sourceNodeId,
         )
-        const healthyEdges = lbOutEdges.filter(e => {
-          const tgtId = _edgesData.find(d => d.id === e.id)?.target
-          return getBreaker(e.id)?.state !== 'open'
-            && (tgtId === undefined || _nodeHealthStates.get(tgtId) !== 'down')
-        })
-        const pool = healthyEdges.length > 0 ? healthyEdges : lbOutEdges
-        if (pool.length > 0) {
-          retryEdgeId = pool[Math.floor(Math.random() * pool.length)].id
+        const healthyEdges = availableBackendEdges(
+          lbOutEdges,
+          id => _edgesData.find(d => d.id === id)?.target,
+          id => getBreaker(id).state,
+          id => _nodeHealthStates.get(id),
+        )
+        // Only reroute onto a genuinely healthy backend. If none, keep the original edge so
+        // processRetryQueue's circuit-open gate drops the retry at the LB (503) rather than
+        // rerouting it onto a tripped/down edge (the old `|| lbOutEdges` fallback did exactly that).
+        if (healthyEdges.length > 0) {
+          retryEdgeId = healthyEdges[Math.floor(Math.random() * healthyEdges.length)].id
         }
       }
       _retryQueue.push({
@@ -1455,15 +1459,22 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       const lbConfig = effectiveConfig(targetNodeId, targetNodeType)
       let chosenEp: EdgePath
 
-      // Exclude backends whose circuit breaker is open or whose health state is 'down'.
-      // Falls back to the full pool only if ALL backends are unavailable — ensures the LB
-      // never silently blackholes traffic when there is no healthy option.
-      const availableEdges = outEdges.filter(e => {
-        const tgtId = _edgesData.find(d => d.id === e.id)?.target
-        return getBreaker(e.id)?.state !== 'open'
-          && (tgtId === undefined || _nodeHealthStates.get(tgtId) !== 'down')
-      })
-      const routingEdges = availableEdges.length > 0 ? availableEdges : outEdges
+      // Route only over backends whose circuit breaker is not open and whose target is not 'down'.
+      // If NONE are available, the LB has no healthy upstream: it rejects the request itself (503)
+      // via dropParticle instead of forwarding onto a tripped/down edge. The old
+      // `availableEdges.length > 0 ? availableEdges : outEdges` fallback forwarded anyway — minting
+      // an `_lbp` particle onto a dead edge that bypasses effectiveRps, so the LB reported outRps=0
+      // while real traffic still hit (and was re-dropped by) the down backends. See lbRouting.ts.
+      const routingEdges = availableBackendEdges(
+        outEdges,
+        id => _edgesData.find(d => d.id === id)?.target,
+        id => getBreaker(id).state,
+        id => _nodeHealthStates.get(id),
+      )
+      if (routingEdges.length === 0) {
+        dropParticle(ep, targetNodeId, particle)
+        return
+      }
 
       if (lbConfig.lbRouting === 'least-connections' && routingEdges.length > 1) {
         // Route to the backend with the fewest in-flight requests
