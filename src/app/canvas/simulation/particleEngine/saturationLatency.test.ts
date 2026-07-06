@@ -71,7 +71,7 @@ async function runSteady(
   edgeReadPercentage?: number,
 ): Promise<Map<string, NodeMetrics>> {
   const nodes: Node<NodeData>[] = [
-    { id: 'src', type: 'dns', position: { x: 0, y: 0 }, data: { label: 'src', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
+    { id: 'src', type: 'cdn', position: { x: 0, y: 0 }, data: { label: 'src', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
     { id: 'dst', type: targetType, position: { x: 200, y: 0 }, data: { label: 'dst', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
   ]
   const edgeData: EdgeData = targetType === 'dbSql'

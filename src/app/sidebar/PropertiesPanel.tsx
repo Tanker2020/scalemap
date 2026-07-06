@@ -5,7 +5,7 @@ import { useUiStore } from '../store/ui.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
 import { useDisplayMetrics, useDisplayMetricsMap } from '../canvas/simulation/useDisplayMetrics'
-import { NODE_CONFIG, GROUPING_TYPES, edgeAcceptsProtocol, type NodeStatus, type EdgeType, type NodeType, type NodeData as ND, type NodeCostConfig, type PacketProtocol } from '../../lib/nodeConfig'
+import { NODE_CONFIG, GROUPING_TYPES, edgeAcceptsProtocol, canDefineOutboundThroughput, type NodeStatus, type EdgeType, type NodeType, type NodeData as ND, type NodeCostConfig, type PacketProtocol } from '../../lib/nodeConfig'
 import { REGIONS_BY_ZONE, WORLD_REGIONS } from '../../lib/regionConfig'
 import { CATEGORY_COLORS } from '../../lib/theme'
 import { CLOUD_REGISTRY, getServiceSpec, resolveProviderLabel, type CloudProvider, type CostComponentSpec } from '../../lib/cloudRegistry'
@@ -744,6 +744,11 @@ export function PropertiesPanel() {
     const tgtRegion = resolveEdgeRegion(selectedEdge.target)
     const hasPartialRegion = (!!srcRegion) !== (!!tgtRegion)
 
+    // Pure network-layer relays (LB, DNS, firewall, VPN) only forward arriving traffic — they
+    // must not carry an independently-configured RPS. See FORWARD_ONLY_NODE_TYPES in nodeConfig.ts.
+    const sourceNodeType = nodeMap.get(selectedEdge.source)?.type as NodeType | undefined
+    const isForwardOnly = !canDefineOutboundThroughput(sourceNodeType)
+
     contentKey = 'edge'
     content = (
       <>
@@ -824,10 +829,19 @@ export function PropertiesPanel() {
                 type="number"
                 min={1}
                 max={10000}
-                value={rps}
+                value={isForwardOnly ? 0 : rps}
+                disabled={isForwardOnly}
+                title={isForwardOnly ? 'Forwards traffic only — set RPS on the incoming edge instead' : undefined}
                 onChange={e => setEdgeRps(selectedEdge.id, Number(e.target.value))}
               />
             </div>
+            {isForwardOnly && (
+              <div className={styles.row}>
+                <span className={styles.rowLabel} style={{ color: 'var(--color-text-muted)', fontStyle: 'italic' }}>
+                  Forwards traffic only · RPS is set upstream
+                </span>
+              </div>
+            )}
             <div className={styles.row}>
               <span className={styles.rowLabel}>Latency (ms)</span>
               <input

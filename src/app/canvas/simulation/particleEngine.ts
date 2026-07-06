@@ -4,7 +4,7 @@ import type {
   RequestEdgeConfig, StreamEdgeConfig, EventEdgeConfig, DependencyEdgeConfig,
   PacketMode, PacketTemplate, HttpTemplate, StreamTemplate, PacketDistributionEntry,
 } from '../../../lib/nodeConfig'
-import { GROUPING_TYPES, DEFAULT_EVENT_EDGE_CONFIG, edgeAcceptsProtocol } from '../../../lib/nodeConfig'
+import { GROUPING_TYPES, DEFAULT_EVENT_EDGE_CONFIG, edgeAcceptsProtocol, FORWARD_ONLY_NODE_TYPES, canDefineOutboundThroughput } from '../../../lib/nodeConfig'
 import { useCanvasStore } from '../../store/canvas.store'
 import { sampleInterRegionLatencyMs } from '../../../lib/regionConfig'
 import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventType, type CircuitState, type RequestSnapshot, type TemplateInfo } from '../../store/simulation.store'
@@ -391,6 +391,15 @@ interface EdgePath {
                               // backpressure, idle-RPS, stall) apply on top — feeds the
                               // caller-side errorRate contribution in updateAllNodeMetrics
 }
+
+// Forwarded/relayed particles (minted directly by the LB's round-robin block or
+// forwardToOutbound — see handleParticleArrival) don't go through spawnParticles' rate-based
+// loop, so without this they'd never register in effectiveRps/inRps/outRps despite really
+// flowing. _forwardedParticleCounts tallies forward-mint events per edge since the last
+// spawnParticles read; _forwardedRpsSmoothed holds the EMA of the converted rate, per edge — a
+// raw per-frame count is far too noisy to use directly (see spawnParticles' fold-in site).
+const _forwardedParticleCounts = new Map<string, number>()
+const _forwardedRpsSmoothed    = new Map<string, number>()
 
 let _edgePaths: EdgePath[] = []
 let _speed = 1
@@ -844,7 +853,24 @@ function spawnParticles(now: number, delta: number) {
     ep.offeredRps = ep.rps * mult
     ep.breakerRejectedRps = breakerFactor < 1 ? ep.offeredRps * (1 - breakerFactor) : 0
     const rps = ep.rps * mult * downstreamFactor
-    ep.effectiveRps = rps
+
+    // Fold in forwarded/relayed traffic measured since the last read (see
+    // _forwardedParticleCounts's doc comment) — additive, not a replacement, since orchestration
+    // clusters can carry a real configured rps on the same edge that also receives forwards.
+    // EMA-smoothed because a raw per-frame count is extremely noisy: at 500 forwarded rps and
+    // ~16ms frames, expected forwards/frame is well under 1, so an unsmoothed conversion would
+    // bounce between 0 and a large instantaneous spike every frame.
+    const rawForwardedCount = _forwardedParticleCounts.get(ep.id) ?? 0
+    if (rawForwardedCount) _forwardedParticleCounts.delete(ep.id)
+    const instantaneousForwardedRps = (delta > 0 && _speed > 0)
+      ? (rawForwardedCount / ((delta / 1000) * _speed)) * PARTICLE_REQUEST_RATIO
+      : 0
+    const smoothedForwardedRps = ema(_forwardedRpsSmoothed.get(ep.id) ?? 0, instantaneousForwardedRps)
+    _forwardedRpsSmoothed.set(ep.id, smoothedForwardedRps)
+
+    // Gated by downstreamFactor so a dead/breaker-open/chaos-affected source's forwarded
+    // contribution decays in lockstep with its configured traffic, not just via EMA lag.
+    ep.effectiveRps = rps + smoothedForwardedRps * downstreamFactor
     const particlesPerSec = rps / PARTICLE_REQUEST_RATIO
     const spawnChance = particlesPerSec * (delta / 1000) * _speed
     let n = Math.floor(spawnChance) + (Math.random() < (spawnChance % 1) ? 1 : 0)
@@ -1142,9 +1168,14 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
   if (!targetNodeId) return
 
   // Update ambient glow
+  const mult = effectiveMultiplier(now)
+  // effectiveRps (not raw rps) so this reflects real forwarded/relayed traffic too — a node fed
+  // purely by forwarding (LB backends, dns/firewall/vpn relays) would otherwise always read 0
+  // here, silently disabling its glow intensity, capacity/overload drop-check, and DB read/write
+  // utilization split (all of which key off this same value further down this function).
   const totalInRps = _edgePaths
     .filter(e => _edgesData.find(d => d.id === e.id)?.target === targetNodeId)
-    .reduce((s, e) => s + e.rps, 0) * effectiveMultiplier(now)
+    .reduce((s, e) => s + (e.effectiveRps ?? (e.rps * mult)), 0)
 
   state.nodeGlows.set(targetNodeId, {
     color: nodeAccentColor(targetNodeType),
@@ -1496,12 +1527,23 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       const _lbp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE, color: particle.templateId !== undefined ? (_packetTemplates[particle.templateId]?.colorOverride ?? edgeColor(chosenEp.edgeType)) : edgeColor(chosenEp.edgeType), edgeId: chosenEp.id, retries: 0, originLatencyMs: 0, spawnTime: performance.now(), payloadBytes: templatePayloadBytes(particle.templateId, chosenEp.targetNodeType, chosenEp.id), templateId: particle.templateId }
       state.particles.get(chosenEp.id)!.push(_lbp)
       _particleById.set(_lbp.id, _lbp)
+      _forwardedParticleCounts.set(chosenEp.id, (_forwardedParticleCounts.get(chosenEp.id) ?? 0) + 1)
     }
     return
   }
 
   // Orchestration clusters: forward to all outbound (broadcast)
   if (['k8sCluster', 'ecsCluster', 'dockerCompose'].includes(targetNodeType)) {
+    forwardToOutbound(targetNodeId, targetNodeType, particle.templateId)
+    return
+  }
+
+  // Pure network-layer relays (dns, firewall, vpn — loadBalancer is handled above, and this point
+  // is unreachable for it since the branch above already returned): these types can never
+  // originate independent outbound traffic (see FORWARD_ONLY_NODE_TYPES/rps zeroing at snapshot
+  // time), so without this they'd go completely dark instead of relaying what arrives.
+  // Single-path relay, same as forwardToOutbound's existing use for orchestration clusters.
+  if (FORWARD_ONLY_NODE_TYPES.has(targetNodeType)) {
     forwardToOutbound(targetNodeId, targetNodeType, particle.templateId)
     return
   }
@@ -1525,6 +1567,7 @@ function forwardToOutbound(nodeId: string, _nodeType: NodeType, templateId?: num
   const _fwdp: Particle = { id: ++_particleIdCounter, t: 0, speed: PARTICLE_SPEED_BASE, color: edgeColor(outEp.edgeType), edgeId: outEp.id, retries: 0, originLatencyMs: 0, spawnTime: performance.now(), payloadBytes: templatePayloadBytes(templateId, outEp.targetNodeType, outEp.id), templateId }
   state.particles.get(outEp.id)!.push(_fwdp)
   _particleById.set(_fwdp.id, _fwdp)
+  _forwardedParticleCounts.set(outEp.id, (_forwardedParticleCounts.get(outEp.id) ?? 0) + 1)
 }
 
 function spawnErrorFlash(nodeId: string) {
@@ -2564,12 +2607,16 @@ export function startSimulation(
       // the latency cost of leaving/entering a defined region is not silently ignored.
       : (srcRegionId || tgtRegionId) && !(srcRegionId && tgtRegionId) ? 50 : 0
 
+    const sourceNodeType = src.type as NodeType | undefined
     return {
       id: edge.id,
       edgeType: edge.data?.edgeType ?? 'request',
-      sourceNodeType: src.type as NodeType | undefined,
+      sourceNodeType,
       targetNodeType: tgt.type as NodeType | undefined,
-      rps: useSimulationStore.getState().getEdgeRps(edge.id),
+      // Pure network-layer relays (loadBalancer, dns, firewall, vpn) must not originate
+      // independent traffic — zeroed here regardless of what's stored, so a legacy .scalemap
+      // file or ScaleScript setEdgeRps override can't reintroduce it. See FORWARD_ONLY_NODE_TYPES.
+      rps: canDefineOutboundThroughput(sourceNodeType) ? useSimulationStore.getState().getEdgeRps(edge.id) : 0,
       geoLatencyMs,
       effectiveRps: 0
     }
@@ -2615,6 +2662,8 @@ export function startSimulation(
   _nodeHealthStates.clear()
   _recoveryUntil.clear()
   _stallSources.clear()
+  _forwardedParticleCounts.clear()
+  _forwardedRpsSmoothed.clear()
   _particleById.clear()
   _particleIdCounter = 0
   _currentCapacity.clear()
@@ -2662,6 +2711,8 @@ export function stopSimulation() {
   _egressBytesAccum.clear()
   _lastEgressFlushAt = 0
   _smoothedMetrics.clear()
+  _forwardedParticleCounts.clear()
+  _forwardedRpsSmoothed.clear()
   _particleFrames.length = 0
   _edgeIndexMap.clear()
   _lastReplayIndexDrawn = -1

@@ -8,7 +8,7 @@ import { getBreaker, clearBreakers } from './circuitBreakers'
 import { clearBackpressureState } from './backpressure'
 import { getChaosFailures, clearChaosState } from './chaos'
 
-// Minimal 2-node, 1-edge fixture: a pure source (dns) feeding a compute node (ec2, which owns
+// Minimal 2-node, 1-edge fixture: a pure source (cdn) feeding a compute node (ec2, which owns
 // a thread pool and a circuit breaker per NODE_SIM_DEFAULTS) over a single request edge. The
 // edge carries a small, tightly-bounded retry config so the retry's fire time is deterministic
 // within a handful of frames.
@@ -28,7 +28,7 @@ const retryConfig: RequestEdgeConfig['retryConfig'] = {
 }
 
 const nodes: Node<NodeData>[] = [
-  { id: 'src', type: 'dns', position: { x: 0, y: 0 }, data: { label: 'dns', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
+  { id: 'src', type: 'cdn', position: { x: 0, y: 0 }, data: { label: 'cdn', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
   { id: 'dst', type: 'ec2', position: { x: 200, y: 0 }, data: { label: 'ec2', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
 ]
 const edges: Edge<EdgeData>[] = [

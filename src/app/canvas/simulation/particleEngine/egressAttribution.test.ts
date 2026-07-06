@@ -6,11 +6,11 @@ import { useSimulationStore, type NodeMetrics } from '../../../store/simulation.
 import { startSimulation, stopSimulation, setCallbacks } from '../particleEngine'
 import { getBreaker } from './circuitBreakers'
 
-// Minimal 2-node, 1-edge fixture: a pure source (dns — no thread-pool gate, no inbound edges,
+// Minimal 2-node, 1-edge fixture: a pure source (cdn — no thread-pool gate, no inbound edges,
 // no circuit-breaker config) feeding a compute node (ec2 — has a circuitBreaker config, so we
 // can force its inbound edge's breaker open to simulate "never arrives").
 const nodes: Node<NodeData>[] = [
-  { id: 'src', type: 'dns', position: { x: 0, y: 0 }, data: { label: 'dns', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
+  { id: 'src', type: 'cdn', position: { x: 0, y: 0 }, data: { label: 'cdn', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
   // avgResponseKb is required so sampleEdgeResponsePayload (via templatePayloadBytes) produces a
   // non-zero payloadBytes for generic-mode particles — without it, egress would read 0 under
   // both the buggy and fixed code, masking the bug this test exists to catch.
@@ -94,8 +94,13 @@ describe('egress byte attribution', () => {
 
     // Now trip the breaker open — every particle already in flight on 'e1' will be dropped
     // the moment it reaches the target, never reaching the successful-arrival path.
+    // openedAt must be the current SIMULATED time `t`, not a hardcoded 0: `t` starts from the
+    // real performance.now() at test-start, which can already be many seconds in if this file
+    // runs later in a busy worker's queue — a hardcoded 0 makes `now - openedAt` reflect real
+    // elapsed wall-clock time instead of "just opened," letting resetMs (10s) elapse and the
+    // breaker prematurely auto-recover to half-open before any in-flight particle arrives.
     getBreaker('e1').state = 'open'
-    getBreaker('e1').openedAt = 0
+    getBreaker('e1').openedAt = t
 
     // Advance well past the point every in-flight particle would have arrived (~104 frames).
     for (let i = 0; i < 150; i++) { t += 16; tick(t) }

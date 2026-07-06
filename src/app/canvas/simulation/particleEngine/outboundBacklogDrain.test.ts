@@ -29,11 +29,14 @@ import { useSimulationStore, type NodeMetrics } from '../../../store/simulation.
 import { startSimulation, stopSimulation, setCallbacks, setNodeConfigs } from '../particleEngine'
 import { getBreaker, clearBreakers } from './circuitBreakers'
 
-// 3-node chain: lb -> srv -> db. srv's inbound edge (lb->srv) breaker will be forced open,
-// cutting srv's live inRps toward 0 — srv's OWN outbound edge (srv->db) is what we're checking:
-// it should trickle from srv's accepted backlog rather than snap to the pure-inRps-decay curve.
+// 3-node chain: lb -> srv -> db. lb is an apiGateway (a legitimate internet-facing origin, unlike
+// loadBalancer, so it may carry an independently-configured outbound RPS) acting as a pure entry
+// point with no inbound edges of its own. srv's inbound edge (lb->srv) breaker will be forced
+// open, cutting srv's live inRps toward 0 — srv's OWN outbound edge (srv->db) is what we're
+// checking: it should trickle from srv's accepted backlog rather than snap to the
+// pure-inRps-decay curve.
 const nodes: Node<NodeData>[] = [
-  { id: 'lb',  type: 'loadBalancer', position: { x: 0, y: 0 },   data: { label: 'lb',  subtitle: '', status: 'healthy', notes: '', warnings: [] } },
+  { id: 'lb',  type: 'apiGateway', position: { x: 0, y: 0 },   data: { label: 'lb',  subtitle: '', status: 'healthy', notes: '', warnings: [] } },
   { id: 'srv', type: 'ec2',          position: { x: 200, y: 0 }, data: { label: 'srv', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
   { id: 'db',  type: 'dbSql',        position: { x: 400, y: 0 }, data: { label: 'db',  subtitle: '', status: 'healthy', notes: '', warnings: [] } },
 ]

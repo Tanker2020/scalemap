@@ -5,11 +5,11 @@ import type { NodeData, EdgeData } from '../../../../lib/nodeConfig'
 import { useSimulationStore, type NodeMetrics } from '../../../store/simulation.store'
 import { startSimulation, stopSimulation, setCallbacks, updateGlobalMultiplier } from '../particleEngine'
 
-// Minimal 2-node, 1-edge fixture: a pure source (dns — no thread-pool gate, no inbound edges,
+// Minimal 2-node, 1-edge fixture: a pure source (cdn — no thread-pool gate, no inbound edges,
 // no circuit-breaker config) feeding a compute node, with edge RPS high enough that particle
 // count exceeds MAX_PARTICLES (500) within the very first simulated frame.
 const nodes: Node<NodeData>[] = [
-  { id: 'src', type: 'dns', position: { x: 0, y: 0 }, data: { label: 'dns', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
+  { id: 'src', type: 'cdn', position: { x: 0, y: 0 }, data: { label: 'cdn', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
   { id: 'dst', type: 'ec2', position: { x: 200, y: 0 }, data: { label: 'ec2', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
 ]
 const edges: Edge<EdgeData>[] = [

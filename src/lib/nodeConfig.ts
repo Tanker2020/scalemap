@@ -26,6 +26,18 @@ export type NodeType =
 
 export type EdgeType = 'request' | 'stream' | 'event' | 'dependency'
 
+// Pure network-layer relays: they forward whatever traffic arrives rather than originating it.
+// An edge sourced from one of these must not carry an independently-configured RPS — see
+// canDefineOutboundThroughput's callers in PropertiesPanel.tsx (UI gate) and particleEngine.ts
+// (engine-level snapshot zeroing, defense-in-depth against legacy files/ScaleScript overrides).
+// apiGateway is deliberately excluded: unlike loadBalancer, it's treated as a legitimate
+// internet-facing ingress origin and keeps free-form outbound RPS.
+export const FORWARD_ONLY_NODE_TYPES = new Set<NodeType>(['loadBalancer', 'dns', 'firewall', 'vpn'])
+
+export function canDefineOutboundThroughput(sourceType: NodeType | undefined): boolean {
+  return sourceType === undefined || !FORWARD_ONLY_NODE_TYPES.has(sourceType)
+}
+
 export interface LatencyModel {
   p50Ms: number
   p99Ms: number

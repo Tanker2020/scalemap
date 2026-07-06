@@ -29,7 +29,7 @@ function makeFakeCanvas(): HTMLCanvasElement {
 async function run(frames: number, edgeRps: number, pinBreakerOpen: boolean): Promise<Map<string, NodeMetrics>> {
   // client(src) -> server(dst): src is the CALLER whose breaker to dst we force open.
   const nodes: Node<NodeData>[] = [
-    { id: 'src', type: 'dns', position: { x: 0, y: 0 }, data: { label: 'client', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
+    { id: 'src', type: 'cdn', position: { x: 0, y: 0 }, data: { label: 'client', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
     { id: 'dst', type: 'ec2', position: { x: 200, y: 0 }, data: { label: 'server', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
   ]
   const edgeData: EdgeData = { label: '', edgeType: 'request', throughput: 0, latency: 0 }

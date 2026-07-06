@@ -6,12 +6,14 @@ import { useSimulationStore, type NodeMetrics } from '../../../store/simulation.
 import { startSimulation, stopSimulation, setCallbacks } from '../particleEngine'
 import { getBreaker, clearBreakers } from './circuitBreakers'
 
-// Minimal 2-node, 1-edge fixture: a loadBalancer (no circuitBreaker config of its own, no
-// inbound edges — a pure entry point) calling an ec2 server (has a default circuitBreaker
-// config per NODE_SIM_DEFAULTS.ec2). Forcing this edge's breaker open lets us isolate the
-// caller-side errorRate contribution without any other error/utilization signal in play.
+// Minimal 2-node, 1-edge fixture: an apiGateway (no circuitBreaker config of its own, no
+// inbound edges — a pure entry point; unlike loadBalancer, apiGateway is a legitimate
+// internet-facing origin allowed to carry an independently-configured outbound RPS) calling an
+// ec2 server (has a default circuitBreaker config per NODE_SIM_DEFAULTS.ec2). Forcing this
+// edge's breaker open lets us isolate the caller-side errorRate contribution without any other
+// error/utilization signal in play.
 const nodes: Node<NodeData>[] = [
-  { id: 'lb', type: 'loadBalancer', position: { x: 0, y: 0 }, data: { label: 'lb', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
+  { id: 'lb', type: 'apiGateway', position: { x: 0, y: 0 }, data: { label: 'lb', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
   { id: 'srv', type: 'ec2', position: { x: 200, y: 0 }, data: { label: 'srv', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
 ]
 const edges: Edge<EdgeData>[] = [

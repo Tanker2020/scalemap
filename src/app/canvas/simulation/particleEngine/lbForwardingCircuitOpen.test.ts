@@ -14,7 +14,7 @@ import { clearChaosState } from './chaos'
 // effectiveRps bookkeeping, so under the bug the LB reports outRps=0 while real particles still
 // flow over the tripped edges and get re-dropped by the backends.
 //
-// Fixture: src (dns, pure source) -> lb (loadBalancer) -> s1, s2 (ec2, each owns a breaker).
+// Fixture: src (cdn, pure source) -> lb (loadBalancer) -> s1, s2 (ec2, each owns a breaker).
 // Inbound src->lb runs hot so particles reliably arrive at the LB and trigger forwarding. The
 // lb->server edges are pinned to 0 rps BEFORE startSimulation (ep.rps is snapshotted there, so it
 // must be set beforehand) — spawnParticles then mints NOTHING on them directly, meaning the ONLY
@@ -39,7 +39,7 @@ function reqEdge(id: string, source: string, target: string): Edge<EdgeData> {
   }
 }
 
-const nodes: Node<NodeData>[] = [node('src', 'dns'), node('lb', 'loadBalancer'), node('s1', 'ec2'), node('s2', 'ec2')]
+const nodes: Node<NodeData>[] = [node('src', 'cdn'), node('lb', 'loadBalancer'), node('s1', 'ec2'), node('s2', 'ec2')]
 const edges: Edge<EdgeData>[] = [
   reqEdge('src-lb', 'src', 'lb'),
   reqEdge('lb-s1', 'lb', 's1'),
