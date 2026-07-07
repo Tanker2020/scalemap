@@ -249,25 +249,36 @@ for why this spec doesn't do that wholesale.
     return p.allowMemoryOvercommit ? p.maxThreadsOverride : Math.min(p.maxThreadsOverride, mem)
   }
   ```
-- Rewrite `ec2AdmissionDecision` to branch on `blockingIoModel`:
+- Rewrite `ec2AdmissionDecision` to branch on `blockingIoModel`. **Check
+  order matters and is verified against the existing test suite**: the
+  current `compute.test.ts` has an explicit test,
+  `ec2AdmissionDecision(100000, W, P)` (a deliberately pathological
+  already-active count) `toBe('drop-503')`, encoding "massive overload
+  still sheds 503s, never a crash" as today's contract for a default
+  (non-overcommitted) blocking node — this must keep passing unchanged.
+  That means for blocking servers, `hardThreadCap` must be checked
+  *before* any RAM-based OOM check, so shedding always wins unless
+  `allowMemoryOvercommit` is explicitly set:
   ```ts
   export function ec2AdmissionDecision(
     activeRequests: number, w: WorkloadDemand, p: ComputeProfile,
   ): Ec2Admission {
-    if (p.blockingIoModel) {
-      // Thread-per-request: memory-derived hard cap, graceful shedding by default (Decision 1).
-      // Only reachable if the box can't hold even one footprint, OR the user explicitly opted
-      // into overcommit (allowMemoryOvercommit) and load has genuinely exceeded physical RAM.
+    if (maxThreadsMem(w, p) <= 0) return 'oom-crash'  // can't hold even one request — always fatal
+    if (!p.blockingIoModel) {
+      // Non-blocking (event-loop): no thread-count gate -- admit and let the request queue
+      // (socket backlog / event-loop lag), degrading via WI-A's real latency scaling as rho
+      // climbs, same as a blocking server would show rising latency. The only hard failure is
+      // genuinely running out of memory from the accumulated backlog -- this IS the primary
+      // overload mode for an event-loop server, not a rare edge case (Decision 2).
       if (currentRamMb(activeRequests, w, p) > p.ramGiB * 1024) return 'oom-crash'
-      if (activeRequests >= hardThreadCap(w, p)) return 'drop-503'
       return 'admit'
     }
-    // Non-blocking (event-loop): no thread-count gate -- admit and let the request queue
-    // (socket backlog / event-loop lag), degrading via WI-A's real latency scaling as rho
-    // climbs, same as a blocking server would show rising latency. The only hard failure is
-    // genuinely running out of memory from the accumulated backlog -- this IS the primary
-    // overload mode for an event-loop server, not a rare edge case (Decision 2).
-    if (currentRamMb(activeRequests, w, p) > p.ramGiB * 1024) return 'oom-crash'
+    // Blocking (thread-per-request): the hard cap wins by default (graceful shedding stays the
+    // contract, Decision 1 -- verified against the existing 100000-active-requests test above).
+    // RAM-based OOM is only reachable past the cap when the user explicitly opted into
+    // allowMemoryOvercommit AND load has genuinely pushed accumulated memory past physical RAM.
+    if (activeRequests >= hardThreadCap(w, p)) return 'drop-503'
+    if (p.allowMemoryOvercommit && currentRamMb(activeRequests, w, p) > p.ramGiB * 1024) return 'oom-crash'
     return 'admit'
   }
   ```
