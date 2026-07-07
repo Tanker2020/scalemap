@@ -197,8 +197,16 @@ for why this spec doesn't do that wholesale.
       const srcConfig = effectiveConfig(sourceNodeId!, ep.sourceNodeType as NodeType)
       const ec2res = ep.sourceNodeType === 'ec2' ? resolveEc2Resources(srcConfig) : null
       const cap = ec2res ? hardThreadCap(ec2res.workload, ec2res.profile) : computeMaxThreads(srcConfig)
-      const active = _lbActiveRequests.get(sourceNodeId!) ?? 0
-      if (active < cap) {
+      // _lbActiveRequests is a raw PARTICLE count (1 particle == PARTICLE_REQUEST_RATIO real
+      // requests); cap is expressed in real-thread units -- scale before comparing, matching the
+      // existing convention at particleEngine.ts's target-side gate (`activeThreads` at
+      // `:1403`/`:1932`) and the displayed `activeRequests` metric (`:2216`). Look-ahead (does
+      // GRANTING this particle exceed cap), not react-after (is current already >= cap): cap is a
+      // physical ceiling that generally isn't a multiple of PARTICLE_REQUEST_RATIO (e.g. 108), so
+      // a react-after check systematically overshoots to the next 10-multiple when crossing such
+      // a boundary.
+      const activeAfter = ((_lbActiveRequests.get(sourceNodeId!) ?? 0) + 1) * PARTICLE_REQUEST_RATIO
+      if (activeAfter <= cap) {
         trackRequest(sourceNodeId!, ep.sourceNodeType as NodeType, srcConfig)
         admitted = 1
       } else {
