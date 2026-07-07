@@ -230,6 +230,17 @@ for why this spec doesn't do that wholesale.
   `wallTimeMs` (post-WI-A, now rho-aware) — no separate release path
   needed for the unified case; the existing per-particle drop/reject path
   (`admitted === 0`) needs no release since nothing was acquired.
+- **Note (post-WI-C):** "the same cap inbound admission uses" is exactly
+  true for a blocking profile, where `hardThreadCap` gates both directions
+  identically. For a non-blocking profile, WI-C removes the thread-count
+  gate from *inbound* admission (queues until genuine RAM exhaustion
+  instead) while this outbound gate still checks `hardThreadCap` — a
+  deliberate, benign asymmetry: `hardThreadCap` for a non-blocking profile
+  is numerically ≈ the same RAM-exhaustion threshold WI-C's OOM check would
+  hit anyway, so the outbound gate just errs on the stricter/earlier side,
+  consistent with this task's documented conservative-over-count bias. Not
+  a bug; flagged here only so the wording above isn't read as literally
+  exact for the non-blocking case.
 - **Expected, intended behavior change**: ec2/container nodes with heavy
   downstream fan-out will show measurably lower effective capacity than
   before, since outbound calls now count against the same pool inbound
