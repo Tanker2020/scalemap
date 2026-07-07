@@ -27,7 +27,8 @@ import {
   getChaosFailures, clearChaosState, isEdgePartitioned, edgePartitionLossRate,
 } from './particleEngine/chaos'
 import { drawCircuitOverlay } from './particleEngine/circuitVisual'
-import { ec2AdmissionDecision, resolveEc2Resources, nodeUtilization, wallTimeMs } from './particleEngine/compute'
+import { ec2AdmissionDecision, resolveEc2Resources, nodeUtilization, wallTimeMs, saturationLatencyMultiplier, cpuUtilization } from './particleEngine/compute'
+export { saturationLatencyMultiplier }
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -336,17 +337,6 @@ function computePercentile(samples: number[], p: number): number {
   const sorted = [...samples].sort((a, b) => a - b)
   const i = Math.floor((p / 100) * (sorted.length - 1))
   return sorted[Math.max(0, Math.min(i, sorted.length - 1))]
-}
-
-// Queueing-theoretic (M/M/1-style) saturation latency multiplier: latency should blow up
-// hyperbolically as utilization (rho) approaches 1, not plateau at a fixed ceiling. Replaces the
-// old capped polynomial (`1 + ((util-0.7)/0.3)^2 * 3`, which topped out at 4x at 100% utilization
-// and only applied to compute node types) with `1 / (1 - rho)`, clamped at rho=0.99 purely for
-// numerical safety (never divide by zero/near-zero) — applied uniformly across compute, storage,
-// and messaging node types (see the `isCompute`/`isStorage`/`isMessaging` gate at its call site).
-export function saturationLatencyMultiplier(rawUtilization: number): number {
-  const clamped = Math.min(rawUtilization, 0.99)
-  return 1 / (1 - clamped)
 }
 
 // ─── Color helpers ────────────────────────────────────────────────────────────
@@ -725,13 +715,24 @@ const THREAD_POOL_TYPES = new Set<string>(['ec2', 'container', 'pod', 'k8sCluste
 function trackRequest(nodeId: string, nodeType: NodeType, config: NodeSimConfig) {
   if (_LB_SKIP_TYPES.has(nodeType) || GROUPING_TYPES.has(nodeType)) return
   _lbActiveRequests.set(nodeId, (_lbActiveRequests.get(nodeId) ?? 0) + 1)
-  // EC2-with-profile holds a thread for the request's WALL time (base latency + CPU compute), so
-  // pool occupancy reflects real compute pressure — not the static processingMs. Other types keep
-  // the legacy processingMs-based hold.
+  // EC2-with-profile holds a thread for the request's WALL time (base latency + CPU compute,
+  // amplified by the node's CURRENT CPU saturation rho), so pool occupancy reflects real, live
+  // compute pressure — not a static per-request cost. Other types keep the legacy
+  // processingMs-based hold. rho is read from the same smoothed inRps signal other live-load
+  // checks in this file already use. A longer hold time at a steady arrival rate legitimately
+  // raises _lbActiveRequests further (Little's Law), which can in turn push the RAM-derived
+  // hardThreadCap gate — an intended cascade (CPU saturation -> slower processing -> backlog ->
+  // memory pressure -> shedding), not a bug. No feedback into rho itself: cpuUtilization is a
+  // pure function of inRps (arrival rate), never of _lbActiveRequests (occupancy).
   const ec2res = nodeType === 'ec2' ? resolveEc2Resources(config) : null
   const baseMs = effectiveProcessingMs(nodeId, config)
   const holdMs = ec2res
-    ? wallTimeMs(config.latencyModel?.p50Ms ?? baseMs, ec2res.workload, ec2res.profile)
+    ? wallTimeMs(
+        config.latencyModel?.p50Ms ?? baseMs,
+        ec2res.workload,
+        ec2res.profile,
+        cpuUtilization(_smoothedMetrics.get(nodeId)?.inRps ?? 0, ec2res.workload, ec2res.profile),
+      )
     : baseMs
   scheduleGenericRelease(nodeId, Math.max(50, holdMs), _simulatedTimeMs, () => {
     _lbActiveRequests.set(nodeId, Math.max(0, (_lbActiveRequests.get(nodeId) ?? 1) - 1))

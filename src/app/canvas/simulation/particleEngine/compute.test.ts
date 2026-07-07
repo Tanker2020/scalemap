@@ -3,7 +3,7 @@ import type { ComputeProfile, WorkloadDemand } from '../../../../lib/nodeConfig'
 import {
   cpuTimeSec, maxThreadsCPU, maxThreadsMem, hardThreadCap,
   cpuUtilization, currentRamMb, nodeUtilization, ec2AdmissionDecision,
-  resolveEc2Resources,
+  resolveEc2Resources, saturationLatencyMultiplier, wallTimeMs,
 } from './compute'
 import { DEFAULT_EC2_COMPUTE_PROFILE, DEFAULT_EC2_WORKLOAD } from '../../../simulation/defaults'
 
@@ -78,5 +78,30 @@ describe('resolveEc2Resources', () => {
 
   it('returns null when no compute profile is present (legacy nodes)', () => {
     expect(resolveEc2Resources({ maxRps: 1000, processingMs: 10, errorRate: 0 })).toBeNull()
+  })
+})
+
+describe('saturationLatencyMultiplier', () => {
+  it('matches the queueing-theoretic 1/(1-rho) formula, clamped at 0.99', () => {
+    expect(saturationLatencyMultiplier(0)).toBeCloseTo(1, 5)
+    expect(saturationLatencyMultiplier(0.5)).toBeCloseTo(2, 5)
+    expect(saturationLatencyMultiplier(0.9)).toBeCloseTo(10, 5)
+    // Clamped at 0.99 for numerical safety near rho=1 — must never divide by (near-)zero.
+    expect(saturationLatencyMultiplier(1)).toBeCloseTo(100, 5)
+  })
+})
+
+describe('wallTimeMs scales the CPU term with live utilization', () => {
+  it('amplifies only the CPU-time component as rho rises -- base latency is untouched', () => {
+    // cpuTimeSec(W, P) = 0.05 / (3.0 * 2.0) = 0.0083333s = 8.3333ms
+    const atIdle = wallTimeMs(20, W, P, 0)    // 20 + 8.3333 * 1  = 28.3333
+    const atHalf = wallTimeMs(20, W, P, 0.5)  // 20 + 8.3333 * 2  = 36.6667
+    const atHot  = wallTimeMs(20, W, P, 0.9)  // 20 + 8.3333 * 10 = 103.333
+    expect(atIdle).toBeCloseTo(28.333, 2)
+    expect(atHalf).toBeCloseTo(36.667, 2)
+    expect(atHot).toBeCloseTo(103.333, 2)
+    // The CPU-time component (total minus the untouched 20ms base) scales exactly with the
+    // multiplier; the base latency term itself never changes.
+    expect(atHot - 20).toBeCloseTo((atIdle - 20) * 10, 1)
   })
 })

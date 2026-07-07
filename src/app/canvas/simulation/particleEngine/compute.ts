@@ -57,12 +57,27 @@ export function nodeUtilization(
   return { utilization: Math.min(1, Math.max(rho, memUtil)), bottleneck }
 }
 
+// Queueing-theoretic (M/M/1-style) saturation latency multiplier: latency should blow up
+// hyperbolically as utilization (rho) approaches 1, not plateau at a fixed ceiling. `1 / (1 - rho)`,
+// clamped at rho=0.99 purely for numerical safety (never divide by zero/near-zero). Moved here from
+// particleEngine.ts so wallTimeMs below can share it -- particleEngine.ts re-exports this symbol
+// unchanged so existing imports (e.g. saturationLatency.test.ts) keep working without modification.
+export function saturationLatencyMultiplier(rawUtilization: number): number {
+  const clamped = Math.min(rawUtilization, 0.99)
+  return 1 / (1 - clamped)
+}
+
 // Wall-clock hold time for a request: the IO/base latency (from latencyModel, passed in) is the
-// dominant term; CPU compute time adds on top. ioBoundFraction is intentionally NOT used to rebuild
-// latency here (a fraction can't regenerate absolute IO time from near-zero CPU time) — it lives in
-// maxThreadsCPU only. p/w kept in the signature so the release/hold path has one source of truth.
-export function wallTimeMs(baseLatencyMs: number, w: WorkloadDemand, p: ComputeProfile): number {
-  return Math.max(1, baseLatencyMs + cpuTimeSec(w, p) * 1000)
+// dominant term; CPU compute time adds on top, amplified by the node's CURRENT CPU saturation
+// (rho) via saturationLatencyMultiplier -- a request processed while the CPU is 90% saturated
+// really does take longer than one processed idle, and this now feeds the REAL scheduled hold
+// time (not just a displayed percentile), so thread-pool occupancy reflects real compute
+// pressure. Only the CPU term is amplified -- baseLatencyMs (IO/base latency) is untouched, since
+// CPU-scheduler contention slows CPU-bound work, not IO waiting. ioBoundFraction is intentionally
+// NOT used to rebuild latency here (a fraction can't regenerate absolute IO time from near-zero
+// CPU time) — it lives in maxThreadsCPU only.
+export function wallTimeMs(baseLatencyMs: number, w: WorkloadDemand, p: ComputeProfile, rho: number): number {
+  return Math.max(1, baseLatencyMs + cpuTimeSec(w, p) * 1000 * saturationLatencyMultiplier(rho))
 }
 
 export type Ec2Admission = 'admit' | 'drop-503' | 'oom-crash'
