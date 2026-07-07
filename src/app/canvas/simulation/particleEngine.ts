@@ -1098,7 +1098,16 @@ function handleRequestTimeout(ep: EdgePath, now: number, _particle: Particle) {
     _upstreamPressure.set(sourceNodeId, Math.min(1, existing + perParticle))
 
     if (ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
-      releaseWorkerNow(sourceNodeId)
+      // ec2/container's slot lives in _lbActiveRequests (trackRequest), not the old
+      // _activeWorkers map releaseWorkerNow operates on — releasing it here means the timeout
+      // frees the slot right away instead of waiting out trackRequest's full wall-time-based
+      // scheduled release. Mirrors the decrement expression trackRequest's own release closure
+      // uses. pod/k8sCluster/ecsCluster have no such server-side pool and keep releaseWorkerNow.
+      if (isTargetThreadPoolCompute(ep.sourceNodeType)) {
+        _lbActiveRequests.set(sourceNodeId, Math.max(0, (_lbActiveRequests.get(sourceNodeId) ?? 1) - 1))
+      } else {
+        releaseWorkerNow(sourceNodeId)
+      }
     }
 
     const srcLabel = (_nodesMap.get(sourceNodeId)?.data as NodeData)?.label ?? sourceNodeId
@@ -1144,8 +1153,17 @@ function dropParticle(ep: EdgePath, targetNodeId: string, particle?: Particle) {
 
     // Release the source's worker thread immediately — a 503/rejection is a fast response,
     // so the thread is freed right away (unlike a slow success that holds it for latency ms).
+    // ec2/container's slot lives in _lbActiveRequests (trackRequest), not the old _activeWorkers
+    // map releaseWorkerNow operates on — decrement that directly instead so the fast-fail still
+    // frees the slot immediately rather than waiting out trackRequest's full wall-time-based
+    // scheduled release. Mirrors the decrement expression trackRequest's own release closure
+    // uses. pod/k8sCluster/ecsCluster have no such server-side pool and keep releaseWorkerNow.
     if (ep.edgeType === 'request' && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
-      releaseWorkerNow(sourceNodeId)
+      if (isTargetThreadPoolCompute(ep.sourceNodeType)) {
+        _lbActiveRequests.set(sourceNodeId, Math.max(0, (_lbActiveRequests.get(sourceNodeId) ?? 1) - 1))
+      } else {
+        releaseWorkerNow(sourceNodeId)
+      }
     }
 
     // Emit cascade event once pressure is significant
@@ -1458,6 +1476,12 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
     _egressBytesAccum.set(targetNodeId, (_egressBytesAccum.get(targetNodeId) ?? 0) + particle.payloadBytes)
     trackRequest(targetNodeId, targetNodeType, config)
 
+    // Note: for ec2/container sources this scheduleWorkerRelease call is now an inert no-op —
+    // it still decrements the old _activeWorkers map (unused by ec2/container's admission since
+    // the caller-side/server-side pool unification), while the REAL release for these types
+    // already happened via trackRequest's own internal scheduling at acquisition time. Kept
+    // unchanged (not deleted) per the compute admission/latency fix design spec's Decision 3 —
+    // pod/k8sCluster/ecsCluster still rely on it for their (unchanged) independent pool.
     if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
       scheduleWorkerRelease(sourceNodeId, threadLatency + ep.geoLatencyMs, _simulatedTimeMs)
     }
@@ -2487,13 +2511,32 @@ function processRetryQueue(now: number) {
       }
     }
 
-    // Thread-pool gate: mirrors spawnParticles' per-particle acquireWorkers call — a retry re-
-    // spawn is exactly as much in-flight cost as a fresh spawn, so it must acquire a worker slot
-    // the same way (and be fast-fail dropped, not silently minted, when the pool is exhausted).
+    // Thread-pool gate: mirrors spawnParticles' per-particle acquisition — a retry re-spawn is
+    // exactly as much in-flight cost as a fresh spawn, so it must acquire a slot the same way
+    // (and be fast-fail dropped, not silently minted, when the pool is exhausted). ec2/container
+    // sources unify with their own server-side pool exactly like the fresh-spawn site does (see
+    // that site, around spawnParticles' isThreadPoolEdge block, for the full rationale) —
+    // pod/k8sCluster/ecsCluster keep the independent acquireWorkers pool unchanged.
     const isThreadPoolEdge = ep?.edgeType === 'request' && !!sourceNodeId && !!ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)
     if (isThreadPoolEdge) {
-      const maxThreads = effectiveConfig(sourceNodeId!, ep!.sourceNodeType as NodeType).maxConcurrency ?? 200
-      const admitted = acquireWorkers(sourceNodeId!, 1, maxThreads)
+      let admitted: number
+      if (isTargetThreadPoolCompute(ep!.sourceNodeType as NodeType)) {
+        const srcConfig = effectiveConfig(sourceNodeId!, ep!.sourceNodeType as NodeType)
+        const ec2res = ep!.sourceNodeType === 'ec2' ? resolveEc2Resources(srcConfig) : null
+        const cap = ec2res ? hardThreadCap(ec2res.workload, ec2res.profile) : computeMaxThreads(srcConfig)
+        // Same look-ahead, PARTICLE_REQUEST_RATIO-scaled comparison the fresh-spawn site uses —
+        // see its comment for why (units mismatch + overshoot-past-cap otherwise).
+        const activeAfter = ((_lbActiveRequests.get(sourceNodeId!) ?? 0) + 1) * PARTICLE_REQUEST_RATIO
+        if (activeAfter <= cap) {
+          trackRequest(sourceNodeId!, ep!.sourceNodeType as NodeType, srcConfig)
+          admitted = 1
+        } else {
+          admitted = 0
+        }
+      } else {
+        const maxThreads = effectiveConfig(sourceNodeId!, ep!.sourceNodeType as NodeType).maxConcurrency ?? 200
+        admitted = acquireWorkers(sourceNodeId!, 1, maxThreads)
+      }
       if (admitted === 0) {
         spawnErrorFlash(sourceNodeId!)
         _droppedCounts.set(sourceNodeId!, (_droppedCounts.get(sourceNodeId!) ?? 0) + 1)
