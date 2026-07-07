@@ -29,10 +29,14 @@ export function maxThreadsMem(w: WorkloadDemand, p: ComputeProfile): number {
   return Math.max(0, Math.floor(usableMb / perRequestMemMb(w, p)))
 }
 
-// The real hard admission cap: memory-bound, optionally clamped by an explicit pool size.
+// The real hard admission cap: memory-bound, optionally clamped by an explicit pool size. When
+// allowMemoryOvercommit is set, an explicit maxThreadsOverride is allowed to exceed the
+// memory-safe ceiling instead of being clamped to it -- see ec2AdmissionDecision below for how
+// that then produces genuine dynamic OOM under sustained load (opt-in, Decision 2).
 export function hardThreadCap(w: WorkloadDemand, p: ComputeProfile): number {
   const mem = maxThreadsMem(w, p)
-  return p.maxThreadsOverride !== undefined ? Math.min(p.maxThreadsOverride, mem) : mem
+  if (p.maxThreadsOverride === undefined) return mem
+  return p.allowMemoryOvercommit ? p.maxThreadsOverride : Math.min(p.maxThreadsOverride, mem)
 }
 
 // CPU utilization rho: offered core-seconds per second / available cores.
@@ -82,19 +86,33 @@ export function wallTimeMs(baseLatencyMs: number, w: WorkloadDemand, p: ComputeP
 
 export type Ec2Admission = 'admit' | 'drop-503' | 'oom-crash'
 
-// Admission decision for one arriving request, given current in-flight count.
+// Admission decision for one arriving request, given current in-flight count. Branches on
+// blockingIoModel (issue #22):
 //
-// Overload degrades GRACEFULLY: because the admission cap (hardThreadCap) is memory-derived, a
-// correctly-provisioned node reaches its cap and sheds 503s while RAM is still (just) within
-// bounds — so sustained overload manifests as rejections + rising latency, never a crash. OOM is
-// reserved for a genuine, unrecoverable breach: the box cannot hold even ONE request's footprint
-// (`maxThreadsMem <= 0` — e.g. osBase alone already exceeds RAM, or a single footprint overflows).
-// CPU pressure never appears here — it is a latency effect, not a rejection.
+// - Blocking (thread-per-request): overload degrades GRACEFULLY by default -- the admission cap
+//   (hardThreadCap) is memory-derived, so a correctly-provisioned node reaches its cap and sheds
+//   503s while RAM is still (just) within bounds. This MUST stay the default contract: an
+//   existing test (ec2AdmissionDecision(100000, ...)) verifies drop-503 wins even at a wildly
+//   pathological active-request count. Dynamic OOM is only reachable when the user explicitly
+//   opts into allowMemoryOvercommit AND load has genuinely pushed accumulated memory past
+//   physical RAM despite being under the (then-raised) cap (Decision 2).
+// - Non-blocking (event-loop): no thread-count gate at all -- a real event-loop server has no
+//   OS-thread-per-connection limit, it queues (socket backlog / event-loop lag) and degrades via
+//   rising latency (see wallTimeMs's rho-awareness, issue #19) as the backlog grows. The only
+//   hard failure is genuinely running out of memory from that accumulated backlog -- this IS the
+//   primary overload mode for an event-loop server by default, not a rare opt-in edge case.
+//
+// CPU pressure never appears here — it is a latency effect (wallTimeMs), not a rejection.
 export function ec2AdmissionDecision(
   activeRequests: number, w: WorkloadDemand, p: ComputeProfile,
 ): Ec2Admission {
-  if (maxThreadsMem(w, p) <= 0) return 'oom-crash'
+  if (maxThreadsMem(w, p) <= 0) return 'oom-crash'  // can't hold even one request — always fatal
+  if (!p.blockingIoModel) {
+    if (currentRamMb(activeRequests, w, p) > p.ramGiB * 1024) return 'oom-crash'
+    return 'admit'
+  }
   if (activeRequests >= hardThreadCap(w, p)) return 'drop-503'
+  if (p.allowMemoryOvercommit && currentRamMb(activeRequests, w, p) > p.ramGiB * 1024) return 'oom-crash'
   return 'admit'
 }
 

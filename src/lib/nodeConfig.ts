@@ -177,6 +177,11 @@ export interface ComputeProfile {
   osBaseMemoryMb?: number            // reserved RAM floor; default 512
   threadStackMb?: number             // per-in-flight thread stack (blocking only); default 1
   maxThreadsOverride?: number        // optional Tomcat-style artificial pool cap below RAM limit
+  allowMemoryOvercommit?: boolean    // when true, maxThreadsOverride may exceed the memory-safe
+                                     // ceiling instead of being clamped to it -- deliberately
+                                     // models an overcommitted pool that can genuinely OOM under
+                                     // load. Default/absent: today's safe behavior (cap always <=
+                                     // memory-safe ceiling for blocking servers).
 }
 
 export type WorkloadTier = 'simple_crud' | 'moderate_logic' | 'heavy_compute' | 'custom'

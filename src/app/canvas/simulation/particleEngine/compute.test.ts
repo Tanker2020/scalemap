@@ -105,3 +105,30 @@ describe('wallTimeMs scales the CPU term with live utilization', () => {
     expect(atHot - 20).toBeCloseTo((atIdle - 20) * 10, 1)
   })
 })
+
+describe('IO-model-aware admission (#22) and opt-in memory overcommit (#20)', () => {
+  it('non-blocking admits past what a blocking server would already be shedding at, since it has no thread-count gate', () => {
+    const asyncP = { ...P, blockingIoModel: false }
+    // A blocking equivalent would already be at drop-503 here (hardThreadCap = 108, the
+    // stack-inclusive figure). Non-blocking has no thread-count gate at all.
+    expect(ec2AdmissionDecision(108, W, asyncP)).toBe('admit')
+    // maxThreadsMem(W, asyncP) = floor((4096-512)/32) = 112 (no thread-stack term for async) --
+    // still admits exactly at that boundary (currentRamMb == ramGiB*1024 is not '>').
+    expect(ec2AdmissionDecision(112, W, asyncP)).toBe('admit')
+    // One past it: currentRamMb(113, W, asyncP) = 512 + 113*32 = 4128 > 4096 -- genuinely out of RAM.
+    expect(ec2AdmissionDecision(113, W, asyncP)).toBe('oom-crash')
+  })
+
+  it('allowMemoryOvercommit lets maxThreadsOverride exceed the memory-safe ceiling, enabling genuine OOM under load', () => {
+    const overcommitP = { ...P, maxThreadsOverride: 200, allowMemoryOvercommit: true }
+    expect(hardThreadCap(W, overcommitP)).toBe(200) // uncapped by the 108 memory-safe ceiling
+    // Below the override cap (200) but currentRamMb(150, W, P) = 512 + 150*33 = 5462 > 4096 --
+    // already past physical RAM. Decision 2's opt-in OOM path.
+    expect(ec2AdmissionDecision(150, W, overcommitP)).toBe('oom-crash')
+  })
+
+  it('without allowMemoryOvercommit, maxThreadsOverride still clamps to the memory-safe ceiling (default unchanged)', () => {
+    const overrideOnlyP = { ...P, maxThreadsOverride: 200 }
+    expect(hardThreadCap(W, overrideOnlyP)).toBe(108) // unaffected -- still clamped
+  })
+})
