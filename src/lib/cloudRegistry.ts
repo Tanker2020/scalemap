@@ -45,6 +45,7 @@ export type CostKind =
   | 'egress'
   | 'storageGbMonth'
   | 'fixedMonthly'
+  | 'computeResource'
 
 export interface StorageTier {
   id: string
@@ -60,6 +61,7 @@ export type CostComponentSpec =
   | { kind: 'egress'; label: string }                                  // uses PROVIDER_EGRESS + node avgResponseKb
   | { kind: 'storageGbMonth'; label: string; tiers: StorageTier[] }    // user picks tier + capacity GB
   | { kind: 'fixedMonthly'; label: string; usd: number }
+  | { kind: 'computeResource'; label: string; vCpuUsdHr: number; ramGiBUsdHr: number; vCpuUsdHrArm: number; ramGiBUsdHrArm: number }
 
 export interface CloudServiceSpec {
   serviceName: string
@@ -142,9 +144,9 @@ const flatTier = (gbMonth: number, label = 'Provisioned'): StorageTier[] =>
 export const CLOUD_REGISTRY: Record<string, Record<RealProvider, CloudServiceSpec>> = {
   // ─── Compute ───────────────────────────────────────────────────────────────
   ec2: {
-    aws:   { serviceName: 'Amazon EC2',        simDefaults: { processingMs: 10 }, pricing: [{ kind: 'instanceHourly', label: 'Instance', defaultRateUsdHr: 0.0416, defaultCount: 1 }, { kind: 'egress', label: 'Egress' }] },
-    gcp:   { serviceName: 'Compute Engine',     simDefaults: { processingMs: 10 }, pricing: [{ kind: 'instanceHourly', label: 'Instance', defaultRateUsdHr: 0.0335, defaultCount: 1 }, { kind: 'egress', label: 'Egress' }] },
-    azure: { serviceName: 'Virtual Machines',   simDefaults: { processingMs: 10 }, pricing: [{ kind: 'instanceHourly', label: 'Instance', defaultRateUsdHr: 0.0416, defaultCount: 1 }, { kind: 'egress', label: 'Egress' }] },
+    aws:   { serviceName: 'Amazon EC2',        simDefaults: { processingMs: 10 }, pricing: [{ kind: 'computeResource', label: 'Compute (vCPU+RAM)', vCpuUsdHr: 0.010, ramGiBUsdHr: 0.0012, vCpuUsdHrArm: 0.008, ramGiBUsdHrArm: 0.0010 }, { kind: 'egress', label: 'Egress' }] },
+    gcp:   { serviceName: 'Compute Engine',     simDefaults: { processingMs: 10 }, pricing: [{ kind: 'computeResource', label: 'Compute (vCPU+RAM)', vCpuUsdHr: 0.0095, ramGiBUsdHr: 0.0013, vCpuUsdHrArm: 0.0076, ramGiBUsdHrArm: 0.0010 }, { kind: 'egress', label: 'Egress' }] },
+    azure: { serviceName: 'Virtual Machines',   simDefaults: { processingMs: 10 }, pricing: [{ kind: 'computeResource', label: 'Compute (vCPU+RAM)', vCpuUsdHr: 0.010, ramGiBUsdHr: 0.0012, vCpuUsdHrArm: 0.008, ramGiBUsdHrArm: 0.0010 }, { kind: 'egress', label: 'Egress' }] },
   },
   lambda: {
     aws:   { serviceName: 'AWS Lambda',         simDefaults: { processingMs: 25, coldStart: { p50Ms: 250, p99Ms: 2500 } }, pricing: [{ kind: 'requestsPerMillion', label: 'Invocations', usdPerMillion: 0.20 }] },

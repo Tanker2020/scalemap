@@ -108,6 +108,19 @@ function nodeCost(node: Node<NodeData>, metrics?: NodeMetrics): NodeCostBreakdow
           components.push({ kind: comp.kind, label: comp.label, monthlyUsd: comp.usd })
           break
         }
+        case 'computeResource': {
+          // Physical compute pricing (EC2 v1): bill provisioned vCPU + RAM, picking the arch-specific
+          // rate so arm64 lands cheaper as real registry data (not a magic discount factor). Respects
+          // the replica multiplier like instanceHourly does.
+          const profile = data.simConfig?.computeProfile
+          if (!profile) break
+          const isArm = profile.architecture === 'arm64'
+          const vRate = isArm ? comp.vCpuUsdHrArm : comp.vCpuUsdHr
+          const rRate = isArm ? comp.ramGiBUsdHrArm : comp.ramGiBUsdHr
+          const monthly = (profile.vCpu * vRate + profile.ramGiB * rRate) * HOURS_PER_MONTH * replicaMultiplier
+          components.push({ kind: comp.kind, label: comp.label, monthlyUsd: monthly })
+          break
+        }
       }
     }
   } else if (cost.instanceRateUsdHr != null) {
