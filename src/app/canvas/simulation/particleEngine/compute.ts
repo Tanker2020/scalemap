@@ -1,0 +1,79 @@
+// Pure resource math for the EC2 compute model. No engine state, no side effects — every function
+// is a deterministic transform of (workload, profile), so the whole model is unit-testable here
+// and the rAF loop just calls in. See docs/superpowers/plans/2026-07-07-ec2-compute-resource-model.md.
+import { COMPUTE_IPC, type ComputeProfile, type WorkloadDemand } from '../../../../lib/nodeConfig'
+
+// Seconds of pure CPU time one request costs: (billion instr) / (billion instr/sec).
+// baseClockGhz * IPC = billions of instructions retired per second.
+export function cpuTimeSec(w: WorkloadDemand, p: ComputeProfile): number {
+  const rate = Math.max(0.001, p.baseClockGhz * COMPUTE_IPC)
+  return Math.max(0, w.cpuInstructionsBillions) / rate
+}
+
+// RAM held per in-flight request. Blocking model additionally pins a thread stack.
+export function perRequestMemMb(w: WorkloadDemand, p: ComputeProfile): number {
+  const stack = p.blockingIoModel ? (p.threadStackMb ?? 1) : 0
+  return Math.max(0.001, w.memoryFootprintMb + stack)
+}
+
+// Soft saturation threshold: useful-concurrency per core given IO wait. NOT a hard cap — it maps
+// to rho≈1 in the latency multiplier, where the hockey-stick begins. clamp io<0.99 for safety.
+export function maxThreadsCPU(p: ComputeProfile, ioBoundFraction: number): number {
+  const io = Math.min(0.99, Math.max(0, ioBoundFraction))
+  return p.vCpu / (1 - io)
+}
+
+// Hard ceiling: how many concurrent request footprints fit before OOM.
+export function maxThreadsMem(w: WorkloadDemand, p: ComputeProfile): number {
+  const usableMb = p.ramGiB * 1024 - (p.osBaseMemoryMb ?? 512)
+  return Math.max(0, Math.floor(usableMb / perRequestMemMb(w, p)))
+}
+
+// The real hard admission cap: memory-bound, optionally clamped by an explicit pool size.
+export function hardThreadCap(w: WorkloadDemand, p: ComputeProfile): number {
+  const mem = maxThreadsMem(w, p)
+  return p.maxThreadsOverride !== undefined ? Math.min(p.maxThreadsOverride, mem) : mem
+}
+
+// CPU utilization rho: offered core-seconds per second / available cores.
+export function cpuUtilization(inRps: number, w: WorkloadDemand, p: ComputeProfile): number {
+  return (Math.max(0, inRps) * cpuTimeSec(w, p)) / Math.max(0.001, p.vCpu)
+}
+
+// Current resident memory given a logical in-flight request count.
+export function currentRamMb(activeRequests: number, w: WorkloadDemand, p: ComputeProfile): number {
+  return (p.osBaseMemoryMb ?? 512) + Math.max(0, activeRequests) * perRequestMemMb(w, p)
+}
+
+// Reported node utilization = the binding constraint (whichever is higher), plus which one it is.
+// CPU util (rho) drives latency amplification; memory util drives hard drops/OOM.
+export function nodeUtilization(
+  inRps: number, activeRequests: number, w: WorkloadDemand, p: ComputeProfile,
+): { utilization: number; bottleneck: 'cpu' | 'memory' } {
+  const rho = cpuUtilization(inRps, w, p)
+  const cap = hardThreadCap(w, p)
+  const memUtil = cap > 0 ? activeRequests / cap : 1
+  const bottleneck = rho >= memUtil ? 'cpu' : 'memory'
+  return { utilization: Math.min(1, Math.max(rho, memUtil)), bottleneck }
+}
+
+// Wall-clock hold time for a request: the IO/base latency (from latencyModel, passed in) is the
+// dominant term; CPU compute time adds on top. ioBoundFraction is intentionally NOT used to rebuild
+// latency here (a fraction can't regenerate absolute IO time from near-zero CPU time) — it lives in
+// maxThreadsCPU only. p/w kept in the signature so the release/hold path has one source of truth.
+export function wallTimeMs(baseLatencyMs: number, w: WorkloadDemand, p: ComputeProfile): number {
+  return Math.max(1, baseLatencyMs + cpuTimeSec(w, p) * 1000)
+}
+
+export type Ec2Admission = 'admit' | 'drop-503' | 'oom-crash'
+
+// Admission decision for one arriving request, given current in-flight count. OOM (hard RAM breach)
+// takes priority; otherwise reject at the hard thread cap; otherwise admit. CPU pressure never
+// appears here — it is a latency effect, not a rejection.
+export function ec2AdmissionDecision(
+  activeRequests: number, w: WorkloadDemand, p: ComputeProfile,
+): Ec2Admission {
+  if (currentRamMb(activeRequests, w, p) > p.ramGiB * 1024) return 'oom-crash'
+  if (activeRequests >= hardThreadCap(w, p)) return 'drop-503'
+  return 'admit'
+}
