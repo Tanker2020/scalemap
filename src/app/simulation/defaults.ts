@@ -1,10 +1,31 @@
-import type { NodeType, NodeSimConfig, NodeSlo } from '../../lib/nodeConfig'
+import type { NodeType, NodeSimConfig, NodeSlo, ComputeProfile, WorkloadDemand } from '../../lib/nodeConfig'
+
+// EC2 v1 compute defaults. A modest 2 vCPU / 4 GiB x86 box running a blocking thread-per-request
+// server. With moderate_logic workload this saturates CPU (~240 rps) long before RAM (~2600 rps),
+// so a fresh EC2 reads as CPU-bound — upgrade vCPU for more headroom. See the compute model plan.
+export const DEFAULT_EC2_COMPUTE_PROFILE: ComputeProfile = {
+  vCpu: 2,
+  ramGiB: 4,
+  architecture: 'x86_64',
+  cpuFamily: 'Intel Xeon (generic)',
+  baseClockGhz: 3.0,
+  blockingIoModel: true,
+  osBaseMemoryMb: 512,
+  threadStackMb: 1,
+}
+
+export const DEFAULT_EC2_WORKLOAD: WorkloadDemand = {
+  tier: 'moderate_logic',
+  cpuInstructionsBillions: 0.05,
+  memoryFootprintMb: 32,
+  ioBoundFraction: 0.8,
+}
 
 export const NODE_SIM_DEFAULTS: Record<NodeType, NodeSimConfig> = {
   // Compute — fixed capacity, no auto-scale, no self-healing
   // maxThreads gives comfortable headroom over PARTICLE_REQUEST_RATIO (10 real requests per
   // visual particle) so a handful of concurrent particles doesn't instantly saturate the pool.
-  ec2:          { maxRps: 1000,  processingMs: 10,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 }, maxThreads: 100 },
+  ec2:          { maxRps: 1000,  processingMs: 10,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 }, computeProfile: DEFAULT_EC2_COMPUTE_PROFILE, workload: DEFAULT_EC2_WORKLOAD },
   lambda:       { maxRps: 1000,  processingMs: 50,  errorRate: 0, maxConcurrency: 10, latencyModel: { p50Ms: 80,  p99Ms: 800  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 29_000, coldStart: { p50Ms: 400, p99Ms: 2500 }, maxWarmInstances: 5, retryConfig: { maxRetries: 2, baseDelayMs: 200,  jitter: 'full',  maxDelayMs: 3000 } },
   container:    { maxRps: 500,   processingMs: 15,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 }, maxThreads: 50 },
   // pod deliberately excluded from the thread-pool model: its utilization/scale-out-in triggers
