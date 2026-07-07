@@ -6,9 +6,10 @@ import { useUiStore } from '../store/ui.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
 import { useDisplayMetrics } from '../canvas/simulation/useDisplayMetrics'
-import { NODE_CONFIG, GROUPING_TYPES, type NodeType, type TrafficOrigin } from '../../lib/nodeConfig'
+import { NODE_CONFIG, GROUPING_TYPES, WORKLOAD_TIER_RANGES, resolveWorkloadInstructions, type NodeType, type TrafficOrigin } from '../../lib/nodeConfig'
 import { WORLD_REGIONS, REGIONS_BY_ZONE } from '../../lib/regionConfig'
-import { NODE_SIM_DEFAULTS, DEFAULT_SLO } from './defaults'
+import { NODE_SIM_DEFAULTS, DEFAULT_SLO, DEFAULT_EC2_COMPUTE_PROFILE, DEFAULT_EC2_WORKLOAD } from './defaults'
+import { hardThreadCap } from '../canvas/simulation/particleEngine/compute'
 import { CATEGORY_COLORS } from '../../lib/theme'
 import { Sparkline } from '../sidebar/Sparkline'
 import { MetricGraphOverlay, type GraphMetric } from '../analytics/MetricGraphOverlay'
@@ -328,6 +329,7 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
   const hasTimeout  = eff.timeoutMs !== undefined
   const slo: NodeSlo | undefined = data.slo ?? DEFAULT_SLO[nodeType]
   const isDb = nodeType === 'dbSql' || nodeType === 'dbNoSql'
+  const isEc2Compute = nodeType === 'ec2'
 
   return (
     <>
@@ -341,7 +343,7 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
       <div className={styles.configBlock}>
         <div className={styles.configBlockTitle}>Capacity</div>
         <div className={styles.configGrid}>
-          {!isDb && (
+          {!isDb && !isEc2Compute && (
             <div className={styles.configField}>
               <span className={styles.configLabel}>Max RPS</span>
               <NumericStepper
@@ -429,7 +431,7 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
               />
             </div>
           )}
-          {isThreadPoolCompute && (
+          {isThreadPoolCompute && !isEc2Compute && (
             <div className={styles.configField}>
               <span className={styles.configLabel}>Max Threads</span>
               <NumericStepper
@@ -442,6 +444,106 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
           )}
         </div>
       </div>
+
+      {isEc2Compute && (() => {
+        const profile = { ...DEFAULT_EC2_COMPUTE_PROFILE, ...(eff.computeProfile ?? {}) }
+        const workload = { ...DEFAULT_EC2_WORKLOAD, ...(eff.workload ?? {}) }
+        const setProfile = (patch: Partial<typeof profile>) =>
+          setNodeConfig(nodeId, { computeProfile: { ...profile, ...patch } })
+        const setWorkload = (patch: Partial<typeof workload>) =>
+          setNodeConfig(nodeId, { workload: { ...workload, ...patch } })
+        const derivedThreads = hardThreadCap(workload, profile)
+        return (
+          <div className={styles.configBlock}>
+            <div className={styles.configBlockTitle}>Compute (vCPU / RAM)</div>
+            <div className={styles.configGrid}>
+              <div className={styles.configField}>
+                <span className={styles.configLabel}>vCPU</span>
+                <NumericStepper value={profile.vCpu} onChange={v => setProfile({ vCpu: v })} min={1} step={1} />
+              </div>
+              <div className={styles.configField}>
+                <span className={styles.configLabel}>RAM (GiB)</span>
+                <NumericStepper value={profile.ramGiB} onChange={v => setProfile({ ramGiB: v })} min={1} step={1} />
+              </div>
+              <div className={styles.configField}>
+                <span className={styles.configLabel}>Clock (GHz)</span>
+                <NumericStepper value={profile.baseClockGhz} onChange={v => setProfile({ baseClockGhz: v })} min={1} step={0.1} />
+              </div>
+              <div className={styles.configField}>
+                <span className={styles.configLabel}>Architecture</span>
+                <select
+                  value={profile.architecture}
+                  onChange={e => setProfile({ architecture: e.target.value as 'x86_64' | 'arm64' })}
+                  style={{ background: 'var(--color-canvas)', color: 'var(--color-text-primary)', border: '1px solid var(--color-node-border)', borderRadius: 4, padding: '2px 6px', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', width: '100%' }}
+                >
+                  <option value="x86_64">x86_64</option>
+                  <option value="arm64">arm64 (cheaper)</option>
+                </select>
+              </div>
+              <div className={styles.configField}>
+                <span className={styles.configLabel}>IO Model</span>
+                <select
+                  value={profile.blockingIoModel ? 'blocking' : 'async'}
+                  onChange={e => setProfile({ blockingIoModel: e.target.value === 'blocking' })}
+                  style={{ background: 'var(--color-canvas)', color: 'var(--color-text-primary)', border: '1px solid var(--color-node-border)', borderRadius: 4, padding: '2px 6px', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', width: '100%' }}
+                >
+                  <option value="blocking">Blocking (thread/req)</option>
+                  <option value="async">Async (event loop)</option>
+                </select>
+              </div>
+              <div className={styles.configField}>
+                <span className={styles.configLabel}>Derived Threads</span>
+                <span className={styles.liveStatVal}>{derivedThreads}</span>
+              </div>
+            </div>
+            <div className={styles.configBlockTitle} style={{ marginTop: 8 }}>Workload</div>
+            <div className={styles.configGrid}>
+              <div className={styles.configField}>
+                <span className={styles.configLabel}>Tier</span>
+                <select
+                  value={workload.tier}
+                  onChange={e => {
+                    const tier = e.target.value as typeof workload.tier
+                    const next = tier === 'custom'
+                      ? workload.cpuInstructionsBillions
+                      : WORKLOAD_TIER_RANGES[tier].default
+                    setWorkload({ tier, cpuInstructionsBillions: resolveWorkloadInstructions(tier, next) })
+                  }}
+                  style={{ background: 'var(--color-canvas)', color: 'var(--color-text-primary)', border: '1px solid var(--color-node-border)', borderRadius: 4, padding: '2px 6px', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', width: '100%' }}
+                >
+                  <option value="simple_crud">Simple CRUD</option>
+                  <option value="moderate_logic">Moderate Logic</option>
+                  <option value="heavy_compute">Heavy Compute</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div className={styles.configField}>
+                <span className={styles.configLabel}>Instr (billions)</span>
+                <NumericStepper
+                  value={workload.cpuInstructionsBillions}
+                  onChange={v => setWorkload({ cpuInstructionsBillions: resolveWorkloadInstructions(workload.tier, v) })}
+                  min={0}
+                  step={workload.tier === 'heavy_compute' || workload.tier === 'custom' ? 0.1 : 0.001}
+                />
+              </div>
+              <div className={styles.configField}>
+                <span className={styles.configLabel}>Mem/req (MB)</span>
+                <NumericStepper value={workload.memoryFootprintMb} onChange={v => setWorkload({ memoryFootprintMb: v })} min={1} step={4} />
+              </div>
+              <div className={styles.configField}>
+                <span className={styles.configLabel}>IO-bound (%)</span>
+                <NumericStepper
+                  value={Math.round(workload.ioBoundFraction * 100)}
+                  onChange={v => setWorkload({ ioBoundFraction: Math.min(0.99, Math.max(0, v / 100)) })}
+                  min={0}
+                  max={99}
+                  step={5}
+                />
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       <div className={styles.configBlock}>
         <div className={styles.configBlockTitle}>SLO Targets</div>
@@ -831,9 +933,14 @@ function LiveSection({ nodeId }: { nodeId: string }) {
   const isLambda = nodeType === 'lambda'
   // Thread pool model (ec2/container — see NODE_SIM_DEFAULTS.maxThreads): a bounded thread pool.
   const isThreadPoolCompute = nodeType === 'ec2' || nodeType === 'container'
-  const effMaxThreads = nodeType
-    ? (nodeConfigs.get(nodeId)?.maxThreads ?? NODE_SIM_DEFAULTS[nodeType]?.maxThreads ?? 50)
-    : 50
+  const effMaxThreads = nodeType === 'ec2'
+    ? hardThreadCap(
+        { ...DEFAULT_EC2_WORKLOAD, ...(nodeConfigs.get(nodeId)?.workload ?? {}) },
+        { ...DEFAULT_EC2_COMPUTE_PROFILE, ...(nodeConfigs.get(nodeId)?.computeProfile ?? {}) },
+      )
+    : nodeType
+      ? (nodeConfigs.get(nodeId)?.maxThreads ?? NODE_SIM_DEFAULTS[nodeType]?.maxThreads ?? 50)
+      : 50
 
   return (
     <div className={styles.liveContent}>
