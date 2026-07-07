@@ -101,7 +101,15 @@ describe('forwarded traffic is reflected in effectiveRps-derived metrics', () =>
     ]
 
     // rps must be set BEFORE startSimulation — ep.rps is snapshotted there.
-    useSimulationStore.getState().setEdgeRps('src-lb', 500)
+    // 200 total (~100/server after the LB's round-robin split) -- deliberately well under the
+    // default EC2 compute profile's ~240rps CPU-saturation point (DEFAULT_EC2_COMPUTE_PROFILE /
+    // DEFAULT_EC2_WORKLOAD, see compute.ts). This test verifies forwarded-traffic visibility to
+    // the idle-RPS gate, not compute saturation -- 500 (250/server) used to be "free" under the
+    // old static-latency model but now realistically saturates s1/s2's CPU, causing real errors
+    // that trip their inbound circuit breaker and (correctly) quiet their own outbound too. That
+    // cascade is real, intended behavior once CPU saturation has teeth (see the compute
+    // admission/latency fix plan) -- it's just a different concern than this test exists to check.
+    useSimulationStore.getState().setEdgeRps('src-lb', 200)
     // lb-s1/lb-s2 would be force-zeroed regardless (loadBalancer is forward-only) — set to 0
     // explicitly for clarity; the ONLY way traffic appears on them is the LB's forwarding.
     useSimulationStore.getState().setEdgeRps('lb-s1', 0)
@@ -184,7 +192,10 @@ describe('forwarded traffic is reflected in effectiveRps-derived metrics', () =>
       reqEdge('gw-dst2', 'gw', 'dst2'),
     ]
 
-    useSimulationStore.getState().setEdgeRps('src-gw', 500)
+    // 200 total (~100/edge after round-robin + dst1's own 30 = ~130 at dst1) -- well under the
+    // default EC2 profile's ~240rps CPU-saturation point, for the same reason as the LB test
+    // above: this test verifies additive forwarded-traffic accounting, not compute saturation.
+    useSimulationStore.getState().setEdgeRps('src-gw', 200)
     // gw-dst1 carries its OWN real configured rps of 30 — unaffected by any restriction, since
     // apiGateway is not forward-only. The round-robin block also picks between gw-dst1 and
     // gw-dst2 for each arrival, so gw-dst1 additionally receives a share of forwarded traffic.
