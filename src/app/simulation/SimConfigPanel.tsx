@@ -320,6 +320,9 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
 
   const isQueue      = ['queue', 'pubsub', 'stream', 'eventBus'].includes(nodeType)
   const isLambda     = nodeType === 'lambda'
+  // Thread pool model (ec2/container — see NODE_SIM_DEFAULTS.maxThreads): a bounded thread
+  // pool, no queue. pod/lambda deliberately excluded — see defaults.ts's comment on pod.
+  const isThreadPoolCompute = nodeType === 'ec2' || nodeType === 'container'
   const isEntryPoint = nodeType === 'cdn' || nodeType === 'loadBalancer' || nodeType === 'apiGateway'
   const hasConnPool = eff.connectionPool !== undefined
   const hasTimeout  = eff.timeoutMs !== undefined
@@ -423,6 +426,17 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
                 onChange={v => setNodeConfig(nodeId, { queueCapacity: v })}
                 min={1}
                 step={100}
+              />
+            </div>
+          )}
+          {isThreadPoolCompute && (
+            <div className={styles.configField}>
+              <span className={styles.configLabel}>Max Threads</span>
+              <NumericStepper
+                value={eff.maxThreads ?? 50}
+                onChange={v => setNodeConfig(nodeId, { maxThreads: v })}
+                min={1}
+                step={1}
               />
             </div>
           )}
@@ -774,6 +788,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
   const bottlenecks = useSimulationStore(s => s.bottlenecks)
   const sloStatus  = useSimulationStore(s => s.sloStatus.get(nodeId))
   const historyMap = useMetricsHistoryStore(s => s.history)
+  const nodeConfigs = useSimulationStore(s => s.nodeConfigs)
   const { nodes }  = useCanvasStore()
   const themeMode  = useUiStore(s => s.themeMode)
   const [graphOverlay, setGraphOverlay] = useState<{ metric: GraphMetric } | null>(null)
@@ -814,6 +829,11 @@ function LiveSection({ nodeId }: { nodeId: string }) {
   const isBottleneck = bottlenecks.has(nodeId)
   const isQueue  = nodeType && ['queue', 'pubsub', 'stream', 'eventBus'].includes(nodeType)
   const isLambda = nodeType === 'lambda'
+  // Thread pool model (ec2/container — see NODE_SIM_DEFAULTS.maxThreads): a bounded thread pool.
+  const isThreadPoolCompute = nodeType === 'ec2' || nodeType === 'container'
+  const effMaxThreads = nodeType
+    ? (nodeConfigs.get(nodeId)?.maxThreads ?? NODE_SIM_DEFAULTS[nodeType]?.maxThreads ?? 50)
+    : 50
 
   return (
     <div className={styles.liveContent}>
@@ -859,7 +879,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
             <span className={styles.liveStatUnit}>%</span>
           </button>
         )}
-        {metrics.activeRequests !== undefined && !isQueue && (
+        {metrics.activeRequests !== undefined && !isQueue && !isThreadPoolCompute && (
           <div className={styles.liveStat}>
             <span className={styles.liveStatLabel}>Active</span>
             <span className={styles.liveStatVal}>{metrics.activeRequests}</span>
@@ -878,6 +898,13 @@ function LiveSection({ nodeId }: { nodeId: string }) {
             <span className={styles.liveStatLabel}>Queue</span>
             <span className={styles.liveStatVal}>{Math.round(metrics.queueDepth).toLocaleString()}</span>
             <span className={styles.liveStatUnit}>msgs</span>
+          </div>
+        )}
+        {isThreadPoolCompute && metrics.activeRequests !== undefined && (
+          <div className={styles.liveStat}>
+            <span className={styles.liveStatLabel}>Threads</span>
+            <span className={styles.liveStatVal}>{metrics.activeRequests} / {effMaxThreads}</span>
+            <span className={styles.liveStatUnit}>active</span>
           </div>
         )}
         {metrics.consumerLagMs !== undefined && (

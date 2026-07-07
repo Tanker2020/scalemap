@@ -9,19 +9,19 @@
 // reads) is EMA-smoothed (alpha 0.25), so it already decays gradually on its own once the
 // breaker trips — a short post-trip observation window never even reaches the point where the
 // gate engages (smoothed inRps < IDLE_RPS_THRESHOLD=5), so a naive short-window test can't
-// discriminate fixed vs. unfixed code (verified empirically: both pass identically for ticks
-// where inRps hasn't yet decayed below the threshold). This test instead:
-//   1. Overrides `srv`'s config (via setNodeConfigs) with a long processingMs (2000ms) so
-//      accepted work (_lbActiveRequests) stays nonzero for many metrics ticks after the
-//      breaker trips, and a small maxConcurrency (50) so the backlog constitutes a large
-//      fraction of it (backlog/maxConcurrency), making the fix's contribution to
-//      downstreamFactor dominant early rather than lost in the tail-end noise.
-//   2. Warms up 150 frames (long enough for particles to complete transit and register in
-//      the backlog) before tripping the breaker, then samples the 24th post-trip metrics
-//      batch for 'srv' (empirically the point where inRps has decayed below the idle
-//      threshold and the backlog term reliably dominates — verified deterministic and
-//      identical across repeat runs pre-fix: 183.8 every time; and reliably >276 post-fix
-//      across 10+ repeat runs; 200 sits safely between the two).
+// discriminate fixed vs. unfixed code. This test instead:
+//   1. Overrides `srv`'s config (via setNodeConfigs) with a long processingMs (2000ms) and a
+//      generous maxThreads (thread-pool model, not rate-integrated) so admitted requests stay
+//      "active" in `_lbActiveRequests` — the idle gate's backlog signal for non-queue types —
+//      for a long time after arrival, letting real in-flight concurrency build up toward a
+//      Little's-Law steady state during warmup instead of draining within a couple of frames.
+//      forcedHealthState keeps srv's own inbound breaker from organically tripping during
+//      warmup — this test controls the trip manually, at a specific frame, to isolate the
+//      idle-gate's trickle behavior specifically.
+//   2. Warms up 150 frames (long enough for in-flight concurrency to approach steady state)
+//      before tripping the breaker, then samples the 24th post-trip metrics batch for 'srv'
+//      (empirically the point where inRps has decayed below the idle threshold and the
+//      backlog term reliably dominates) — see the assertion below for the current bound.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { Node, Edge } from '@xyflow/react'
 import type { NodeData, EdgeData, NodeSimConfig } from '../../../../lib/nodeConfig'
@@ -88,11 +88,15 @@ describe('outbound trickles from the accepted backlog when inbound is breaker-ga
   })
 
   it('keeps srv->db outRps well above the pure-inRps-decay curve while srv drains its accepted backlog', () => {
-    // Long processingMs so accepted work (_lbActiveRequests) stays nonzero for many metrics
-    // ticks after the breaker trips; small maxConcurrency so that backlog is a large fraction
-    // of it, making the fix's contribution to downstreamFactor dominant rather than negligible.
+    // Thread-pool model: the idle-gate's backlog reference for ec2/container is the discrete
+    // `_lbActiveRequests` in-flight counter (see particleEngine.ts's idle-RPS gate), which
+    // trackRequest increments on arrival and decrements after processingMs. maxThreads (200) is
+    // deliberately set BELOW the ~500-1000rps natural demand so the thread pool saturates and
+    // stays pinned at capacity during warmup (mirroring the old test's maxRps-below-demand
+    // setup) — a long processingMs (2000ms) then makes that pinned backlog drain visibly over
+    // ~2s once inbound stops, instead of within a couple of frames.
     setNodeConfigs(new Map<string, NodeSimConfig>([
-      ['srv', { maxRps: 1000, processingMs: 2000, errorRate: 0, maxConcurrency: 50 } as NodeSimConfig],
+      ['srv', { processingMs: 2000, errorRate: 0, forcedHealthState: 'healthy', maxThreads: 200 } as NodeSimConfig],
     ]))
 
     const batches: Map<string, NodeMetrics>[] = []
@@ -127,11 +131,10 @@ describe('outbound trickles from the accepted backlog when inbound is breaker-ga
     }
 
     // 24th post-trip metrics batch (0-indexed): empirically the smoothed inRps has decayed
-    // below IDLE_RPS_THRESHOLD (5) by this point (gate engaged) while srv's backlog (kept
-    // alive by the long processingMs override) has not yet drained. Pre-fix this value is a
-    // deterministic function of inRps alone (183.8, identical every run); post-fix it's
-    // consistently >276 across repeated runs (backlog-driven elevation). 200 sits safely
-    // between the two with wide margin on both sides.
+    // below IDLE_RPS_THRESHOLD (5) by this point (gate engaged) while srv's in-flight backlog
+    // (kept alive by the long processingMs override) has not yet drained. Without the backlog
+    // trickle this value would be a deterministic function of inRps alone; with it, srv's
+    // still-substantial in-flight count keeps outRps meaningfully elevated above that curve.
     expect(srvOutRpsTicks.length).toBeGreaterThan(23)
     expect(srvOutRpsTicks[23]).toBeGreaterThan(200)
   })

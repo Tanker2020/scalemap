@@ -135,6 +135,12 @@ export interface NodeSimConfig {
     writeLatencyMs: number  // e.g. dbSql: 15ms,  dbNoSql: 5ms
   }
 
+  // ─── Thread pool (fixed-capacity compute nodes: ec2, container) ───────────────
+  // Requests occupy a thread for their processing duration; when all threads are occupied,
+  // new requests are rejected immediately (503) — no queue, no backlog. User-configured
+  // directly (not derived from maxRps/processingMs) — see computeMaxThreads in particleEngine.ts.
+  maxThreads?: number
+
   // ─── CAP-theorem modeling (GitHub #12) ─────────────────────────────────────
   // DB nodes only (dbSql, dbNoSql); undefined = today's single-bucket behavior (unchanged).
   // When set, the engine models a fixed replica set of 3 and gates read/write availability

@@ -2,9 +2,16 @@ import type { NodeType, NodeSimConfig, NodeSlo } from '../../lib/nodeConfig'
 
 export const NODE_SIM_DEFAULTS: Record<NodeType, NodeSimConfig> = {
   // Compute — fixed capacity, no auto-scale, no self-healing
-  ec2:          { maxRps: 1000,  processingMs: 10,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 } },
+  // maxThreads gives comfortable headroom over PARTICLE_REQUEST_RATIO (10 real requests per
+  // visual particle) so a handful of concurrent particles doesn't instantly saturate the pool.
+  ec2:          { maxRps: 1000,  processingMs: 10,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 }, maxThreads: 100 },
   lambda:       { maxRps: 1000,  processingMs: 50,  errorRate: 0, maxConcurrency: 10, latencyModel: { p50Ms: 80,  p99Ms: 800  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 29_000, coldStart: { p50Ms: 400, p99Ms: 2500 }, maxWarmInstances: 5, retryConfig: { maxRetries: 2, baseDelayMs: 200,  jitter: 'full',  maxDelayMs: 3000 } },
-  container:    { maxRps: 500,   processingMs: 15,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 } },
+  container:    { maxRps: 500,   processingMs: 15,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 }, maxThreads: 50 },
+  // pod deliberately excluded from the thread-pool model: its utilization/scale-out-in triggers
+  // are already driven by the HPA/namespace/cluster-quota effectiveMaxRps tiers computed in
+  // updateAllNodeMetrics (see the k8sPod branch there) — overriding utilization with a fixed
+  // thread pool would silently disable HPA autoscaling. Same reasoning as excluding
+  // lambda (its own maxConcurrency+cold-start model). See docs/module-boundaries.md.
   pod:          { maxRps: 300,   processingMs: 20,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 }, k8sPod: { replicas: 3, baseCapacityRps: 300, hpa: { minReplicas: 1, maxReplicas: 10, targetCpuUtilization: 0.7 } } },
   // Network
   loadBalancer: { maxRps: 10000, processingMs: 2,   errorRate: 0, latencyModel: { p50Ms: 3,   p99Ms: 20   }, timeoutMs: 60_000, retryConfig: { maxRetries: 2, baseDelayMs: 50,   jitter: 'full',  maxDelayMs: 1000 }, lbRouting: 'round-robin' },

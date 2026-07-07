@@ -110,6 +110,9 @@ const _downstreamStallPressure = new Map<string, number>()
 // Cumulative drop counts per node since simulation start
 const _droppedCounts = new Map<string, number>()
 
+// Accumulator for fractional caller-side rejections to integrate into integer droppedRequests
+const _callerRejectionAccum = new Map<string, number>()
+
 // Cumulative dead-lettered message counts per node (event edges, retries exhausted)
 const _deadLetterCounts = new Map<string, number>()
 
@@ -429,7 +432,8 @@ const _clientErrorCounts = new Map<string, number>()
 // wall clock. (Frame-delta baselines and inter-frame scheduling still use performance.now().)
 let _simulatedTimeMs = 0
 
-// In-flight request counter used by LAC load balancer routing
+// In-flight request counter used by LAC load balancer routing. Also doubles as the thread
+// pool's active-thread count for ec2/container (scaled by PARTICLE_REQUEST_RATIO).
 const _lbActiveRequests = new Map<string, number>()
 
 // Tracks which downstream node is the proven cause of each upstream node's stall pressure
@@ -441,6 +445,23 @@ const _nodeHealthStates = new Map<string, 'healthy' | 'degraded' | 'down'>()
 // Recovery hysteresis: timestamp before which a 'down' node cannot jump straight to 'healthy'
 const _recoveryUntil    = new Map<string, number>()
 const HEALTH_RECOVERY_LOCK_MS = 8_000  // 8s minimum in 'degraded' after exiting 'down'
+
+// Onset hysteresis: the symmetric partner of the recovery lock above, guarding entry into a
+// WORSE state instead of exit from 'down'. Without this, a single bad tick (e.g. a brief
+// utilization spike) latched immediately, which — via forceOpenBreakersForNode below — could
+// re-trip an inbound breaker on every blip, producing oscillation with no obvious cause.
+// _onsetPendingSince: nodeId -> timestamp the current (not-yet-latched) worse rawState was first
+// observed; cleared the instant the node recovers or holds steady, so only SUSTAINED
+// degradation ever latches.
+const _onsetPendingSince = new Map<string, number>()
+const HEALTH_ONSET_DEBOUNCE_MS = 3_000  // sustained degradation required before latching a worse state
+const _healthSeverity: Record<'healthy' | 'degraded' | 'down', number> = { healthy: 0, degraded: 1, down: 2 }
+
+// Defense-in-depth minimum spacing between forceOpenBreakersForNode calls for the same node —
+// the onset debounce above is the real fix for oscillation; this just guards against any
+// remaining rapid re-fire (the function itself is already a no-op if the breaker is already open).
+const _lastForceOpenAt = new Map<string, number>()
+const FORCE_OPEN_MIN_SPACING_MS = 2_000
 
 // Lambda warm instance tracking (7b) — state lives in backpressure.ts; this constant governs
 // the idle-expiry check at the call site.
@@ -667,6 +688,20 @@ function effectiveProcessingMs(nodeId: string, config: NodeSimConfig): number {
   return base * (1 + degradedDepth(prevScore))  // 1×–2× proportional to depth
 }
 
+// Thread pool size for ec2/container (server-side capacity), user-configured directly.
+// Shared by admission, metrics, and the idle-RPS backlog gate so all three agree on what
+// "the pool" means for a given node.
+function computeMaxThreads(config: NodeSimConfig): number {
+  return config.maxThreads ?? 50
+}
+
+// Target-side compute capacity (ec2/container as request TARGETS). Distinct from
+// THREAD_POOL_TYPES below, which models these same node types as request SOURCES
+// (caller-side synchronous thread-pool exhaustion) — the two are orthogonal and coexist.
+function isTargetThreadPoolCompute(nodeType: NodeType): boolean {
+  return nodeType === 'ec2' || nodeType === 'container'
+}
+
 // ─── LAC in-flight tracking ──────────────────────────────────────────────────
 
 // Routers and accumulators: not counted as backends for LAC routing
@@ -773,13 +808,18 @@ function spawnParticles(now: number, delta: number) {
         // Without this, all downstream nodes fire at 100% for the first metrics cycle (~200ms).
         const inRps = _smoothedMetrics.get(sourceNodeId)?.inRps ?? 0
         if (inRps < IDLE_RPS_THRESHOLD) {
+          const srcConfig = effectiveConfig(sourceNodeId, ep.sourceNodeType)
           const backlog = _lbActiveRequests.get(sourceNodeId) ?? 0
           if (backlog > 0) {
             // Still draining accepted work (e.g. inbound just got breaker-gated) — trickle
             // outbound proportional to the decaying backlog instead of snapping to 0 in the
-            // same tick as inbound. `?? 200` matches the thread-pool fallback already used for
-            // this class of source node elsewhere in this file (maxConcurrency default below).
-            const maxBacklogRef = Math.max(1, effectiveConfig(sourceNodeId, ep.sourceNodeType).maxConcurrency ?? 200)
+            // same tick as inbound. Thread-pool types (ec2/container) reference their own
+            // maxThreads-derived particle cap — maxConcurrency is a different, caller-side
+            // concept for these types (see THREAD_POOL_TYPES) and isn't a meaningful backlog
+            // denominator here.
+            const maxBacklogRef = Math.max(1, isTargetThreadPoolCompute(ep.sourceNodeType)
+              ? computeMaxThreads(srcConfig) / PARTICLE_REQUEST_RATIO
+              : srcConfig.maxConcurrency ?? 200)
             downstreamFactor *= Math.max(inRps / IDLE_RPS_THRESHOLD, Math.min(1, backlog / maxBacklogRef))
           } else {
             // Soft fade: 0 RPS → 0%, 5 RPS → 100%. Saturates immediately above the threshold.
@@ -852,6 +892,18 @@ function spawnParticles(now: number, delta: number) {
 
     ep.offeredRps = ep.rps * mult
     ep.breakerRejectedRps = breakerFactor < 1 ? ep.offeredRps * (1 - breakerFactor) : 0
+    if (ep.breakerRejectedRps > 0 && sourceNodeId) {
+      const rejectedParticles = (ep.breakerRejectedRps / PARTICLE_REQUEST_RATIO) * (delta / 1000) * _speed
+      const existing = _callerRejectionAccum.get(sourceNodeId) ?? 0
+      const next = existing + rejectedParticles
+      if (next >= 1) {
+        const floor = Math.floor(next)
+        _droppedCounts.set(sourceNodeId, (_droppedCounts.get(sourceNodeId) ?? 0) + floor)
+        _callerRejectionAccum.set(sourceNodeId, next - floor)
+      } else {
+        _callerRejectionAccum.set(sourceNodeId, next)
+      }
+    }
     const rps = ep.rps * mult * downstreamFactor
 
     // Fold in forwarded/relayed traffic measured since the last read (see
@@ -1286,6 +1338,39 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       dropParticle(ep, targetNodeId, particle)
       return
     }
+  }
+
+  // Thread pool model (ec2/container): requests occupy a thread for their processing duration;
+  // when all threads are occupied, reject immediately — no queue, no hysteresis. Self-contained
+  // block (own latency, own trackRequest/forward, own return) mirroring the lambda/db blocks
+  // below, since this REPLACES the generic rate-ratio capacity check for these types.
+  if (isTargetThreadPoolCompute(targetNodeType)) {
+    const maxThreads = computeMaxThreads(config)
+    const activeThreads = (_lbActiveRequests.get(targetNodeId) ?? 0) * PARTICLE_REQUEST_RATIO
+    if (activeThreads >= maxThreads) {
+      const label = (_nodesMap.get(targetNodeId)?.data as NodeData)?.label ?? targetNodeId
+      _onEvent('connection_pool_exhausted', targetNodeId,
+        `${label} thread pool full (${activeThreads}/${maxThreads}) — dropping`, 'critical',
+        { utilization: 1, errorRate: 1 })
+      recordBreakerResultLocal(ep.id, true, config, now)
+      dropParticle(ep, targetNodeId, particle)
+      return
+    }
+
+    const lmR = config.latencyModel
+    const threadLatency = lmR ? sampleLatencyMs(lmR.p50Ms, lmR.p99Ms) : (config.processingMs || 5)
+
+    particle.originLatencyMs = 0
+    recordLatency(targetNodeId, threadLatency)
+    recordBreakerResultLocal(ep.id, false, config, now)
+    _egressBytesAccum.set(targetNodeId, (_egressBytesAccum.get(targetNodeId) ?? 0) + particle.payloadBytes)
+    trackRequest(targetNodeId, targetNodeType, config)
+
+    if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
+      scheduleWorkerRelease(sourceNodeId, threadLatency + ep.geoLatencyMs, _simulatedTimeMs)
+    }
+    forwardToOutbound(targetNodeId, targetNodeType, particle.templateId)
+    return
   }
 
   // Sample server-side processing latency only.
@@ -1749,6 +1834,10 @@ function updateAllNodeMetrics(now: number, delta: number) {
       const maxC = config.maxConcurrency ?? 10
       concurrency = cur
       utilization = Math.min(1, cur / maxC)
+    } else if (isTargetThreadPoolCompute(nodeType)) {
+      const maxThreads = computeMaxThreads(config)
+      const activeThreads = (_lbActiveRequests.get(nodeId) ?? 0) * PARTICLE_REQUEST_RATIO
+      utilization = Math.min(1, activeThreads / maxThreads)
     } else {
       let effectiveMaxRps = config.maxRps
       const isDb = config.dbConfig && (nodeType === 'dbSql' || nodeType === 'dbNoSql')
@@ -2006,7 +2095,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
     }
     if (!nowSaturated) _dbSaturationReason.delete(nodeId)
 
-    // Soft error onset at 85% utilization (real services start erroring before full saturation)
+    // Soft error onset at 85% utilization (real services start erroring before full saturation).
     const errorOnset = 0.85
     const baseErrorRate = utilization > errorOnset
       ? Math.min(1, (utilization - errorOnset) / (1.0 - errorOnset) * 0.15)
@@ -2020,7 +2109,9 @@ function updateAllNodeMetrics(now: number, delta: number) {
 
     const rawErrorRate = Math.min(1, baseErrorRate + cascadePressure * 0.15 + clientErrorRate + breakerRejectionRate)
 
-    const activeRequests = _lbActiveRequests.get(nodeId)
+    const activeRequests = _lbActiveRequests.get(nodeId) !== undefined
+      ? (_lbActiveRequests.get(nodeId)! * (isTargetThreadPoolCompute(nodeType) ? PARTICLE_REQUEST_RATIO : 1))
+      : undefined
 
     const dbSaturation = _dbSaturationReason.get(nodeId)
     const egressBytesPerSec = egressWindowSec > 0
@@ -2055,7 +2146,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
     if (forced !== 'auto') {
       healthState = forced
     } else {
-      // Score formula: error (40%) + utilization above 80% (40%) + latency amplification (20%)
+      // Score formula: error (40%) + utilization above 80% (40%) + latency amplification (20%).
       const baselineP50    = nodeConfig.latencyModel?.p50Ms ?? Math.max(1, nodeConfig.processingMs)
       const latencyRatio   = rawP90 > 0 ? rawP90 / Math.max(baselineP50, 1) : 1
       const errorContrib   = Math.min(0.4, rawErrorRate * 0.4)
@@ -2067,14 +2158,27 @@ function updateAllNodeMetrics(now: number, delta: number) {
 
       const rawState = healthScore >= 0.85 ? 'healthy' : healthScore >= 0.50 ? 'degraded' : 'down'
 
-      // Recovery hysteresis: after exiting 'down', can't jump straight to 'healthy'
+      // Onset hysteresis: only latch a WORSE state once it's been observed continuously for
+      // HEALTH_ONSET_DEBOUNCE_MS — a single bad tick holds at the previous (better) state instead.
+      // Recovering or holding steady clears the pending timer immediately (no debounce on those).
       const prevState = _nodeHealthStates.get(nodeId)
+      let onsetState: 'healthy' | 'degraded' | 'down' = rawState
+      if (prevState !== undefined && _healthSeverity[rawState] > _healthSeverity[prevState]) {
+        const pendingSince = _onsetPendingSince.get(nodeId) ?? now
+        if (!_onsetPendingSince.has(nodeId)) _onsetPendingSince.set(nodeId, pendingSince)
+        onsetState = (now - pendingSince >= HEALTH_ONSET_DEBOUNCE_MS) ? rawState : prevState
+        if (onsetState === rawState) _onsetPendingSince.delete(nodeId)
+      } else {
+        _onsetPendingSince.delete(nodeId)
+      }
+
+      // Recovery hysteresis: after exiting 'down', can't jump straight to 'healthy'
       if (prevState === 'down' && rawState !== 'down') {
         _recoveryUntil.set(nodeId, now + HEALTH_RECOVERY_LOCK_MS)
       }
-      healthState = (rawState === 'healthy' && (_recoveryUntil.get(nodeId) ?? 0) > now)
+      healthState = (onsetState === 'healthy' && (_recoveryUntil.get(nodeId) ?? 0) > now)
         ? 'degraded'  // still warming up after 'down'
-        : rawState
+        : onsetState
     }
 
     const prevHealthState = _nodeHealthStates.get(nodeId)
@@ -2087,7 +2191,8 @@ function updateAllNodeMetrics(now: number, delta: number) {
     // telling it the target is unreachable, so those edges stay visually active and
     // particles are dropped on arrival instead of being suppressed at the source.
     // Delegates to circuitBreakers.ts (moved there in Task 0 — pure code motion).
-    if (healthState === 'down') {
+    if (healthState === 'down' && now - (_lastForceOpenAt.get(nodeId) ?? -Infinity) >= FORCE_OPEN_MIN_SPACING_MS) {
+      _lastForceOpenAt.set(nodeId, now)
       const inboundRequestEdges = _edgesData.filter(ed => {
         if (ed.target !== nodeId) return false
         const edgePath = _edgePaths.find(ep => ep.id === ed.id)
@@ -2661,9 +2766,12 @@ export function startSimulation(
   _lbActiveRequests.clear()
   _nodeHealthStates.clear()
   _recoveryUntil.clear()
+  _onsetPendingSince.clear()
+  _lastForceOpenAt.clear()
   _stallSources.clear()
   _forwardedParticleCounts.clear()
   _forwardedRpsSmoothed.clear()
+  _callerRejectionAccum.clear()
   _particleById.clear()
   _particleIdCounter = 0
   _currentCapacity.clear()
@@ -2696,6 +2804,8 @@ export function stopSimulation() {
   _lbActiveRequests.clear()
   _nodeHealthStates.clear()
   _recoveryUntil.clear()
+  _onsetPendingSince.clear()
+  _lastForceOpenAt.clear()
   _stallSources.clear()
   _particleById.clear()
   _particleIdCounter = 0
@@ -2706,6 +2816,7 @@ export function stopSimulation() {
   _restartCooldown.clear()
   _retryQueue.length = 0
   _droppedCounts.clear()
+  _callerRejectionAccum.clear()
   _deadLetterCounts.clear()
   _simulatedTimeMs = 0
   _egressBytesAccum.clear()

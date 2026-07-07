@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { Node, Edge } from '@xyflow/react'
-import type { NodeData, EdgeData } from '../../../../lib/nodeConfig'
+import type { NodeData, EdgeData, NodeSimConfig } from '../../../../lib/nodeConfig'
 import { useSimulationStore, type NodeMetrics } from '../../../store/simulation.store'
-import { startSimulation, stopSimulation, setCallbacks, updateGlobalMultiplier } from '../particleEngine'
+import { startSimulation, stopSimulation, setCallbacks, setNodeConfigs, updateGlobalMultiplier } from '../particleEngine'
 
 // Minimal 2-node, 1-edge fixture: a pure source (cdn — no thread-pool gate, no inbound edges,
 // no circuit-breaker config) feeding a compute node, with edge RPS high enough that particle
@@ -71,6 +71,12 @@ describe('effectiveRps under particle-cap saturation', () => {
 
     const canvas = makeFakeCanvas()
     startSimulation(canvas, nodes, edges, 1)
+    // 'dst' is ec2, which now carries a default thread-pool cap — under this test's deliberately
+    // extreme 1,000,000rps overload, that would organically degrade health to 'down' and trip
+    // 'e1's breaker (forceOpenBreakersForNode), collapsing inRps — a real, separate mechanism
+    // this test isn't about. Force healthy to isolate what's actually under test: whether
+    // effectiveRps/inRps keeps tracking globalMultiplier regardless of the particle-visual-cap.
+    setNodeConfigs(new Map([['dst', { forcedHealthState: 'healthy' } as NodeSimConfig]]))
 
     // 'steady' traffic mode reads globalMultiplier directly (effectiveMultiplier's 'steady' case
     // returns it unchanged), so bumping it once per frame gives us a fully deterministic,
