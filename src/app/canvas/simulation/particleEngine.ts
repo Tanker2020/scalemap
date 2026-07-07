@@ -1367,7 +1367,13 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
     if (ec2res) {
       // EC2 compute model: memory-bound admission (hard cap) + OOM crash. CPU pressure is NOT a
       // drop here — it shows up as amplified latency in updateAllNodeMetrics.
-      const decision = ec2AdmissionDecision(activeThreads, ec2res.workload, ec2res.profile)
+      // Force Healthy is an explicit user override of the model: it exempts the node from compute
+      // OOM/503 drops entirely, so it behaves like a perfect infinite server (consistent with how
+      // forcedHealthState: 'healthy' pins every other node type). Only 'healthy' exempts — forcing
+      // 'degraded'/'down' means the user WANTS problems, so those still admit-and-drop normally.
+      const decision = config.forcedHealthState === 'healthy'
+        ? 'admit'
+        : ec2AdmissionDecision(activeThreads, ec2res.workload, ec2res.profile)
       if (decision === 'oom-crash') {
         const label = (_nodesMap.get(targetNodeId)?.data as NodeData)?.label ?? targetNodeId
         _nodeHealthStates.set(targetNodeId, 'down')

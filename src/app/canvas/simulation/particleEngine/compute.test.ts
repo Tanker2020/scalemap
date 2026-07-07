@@ -57,13 +57,15 @@ describe('compute math', () => {
     expect(currentRamMb(100, W, P)).toBe(512 + 100 * 33)
   })
 
-  it('admission: admit under cap, drop at cap, crash on OOM', () => {
+  it('admission: overload degrades gracefully (503), OOM only when RAM cannot hold one request', () => {
     expect(ec2AdmissionDecision(107, W, P)).toBe('admit')
-    expect(ec2AdmissionDecision(108, W, P)).toBe('drop-503')  // at hard cap
-    // Force OOM independent of cap via a tiny override that still leaves RAM exceedable:
-    const oomP = { ...P, maxThreadsOverride: 100000 }
-    // 200 active * 33MB + 512 = 7112MB > 4096MB -> OOM
-    expect(ec2AdmissionDecision(200, W, oomP)).toBe('oom-crash')
+    expect(ec2AdmissionDecision(108, W, P)).toBe('drop-503')  // at hard cap -> graceful 503
+    // Massive overload still sheds 503s, never a crash — the box has capacity, it's just full.
+    expect(ec2AdmissionDecision(100000, W, P)).toBe('drop-503')
+    // OOM only for a genuine unrecoverable breach: ramGiB below osBaseMemoryMb -> maxThreadsMem <= 0
+    // (can't hold even one request), so the first arrival crashes regardless of active count.
+    const brokenP = { ...P, ramGiB: 0.25 }  // 256MB RAM < 512MB osBase
+    expect(ec2AdmissionDecision(0, W, brokenP)).toBe('oom-crash')
   })
 })
 

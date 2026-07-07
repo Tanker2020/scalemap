@@ -67,13 +67,18 @@ export function wallTimeMs(baseLatencyMs: number, w: WorkloadDemand, p: ComputeP
 
 export type Ec2Admission = 'admit' | 'drop-503' | 'oom-crash'
 
-// Admission decision for one arriving request, given current in-flight count. OOM (hard RAM breach)
-// takes priority; otherwise reject at the hard thread cap; otherwise admit. CPU pressure never
-// appears here — it is a latency effect, not a rejection.
+// Admission decision for one arriving request, given current in-flight count.
+//
+// Overload degrades GRACEFULLY: because the admission cap (hardThreadCap) is memory-derived, a
+// correctly-provisioned node reaches its cap and sheds 503s while RAM is still (just) within
+// bounds — so sustained overload manifests as rejections + rising latency, never a crash. OOM is
+// reserved for a genuine, unrecoverable breach: the box cannot hold even ONE request's footprint
+// (`maxThreadsMem <= 0` — e.g. osBase alone already exceeds RAM, or a single footprint overflows).
+// CPU pressure never appears here — it is a latency effect, not a rejection.
 export function ec2AdmissionDecision(
   activeRequests: number, w: WorkloadDemand, p: ComputeProfile,
 ): Ec2Admission {
-  if (currentRamMb(activeRequests, w, p) > p.ramGiB * 1024) return 'oom-crash'
+  if (maxThreadsMem(w, p) <= 0) return 'oom-crash'
   if (activeRequests >= hardThreadCap(w, p)) return 'drop-503'
   return 'admit'
 }
