@@ -150,6 +150,56 @@ export interface NodeSimConfig {
   // split-brain simulation (explicitly de-scoped; see optimization-issues-spec.md Task O2).
   consistencyLevel?: 'ONE' | 'QUORUM' | 'ALL'   // ONE: >=1/3 replicas reachable; QUORUM: >=2/3; ALL: 3/3
   replicationLagMs?: number                      // extra latency applied to reads served by a non-primary replica; undefined = 0 (no lag modeled)
+
+  // ─── Compute resource model (EC2 v1) ─────────────────────────────────────────
+  // When set, the engine derives throughput/concurrency/OOM/latency from physical hardware
+  // (computeProfile) + per-request cost (workload) instead of maxRps. EC2 only in v1.
+  computeProfile?: ComputeProfile
+  workload?: WorkloadDemand
+}
+
+// ─── Compute resource model (EC2 v1) ───────────────────────────────────────────
+// Physical hardware profile for a compute node. When present on a node's simConfig, the engine
+// derives capacity/latency/OOM from CPU + RAM instead of the abstract maxRps gate. Gated exactly
+// like dbConfig/k8sPod — absent ⇒ legacy maxRps behavior, unchanged.
+export const COMPUTE_IPC = 2.0   // fixed placeholder across all CPU families until a per-family
+                                 // IPC lookup table (Geekbench/SPEC) is built. ~1.5–3.0 is the
+                                 // realistic band for mixed server workloads; 2.0 is defensible.
+
+export interface ComputeProfile {
+  vCpu: number                       // linear compute units (1 vCPU ≈ 1 hardware thread)
+  ramGiB: number
+  architecture: 'x86_64' | 'arm64'   // v1: affects cost only (arm cheaper)
+  cpuFamily: string                  // cosmetic in v1 (IPC fixed at COMPUTE_IPC)
+  baseClockGhz: number
+  blockingIoModel: boolean           // true: thread-per-request (a blocked thread holds a stack);
+                                     // false: async/event-loop (no thread stack per in-flight req)
+  osBaseMemoryMb?: number            // reserved RAM floor; default 512
+  threadStackMb?: number             // per-in-flight thread stack (blocking only); default 1
+  maxThreadsOverride?: number        // optional Tomcat-style artificial pool cap below RAM limit
+}
+
+export type WorkloadTier = 'simple_crud' | 'moderate_logic' | 'heavy_compute' | 'custom'
+
+export interface WorkloadDemand {
+  tier: WorkloadTier
+  cpuInstructionsBillions: number    // resolved value (tier-clamped or custom)
+  memoryFootprintMb: number          // RAM held per active request for its duration
+  ioBoundFraction: number            // 0..0.99 — fraction of wall time blocked on IO (not CPU)
+}
+
+// Bounds + default per preset tier. 'custom' is unconstrained (any non-negative value).
+export const WORKLOAD_TIER_RANGES: Record<Exclude<WorkloadTier, 'custom'>, { min: number; max: number; default: number }> = {
+  simple_crud:    { min: 0.001, max: 0.01, default: 0.005 }, // ~1M–10M instr — parse, 1 query, serialize
+  moderate_logic: { min: 0.01,  max: 0.1,  default: 0.05  }, // ~10M–100M instr — validation, transforms
+  heavy_compute:  { min: 0.1,   max: 10.0, default: 1.0   }, // ~100M–10B instr — image/crypto/ML inference
+}
+
+// Clamp a raw instruction count into the selected tier's range; 'custom' passes through (>= 0).
+export function resolveWorkloadInstructions(tier: WorkloadTier, raw: number): number {
+  if (tier === 'custom') return Math.max(0, raw)
+  const r = WORKLOAD_TIER_RANGES[tier]
+  return Math.min(r.max, Math.max(r.min, raw))
 }
 
 // User-entered pricing parameters. Rates live in cloudRegistry.ts; this holds only the
