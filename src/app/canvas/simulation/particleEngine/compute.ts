@@ -1,7 +1,7 @@
 // Pure resource math for the EC2 compute model. No engine state, no side effects — every function
 // is a deterministic transform of (workload, profile), so the whole model is unit-testable here
 // and the rAF loop just calls in. See docs/superpowers/plans/2026-07-07-ec2-compute-resource-model.md.
-import { COMPUTE_IPC, type ComputeProfile, type WorkloadDemand } from '../../../../lib/nodeConfig'
+import { COMPUTE_IPC, type ComputeProfile, type WorkloadDemand, type NodeSimConfig } from '../../../../lib/nodeConfig'
 
 // Seconds of pure CPU time one request costs: (billion instr) / (billion instr/sec).
 // baseClockGhz * IPC = billions of instructions retired per second.
@@ -76,4 +76,13 @@ export function ec2AdmissionDecision(
   if (currentRamMb(activeRequests, w, p) > p.ramGiB * 1024) return 'oom-crash'
   if (activeRequests >= hardThreadCap(w, p)) return 'drop-503'
   return 'admit'
+}
+
+// Gate helper: an EC2 node participates in the compute model only when it carries both a hardware
+// profile and a workload. Legacy files / non-EC2 configs return null and keep legacy behavior.
+export function resolveEc2Resources(
+  config: NodeSimConfig,
+): { profile: ComputeProfile; workload: WorkloadDemand } | null {
+  if (!config.computeProfile || !config.workload) return null
+  return { profile: config.computeProfile, workload: config.workload }
 }

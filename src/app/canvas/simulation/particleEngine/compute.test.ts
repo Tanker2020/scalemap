@@ -3,7 +3,9 @@ import type { ComputeProfile, WorkloadDemand } from '../../../../lib/nodeConfig'
 import {
   cpuTimeSec, maxThreadsCPU, maxThreadsMem, hardThreadCap,
   cpuUtilization, currentRamMb, nodeUtilization, ec2AdmissionDecision,
+  resolveEc2Resources,
 } from './compute'
+import { DEFAULT_EC2_COMPUTE_PROFILE, DEFAULT_EC2_WORKLOAD } from '../../../simulation/defaults'
 
 const P: ComputeProfile = {
   vCpu: 2, ramGiB: 4, architecture: 'x86_64', cpuFamily: 'test',
@@ -62,5 +64,17 @@ describe('compute math', () => {
     const oomP = { ...P, maxThreadsOverride: 100000 }
     // 200 active * 33MB + 512 = 7112MB > 4096MB -> OOM
     expect(ec2AdmissionDecision(200, W, oomP)).toBe('oom-crash')
+  })
+})
+
+describe('resolveEc2Resources', () => {
+  it('returns profile+workload for a config that has them', () => {
+    const r = resolveEc2Resources({ maxRps: 1000, processingMs: 10, errorRate: 0, computeProfile: DEFAULT_EC2_COMPUTE_PROFILE, workload: DEFAULT_EC2_WORKLOAD })
+    expect(r).not.toBeNull()
+    expect(r!.profile.vCpu).toBe(2)
+  })
+
+  it('returns null when no compute profile is present (legacy nodes)', () => {
+    expect(resolveEc2Resources({ maxRps: 1000, processingMs: 10, errorRate: 0 })).toBeNull()
   })
 })

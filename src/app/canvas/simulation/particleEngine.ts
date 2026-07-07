@@ -27,6 +27,7 @@ import {
   getChaosFailures, clearChaosState, isEdgePartitioned, edgePartitionLossRate,
 } from './particleEngine/chaos'
 import { drawCircuitOverlay } from './particleEngine/circuitVisual'
+import { ec2AdmissionDecision, resolveEc2Resources } from './particleEngine/compute'
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -695,6 +696,18 @@ function computeMaxThreads(config: NodeSimConfig): number {
   return config.maxThreads ?? 50
 }
 
+// Restore a crashed node to 'healthy' after its configured restart delay (default 5s). Mirrors the
+// existing selfHealing config; OOM reuses this rather than inventing a new reboot cycle. Distinct
+// from the chaos-failure restart/backoff cycle further down (getChaosFailures/_restartCounts) —
+// that models externally-injected chaos failures, this models an OOM the compute model itself
+// causes, so it self-heals on a plain fixed delay with no cooldown/backoff bookkeeping.
+function scheduleNodeRestart(nodeId: string, config: NodeSimConfig): void {
+  const delay = config.selfHealing?.restartDelayMs ?? 5000
+  scheduleGenericRelease(nodeId, delay, _simulatedTimeMs, () => {
+    if (_nodeHealthStates.get(nodeId) === 'down') _nodeHealthStates.set(nodeId, 'healthy')
+  })
+}
+
 // Target-side compute capacity (ec2/container as request TARGETS). Distinct from
 // THREAD_POOL_TYPES below, which models these same node types as request SOURCES
 // (caller-side synchronous thread-pool exhaustion) — the two are orthogonal and coexist.
@@ -1345,16 +1358,45 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
   // block (own latency, own trackRequest/forward, own return) mirroring the lambda/db blocks
   // below, since this REPLACES the generic rate-ratio capacity check for these types.
   if (isTargetThreadPoolCompute(targetNodeType)) {
-    const maxThreads = computeMaxThreads(config)
     const activeThreads = (_lbActiveRequests.get(targetNodeId) ?? 0) * PARTICLE_REQUEST_RATIO
-    if (activeThreads >= maxThreads) {
-      const label = (_nodesMap.get(targetNodeId)?.data as NodeData)?.label ?? targetNodeId
-      _onEvent('connection_pool_exhausted', targetNodeId,
-        `${label} thread pool full (${activeThreads}/${maxThreads}) — dropping`, 'critical',
-        { utilization: 1, errorRate: 1 })
-      recordBreakerResultLocal(ep.id, true, config, now)
-      dropParticle(ep, targetNodeId, particle)
-      return
+    const ec2res = targetNodeType === 'ec2' ? resolveEc2Resources(config) : null
+
+    if (ec2res) {
+      // EC2 compute model: memory-bound admission (hard cap) + OOM crash. CPU pressure is NOT a
+      // drop here — it shows up as amplified latency in updateAllNodeMetrics.
+      const decision = ec2AdmissionDecision(activeThreads, ec2res.workload, ec2res.profile)
+      if (decision === 'oom-crash') {
+        const label = (_nodesMap.get(targetNodeId)?.data as NodeData)?.label ?? targetNodeId
+        _nodeHealthStates.set(targetNodeId, 'down')
+        _onEvent('crash_loop_detected', targetNodeId,
+          `${label} out of memory — ${ec2res.profile.ramGiB} GiB exhausted, crashing`, 'critical',
+          { utilization: 1, errorRate: 1 })
+        scheduleNodeRestart(targetNodeId, config)
+        recordBreakerResultLocal(ep.id, true, config, now)
+        dropParticle(ep, targetNodeId, particle)
+        return
+      }
+      if (decision === 'drop-503') {
+        const label = (_nodesMap.get(targetNodeId)?.data as NodeData)?.label ?? targetNodeId
+        _onEvent('connection_pool_exhausted', targetNodeId,
+          `${label} thread pool full (RAM-bound) — dropping`, 'critical', { utilization: 1, errorRate: 1 })
+        recordBreakerResultLocal(ep.id, true, config, now)
+        dropParticle(ep, targetNodeId, particle)
+        return
+      }
+      // 'admit' falls through to normal processing below.
+    } else {
+      // Legacy path: fixed maxThreads pool (container, or EC2 files without a profile).
+      const maxThreads = computeMaxThreads(config)
+      if (activeThreads >= maxThreads) {
+        const label = (_nodesMap.get(targetNodeId)?.data as NodeData)?.label ?? targetNodeId
+        _onEvent('connection_pool_exhausted', targetNodeId,
+          `${label} thread pool full (${activeThreads}/${maxThreads}) — dropping`, 'critical',
+          { utilization: 1, errorRate: 1 })
+        recordBreakerResultLocal(ep.id, true, config, now)
+        dropParticle(ep, targetNodeId, particle)
+        return
+      }
     }
 
     const lmR = config.latencyModel
@@ -1532,8 +1574,10 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       return
     }
 
-    // Other non-queue nodes: drop if at capacity
-    if (utilization >= 1.0 + config.errorRate) {
+    // Other non-queue nodes: drop if at capacity — EXCEPT EC2 running the compute model, whose
+    // admission is handled by the RAM/thread gate above (maxRps is meaningless for it).
+    const ec2ComputeGated = targetNodeType === 'ec2' && resolveEc2Resources(config) !== null
+    if (!ec2ComputeGated && utilization >= 1.0 + config.errorRate) {
       dropParticle(ep, targetNodeId, particle)
       recordBreakerResultLocal(ep.id, true, config, now)
       return

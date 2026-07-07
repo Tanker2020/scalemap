@@ -95,8 +95,13 @@ describe('outbound trickles from the accepted backlog when inbound is breaker-ga
     // stays pinned at capacity during warmup (mirroring the old test's maxRps-below-demand
     // setup) — a long processingMs (2000ms) then makes that pinned backlog drain visibly over
     // ~2s once inbound stops, instead of within a couple of frames.
+    // computeProfile/workload explicitly cleared: NODE_SIM_DEFAULTS.ec2 now carries a default
+    // compute profile (EC2 v1 compute model), and effectiveConfig merges as
+    // {...defaults, ...override} — without this override the merged config would still resolve
+    // a profile and this node would be routed through the RAM/CPU-bound admission gate instead
+    // of the fixed-maxThreads legacy path this test is specifically exercising.
     setNodeConfigs(new Map<string, NodeSimConfig>([
-      ['srv', { processingMs: 2000, errorRate: 0, forcedHealthState: 'healthy', maxThreads: 200 } as NodeSimConfig],
+      ['srv', { processingMs: 2000, errorRate: 0, forcedHealthState: 'healthy', maxThreads: 200, computeProfile: undefined, workload: undefined } as NodeSimConfig],
     ]))
 
     const batches: Map<string, NodeMetrics>[] = []
