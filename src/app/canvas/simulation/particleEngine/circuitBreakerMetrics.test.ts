@@ -53,7 +53,17 @@ async function run(frames: number, edgeRps: number, pinBreakerOpen: boolean): Pr
     setCallbacks((batch) => batches.push(new Map(batch)), () => {}, () => {})
 
     startSimulation(makeFakeCanvas(), nodes, edges, 1)
-    setNodeConfigs(new Map([['dst', { forcedHealthState: 'healthy' } as NodeSimConfig]]))
+    // dst is type 'ec2'. This test is about circuit-breaker metrics on a plain healthy server, not
+    // capacity — but two EC2-compute-model changes now make an unconfigured ec2 node intermittently
+    // shed traffic at 800 rps and force-open the inbound breaker, inverting the "breaker closed →
+    // caller shows no error" premise (flaky ~30% otherwise):
+    //   1. NODE_SIM_DEFAULTS.ec2 now carries a default computeProfile/workload (merged via
+    //      effectiveConfig's {...defaults, ...override}), routing dst through the RAM/CPU gate.
+    //   2. NODE_SIM_DEFAULTS.ec2 no longer sets maxThreads, so the legacy thread-pool fallback
+    //      drops from 100 to computeMaxThreads' hardcoded 50 — which 800 rps transiently exceeds.
+    // Pin dst to the legacy path with generous headroom so capacity never binds here (same class of
+    // fix as outboundBacklogDrain.test.ts, which also clears the profile and sets maxThreads).
+    setNodeConfigs(new Map([['dst', { forcedHealthState: 'healthy', maxThreads: 10000, computeProfile: undefined, workload: undefined } as NodeSimConfig]]))
 
     let t = performance.now()
     expect(rafCallback).not.toBeNull()

@@ -164,8 +164,14 @@ describe('queueing-theoretic latency amplification is wired into node types', ()
     // low enough that queueDepth never approaches capacity, but high enough (50 rps, well above
     // PARTICLE_REQUEST_RATIO's per-tick spawn-chance floor) that at least one particle reliably
     // arrives within the run — RPS=5 was occasionally too sparse to guarantee any arrival at all.
-    const lightly = await runSteady('queue', 50, 150)    // depth stays low -> low util
-    const saturated = await runSteady('queue', 900, 150) // depth climbs toward capacity -> high util
+    // 300 frames (was 150): the lightly-loaded run at 50 rps depends on at least one sparse particle
+    // completing its ~100-frame edge traversal AND landing in the final recorded batch. Under
+    // full-suite ordering the global Math.random() position varies run-to-run, so 150 frames left
+    // too thin a margin (~10% of full-suite runs recorded zero arrivals -> p99 = 0). This is a
+    // pre-existing sparsity fragility (unrelated to the compute model — neither node here is ec2);
+    // doubling the window makes an arrival reliable without changing the light-vs-saturated contrast.
+    const lightly = await runSteady('queue', 50, 300)    // depth stays low -> low util
+    const saturated = await runSteady('queue', 900, 300) // depth climbs toward capacity -> high util
 
     const lightMetrics = lightly.get('dst')
     const satMetrics = saturated.get('dst')
