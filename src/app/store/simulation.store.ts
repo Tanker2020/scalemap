@@ -26,6 +26,7 @@ export interface NodeMetrics {
   deadLetterCount?: number                        // event edges: cumulative dead-lettered messages
   dbSaturation?: 'read' | 'write'                // DB nodes: which capacity limit was the bottleneck
   egressBytesPerSec?: number                      // live outbound response bandwidth (drives egress cost)
+  bottleneckResource?: 'cpu' | 'memory'          // EC2 compute model: which limit is binding
 }
 
 export type SimEventType =

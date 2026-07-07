@@ -27,7 +27,7 @@ import {
   getChaosFailures, clearChaosState, isEdgePartitioned, edgePartitionLossRate,
 } from './particleEngine/chaos'
 import { drawCircuitOverlay } from './particleEngine/circuitVisual'
-import { ec2AdmissionDecision, resolveEc2Resources } from './particleEngine/compute'
+import { ec2AdmissionDecision, resolveEc2Resources, nodeUtilization, wallTimeMs } from './particleEngine/compute'
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -446,6 +446,11 @@ const _nodeHealthStates = new Map<string, 'healthy' | 'degraded' | 'down'>()
 // Recovery hysteresis: timestamp before which a 'down' node cannot jump straight to 'healthy'
 const _recoveryUntil    = new Map<string, number>()
 const HEALTH_RECOVERY_LOCK_MS = 8_000  // 8s minimum in 'degraded' after exiting 'down'
+// OOM crash lock: timestamp before which an OOM-crashed node is pinned 'down'. Mirrors the
+// _recoveryUntil time-lock — without it the per-frame health scorer recomputes from live
+// utilization and flips a crashed node out of 'down' within a frame, so it keeps serving and
+// re-crashes faster than restartDelayMs (a crash-loop).
+const _forcedDownUntil  = new Map<string, number>()
 
 // Onset hysteresis: the symmetric partner of the recovery lock above, guarding entry into a
 // WORSE state instead of exit from 'down'. Without this, a single bad tick (e.g. a brief
@@ -477,6 +482,8 @@ const _restartCooldown  = new Map<string, number>()  // nodeId → next allowed 
 
 // ─── Database read/write saturation tracking ─────────────────────────────────
 const _dbSaturationReason = new Map<string, 'read' | 'write'>()
+// EC2 compute model: which resource (CPU rho vs memory) is the binding constraint this frame.
+const _bottleneckResource = new Map<string, 'cpu' | 'memory'>()
 
 // ─── CAP-theorem modeling: replica-set availability (GitHub #12) ─────────────
 // First-pass scope: a fixed replica count of 3 (matching ONE/QUORUM/ALL semantics) without a
@@ -696,18 +703,6 @@ function computeMaxThreads(config: NodeSimConfig): number {
   return config.maxThreads ?? 50
 }
 
-// Restore a crashed node to 'healthy' after its configured restart delay (default 5s). Mirrors the
-// existing selfHealing config; OOM reuses this rather than inventing a new reboot cycle. Distinct
-// from the chaos-failure restart/backoff cycle further down (getChaosFailures/_restartCounts) —
-// that models externally-injected chaos failures, this models an OOM the compute model itself
-// causes, so it self-heals on a plain fixed delay with no cooldown/backoff bookkeeping.
-function scheduleNodeRestart(nodeId: string, config: NodeSimConfig): void {
-  const delay = config.selfHealing?.restartDelayMs ?? 5000
-  scheduleGenericRelease(nodeId, delay, _simulatedTimeMs, () => {
-    if (_nodeHealthStates.get(nodeId) === 'down') _nodeHealthStates.set(nodeId, 'healthy')
-  })
-}
-
 // Target-side compute capacity (ec2/container as request TARGETS). Distinct from
 // THREAD_POOL_TYPES below, which models these same node types as request SOURCES
 // (caller-side synchronous thread-pool exhaustion) — the two are orthogonal and coexist.
@@ -730,7 +725,15 @@ const THREAD_POOL_TYPES = new Set<string>(['ec2', 'container', 'pod', 'k8sCluste
 function trackRequest(nodeId: string, nodeType: NodeType, config: NodeSimConfig) {
   if (_LB_SKIP_TYPES.has(nodeType) || GROUPING_TYPES.has(nodeType)) return
   _lbActiveRequests.set(nodeId, (_lbActiveRequests.get(nodeId) ?? 0) + 1)
-  scheduleGenericRelease(nodeId, Math.max(50, effectiveProcessingMs(nodeId, config)), _simulatedTimeMs, () => {
+  // EC2-with-profile holds a thread for the request's WALL time (base latency + CPU compute), so
+  // pool occupancy reflects real compute pressure — not the static processingMs. Other types keep
+  // the legacy processingMs-based hold.
+  const ec2res = nodeType === 'ec2' ? resolveEc2Resources(config) : null
+  const baseMs = effectiveProcessingMs(nodeId, config)
+  const holdMs = ec2res
+    ? wallTimeMs(config.latencyModel?.p50Ms ?? baseMs, ec2res.workload, ec2res.profile)
+    : baseMs
+  scheduleGenericRelease(nodeId, Math.max(50, holdMs), _simulatedTimeMs, () => {
     _lbActiveRequests.set(nodeId, Math.max(0, (_lbActiveRequests.get(nodeId) ?? 1) - 1))
   })
 }
@@ -1371,7 +1374,9 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
         _onEvent('crash_loop_detected', targetNodeId,
           `${label} out of memory — ${ec2res.profile.ramGiB} GiB exhausted, crashing`, 'critical',
           { utilization: 1, errorRate: 1 })
-        scheduleNodeRestart(targetNodeId, config)
+        // Pin the node 'down' for the full restart window so the per-frame health scorer can't flip
+        // it back to healthy/degraded next frame (which would re-serve traffic and crash-loop).
+        _forcedDownUntil.set(targetNodeId, now + (config.selfHealing?.restartDelayMs ?? 5000))
         recordBreakerResultLocal(ep.id, true, config, now)
         dropParticle(ep, targetNodeId, particle)
         return
@@ -1879,9 +1884,18 @@ function updateAllNodeMetrics(now: number, delta: number) {
       concurrency = cur
       utilization = Math.min(1, cur / maxC)
     } else if (isTargetThreadPoolCompute(nodeType)) {
-      const maxThreads = computeMaxThreads(config)
       const activeThreads = (_lbActiveRequests.get(nodeId) ?? 0) * PARTICLE_REQUEST_RATIO
-      utilization = Math.min(1, activeThreads / maxThreads)
+      const ec2res = nodeType === 'ec2' ? resolveEc2Resources(config) : null
+      if (ec2res) {
+        // EC2 compute model: reported utilization is the binding constraint — CPU rho (drives the
+        // latency hockey-stick) or memory (drives hard drops/OOM), whichever is higher.
+        const u = nodeUtilization(inRps, activeThreads, ec2res.workload, ec2res.profile)
+        utilization = u.utilization
+        _bottleneckResource.set(nodeId, u.bottleneck)
+      } else {
+        const maxThreads = computeMaxThreads(config)
+        utilization = Math.min(1, activeThreads / maxThreads)
+      }
     } else {
       let effectiveMaxRps = config.maxRps
       const isDb = config.dbConfig && (nodeType === 'dbSql' || nodeType === 'dbNoSql')
@@ -2179,6 +2193,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
       deadLetterCount: _deadLetterCounts.get(nodeId) ?? 0,
       ...(dbSaturation !== undefined && { dbSaturation }),
       egressBytesPerSec,
+      ...(_bottleneckResource.get(nodeId) !== undefined && { bottleneckResource: _bottleneckResource.get(nodeId) }),
     }
 
     // ─── Health scoring ───────────────────────────────────────────────────────
@@ -2187,9 +2202,16 @@ function updateAllNodeMetrics(now: number, delta: number) {
     let healthState: 'healthy' | 'degraded' | 'down'
     let healthScore: number | undefined
 
-    if (forced !== 'auto') {
+    const oomUntil = _forcedDownUntil.get(nodeId) ?? 0
+    if (oomUntil > now) {
+      // OOM crash lock: hold 'down' for the full restart window (mirrors _recoveryUntil). Without
+      // this the per-frame score below flips the node out of 'down' in 1-2 frames and it re-serves.
+      healthState = 'down'
+    } else if (forced !== 'auto') {
+      if (oomUntil !== 0) _forcedDownUntil.delete(nodeId)
       healthState = forced
     } else {
+      if (oomUntil !== 0) _forcedDownUntil.delete(nodeId)
       // Score formula: error (40%) + utilization above 80% (40%) + latency amplification (20%).
       const baselineP50    = nodeConfig.latencyModel?.p50Ms ?? Math.max(1, nodeConfig.processingMs)
       const latencyRatio   = rawP90 > 0 ? rawP90 / Math.max(baselineP50, 1) : 1
@@ -2277,6 +2299,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
       droppedRequests:  rawMetrics.droppedRequests,
       deadLetterCount:  rawMetrics.deadLetterCount,
       dbSaturation:     rawMetrics.dbSaturation,
+      bottleneckResource: rawMetrics.bottleneckResource,
     } : rawMetrics
     _smoothedMetrics.set(nodeId, metrics)
 
@@ -2810,6 +2833,8 @@ export function startSimulation(
   _lbActiveRequests.clear()
   _nodeHealthStates.clear()
   _recoveryUntil.clear()
+  _forcedDownUntil.clear()
+  _bottleneckResource.clear()
   _onsetPendingSince.clear()
   _lastForceOpenAt.clear()
   _stallSources.clear()
@@ -2848,6 +2873,8 @@ export function stopSimulation() {
   _lbActiveRequests.clear()
   _nodeHealthStates.clear()
   _recoveryUntil.clear()
+  _forcedDownUntil.clear()
+  _bottleneckResource.clear()
   _onsetPendingSince.clear()
   _lastForceOpenAt.clear()
   _stallSources.clear()
