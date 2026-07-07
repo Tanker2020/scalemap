@@ -10,6 +10,7 @@
 import type { Node } from '@xyflow/react'
 import { NODE_CONFIG, type NodeData, type NodeCategory, type NodeType } from './nodeConfig'
 import type { NodeMetrics } from '../app/store/simulation.store'
+import { NODE_SIM_DEFAULTS } from '../app/simulation/defaults'
 import {
   getServiceSpec,
   egressMonthlyCost,
@@ -112,7 +113,12 @@ function nodeCost(node: Node<NodeData>, metrics?: NodeMetrics): NodeCostBreakdow
           // Physical compute pricing (EC2 v1): bill provisioned vCPU + RAM, picking the arch-specific
           // rate so arm64 lands cheaper as real registry data (not a magic discount factor). Respects
           // the replica multiplier like instanceHourly does.
-          const profile = data.simConfig?.computeProfile
+          // Resolve the profile the same way the engine does — fall back to the node type's default
+          // profile when node.data.simConfig carries none. New nodes ship with no simConfig, and the
+          // SimConfigPanel writes hardware edits to the (transient) simulation store rather than
+          // node.data, so without this fallback every real EC2 node would bill $0 for compute
+          // (a regression from the old instanceHourly default-rate behavior).
+          const profile = data.simConfig?.computeProfile ?? NODE_SIM_DEFAULTS[type as NodeType]?.computeProfile
           if (!profile) break
           const isArm = profile.architecture === 'arm64'
           const vRate = isArm ? comp.vCpuUsdHrArm : comp.vCpuUsdHr
