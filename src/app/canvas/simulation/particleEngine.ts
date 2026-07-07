@@ -27,7 +27,7 @@ import {
   getChaosFailures, clearChaosState, isEdgePartitioned, edgePartitionLossRate,
 } from './particleEngine/chaos'
 import { drawCircuitOverlay } from './particleEngine/circuitVisual'
-import { ec2AdmissionDecision, resolveEc2Resources, nodeUtilization, wallTimeMs, saturationLatencyMultiplier, cpuUtilization } from './particleEngine/compute'
+import { ec2AdmissionDecision, resolveEc2Resources, nodeUtilization, wallTimeMs, saturationLatencyMultiplier, cpuUtilization, hardThreadCap } from './particleEngine/compute'
 export { saturationLatencyMultiplier }
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -1000,8 +1000,46 @@ function spawnParticles(now: number, delta: number) {
       // MAX_PARTICLES cap check above — 1:1 with the scheduleWorkerRelease call each minted
       // particle's arrival handler later makes. Reject overflow explicitly (fast-fail 503-style
       // drop) instead of silently under-acquiring and minting anyway.
+      //
+      // ec2/container sources unify with their OWN server-side thread pool
+      // (_lbActiveRequests/hardThreadCap, via trackRequest) instead of the independent,
+      // arbitrarily-capped acquireWorkers pool -- see the compute admission/latency fix design
+      // spec's WI-B / Decision 3 for why this deliberately over-counts (conservatively) in the
+      // nested-call sub-case rather than attempting full per-request causal tracking.
+      // pod/k8sCluster/ecsCluster have no server-side model to unify against and keep the
+      // independent acquireWorkers pool unchanged.
       if (isThreadPoolEdge) {
-        const admitted = acquireWorkers(sourceNodeId!, 1, maxThreads)
+        let admitted: number
+        if (isTargetThreadPoolCompute(ep.sourceNodeType as NodeType)) {
+          const srcConfig = effectiveConfig(sourceNodeId!, ep.sourceNodeType as NodeType)
+          const ec2res = ep.sourceNodeType === 'ec2' ? resolveEc2Resources(srcConfig) : null
+          const cap = ec2res ? hardThreadCap(ec2res.workload, ec2res.profile) : computeMaxThreads(srcConfig)
+          // Scale by PARTICLE_REQUEST_RATIO before comparing to cap: _lbActiveRequests is a raw
+          // particle count (1 particle == PARTICLE_REQUEST_RATIO real requests), while
+          // hardThreadCap/computeMaxThreads are expressed in real-thread units -- the same
+          // scaling the target-side gate already applies (see activeThreads at :1387/:1916) and
+          // the same unit the displayed `activeRequests` metric uses (:2200). Comparing the raw,
+          // unscaled particle count directly against `cap` here would admit up to
+          // cap * PARTICLE_REQUEST_RATIO real requests -- 10x looser than the node's real
+          // hardThreadCap and inconsistent with every other _lbActiveRequests/cap comparison in
+          // this file.
+          //
+          // Look-ahead (not react-after): check whether granting THIS particle would push real
+          // occupancy past cap, rather than only rejecting once already at/over cap. hardThreadCap
+          // is a physical RAM-derived ceiling that generally isn't a multiple of
+          // PARTICLE_REQUEST_RATIO (e.g. 108), so a "reject once current >= cap" check
+          // systematically overshoots to the next 10-multiple (100 -> 110) when crossing such a
+          // boundary -- never actually bounding real occupancy at the physical cap.
+          const activeAfter = ((_lbActiveRequests.get(sourceNodeId!) ?? 0) + 1) * PARTICLE_REQUEST_RATIO
+          if (activeAfter <= cap) {
+            trackRequest(sourceNodeId!, ep.sourceNodeType as NodeType, srcConfig)
+            admitted = 1
+          } else {
+            admitted = 0
+          }
+        } else {
+          admitted = acquireWorkers(sourceNodeId!, 1, maxThreads)
+        }
         if (admitted === 0) {
           spawnErrorFlash(sourceNodeId!)
           _droppedCounts.set(sourceNodeId!, (_droppedCounts.get(sourceNodeId!) ?? 0) + 1)
