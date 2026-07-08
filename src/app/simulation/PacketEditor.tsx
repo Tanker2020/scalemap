@@ -7,6 +7,8 @@ import { useUiStore } from '../store/ui.store'
 import type {
   PacketProtocol, PacketTemplate, NewPacketTemplate, HttpTemplate, EventTemplate, StreamTemplate, DbTemplate,
 } from '../../lib/nodeConfig'
+import { WORKLOAD_TIER_RANGES, resolveWorkloadInstructions, type WorkloadDemand } from '../../lib/nodeConfig'
+import { DEFAULT_PACKET_WORKLOAD } from './defaults'
 import styles from './PacketEditor.module.css'
 
 // Harmonized with theme.ts's CATEGORY_COLORS hue families (compute=blue, network=teal,
@@ -34,11 +36,12 @@ function protocolColor(protocol: PacketProtocol, mode: 'dark' | 'light'): string
 
 // Sensible starting values per protocol so a new template is immediately valid.
 function defaultTemplate(protocol: PacketProtocol): NewPacketTemplate {
+  const workload = DEFAULT_PACKET_WORKLOAD
   switch (protocol) {
-    case 'http':   return { name: 'New HTTP request', protocol, sizeKb: 2, method: 'GET', path: '/api/v1/resource', statusCode: 200 }
-    case 'event':  return { name: 'New event', protocol, sizeKb: 1, topic: 'domain.events', eventType: 'created', deliveryMode: 'at-least-once' }
-    case 'stream': return { name: 'New stream record', protocol, sizeKb: 4, streamId: 'stream-1', compressionType: 'none' }
-    case 'db':     return { name: 'New query', protocol, sizeKb: 1, queryType: 'read', isWAL: false, resultSizeKb: 8 }
+    case 'http':   return { name: 'New HTTP request', protocol, sizeKb: 2, method: 'GET', path: '/api/v1/resource', statusCode: 200, workload }
+    case 'event':  return { name: 'New event', protocol, sizeKb: 1, topic: 'domain.events', eventType: 'created', deliveryMode: 'at-least-once', workload }
+    case 'stream': return { name: 'New stream record', protocol, sizeKb: 4, streamId: 'stream-1', compressionType: 'none', workload }
+    case 'db':     return { name: 'New query', protocol, sizeKb: 1, queryType: 'read', isWAL: false, resultSizeKb: 8, workload }
   }
 }
 
@@ -284,6 +287,11 @@ function PacketCard({ template, color, reduceMotion, patch, onDelete }: {
         {template.protocol === 'event' && <EventPins t={template} patch={patch} reduceMotion={reduceMotion} />}
         {template.protocol === 'stream' && <StreamPins t={template} patch={patch} reduceMotion={reduceMotion} />}
         {template.protocol === 'db' && <DbPins t={template} patch={patch} reduceMotion={reduceMotion} />}
+      </div>
+
+      {/* Compute workload — shared across every protocol (BasePacketTemplate.workload) */}
+      <div className={styles.pinRow}>
+        <WorkloadPins t={template} patch={patch} reduceMotion={reduceMotion} />
       </div>
 
       {template.protocol === 'http' && (
@@ -543,6 +551,44 @@ function DbPins({ t, patch, reduceMotion }: { t: DbTemplate; patch: (p: Partial<
       >
         <Sparkles size={11} /> WAL {t.isWAL ? 'on' : 'off'}
       </button>
+    </>
+  )
+}
+
+function WorkloadPins({ t, patch, reduceMotion }: { t: PacketTemplate; patch: (p: Partial<PacketTemplate>) => void; reduceMotion: boolean }) {
+  const pin = usePinState()
+  const workload = t.workload ?? DEFAULT_PACKET_WORKLOAD
+  const setWorkload = (w: Partial<WorkloadDemand>) => patch({ workload: { ...workload, ...w } })
+  return (
+    <>
+      <Pin label="Tier" valueLabel={workload.tier} editing={pin.isOpen('tier')} onToggle={() => pin.toggle('tier')} reduceMotion={reduceMotion}>
+        <select className={styles.input} autoFocus value={workload.tier} onChange={e => {
+          const tier = e.target.value as WorkloadDemand['tier']
+          const next = tier === 'custom' ? workload.cpuInstructionsBillions : WORKLOAD_TIER_RANGES[tier].default
+          setWorkload({ tier, cpuInstructionsBillions: resolveWorkloadInstructions(tier, next) })
+          pin.toggle('tier')
+        }}>
+          <option value="simple_crud">simple_crud</option>
+          <option value="moderate_logic">moderate_logic</option>
+          <option value="heavy_compute">heavy_compute</option>
+          <option value="custom">custom</option>
+        </select>
+      </Pin>
+      <Pin label="Instr (B)" valueLabel={String(workload.cpuInstructionsBillions)} editing={pin.isOpen('instr')} onToggle={() => pin.toggle('instr')} reduceMotion={reduceMotion}>
+        <input className={styles.input} autoFocus type="number" min={0} step={workload.tier === 'heavy_compute' || workload.tier === 'custom' ? 0.1 : 0.001}
+          value={workload.cpuInstructionsBillions}
+          onChange={e => setWorkload({ cpuInstructionsBillions: resolveWorkloadInstructions(workload.tier, Number(e.target.value) || 0) })} />
+      </Pin>
+      <Pin label="Mem/req (MB)" valueLabel={String(workload.memoryFootprintMb)} editing={pin.isOpen('mem')} onToggle={() => pin.toggle('mem')} reduceMotion={reduceMotion}>
+        <input className={styles.input} autoFocus type="number" min={1} step={4}
+          value={workload.memoryFootprintMb}
+          onChange={e => setWorkload({ memoryFootprintMb: Math.max(1, Number(e.target.value) || 1) })} />
+      </Pin>
+      <Pin label="IO-bound (%)" valueLabel={String(Math.round(workload.ioBoundFraction * 100))} editing={pin.isOpen('io')} onToggle={() => pin.toggle('io')} reduceMotion={reduceMotion}>
+        <input className={styles.input} autoFocus type="number" min={0} max={99} step={5}
+          value={Math.round(workload.ioBoundFraction * 100)}
+          onChange={e => setWorkload({ ioBoundFraction: Math.min(0.99, Math.max(0, (Number(e.target.value) || 0) / 100)) })} />
+      </Pin>
     </>
   )
 }
