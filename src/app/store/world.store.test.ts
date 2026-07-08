@@ -108,6 +108,13 @@ describe('world.store', () => {
     expect(doc.blueprints[bpId]).toBeDefined()
   })
 
+  it('undo marks the file store dirty even if dirty was cleared beforehand', () => {
+    buildChain()
+    useFileStore.getState().setDirty(false)
+    useWorldStore.getState().undo()
+    expect(useFileStore.getState().dirty).toBe(true)
+  })
+
   it('removeManagedService strips dependencies targeting it', () => {
     const { azId, bpId } = buildChain()
     const msId = useWorldStore.getState().addManagedService('s3', 'S3', { kind: 'az', azId }, 443)

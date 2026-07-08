@@ -217,6 +217,7 @@ export const useWorldStore = create<WorldStore>((set, get) => {
         history: history.slice(0, -1),
         future: [deepCopy(doc), ...future],
       })
+      useFileStore.getState().setDirty(true)
     },
     redo: () => {
       const { future, doc, history } = get()
@@ -226,6 +227,7 @@ export const useWorldStore = create<WorldStore>((set, get) => {
         history: [...history, deepCopy(doc)],
         future: future.slice(1),
       })
+      useFileStore.getState().setDirty(true)
     },
   }
 })

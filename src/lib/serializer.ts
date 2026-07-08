@@ -80,8 +80,17 @@ export function deserializeWorld(raw: string): ScalemapFileV2 {
   if (data.version !== '2') {
     throw new Error(`Unsupported scalemap version: ${String(data.version)}`)
   }
-  if (!data.world || typeof data.world !== 'object' || !('regions' in data.world)) {
-    throw new Error('Invalid .scalemap file: missing world document')
+  const meta = (data as { meta?: unknown }).meta
+  const world = data.world as Record<string, unknown> | undefined
+  const requiredCollections = [
+    'routing', 'traffic', 'populations', 'regions', 'azs', 'servers',
+    'blueprints', 'placements', 'managedServices',
+  ] as const
+  const worldIsValid =
+    world != null && typeof world === 'object' &&
+    requiredCollections.every(key => world[key] != null && typeof world[key] === 'object')
+  if (meta == null || typeof meta !== 'object' || !worldIsValid) {
+    throw new Error('Invalid .scalemap file: missing or malformed world document')
   }
   return data as ScalemapFileV2
 }

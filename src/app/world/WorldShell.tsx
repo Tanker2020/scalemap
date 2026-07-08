@@ -27,7 +27,25 @@ export function WorldShell() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') useNavStore.getState().up()
+      if (e.defaultPrevented) return
+      const t = e.target as HTMLElement
+      if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return
+
+      if (e.key === 'Escape') {
+        useNavStore.getState().up()
+        return
+      }
+      const meta = e.metaKey || e.ctrlKey
+      if (meta && e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault()
+        useWorldStore.getState().redo()
+        return
+      }
+      if (meta && e.key.toLowerCase() === 'z') {
+        e.preventDefault()
+        useWorldStore.getState().undo()
+        return
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)

@@ -14,6 +14,7 @@ import { HomeScreen } from './app/home/HomeScreen'
 import { WorldShell } from './app/world/WorldShell'
 import { useFileStore } from './app/store/file.store'
 import { useWorldStore } from './app/store/world.store'
+import { useNavStore } from './app/store/nav.store'
 import { useUiStore } from './app/store/ui.store'
 import { serializeWorld } from './lib/serializer'
 import styles from './App.module.css'
@@ -51,6 +52,7 @@ export default function App() {
       if (meta && e.key === 'n') {
         e.preventDefault()
         useWorldStore.getState().newWorld()
+        useNavStore.getState().goGlobe()
         useFileStore.getState().setFilePath(null)
         useFileStore.getState().setShowHome(false)
       }

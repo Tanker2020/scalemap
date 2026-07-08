@@ -26,4 +26,16 @@ describe('scalemap v2 serializer', () => {
     expect(() => deserializeWorld(JSON.stringify({ version: '2' }))).toThrowError(/world/i)
     expect(() => deserializeWorld('not json')).toThrow()
   })
+
+  it('rejects a world document missing required collections', () => {
+    const malformed = JSON.stringify({ version: '2', meta: { name: 'x', created: '', modified: '' }, world: { regions: {} } })
+    expect(() => deserializeWorld(malformed)).toThrowError(/world/i)
+  })
+
+  it('round-trips a full createWorld() document unmodified', () => {
+    const world = createWorld()
+    const raw = serializeWorld(world, 'untitled', '2026-07-08T00:00:00.000Z')
+    const parsed = deserializeWorld(raw)
+    expect(parsed.world).toEqual(world)
+  })
 })

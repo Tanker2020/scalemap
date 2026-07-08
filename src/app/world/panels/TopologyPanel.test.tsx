@@ -40,4 +40,22 @@ describe('TopologyPanel', () => {
     const server = Object.values(useWorldStore.getState().doc.servers)[0]
     expect(server.firewall.length).toBe(2)              // default-internal + new rule
   })
+
+  it('moves a firewall rule up with the ↑ button', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, { id: 'vps-small', kind: 'vps', specs: { vcpu: 2, threadsPerCore: 1, ramMb: 4096, diskGb: 40, nicMbps: 500 }, hourlyUsd: 0.018, oversubscriptionRatio: 6, burstable: true })
+    render(<TopologyPanel />)
+    fireEvent.click(screen.getByText(/server-1/))       // expand the server editor
+    fireEvent.click(screen.getByText('+ Rule'))
+    const before = Object.values(useWorldStore.getState().doc.servers)[0]
+    expect(before.firewall.length).toBe(2)
+    const newRule = before.firewall[1]
+
+    const upButtons = screen.getAllByText('↑')
+    fireEvent.click(upButtons[upButtons.length - 1])    // the new rule's ↑ (last row)
+
+    const after = Object.values(useWorldStore.getState().doc.servers)[0]
+    expect(after.firewall[0]).toEqual(newRule)
+  })
 })

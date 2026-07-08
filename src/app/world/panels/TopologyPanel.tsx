@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
+import { useFileStore } from '../../store/file.store'
 import { WORLD_REGIONS } from '../../../lib/regionConfig'
 import { INSTANCE_CATALOG, getPreset } from '../../../lib/world/instanceCatalog'
 import { nextWorldId } from '../../../lib/world/factories'
@@ -38,9 +39,12 @@ export function TopologyPanel() {
         <div key={region.id} style={{ border: '1px solid var(--color-node-border)', borderRadius: 6, padding: 8, marginTop: 8 }}>
           <div style={row}>
             <strong style={{ flex: 1 }}>{region.catalogId}</strong>
-            {/* Role toggle writes via setState directly — deliberately no history push for a two-value toggle (see plan Task 11 note). */}
+            {/* Role toggle writes via setState directly — deliberately no history push for a two-value toggle (see plan Task 11 note). History bypass is deliberate; dirty-marking is still required. */}
             <select style={{ ...field, width: 76, marginBottom: 0 }} value={region.role}
-              onChange={e => useWorldStore.setState(s => ({ doc: { ...s.doc, regions: { ...s.doc.regions, [region.id]: { ...region, role: e.target.value as 'active' | 'passive' } } } }))}>
+              onChange={e => {
+                useWorldStore.setState(s => ({ doc: { ...s.doc, regions: { ...s.doc.regions, [region.id]: { ...region, role: e.target.value as 'active' | 'passive' } } } }))
+                useFileStore.getState().setDirty(true)
+              }}>
               <option value="active">active</option>
               <option value="passive">passive</option>
             </select>
@@ -121,6 +125,18 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
                 onChange={e => upd({ firewall: server.firewall.map((x, j) => j === i ? { ...x, source: e.target.value === 'cidr' ? '10.0.0.0/8' : e.target.value } : x) })}>
                 <option value="internal">internal</option><option value="any">any</option><option value="cidr">cidr…</option>
               </select>
+              <button style={smallBtn} disabled={i === 0}
+                onClick={() => {
+                  const swapped = [...server.firewall]
+                  ;[swapped[i - 1], swapped[i]] = [swapped[i], swapped[i - 1]]
+                  upd({ firewall: swapped })
+                }}>↑</button>
+              <button style={smallBtn} disabled={i === server.firewall.length - 1}
+                onClick={() => {
+                  const swapped = [...server.firewall]
+                  ;[swapped[i], swapped[i + 1]] = [swapped[i + 1], swapped[i]]
+                  upd({ firewall: swapped })
+                }}>↓</button>
               <button style={dangerBtn} onClick={() => upd({ firewall: server.firewall.filter((_, j) => j !== i) })}>×</button>
             </div>
           ))}
