@@ -1,4 +1,6 @@
+import '@testing-library/jest-dom/vitest'
 import { beforeEach, afterEach } from 'vitest'
+import { cleanup } from '@testing-library/react'
 
 // ─── Deterministic RNG for tests ────────────────────────────────────────────────
 // Math.random() is a process-global built-in and is NOT reset by Vitest's per-file module
@@ -33,4 +35,13 @@ beforeEach(() => {
 
 afterEach(() => {
   Math.random = _originalRandom
+})
+
+// ─── React Testing Library cleanup ──────────────────────────────────────────────
+// RTL's own auto-cleanup only registers itself when it detects a global `afterEach`
+// (see its `typeof afterEach === 'function'` check). This project doesn't enable Vitest's
+// `test.globals`, so that check never fires and rendered components leak across tests in
+// the same file. Register cleanup explicitly instead.
+afterEach(() => {
+  cleanup()
 })
