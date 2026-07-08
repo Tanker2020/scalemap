@@ -38,6 +38,7 @@ export function TopologyPanel() {
         <div key={region.id} style={{ border: '1px solid var(--color-node-border)', borderRadius: 6, padding: 8, marginTop: 8 }}>
           <div style={row}>
             <strong style={{ flex: 1 }}>{region.catalogId}</strong>
+            {/* Role toggle writes via setState directly — deliberately no history push for a two-value toggle (see plan Task 11 note). */}
             <select style={{ ...field, width: 76, marginBottom: 0 }} value={region.role}
               onChange={e => useWorldStore.setState(s => ({ doc: { ...s.doc, regions: { ...s.doc.regions, [region.id]: { ...region, role: e.target.value as 'active' | 'passive' } } } }))}>
               <option value="active">active</option>
