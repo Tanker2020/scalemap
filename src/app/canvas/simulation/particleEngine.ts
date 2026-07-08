@@ -3,6 +3,7 @@ import type {
   NodeData, EdgeData, NodeType, EdgeType, NodeSimConfig, RetryConfig,
   RequestEdgeConfig, StreamEdgeConfig, EventEdgeConfig, DependencyEdgeConfig,
   PacketMode, PacketTemplate, HttpTemplate, StreamTemplate, PacketDistributionEntry,
+  WorkloadDemand,
 } from '../../../lib/nodeConfig'
 import { GROUPING_TYPES, DEFAULT_EVENT_EDGE_CONFIG, edgeAcceptsProtocol, FORWARD_ONLY_NODE_TYPES, canDefineOutboundThroughput } from '../../../lib/nodeConfig'
 import { useCanvasStore } from '../../store/canvas.store'
@@ -306,6 +307,71 @@ function distributionReadFraction(nodeId: string): number | undefined {
   }
   if (total <= 0) return undefined
   return 1 - writeW / total
+}
+
+// Exact resolution for a specific particle's compute cost — reads its resolved packet template's
+// workload, falling back to DEFAULT_PACKET_WORKLOAD when the particle has no templateId (generic
+// mode) or its template predates this field.
+export function resolveParticleWorkload(particle: Particle): WorkloadDemand {
+  const tpl = particle.templateId !== undefined ? _packetTemplates[particle.templateId] : undefined
+  return tpl?.workload ?? DEFAULT_PACKET_WORKLOAD
+}
+
+// Weighted average of cpuInstructionsBillions/memoryFootprintMb/ioBoundFraction across `dist`,
+// restricted to entries whose template's protocol fits `edgeType` (same eligibility filter
+// rollDistribution/distributionReadFraction already use). Returns undefined (not a default) when
+// nothing is eligible to blend, so callers can layer their own fallback explicitly.
+export function blendDistributionWorkload(
+  dist: PacketDistributionEntry[] | undefined, edgeType: EdgeType,
+): WorkloadDemand | undefined {
+  if (!dist || dist.length === 0) return undefined
+  let total = 0, cpu = 0, mem = 0, io = 0
+  for (const d of dist) {
+    const tpl = _packetTemplates[d.templateId]
+    if (!tpl || d.weight <= 0 || !edgeAcceptsProtocol(edgeType, tpl.protocol)) continue
+    const w = tpl.workload ?? DEFAULT_PACKET_WORKLOAD
+    cpu += w.cpuInstructionsBillions * d.weight
+    mem += w.memoryFootprintMb * d.weight
+    io  += w.ioBoundFraction * d.weight
+    total += d.weight
+  }
+  if (total <= 0) return undefined
+  return { tier: 'custom', cpuInstructionsBillions: cpu / total, memoryFootprintMb: mem / total, ioBoundFraction: io / total }
+}
+
+// Particle-less resolution for a SOURCE node about to make an outbound call (before a specific
+// packet is rolled) -- blends that node's own configured outbound distribution. Generic mode or
+// no eligible distribution falls back to DEFAULT_PACKET_WORKLOAD.
+export function resolveSourceOutboundWorkload(sourceNodeId: string, edgeType: EdgeType): WorkloadDemand {
+  if (_packetMode !== 'custom') return DEFAULT_PACKET_WORKLOAD
+  const dist = (_nodesMap.get(sourceNodeId)?.data as NodeData | undefined)?.packetDistribution
+  return blendDistributionWorkload(dist, edgeType) ?? DEFAULT_PACKET_WORKLOAD
+}
+
+// Particle-less resolution for a TARGET node's aggregate utilization -- blends across every
+// inbound edge's source distribution, weighted by that edge's live effectiveRps share (mirroring
+// how inRps itself is already summed from inbound edges elsewhere in this file). Generic mode or
+// no inbound edges/eligible distributions falls back to DEFAULT_PACKET_WORKLOAD.
+export function resolveInboundWeightedWorkload(targetNodeId: string): WorkloadDemand {
+  if (_packetMode !== 'custom') return DEFAULT_PACKET_WORKLOAD
+  const inboundEdges = _edgePaths.filter(ep => ep.edgeType !== 'dependency' && _edgesData.find(e => e.id === ep.id)?.target === targetNodeId)
+  if (inboundEdges.length === 0) return DEFAULT_PACKET_WORKLOAD
+  let totalW = 0, cpu = 0, mem = 0, io = 0
+  for (const ep of inboundEdges) {
+    const sourceId = _edgesData.find(e => e.id === ep.id)?.source
+    if (!sourceId) continue
+    const dist = (_nodesMap.get(sourceId)?.data as NodeData | undefined)?.packetDistribution
+    const blended = blendDistributionWorkload(dist, ep.edgeType as EdgeType)
+    if (!blended) continue
+    const edgeWeight = ep.effectiveRps ?? ep.rps
+    if (edgeWeight <= 0) continue
+    cpu += blended.cpuInstructionsBillions * edgeWeight
+    mem += blended.memoryFootprintMb * edgeWeight
+    io  += blended.ioBoundFraction * edgeWeight
+    totalW += edgeWeight
+  }
+  if (totalW <= 0) return DEFAULT_PACKET_WORKLOAD
+  return { tier: 'custom', cpuInstructionsBillions: cpu / totalW, memoryFootprintMb: mem / totalW, ioBoundFraction: io / totalW }
 }
 
 // Compression shrinks bytes on the wire — applied to stream-template egress.
@@ -712,7 +778,7 @@ const _INBOUND_GATE_EXEMPT_TYPES = new Set<string>(['queue', 'eventBus', 'pubsub
 // Node types that model a traditional thread pool: slow downstream holds a thread, blocking new requests
 const THREAD_POOL_TYPES = new Set<string>(['ec2', 'container', 'pod', 'k8sCluster', 'ecsCluster'])
 
-function trackRequest(nodeId: string, nodeType: NodeType, config: NodeSimConfig) {
+function trackRequest(nodeId: string, nodeType: NodeType, config: NodeSimConfig, particle?: Particle) {
   if (_LB_SKIP_TYPES.has(nodeType) || GROUPING_TYPES.has(nodeType)) return
   _lbActiveRequests.set(nodeId, (_lbActiveRequests.get(nodeId) ?? 0) + 1)
   // EC2-with-profile holds a thread for the request's WALL time (base latency + CPU compute,
@@ -725,7 +791,7 @@ function trackRequest(nodeId: string, nodeType: NodeType, config: NodeSimConfig)
   // memory pressure -> shedding), not a bug. No feedback into rho itself: cpuUtilization is a
   // pure function of inRps (arrival rate), never of _lbActiveRequests (occupancy).
   const profile = nodeType === 'ec2' ? resolveEc2Profile(config) : null
-  const workload = DEFAULT_PACKET_WORKLOAD // Task 2 replaces this with per-particle/blended resolution
+  const workload = particle ? resolveParticleWorkload(particle) : resolveSourceOutboundWorkload(nodeId, 'request')
   const baseMs = effectiveProcessingMs(nodeId, config)
   const holdMs = profile
     ? wallTimeMs(
@@ -1014,7 +1080,7 @@ function spawnParticles(now: number, delta: number) {
         if (isTargetThreadPoolCompute(ep.sourceNodeType as NodeType)) {
           const srcConfig = effectiveConfig(sourceNodeId!, ep.sourceNodeType as NodeType)
           const srcProfile = ep.sourceNodeType === 'ec2' ? resolveEc2Profile(srcConfig) : null
-          const cap = srcProfile ? hardThreadCap(DEFAULT_PACKET_WORKLOAD, srcProfile) : computeMaxThreads(srcConfig)
+          const cap = srcProfile ? hardThreadCap(resolveSourceOutboundWorkload(sourceNodeId!, 'request'), srcProfile) : computeMaxThreads(srcConfig)
           // Scale by PARTICLE_REQUEST_RATIO before comparing to cap: _lbActiveRequests is a raw
           // particle count (1 particle == PARTICLE_REQUEST_RATIO real requests), while
           // hardThreadCap/computeMaxThreads are expressed in real-thread units -- the same
@@ -1431,7 +1497,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       // 'degraded'/'down' means the user WANTS problems, so those still admit-and-drop normally.
       const decision = config.forcedHealthState === 'healthy'
         ? 'admit'
-        : ec2AdmissionDecision(activeThreads, DEFAULT_PACKET_WORKLOAD, ec2profile)
+        : ec2AdmissionDecision(activeThreads, resolveParticleWorkload(particle), ec2profile)
       if (decision === 'oom-crash') {
         const label = (_nodesMap.get(targetNodeId)?.data as NodeData)?.label ?? targetNodeId
         _nodeHealthStates.set(targetNodeId, 'down')
@@ -1475,7 +1541,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
     recordLatency(targetNodeId, threadLatency)
     recordBreakerResultLocal(ep.id, false, config, now)
     _egressBytesAccum.set(targetNodeId, (_egressBytesAccum.get(targetNodeId) ?? 0) + particle.payloadBytes)
-    trackRequest(targetNodeId, targetNodeType, config)
+    trackRequest(targetNodeId, targetNodeType, config, particle)
 
     // Note: for ec2/container sources this scheduleWorkerRelease call is now an inert no-op —
     // it still decrements the old _activeWorkers map (unused by ec2/container's admission since
@@ -1559,7 +1625,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       // arrival succeeded, not at spawn (a lambda that never gets here due to a concurrency
       // drop above must not have been billed; see GitHub issue #15).
       _egressBytesAccum.set(targetNodeId, (_egressBytesAccum.get(targetNodeId) ?? 0) + particle.payloadBytes)
-      trackRequest(targetNodeId, targetNodeType, config)
+      trackRequest(targetNodeId, targetNodeType, config, particle)
       // Release source thread: blocked for the full lambda execution time + response transit
       if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
         scheduleWorkerRelease(sourceNodeId, effectiveLatency + ep.geoLatencyMs, _simulatedTimeMs)
@@ -1641,7 +1707,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       recordBreakerResultLocal(ep.id, false, config, now)
       // Bill on successful arrival only — see GitHub issue #15.
       _egressBytesAccum.set(targetNodeId, (_egressBytesAccum.get(targetNodeId) ?? 0) + particle.payloadBytes)
-      trackRequest(targetNodeId, targetNodeType, config)
+      trackRequest(targetNodeId, targetNodeType, config, particle)
       if (ep.edgeType === 'request' && sourceNodeId && ep.sourceNodeType && THREAD_POOL_TYPES.has(ep.sourceNodeType)) {
         scheduleWorkerRelease(sourceNodeId, dbLatency + ep.geoLatencyMs, _simulatedTimeMs)
       }
@@ -1676,7 +1742,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
   // Bill on successful arrival only — covers plain compute, queue-type, LB/gateway, and
   // orchestration-cluster targets, all of which share this fallthrough path. See GitHub issue #15.
   _egressBytesAccum.set(targetNodeId, (_egressBytesAccum.get(targetNodeId) ?? 0) + particle.payloadBytes)
-  trackRequest(targetNodeId, targetNodeType, config)
+  trackRequest(targetNodeId, targetNodeType, config, particle)
 
   // Release source thread after target finishes processing and response transits back.
   // This is what causes thread-pool exhaustion: a slow target holds threads at the source
@@ -1959,7 +2025,7 @@ function updateAllNodeMetrics(now: number, delta: number) {
       if (ec2profile2) {
         // EC2 compute model: reported utilization is the binding constraint — CPU rho (drives the
         // latency hockey-stick) or memory (drives hard drops/OOM), whichever is higher.
-        const u = nodeUtilization(inRps, activeThreads, DEFAULT_PACKET_WORKLOAD, ec2profile2)
+        const u = nodeUtilization(inRps, activeThreads, resolveInboundWeightedWorkload(nodeId), ec2profile2)
         utilization = u.utilization
         _bottleneckResource.set(nodeId, u.bottleneck)
       } else {
@@ -2524,7 +2590,7 @@ function processRetryQueue(now: number) {
       if (isTargetThreadPoolCompute(ep!.sourceNodeType as NodeType)) {
         const srcConfig = effectiveConfig(sourceNodeId!, ep!.sourceNodeType as NodeType)
         const srcProfile = ep!.sourceNodeType === 'ec2' ? resolveEc2Profile(srcConfig) : null
-        const cap = srcProfile ? hardThreadCap(DEFAULT_PACKET_WORKLOAD, srcProfile) : computeMaxThreads(srcConfig)
+        const cap = srcProfile ? hardThreadCap(resolveSourceOutboundWorkload(sourceNodeId!, 'request'), srcProfile) : computeMaxThreads(srcConfig)
         // Same look-ahead, PARTICLE_REQUEST_RATIO-scaled comparison the fresh-spawn site uses —
         // see its comment for why (units mismatch + overshoot-past-cap otherwise).
         const activeAfter = ((_lbActiveRequests.get(sourceNodeId!) ?? 0) + 1) * PARTICLE_REQUEST_RATIO
