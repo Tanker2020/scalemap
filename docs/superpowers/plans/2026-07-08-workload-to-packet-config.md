@@ -881,175 +881,38 @@ carry genuinely different simulated compute cost."
 
 ### Task 3: UI — remove node-level workload config, add packet-level workload editing
 
+**`SimConfigPanel.tsx` removal already done — pulled forward into Task 1.**
+Task 1's implementer hit this file as a compile break (it referenced
+`NodeSimConfig.workload` and `DEFAULT_EC2_WORKLOAD` directly) and fixed it as
+part of reaching a green build, commit `0dc69db`: the Workload `configBlock`
+is removed, `effMaxThreads`/`derivedThreads` now read `DEFAULT_PACKET_WORKLOAD`
+directly, imports updated. Reviewed and confirmed correct/complete as part of
+Task 1's review. **This task now starts from Step 4 below (renumbered to
+Step 1) — do not attempt to redo the `SimConfigPanel.tsx` removal, it's
+already on the branch.** Only verify, don't re-edit: confirm
+`SimConfigPanel.tsx` still compiles and its EC2 Compute block (vCPU/RAM/Clock/
+Architecture/IO Model/Derived Threads) renders correctly before starting your
+own changes — if you find it in an unexpected state, stop and investigate
+rather than assuming this note is stale.
+
 **Files:**
-- Modify: `src/app/simulation/SimConfigPanel.tsx` (Workload `configBlock` `:499-543`, `effMaxThreads` `:936-940`)
 - Modify: `src/app/simulation/PacketEditor.tsx` (`defaultTemplate` `:36-43`, `PacketCard` render `:250-297`, add `WorkloadPins`)
 
 **Interfaces:**
 - Consumes: `WORKLOAD_TIER_RANGES`, `resolveWorkloadInstructions` (`nodeConfig.ts`, pre-existing, already exported); `DEFAULT_PACKET_WORKLOAD` (Task 1).
 - Produces: nothing consumed elsewhere — UI leaf.
 
-- [ ] **Step 1: Remove the Workload block from `SimConfigPanel.tsx`**
+- [ ] **Step 0 (verify only, already done): `SimConfigPanel.tsx`**
 
-Find the whole block (around lines 448-546 — the `isEc2Compute && (() => { ... })()` IIFE). It
-currently renders BOTH the "Compute (vCPU/RAM)" block AND the "Workload" block inside one IIFE.
-Keep the Compute block, remove only the Workload portion. Find:
+Run `npx tsc --noEmit` and `npx vitest run` — both should already be clean
+(this file's workload UI was removed in Task 1, commit `0dc69db`). Open
+`src/app/simulation/SimConfigPanel.tsx` and confirm the `isEc2Compute` block
+still renders vCPU/RAM/Clock/Architecture/IO Model/Derived Threads, with no
+Workload section and no reference to `NodeSimConfig.workload` anywhere in the
+file. If anything here doesn't match, stop and investigate before continuing
+— don't re-apply a removal that's already on the branch.
 
-```tsx
-              <div className={styles.configField}>
-                <span className={styles.configLabel}>Derived Threads</span>
-                <span className={styles.liveStatVal}>{derivedThreads}</span>
-              </div>
-            </div>
-            <div className={styles.configBlockTitle} style={{ marginTop: 8 }}>Workload</div>
-            <div className={styles.configGrid}>
-              <div className={styles.configField}>
-                <span className={styles.configLabel}>Tier</span>
-                <select
-                  value={workload.tier}
-                  onChange={e => {
-                    const tier = e.target.value as typeof workload.tier
-                    const next = tier === 'custom'
-                      ? workload.cpuInstructionsBillions
-                      : WORKLOAD_TIER_RANGES[tier].default
-                    setWorkload({ tier, cpuInstructionsBillions: resolveWorkloadInstructions(tier, next) })
-                  }}
-                  style={{ background: 'var(--color-canvas)', color: 'var(--color-text-primary)', border: '1px solid var(--color-node-border)', borderRadius: 4, padding: '2px 6px', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', width: '100%' }}
-                >
-                  <option value="simple_crud">Simple CRUD</option>
-                  <option value="moderate_logic">Moderate Logic</option>
-                  <option value="heavy_compute">Heavy Compute</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-              <div className={styles.configField}>
-                <span className={styles.configLabel}>Instr (billions)</span>
-                <NumericStepper
-                  value={workload.cpuInstructionsBillions}
-                  onChange={v => setWorkload({ cpuInstructionsBillions: resolveWorkloadInstructions(workload.tier, v) })}
-                  min={0}
-                  step={workload.tier === 'heavy_compute' || workload.tier === 'custom' ? 0.1 : 0.001}
-                />
-              </div>
-              <div className={styles.configField}>
-                <span className={styles.configLabel}>Mem/req (MB)</span>
-                <NumericStepper value={workload.memoryFootprintMb} onChange={v => setWorkload({ memoryFootprintMb: v })} min={1} step={4} />
-              </div>
-              <div className={styles.configField}>
-                <span className={styles.configLabel}>IO-bound (%)</span>
-                <NumericStepper
-                  value={Math.round(workload.ioBoundFraction * 100)}
-                  onChange={v => setWorkload({ ioBoundFraction: Math.min(0.99, Math.max(0, v / 100)) })}
-                  min={0}
-                  max={99}
-                  step={5}
-                />
-              </div>
-            </div>
-          </div>
-        )
-      })()}
-```
-
-Replace with:
-
-```tsx
-              <div className={styles.configField}>
-                <span className={styles.configLabel}>Derived Threads</span>
-                <span className={styles.liveStatVal}>{derivedThreads}</span>
-              </div>
-            </div>
-          </div>
-        )
-      })()}
-```
-
-Then find the IIFE's opening, which computes `workload`/`setWorkload` — these are now unused:
-
-```tsx
-      {isEc2Compute && (() => {
-        const profile = { ...DEFAULT_EC2_COMPUTE_PROFILE, ...(eff.computeProfile ?? {}) }
-        const workload = { ...DEFAULT_EC2_WORKLOAD, ...(eff.workload ?? {}) }
-        const setProfile = (patch: Partial<typeof profile>) =>
-          setNodeConfig(nodeId, { computeProfile: { ...profile, ...patch } })
-        const setWorkload = (patch: Partial<typeof workload>) =>
-          setNodeConfig(nodeId, { workload: { ...workload, ...patch } })
-        const derivedThreads = hardThreadCap(workload, profile)
-```
-
-Replace with:
-
-```tsx
-      {isEc2Compute && (() => {
-        const profile = { ...DEFAULT_EC2_COMPUTE_PROFILE, ...(eff.computeProfile ?? {}) }
-        const setProfile = (patch: Partial<typeof profile>) =>
-          setNodeConfig(nodeId, { computeProfile: { ...profile, ...patch } })
-        // Indicative only -- actual per-request capacity now varies by packet type (Custom mode).
-        // See PacketEditor for per-template workload configuration.
-        const derivedThreads = hardThreadCap(DEFAULT_PACKET_WORKLOAD, profile)
-```
-
-- [ ] **Step 2: Update `SimConfigPanel.tsx`'s imports**
-
-Find (around line 9-12):
-
-```ts
-import { NODE_CONFIG, GROUPING_TYPES, WORKLOAD_TIER_RANGES, resolveWorkloadInstructions, type NodeType, type TrafficOrigin } from '../../lib/nodeConfig'
-```
-
-Replace with:
-
-```ts
-import { NODE_CONFIG, GROUPING_TYPES, type NodeType, type TrafficOrigin } from '../../lib/nodeConfig'
-```
-
-Find:
-
-```ts
-import { NODE_SIM_DEFAULTS, DEFAULT_SLO, DEFAULT_EC2_COMPUTE_PROFILE, DEFAULT_EC2_WORKLOAD } from './defaults'
-```
-
-Replace with:
-
-```ts
-import { NODE_SIM_DEFAULTS, DEFAULT_SLO, DEFAULT_EC2_COMPUTE_PROFILE, DEFAULT_PACKET_WORKLOAD } from './defaults'
-```
-
-> Verify `NumericStepper`'s import isn't now unused in this file — it's still used by the
-> Compute block's vCPU/RAM/Clock steppers, so it should stay; just confirm via a search before
-> assuming.
-
-- [ ] **Step 3: Update `effMaxThreads`**
-
-Find (around line 936):
-
-```ts
-  const effMaxThreads = nodeType === 'ec2'
-    ? hardThreadCap(
-        { ...DEFAULT_EC2_WORKLOAD, ...(nodeConfigs.get(nodeId)?.workload ?? {}) },
-        { ...DEFAULT_EC2_COMPUTE_PROFILE, ...(nodeConfigs.get(nodeId)?.computeProfile ?? {}) },
-      )
-    : nodeType
-      ? (nodeConfigs.get(nodeId)?.maxThreads ?? NODE_SIM_DEFAULTS[nodeType]?.maxThreads ?? 50)
-      : 50
-```
-
-Replace with:
-
-```ts
-  // Indicative only, assuming DEFAULT_PACKET_WORKLOAD -- actual capacity varies per packet type
-  // once Custom mode is in use (see PacketEditor for per-template workload configuration).
-  const effMaxThreads = nodeType === 'ec2'
-    ? hardThreadCap(
-        DEFAULT_PACKET_WORKLOAD,
-        { ...DEFAULT_EC2_COMPUTE_PROFILE, ...(nodeConfigs.get(nodeId)?.computeProfile ?? {}) },
-      )
-    : nodeType
-      ? (nodeConfigs.get(nodeId)?.maxThreads ?? NODE_SIM_DEFAULTS[nodeType]?.maxThreads ?? 50)
-      : 50
-```
-
-- [ ] **Step 4: Add workload fields to `PacketEditor.tsx`**
+- [ ] **Step 1: Add workload fields to `PacketEditor.tsx`**
 
 In `src/app/simulation/PacketEditor.tsx`, add the import for the tier helpers and default
 constant (find the existing `import type { ... } from` block near the top and extend it, plus add
@@ -1131,7 +994,7 @@ function WorkloadPins({ t, patch, reduceMotion }: { t: PacketTemplate; patch: (p
 }
 ```
 
-- [ ] **Step 5: Render `WorkloadPins` in `PacketCard`**
+- [ ] **Step 2: Render `WorkloadPins` in `PacketCard`**
 
 Find (around line 281-287):
 
@@ -1162,7 +1025,7 @@ Replace with:
       </div>
 ```
 
-- [ ] **Step 6: Typecheck and manual verification**
+- [ ] **Step 3: Typecheck and manual verification**
 
 Run: `npx tsc --noEmit`
 Expected: clean.
@@ -1175,17 +1038,17 @@ a "Tier / Instr (B) / Mem/req (MB) / IO-bound (%)" pin row; drop an EC2 node,
 open its Properties panel, confirm the old node-level Workload section is
 gone and "Derived Threads" still shows a number.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add src/app/simulation/SimConfigPanel.tsx src/app/simulation/PacketEditor.tsx
-git commit -m "feat(compute): move workload editing UI from node config to packet editor
+git add src/app/simulation/PacketEditor.tsx
+git commit -m "feat(compute): add packet-level workload editing to PacketEditor
 
-SimConfigPanel's EC2 Workload section is removed (Derived Threads
-becomes an indicative estimate using DEFAULT_PACKET_WORKLOAD, since
-actual per-request capacity now varies by packet type). PacketEditor
-gains a Tier/Instr/Mem/IO-bound pin row, shared across all 4 protocol
-types since workload lives on BasePacketTemplate. New templates seed
+Completes the UI side of issue #18 (SimConfigPanel's node-level
+Workload section was already removed in Task 1, commit 0dc69db, as a
+compile-time necessity of the schema move). PacketEditor gains a
+Tier/Instr/Mem/IO-bound pin row, shared across all 4 protocol types
+since workload lives on BasePacketTemplate. New templates seed
 DEFAULT_PACKET_WORKLOAD so they're immediately valid."
 ```
 
@@ -1221,7 +1084,8 @@ Task 3 (`defaultTemplate` seeding) ✓. Engine resolves dynamically per-packet
 or falls back to node-level weighted representatives → Task 2 (exact +
 true-blend, per the "true weighted blend" decision, not the flatter
 fallback-only option) ✓. `PacketEditor.tsx` renders/configures workload →
-Task 3 ✓. Remove workload config from `SimConfigPanel.tsx` → Task 3 ✓.
+Task 3 ✓. Remove workload config from `SimConfigPanel.tsx` → pulled forward
+into Task 1 (compile-time necessity), reviewed there ✓.
 
 **Placeholder scan:** Task 1's `DEFAULT_PACKET_WORKLOAD` intermediate value
 is a real, complete, working fallback (not a "TBD") — explicitly designed as
