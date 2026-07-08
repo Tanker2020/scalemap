@@ -5,6 +5,7 @@ import type {
   HopClass,
 } from './types'
 import { evaluateInstancePath } from './network'
+import { computeRouting, volumeFindings } from './routing'
 
 export function instanceId(placementId: string, index: number): InstanceId {
   return `${placementId}#${index}`
@@ -95,8 +96,8 @@ export function compileWorld(doc: WorldDoc): CompiledWorld {
   return {
     instances,
     paths,
-    findings,
-    routing: { populationRegionOrder: {}, regionAzSpread: {}, azBlueprintTargets: {} }, // Task 6
+    findings: [...findings, ...volumeFindings(doc)],
+    routing: computeRouting(doc, instances),
   }
 }
 
