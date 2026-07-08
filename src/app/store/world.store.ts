@@ -102,7 +102,13 @@ export const useWorldStore = create<WorldStore>((set, get) => {
     history: [],
     future: [],
 
-    newWorld: () => set({ doc: createWorld(), history: [], future: [] }),
+    newWorld: () => {
+      set({ doc: createWorld(), history: [], future: [] })
+      // A fresh world is pristine: clear the dirty flag and created stamp so the
+      // autosave gate and Save's meta.created both start clean.
+      useFileStore.getState().setDirty(false)
+      useFileStore.getState().setCreatedIso(null)
+    },
     replaceWorld: (doc) => set({ doc, history: [], future: [] }),
 
     addRegion: (catalogId) => {

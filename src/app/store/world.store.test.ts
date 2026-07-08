@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useWorldStore } from './world.store'
+import { useFileStore } from './file.store'
 import { getPreset } from '../../lib/world/instanceCatalog'
 
 beforeEach(() => useWorldStore.getState().newWorld())
@@ -15,6 +16,14 @@ function buildChain() {
 }
 
 describe('world.store', () => {
+  it('newWorld resets the dirty flag and created timestamp', () => {
+    useFileStore.getState().setDirty(true)
+    useFileStore.getState().setCreatedIso('2020-01-01T00:00:00.000Z')
+    useWorldStore.getState().newWorld()
+    expect(useFileStore.getState().dirty).toBe(false)
+    expect(useFileStore.getState().createdIso).toBeNull()
+  })
+
   it('builds a linked region→az→server→blueprint→placement chain', () => {
     const { regionId, azId, serverId, bpId, plId } = buildChain()
     const doc = useWorldStore.getState().doc
