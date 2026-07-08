@@ -67,4 +67,47 @@ describe('world.store', () => {
     s.addRegion('eu-west-1')
     expect(useWorldStore.getState().doc).not.toBe(before)
   })
+
+  it('removeRegion drops the region from routing weights and priorityOrder', () => {
+    const { regionId } = buildChain()
+    const r2 = useWorldStore.getState().addRegion('eu-west-1')
+    useWorldStore.getState().updateRouting({ weights: { [regionId]: 10, [r2]: 5 }, priorityOrder: [regionId, r2] })
+    useWorldStore.getState().removeRegion(regionId)
+    const doc = useWorldStore.getState().doc
+    expect(doc.routing.weights).toEqual({ [r2]: 5 })
+    expect(doc.routing.priorityOrder).toEqual([r2])
+  })
+
+  it('removeAz cascades its servers, placements, and az-scoped managed services', () => {
+    const { regionId, azId } = buildChain()
+    useWorldStore.getState().addManagedService('rds', 'RDS', { kind: 'az', azId }, 5432)
+    useWorldStore.getState().removeAz(azId)
+    const doc = useWorldStore.getState().doc
+    expect(Object.keys(doc.azs)).toHaveLength(0)
+    expect(Object.keys(doc.servers)).toHaveLength(0)
+    expect(Object.keys(doc.placements)).toHaveLength(0)
+    expect(Object.keys(doc.managedServices)).toHaveLength(0)
+    expect(doc.regions[regionId]).toBeDefined()
+  })
+
+  it('removeServer cascades only its placements', () => {
+    const { serverId, bpId } = buildChain()
+    useWorldStore.getState().removeServer(serverId)
+    const doc = useWorldStore.getState().doc
+    expect(Object.keys(doc.servers)).toHaveLength(0)
+    expect(Object.keys(doc.placements)).toHaveLength(0)
+    expect(doc.blueprints[bpId]).toBeDefined()
+  })
+
+  it('removeManagedService strips dependencies targeting it', () => {
+    const { azId, bpId } = buildChain()
+    const msId = useWorldStore.getState().addManagedService('s3', 'S3', { kind: 'az', azId }, 443)
+    useWorldStore.getState().updateBlueprint(bpId, {
+      dependencies: [{ id: 'd1', target: { kind: 'managed', managedServiceId: msId }, port: 443, protocol: 'http', packetTemplateId: null }],
+    })
+    useWorldStore.getState().removeManagedService(msId)
+    const doc = useWorldStore.getState().doc
+    expect(doc.managedServices[msId]).toBeUndefined()
+    expect(doc.blueprints[bpId].dependencies).toHaveLength(0)
+  })
 })
