@@ -1,10 +1,8 @@
 import { useState } from 'react'
 import { TopologyPanel } from './TopologyPanel'
+import { BlueprintPanel } from './BlueprintPanel'
+import { PlacementPanel } from './PlacementPanel'
 import { panel, smallBtn } from './panelStyles'
-
-// Filled in Task 12:
-function BlueprintPanel() { return null }
-function PlacementPanel() { return null }
 
 type Tab = 'topology' | 'blueprints' | 'placements'
 
