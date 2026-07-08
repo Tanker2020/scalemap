@@ -101,7 +101,7 @@ describe('outbound trickles from the accepted backlog when inbound is breaker-ga
     // a profile and this node would be routed through the RAM/CPU-bound admission gate instead
     // of the fixed-maxThreads legacy path this test is specifically exercising.
     setNodeConfigs(new Map<string, NodeSimConfig>([
-      ['srv', { processingMs: 2000, errorRate: 0, forcedHealthState: 'healthy', maxThreads: 200, computeProfile: undefined, workload: undefined } as NodeSimConfig],
+      ['srv', { processingMs: 2000, errorRate: 0, forcedHealthState: 'healthy', maxThreads: 200, computeProfile: undefined } as NodeSimConfig],
     ]))
 
     const batches: Map<string, NodeMetrics>[] = []

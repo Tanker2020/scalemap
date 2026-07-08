@@ -63,7 +63,7 @@ async function run(frames: number, edgeRps: number, pinBreakerOpen: boolean): Pr
     //      drops from 100 to computeMaxThreads' hardcoded 50 — which 800 rps transiently exceeds.
     // Pin dst to the legacy path with generous headroom so capacity never binds here (same class of
     // fix as outboundBacklogDrain.test.ts, which also clears the profile and sets maxThreads).
-    setNodeConfigs(new Map([['dst', { forcedHealthState: 'healthy', maxThreads: 10000, computeProfile: undefined, workload: undefined } as NodeSimConfig]]))
+    setNodeConfigs(new Map([['dst', { forcedHealthState: 'healthy', maxThreads: 10000, computeProfile: undefined } as NodeSimConfig]]))
 
     let t = performance.now()
     expect(rafCallback).not.toBeNull()

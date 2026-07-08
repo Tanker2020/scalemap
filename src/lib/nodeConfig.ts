@@ -153,9 +153,10 @@ export interface NodeSimConfig {
 
   // ─── Compute resource model (EC2 v1) ─────────────────────────────────────────
   // When set, the engine derives throughput/concurrency/OOM/latency from physical hardware
-  // (computeProfile) + per-request cost (workload) instead of maxRps. EC2 only in v1.
+  // (computeProfile) instead of maxRps. Per-request cost (workload) lives on the PACKET
+  // template that generated the request, not here — see BasePacketTemplate.workload. EC2 only
+  // in v1.
   computeProfile?: ComputeProfile
-  workload?: WorkloadDemand
 }
 
 // ─── Compute resource model (EC2 v1) ───────────────────────────────────────────
@@ -231,6 +232,11 @@ export interface BasePacketTemplate {
   protocol: PacketProtocol
   sizeKb: number            // request/packet payload — drives payloadBytes via log-normal
   colorOverride?: string    // optional particle tint
+  // Per-request compute cost (CPU/memory/IO), consumed by the EC2 compute model when this
+  // template's particle arrives at (or originates an outbound call from) an ec2 node. Optional
+  // so protocol variants that predate this field, or a template a user never touched, still
+  // resolve via DEFAULT_PACKET_WORKLOAD (see defaults.ts) rather than being invalid.
+  workload?: WorkloadDemand
 }
 
 export interface HttpTemplate extends BasePacketTemplate {

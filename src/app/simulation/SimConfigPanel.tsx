@@ -6,9 +6,9 @@ import { useUiStore } from '../store/ui.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
 import { useDisplayMetrics } from '../canvas/simulation/useDisplayMetrics'
-import { NODE_CONFIG, GROUPING_TYPES, WORKLOAD_TIER_RANGES, resolveWorkloadInstructions, type NodeType, type TrafficOrigin } from '../../lib/nodeConfig'
+import { NODE_CONFIG, GROUPING_TYPES, type NodeType, type TrafficOrigin } from '../../lib/nodeConfig'
 import { WORLD_REGIONS, REGIONS_BY_ZONE } from '../../lib/regionConfig'
-import { NODE_SIM_DEFAULTS, DEFAULT_SLO, DEFAULT_EC2_COMPUTE_PROFILE, DEFAULT_EC2_WORKLOAD } from './defaults'
+import { NODE_SIM_DEFAULTS, DEFAULT_SLO, DEFAULT_EC2_COMPUTE_PROFILE, DEFAULT_PACKET_WORKLOAD } from './defaults'
 import { hardThreadCap } from '../canvas/simulation/particleEngine/compute'
 import { CATEGORY_COLORS } from '../../lib/theme'
 import { Sparkline } from '../sidebar/Sparkline'
@@ -447,11 +447,13 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
 
       {isEc2Compute && (() => {
         const profile = { ...DEFAULT_EC2_COMPUTE_PROFILE, ...(eff.computeProfile ?? {}) }
-        const workload = { ...DEFAULT_EC2_WORKLOAD, ...(eff.workload ?? {}) }
+        // Per-request workload now lives on packet templates, not node config (see
+        // BasePacketTemplate.workload) — this panel no longer edits it. DEFAULT_PACKET_WORKLOAD is
+        // used here only to preview "Derived Threads" against the same fallback the engine uses.
+        // TODO(#18 Task 3): surface real per-packet workload editing in the packet editor.
+        const workload = DEFAULT_PACKET_WORKLOAD
         const setProfile = (patch: Partial<typeof profile>) =>
           setNodeConfig(nodeId, { computeProfile: { ...profile, ...patch } })
-        const setWorkload = (patch: Partial<typeof workload>) =>
-          setNodeConfig(nodeId, { workload: { ...workload, ...patch } })
         const derivedThreads = hardThreadCap(workload, profile)
         return (
           <div className={styles.configBlock}>
@@ -494,51 +496,6 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
               <div className={styles.configField}>
                 <span className={styles.configLabel}>Derived Threads</span>
                 <span className={styles.liveStatVal}>{derivedThreads}</span>
-              </div>
-            </div>
-            <div className={styles.configBlockTitle} style={{ marginTop: 8 }}>Workload</div>
-            <div className={styles.configGrid}>
-              <div className={styles.configField}>
-                <span className={styles.configLabel}>Tier</span>
-                <select
-                  value={workload.tier}
-                  onChange={e => {
-                    const tier = e.target.value as typeof workload.tier
-                    const next = tier === 'custom'
-                      ? workload.cpuInstructionsBillions
-                      : WORKLOAD_TIER_RANGES[tier].default
-                    setWorkload({ tier, cpuInstructionsBillions: resolveWorkloadInstructions(tier, next) })
-                  }}
-                  style={{ background: 'var(--color-canvas)', color: 'var(--color-text-primary)', border: '1px solid var(--color-node-border)', borderRadius: 4, padding: '2px 6px', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', width: '100%' }}
-                >
-                  <option value="simple_crud">Simple CRUD</option>
-                  <option value="moderate_logic">Moderate Logic</option>
-                  <option value="heavy_compute">Heavy Compute</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-              <div className={styles.configField}>
-                <span className={styles.configLabel}>Instr (billions)</span>
-                <NumericStepper
-                  value={workload.cpuInstructionsBillions}
-                  onChange={v => setWorkload({ cpuInstructionsBillions: resolveWorkloadInstructions(workload.tier, v) })}
-                  min={0}
-                  step={workload.tier === 'heavy_compute' || workload.tier === 'custom' ? 0.1 : 0.001}
-                />
-              </div>
-              <div className={styles.configField}>
-                <span className={styles.configLabel}>Mem/req (MB)</span>
-                <NumericStepper value={workload.memoryFootprintMb} onChange={v => setWorkload({ memoryFootprintMb: v })} min={1} step={4} />
-              </div>
-              <div className={styles.configField}>
-                <span className={styles.configLabel}>IO-bound (%)</span>
-                <NumericStepper
-                  value={Math.round(workload.ioBoundFraction * 100)}
-                  onChange={v => setWorkload({ ioBoundFraction: Math.min(0.99, Math.max(0, v / 100)) })}
-                  min={0}
-                  max={99}
-                  step={5}
-                />
               </div>
             </div>
           </div>
@@ -935,7 +892,7 @@ function LiveSection({ nodeId }: { nodeId: string }) {
   const isThreadPoolCompute = nodeType === 'ec2' || nodeType === 'container'
   const effMaxThreads = nodeType === 'ec2'
     ? hardThreadCap(
-        { ...DEFAULT_EC2_WORKLOAD, ...(nodeConfigs.get(nodeId)?.workload ?? {}) },
+        DEFAULT_PACKET_WORKLOAD,
         { ...DEFAULT_EC2_COMPUTE_PROFILE, ...(nodeConfigs.get(nodeId)?.computeProfile ?? {}) },
       )
     : nodeType

@@ -9,7 +9,7 @@ import { useCanvasStore } from '../../store/canvas.store'
 import { sampleInterRegionLatencyMs } from '../../../lib/regionConfig'
 import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventType, type CircuitState, type RequestSnapshot, type TemplateInfo } from '../../store/simulation.store'
 import { useReplayStore } from '../../store/replay.store'
-import { NODE_SIM_DEFAULTS } from '../../simulation/defaults'
+import { NODE_SIM_DEFAULTS, DEFAULT_PACKET_WORKLOAD } from '../../simulation/defaults'
 import { CLOUD_REGISTRY, type CloudProvider } from '../../../lib/cloudRegistry'
 import {
   getBreaker, recordBreakerResult, checkBreakerTransition,
@@ -27,7 +27,7 @@ import {
   getChaosFailures, clearChaosState, isEdgePartitioned, edgePartitionLossRate,
 } from './particleEngine/chaos'
 import { drawCircuitOverlay } from './particleEngine/circuitVisual'
-import { ec2AdmissionDecision, resolveEc2Resources, nodeUtilization, wallTimeMs, saturationLatencyMultiplier, cpuUtilization, hardThreadCap } from './particleEngine/compute'
+import { ec2AdmissionDecision, resolveEc2Profile, nodeUtilization, wallTimeMs, saturationLatencyMultiplier, cpuUtilization, hardThreadCap } from './particleEngine/compute'
 export { saturationLatencyMultiplier }
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -724,14 +724,15 @@ function trackRequest(nodeId: string, nodeType: NodeType, config: NodeSimConfig)
   // hardThreadCap gate — an intended cascade (CPU saturation -> slower processing -> backlog ->
   // memory pressure -> shedding), not a bug. No feedback into rho itself: cpuUtilization is a
   // pure function of inRps (arrival rate), never of _lbActiveRequests (occupancy).
-  const ec2res = nodeType === 'ec2' ? resolveEc2Resources(config) : null
+  const profile = nodeType === 'ec2' ? resolveEc2Profile(config) : null
+  const workload = DEFAULT_PACKET_WORKLOAD // Task 2 replaces this with per-particle/blended resolution
   const baseMs = effectiveProcessingMs(nodeId, config)
-  const holdMs = ec2res
+  const holdMs = profile
     ? wallTimeMs(
         config.latencyModel?.p50Ms ?? baseMs,
-        ec2res.workload,
-        ec2res.profile,
-        cpuUtilization(_smoothedMetrics.get(nodeId)?.inRps ?? 0, ec2res.workload, ec2res.profile),
+        workload,
+        profile,
+        cpuUtilization(_smoothedMetrics.get(nodeId)?.inRps ?? 0, workload, profile),
       )
     : baseMs
   scheduleGenericRelease(nodeId, Math.max(50, holdMs), _simulatedTimeMs, () => {
@@ -1012,8 +1013,8 @@ function spawnParticles(now: number, delta: number) {
         let admitted: number
         if (isTargetThreadPoolCompute(ep.sourceNodeType as NodeType)) {
           const srcConfig = effectiveConfig(sourceNodeId!, ep.sourceNodeType as NodeType)
-          const ec2res = ep.sourceNodeType === 'ec2' ? resolveEc2Resources(srcConfig) : null
-          const cap = ec2res ? hardThreadCap(ec2res.workload, ec2res.profile) : computeMaxThreads(srcConfig)
+          const srcProfile = ep.sourceNodeType === 'ec2' ? resolveEc2Profile(srcConfig) : null
+          const cap = srcProfile ? hardThreadCap(DEFAULT_PACKET_WORKLOAD, srcProfile) : computeMaxThreads(srcConfig)
           // Scale by PARTICLE_REQUEST_RATIO before comparing to cap: _lbActiveRequests is a raw
           // particle count (1 particle == PARTICLE_REQUEST_RATIO real requests), while
           // hardThreadCap/computeMaxThreads are expressed in real-thread units -- the same
@@ -1419,9 +1420,9 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
   // below, since this REPLACES the generic rate-ratio capacity check for these types.
   if (isTargetThreadPoolCompute(targetNodeType)) {
     const activeThreads = (_lbActiveRequests.get(targetNodeId) ?? 0) * PARTICLE_REQUEST_RATIO
-    const ec2res = targetNodeType === 'ec2' ? resolveEc2Resources(config) : null
+    const ec2profile = targetNodeType === 'ec2' ? resolveEc2Profile(config) : null
 
-    if (ec2res) {
+    if (ec2profile) {
       // EC2 compute model: memory-bound admission (hard cap) + OOM crash. CPU pressure is NOT a
       // drop here — it shows up as amplified latency in updateAllNodeMetrics.
       // Force Healthy is an explicit user override of the model: it exempts the node from compute
@@ -1430,12 +1431,12 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
       // 'degraded'/'down' means the user WANTS problems, so those still admit-and-drop normally.
       const decision = config.forcedHealthState === 'healthy'
         ? 'admit'
-        : ec2AdmissionDecision(activeThreads, ec2res.workload, ec2res.profile)
+        : ec2AdmissionDecision(activeThreads, DEFAULT_PACKET_WORKLOAD, ec2profile)
       if (decision === 'oom-crash') {
         const label = (_nodesMap.get(targetNodeId)?.data as NodeData)?.label ?? targetNodeId
         _nodeHealthStates.set(targetNodeId, 'down')
         _onEvent('crash_loop_detected', targetNodeId,
-          `${label} out of memory — ${ec2res.profile.ramGiB} GiB exhausted, crashing`, 'critical',
+          `${label} out of memory — ${ec2profile.ramGiB} GiB exhausted, crashing`, 'critical',
           { utilization: 1, errorRate: 1 })
         // Pin the node 'down' for the full restart window so the per-frame health scorer can't flip
         // it back to healthy/degraded next frame (which would re-serve traffic and crash-loop).
@@ -1650,7 +1651,7 @@ function handleParticleArrival(ep: EdgePath, now: number, particle: Particle) {
 
     // Other non-queue nodes: drop if at capacity — EXCEPT EC2 running the compute model, whose
     // admission is handled by the RAM/thread gate above (maxRps is meaningless for it).
-    const ec2ComputeGated = targetNodeType === 'ec2' && resolveEc2Resources(config) !== null
+    const ec2ComputeGated = targetNodeType === 'ec2' && resolveEc2Profile(config) !== null
     if (!ec2ComputeGated && utilization >= 1.0 + config.errorRate) {
       dropParticle(ep, targetNodeId, particle)
       recordBreakerResultLocal(ep.id, true, config, now)
@@ -1954,11 +1955,11 @@ function updateAllNodeMetrics(now: number, delta: number) {
       utilization = Math.min(1, cur / maxC)
     } else if (isTargetThreadPoolCompute(nodeType)) {
       const activeThreads = (_lbActiveRequests.get(nodeId) ?? 0) * PARTICLE_REQUEST_RATIO
-      const ec2res = nodeType === 'ec2' ? resolveEc2Resources(config) : null
-      if (ec2res) {
+      const ec2profile2 = nodeType === 'ec2' ? resolveEc2Profile(config) : null
+      if (ec2profile2) {
         // EC2 compute model: reported utilization is the binding constraint — CPU rho (drives the
         // latency hockey-stick) or memory (drives hard drops/OOM), whichever is higher.
-        const u = nodeUtilization(inRps, activeThreads, ec2res.workload, ec2res.profile)
+        const u = nodeUtilization(inRps, activeThreads, DEFAULT_PACKET_WORKLOAD, ec2profile2)
         utilization = u.utilization
         _bottleneckResource.set(nodeId, u.bottleneck)
       } else {
@@ -2522,8 +2523,8 @@ function processRetryQueue(now: number) {
       let admitted: number
       if (isTargetThreadPoolCompute(ep!.sourceNodeType as NodeType)) {
         const srcConfig = effectiveConfig(sourceNodeId!, ep!.sourceNodeType as NodeType)
-        const ec2res = ep!.sourceNodeType === 'ec2' ? resolveEc2Resources(srcConfig) : null
-        const cap = ec2res ? hardThreadCap(ec2res.workload, ec2res.profile) : computeMaxThreads(srcConfig)
+        const srcProfile = ep!.sourceNodeType === 'ec2' ? resolveEc2Profile(srcConfig) : null
+        const cap = srcProfile ? hardThreadCap(DEFAULT_PACKET_WORKLOAD, srcProfile) : computeMaxThreads(srcConfig)
         // Same look-ahead, PARTICLE_REQUEST_RATIO-scaled comparison the fresh-spawn site uses —
         // see its comment for why (units mismatch + overshoot-past-cap otherwise).
         const activeAfter = ((_lbActiveRequests.get(sourceNodeId!) ?? 0) + 1) * PARTICLE_REQUEST_RATIO

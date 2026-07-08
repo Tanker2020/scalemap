@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { Node, Edge } from '@xyflow/react'
-import type { NodeData, EdgeData, NodeSimConfig, RequestEdgeConfig, ComputeProfile, WorkloadDemand } from '../../../../lib/nodeConfig'
+import type { NodeData, EdgeData, NodeSimConfig, RequestEdgeConfig, ComputeProfile } from '../../../../lib/nodeConfig'
 import { useSimulationStore, type NodeMetrics } from '../../../store/simulation.store'
 import { startSimulation, stopSimulation, setCallbacks, setNodeConfigs } from '../particleEngine'
 import { clearBreakers } from './circuitBreakers'
@@ -58,18 +58,11 @@ const tinyRamProfile: ComputeProfile = {
   osBaseMemoryMb: 512,
   threadStackMb: 1,
 }
-const workload: WorkloadDemand = {
-  tier: 'moderate_logic',
-  cpuInstructionsBillions: 0.05,
-  memoryFootprintMb: 64,
-  ioBoundFraction: 0.5,
-}
 const oomEc2Config: NodeSimConfig = {
   maxRps: 10_000,
   processingMs: 5,
   errorRate: 0,
   computeProfile: tinyRamProfile,
-  workload,
   selfHealing: { restartDelayMs: 5000 },
 } as unknown as NodeSimConfig
 

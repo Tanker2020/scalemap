@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { Node, Edge } from '@xyflow/react'
-import type { NodeData, EdgeData, NodeSimConfig, RequestEdgeConfig, ComputeProfile, WorkloadDemand } from '../../../../lib/nodeConfig'
+import type { NodeData, EdgeData, NodeSimConfig, RequestEdgeConfig, ComputeProfile } from '../../../../lib/nodeConfig'
 import { useSimulationStore, type NodeMetrics } from '../../../store/simulation.store'
 import { startSimulation, stopSimulation, setCallbacks, setNodeConfigs } from '../particleEngine'
 import { getActiveWorkers, clearBackpressureState } from './backpressure'
@@ -108,10 +108,6 @@ describe('retry re-spawn admission unifies with ec2 server-side capacity (#21 ga
     baseClockGhz: 3.0, blockingIoModel: true, osBaseMemoryMb: 512, threadStackMb: 1,
     maxThreadsOverride: 10,
   }
-  const lowCapWorkload: WorkloadDemand = {
-    tier: 'moderate_logic', cpuInstructionsBillions: 0.05, memoryFootprintMb: 32, ioBoundFraction: 0.8,
-  }
-
   const retryNodes: Node<NodeData>[] = [
     { id: 'caller', type: 'ec2', position: { x: 0, y: 0 }, data: { label: 'caller', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
     { id: 'downstream', type: 'dbSql', position: { x: 200, y: 0 }, data: { label: 'downstream', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
@@ -177,7 +173,6 @@ describe('retry re-spawn admission unifies with ec2 server-side capacity (#21 ga
     // we observe can only come from the drop/retry path, never from natural expiry.
     setNodeConfigs(new Map([['caller', {
       computeProfile: lowCapProfile,
-      workload: lowCapWorkload,
       latencyModel: { p50Ms: 500_000, p99Ms: 600_000 },
     } as NodeSimConfig]]))
 
@@ -240,10 +235,6 @@ describe('fast-fail release unifies with ec2 server-side capacity (#21 gap)', ()
     baseClockGhz: 3.0, blockingIoModel: true, osBaseMemoryMb: 512, threadStackMb: 1,
     maxThreadsOverride: 10,
   }
-  const lowCapWorkload: WorkloadDemand = {
-    tier: 'moderate_logic', cpuInstructionsBillions: 0.05, memoryFootprintMb: 32, ioBoundFraction: 0.8,
-  }
-
   const dropNodes: Node<NodeData>[] = [
     { id: 'caller', type: 'ec2', position: { x: 0, y: 0 }, data: { label: 'caller', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
     { id: 'downstream', type: 'dbSql', position: { x: 200, y: 0 }, data: { label: 'downstream', subtitle: '', status: 'healthy', notes: '', warnings: [] } },
@@ -293,7 +284,6 @@ describe('fast-fail release unifies with ec2 server-side capacity (#21 gap)', ()
     // 0 can only be the immediate fast-fail release under test, never natural expiry.
     setNodeConfigs(new Map([['caller', {
       computeProfile: lowCapProfile,
-      workload: lowCapWorkload,
       latencyModel: { p50Ms: 500_000, p99Ms: 600_000 },
     } as NodeSimConfig]]))
 

@@ -116,11 +116,10 @@ export function ec2AdmissionDecision(
   return 'admit'
 }
 
-// Gate helper: an EC2 node participates in the compute model only when it carries both a hardware
-// profile and a workload. Legacy files / non-EC2 configs return null and keep legacy behavior.
-export function resolveEc2Resources(
-  config: NodeSimConfig,
-): { profile: ComputeProfile; workload: WorkloadDemand } | null {
-  if (!config.computeProfile || !config.workload) return null
-  return { profile: config.computeProfile, workload: config.workload }
+// Gate helper: an EC2 node participates in the compute model only when it carries a hardware
+// profile. Legacy files / non-EC2 configs return null and keep legacy behavior. Workload is
+// resolved separately (see particleEngine.ts's resolveParticleWorkload/resolveSourceOutboundWorkload/
+// resolveInboundWeightedWorkload) since it now lives on packet templates, not here.
+export function resolveEc2Profile(config: NodeSimConfig): ComputeProfile | null {
+  return config.computeProfile ?? null
 }

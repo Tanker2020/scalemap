@@ -14,7 +14,10 @@ export const DEFAULT_EC2_COMPUTE_PROFILE: ComputeProfile = {
   threadStackMb: 1,
 }
 
-export const DEFAULT_EC2_WORKLOAD: WorkloadDemand = {
+// No longer EC2-specific — this is the fallback workload for ANY packet that doesn't carry its
+// own (generic-mode traffic, or a custom template predating this field). See
+// docs/superpowers/specs/2026-07-08-workload-to-packet-config-design.md.
+export const DEFAULT_PACKET_WORKLOAD: WorkloadDemand = {
   tier: 'moderate_logic',
   cpuInstructionsBillions: 0.05,
   memoryFootprintMb: 32,
@@ -25,7 +28,7 @@ export const NODE_SIM_DEFAULTS: Record<NodeType, NodeSimConfig> = {
   // Compute — fixed capacity, no auto-scale, no self-healing
   // maxThreads gives comfortable headroom over PARTICLE_REQUEST_RATIO (10 real requests per
   // visual particle) so a handful of concurrent particles doesn't instantly saturate the pool.
-  ec2:          { maxRps: 1000,  processingMs: 10,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 }, computeProfile: DEFAULT_EC2_COMPUTE_PROFILE, workload: DEFAULT_EC2_WORKLOAD },
+  ec2:          { maxRps: 1000,  processingMs: 10,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 }, computeProfile: DEFAULT_EC2_COMPUTE_PROFILE },
   lambda:       { maxRps: 1000,  processingMs: 50,  errorRate: 0, maxConcurrency: 10, latencyModel: { p50Ms: 80,  p99Ms: 800  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 29_000, coldStart: { p50Ms: 400, p99Ms: 2500 }, maxWarmInstances: 5, retryConfig: { maxRetries: 2, baseDelayMs: 200,  jitter: 'full',  maxDelayMs: 3000 } },
   container:    { maxRps: 500,   processingMs: 15,  errorRate: 0, latencyModel: { p50Ms: 20,  p99Ms: 250  }, circuitBreaker: { errorThreshold: 0.5, resetMs: 10000 }, timeoutMs: 30_000, retryConfig: { maxRetries: 3, baseDelayMs: 100,  jitter: 'full',  maxDelayMs: 2000 }, maxThreads: 50 },
   // pod deliberately excluded from the thread-pool model: its utilization/scale-out-in triggers

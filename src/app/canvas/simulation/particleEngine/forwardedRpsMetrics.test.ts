@@ -103,7 +103,7 @@ describe('forwarded traffic is reflected in effectiveRps-derived metrics', () =>
     // rps must be set BEFORE startSimulation — ep.rps is snapshotted there.
     // 200 total (~100/server after the LB's round-robin split) -- deliberately well under the
     // default EC2 compute profile's ~240rps CPU-saturation point (DEFAULT_EC2_COMPUTE_PROFILE /
-    // DEFAULT_EC2_WORKLOAD, see compute.ts). This test verifies forwarded-traffic visibility to
+    // DEFAULT_PACKET_WORKLOAD, see compute.ts). This test verifies forwarded-traffic visibility to
     // the idle-RPS gate, not compute saturation -- 500 (250/server) used to be "free" under the
     // old static-latency model but now realistically saturates s1/s2's CPU, causing real errors
     // that trip their inbound circuit breaker and (correctly) quiet their own outbound too. That
