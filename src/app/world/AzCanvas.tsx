@@ -24,6 +24,41 @@ export function AzCanvas() {
       (m.scope.kind === 'region' && m.scope.regionId === regionId))
     const pos = layoutAzGrid(servers.map(s => s.id), managed.map(m => m.id))
 
+    // Aggregate instance-level compiled paths into one edge per (fromServer, target).
+    // Same-server blocked paths never become edges — they surface as a badge on the server node.
+    const agg = new Map<string, { source: string; target: string; total: number; blocked: number; reason: string | null }>()
+    const internalBlockedByServer = new Map<string, number>()
+    const inAz = new Set(servers.map(s => s.id))
+    const managedHere = new Set(managed.map(m => m.id))
+    for (const p of compiled.paths) {
+      const from = compiled.instances[p.fromInstanceId]
+      if (!from || !inAz.has(from.serverId)) continue
+      let targetId: string
+      if (p.to.kind === 'managed') {
+        if (!managedHere.has(p.to.managedServiceId)) continue
+        targetId = p.to.managedServiceId
+      } else {
+        const to = compiled.instances[p.to.instanceId]
+        if (!to || !inAz.has(to.serverId)) continue // cross-AZ links render at region level (Phase 4)
+        if (to.serverId === from.serverId) {
+          // Same-server paths draw no edge; blocked ones (e.g. docker network-isolation) badge the server node.
+          if (p.verdict === 'blocked') {
+            internalBlockedByServer.set(from.serverId, (internalBlockedByServer.get(from.serverId) ?? 0) + 1)
+          }
+          continue
+        }
+        targetId = to.serverId
+      }
+      const key = `${from.serverId}->${targetId}`
+      const entry = agg.get(key) ?? { source: from.serverId, target: targetId, total: 0, blocked: 0, reason: null }
+      entry.total++
+      if (p.verdict === 'blocked') {
+        entry.blocked++
+        entry.reason = entry.reason ?? p.blockReason?.kind ?? 'blocked'
+      }
+      agg.set(key, entry)
+    }
+
     const nodes: Node[] = [
       ...servers.map(server => ({
         id: server.id, type: 'worldServer' as const, position: pos[server.id],
@@ -36,6 +71,7 @@ export function AzCanvas() {
               const pl = doc.placements[i.placementId]
               return { color: bp?.color ?? '#888', name: bp?.name ?? '?', role: i.role, runtime: pl?.runtime.type ?? 'process' }
             }),
+          internalBlocked: internalBlockedByServer.get(server.id) ?? 0,
         },
       })),
       ...managed.map(m => ({
@@ -43,32 +79,6 @@ export function AzCanvas() {
         data: { label: m.label, nodeType: m.nodeType, port: m.port },
       })),
     ]
-
-    // Aggregate instance-level compiled paths into one edge per (fromServer, target).
-    const agg = new Map<string, { source: string; target: string; total: number; blocked: number; reason: string | null }>()
-    const inAz = new Set(servers.map(s => s.id))
-    const managedHere = new Set(managed.map(m => m.id))
-    for (const p of compiled.paths) {
-      const from = compiled.instances[p.fromInstanceId]
-      if (!from || !inAz.has(from.serverId)) continue
-      let targetId: string
-      if (p.to.kind === 'managed') {
-        if (!managedHere.has(p.to.managedServiceId)) continue
-        targetId = p.to.managedServiceId
-      } else {
-        const to = compiled.instances[p.to.instanceId]
-        if (!to || !inAz.has(to.serverId) || to.serverId === from.serverId) continue // cross-AZ links render at region level (Phase 4)
-        targetId = to.serverId
-      }
-      const key = `${from.serverId}->${targetId}`
-      const entry = agg.get(key) ?? { source: from.serverId, target: targetId, total: 0, blocked: 0, reason: null }
-      entry.total++
-      if (p.verdict === 'blocked') {
-        entry.blocked++
-        entry.reason = entry.reason ?? p.blockReason?.kind ?? 'blocked'
-      }
-      agg.set(key, entry)
-    }
 
     const edges: Edge[] = [...agg.entries()].map(([key, e]) => ({
       id: key,

@@ -4,11 +4,12 @@ import type { Server } from '../../lib/world/types'
 export interface WorldServerNodeData {
   server: Server
   chips: { color: string; name: string; role: string; runtime: string }[]
+  internalBlocked: number
   [key: string]: unknown
 }
 
 export function WorldServerNode({ data }: NodeProps) {
-  const { server, chips } = data as WorldServerNodeData
+  const { server, chips, internalBlocked } = data as WorldServerNodeData
   return (
     <div style={{
       width: 220, background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
@@ -30,6 +31,11 @@ export function WorldServerNode({ data }: NodeProps) {
         </div>
       ))}
       {chips.length === 0 && <div style={{ color: 'var(--color-text-muted)', fontSize: 10 }}>empty</div>}
+      {internalBlocked > 0 && (
+        <div style={{ color: 'var(--color-danger)', fontSize: 10, marginTop: 4 }}>
+          ✕ {internalBlocked} blocked internal path{internalBlocked > 1 ? 's' : ''}
+        </div>
+      )}
       <Handle type="source" position={Position.Right} />
     </div>
   )
