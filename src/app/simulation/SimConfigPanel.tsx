@@ -448,9 +448,9 @@ function ConfigSection({ nodeId }: { nodeId: string }) {
       {isEc2Compute && (() => {
         const profile = { ...DEFAULT_EC2_COMPUTE_PROFILE, ...(eff.computeProfile ?? {}) }
         // Per-request workload now lives on packet templates, not node config (see
-        // BasePacketTemplate.workload) — this panel no longer edits it. DEFAULT_PACKET_WORKLOAD is
-        // used here only to preview "Derived Threads" against the same fallback the engine uses.
-        // TODO(#18 Task 3): surface real per-packet workload editing in the packet editor.
+        // BasePacketTemplate.workload, editable in PacketEditor) — this panel no longer edits it.
+        // DEFAULT_PACKET_WORKLOAD is used here only to preview "Derived Threads" against the same
+        // fallback the engine uses when a packet doesn't specify its own workload.
         const workload = DEFAULT_PACKET_WORKLOAD
         const setProfile = (patch: Partial<typeof profile>) =>
           setNodeConfig(nodeId, { computeProfile: { ...profile, ...patch } })
