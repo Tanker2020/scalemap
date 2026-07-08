@@ -155,6 +155,60 @@ toolbar's structure below is the final state, not a snapshot from any single tas
 - **Bug A (Simulate button clipped/overlapped at narrow widths) — fixed.** The Task 5 gap (two breakpoints weren't enough; Simulate/its chevron overlapped or fell past `.toolbarMain`'s clip boundary between ~640-1040px) is closed by two new breakpoints — `max-width: 1180px` (hide the "Panels" caption) and `max-width: 1060px` (collapse Provider + the Panels group's four buttons to icon-only, plus tighten their now-excess icon-only padding). Verified with a continuous width scan (real diagram loaded, 640-1440px, both 40px and 10px step granularity) checking `.toolbarMain.scrollWidth <= clientWidth` and the Simulate button/chevron's `getBoundingClientRect()` against `.themeToggleFixed`'s on every step, in both idle and running toolbar states: zero failures.
 - **Bug B (toolbar dropdowns render behind the canvas) — fixed.** Root cause: `.toolbarMain`'s `overflow-x: hidden` (with no `overflow-y` declared) computed `overflow-y: auto` per the CSS overflow spec's pairing rule (a non-`visible` value on one axis forces the other, if `visible`, to become `auto`) — this silently turned `.toolbarMain` into a clipping/scroll container that clipped every absolutely-positioned popover anchored inside it (`FileMenu`'s and `ProviderMenu`'s `.dropdownMenu`, `SimSettings`' `.settingsPanel`) to `.toolbarMain`'s own ~33px-tall box, regardless of their `z-index: 1000` — confirmed via `getComputedStyle(toolbarMain).overflowY === 'auto'` and `document.elementFromPoint()` at the dropdown's own coordinates resolving to `.react-flow__pane` underneath. Fixed by switching `.toolbarMain` to `overflow-x: clip; overflow-y: visible` — `clip` (unlike `hidden`) doesn't participate in that pairing rule, so `overflow-y: visible` actually stays visible. A second, related clip was found and fixed on `.dropdownMenu` itself: its own `overflow: hidden` (present before this branch, used to round `.dropdownItem`'s hover-background corners) also clipped `.dropdownSubmenu` — the Export/Import nested flyout introduced in Task 2, which escapes to the right via `left: 100%` — making Export/Import unclickable. Fixed by moving the corner-rounding onto `.dropdownItem:first-child`/`:last-child` directly and removing `.dropdownMenu`'s own `overflow: hidden`. Re-verified via `elementFromPoint`/computed-style inspection that all three popovers plus the submenu now resolve to themselves, in both light and dark mode.
 
+**2026-07-08 update — orphaned from the app root by Task 10 (see §J):** `App.tsx` no longer
+mounts `Toolbar` at all (nor `NodePalette`/`Canvas`/`PropertiesPanel`/`StatusBar`/
+`MetricsDrawer`/`SimConfigPanel`/`UtilityDock`/`PacketEditor` — see §H's now-stale "`App.tsx`
+just renders `<UtilityDock />` unconditionally" claim above, and §1.A/§1.B's canvas/simulation
+entries below). All of these files are untouched and still compile; they are simply no longer
+reachable from the running app. Everything above this note describes their internals
+accurately — it's only the "who mounts this" wiring that changed.
+
+### J. World navigation shell (Task 10, 2026-07-08) — new app root, replaces Toolbar/Canvas/panels wiring
+
+Part of the `world-rebuild` branch's Phase 1-2 (Tasks 1-9 built `src/lib/world/`, the
+`world.store`/`useCompiledWorld` compiler pipeline, the v2 `.scalemap` serializer, and deleted
+the structural linter — see §C). Task 10 is the first task to change what `App.tsx` actually
+*mounts*: the entire legacy body (§I's `Toolbar`, `NodePalette`, `Canvas`, `PropertiesPanel`,
+`StatusBar`, `MetricsDrawer`, §H's `UtilityDock`, `SimConfigPanel`, `PacketEditor`) is unmounted
+in favor of a single `<WorldShell />`, gated behind the same `showHome` flag HomeScreen already
+used. `HomeScreen.tsx` itself is untouched here (still drives v1 stores — `canvas.store`,
+`simulation.store`, `metricsHistory.store`) and gets rewired in a later task; today, clicking
+"New Diagram" flips `showHome` to `false` without touching `world.store`, so `WorldShell` opens
+onto whatever `world.store` already holds (an empty `createWorld()` doc on first load) — this is
+expected, not a bug, until that rewire lands.
+
+| File | Role |
+|---|---|
+| `src/app/store/nav.store.ts` | New, independent Zustand store — `WorldLevel = 'globe' \| 'region' \| 'az' \| 'server'` plus `regionId`/`azId`/`serverId` focus and `goGlobe`/`goRegion`/`goAz`/`goServer`/`up()`. Deliberately has no dependency on `world.store` — it's pure UI focus/breadcrumb state, decoupled from the document so navigating never itself pushes undo/redo history. `up()` climbs exactly one level and clears only the level(s) below the new one |
+| `src/app/world/WorldShell.tsx` | The app's entire post-home body: a header (`Breadcrumb` + "esc = up one level" hint) over a `flex` row of the active level view (`GlobeView`/`RegionView`/an inline `AzView` placeholder/`ServerView`, chosen by `nav.level`) and `WorldPanel` (§ below). Wraps the level view in `framer-motion`'s `AnimatePresence mode="wait"` keyed by the full `level:regionId:azId:serverId` path (so re-entering the same level with a different focus still re-animates) and respects `useReducedMotion()`. Owns a window-level `Escape` listener calling `useNavStore.getState().up()` — the only global keyboard binding this task adds |
+| `src/app/world/Breadcrumb.tsx` | Reads `useNavStore` + `useWorldStore(s => s.doc)` directly (no props) and renders `World › <region.catalogId> › <az.label> › <server.label>` up to the current level, each non-current segment a clickable button jumping straight to that level (skips intermediate `goAz`/`goRegion` calls — clicking "World" from server level calls `goGlobe()` directly, not three `up()`s) |
+| `src/app/world/GlobeView.tsx`, `RegionView.tsx`, `ServerView.tsx` | Phase-1 placeholders — deliberately spartan grid/card layouts, not the approved mockup designs (those land in Phases 3-5). All three call `useCompiledWorld()` (Task 7's `compileWorld` memoized on `world.store`'s `doc`) so findings/instance counts are already live end-to-end, not stubbed. `ServerView` is the most complete of the three: a full readout of a server's specs/services/firewall/compose-stacks, meant as a verifiable ground-truth view of what the compiler produced for that node until Task 3's circuit-board redesign replaces it |
+| `src/app/world/panels/WorldPanel.tsx` | **Task-10 stub only** — returns `null`. Exists purely so `WorldShell` has something to import and the build stays green; Task 11 replaces it wholesale with the real authoring panel (add region/AZ/server/blueprint/placement, findings list) |
+| `src/App.tsx` | Reduced to `useThemeBootstrap()` + a single `⌘N` handler (now calls `useWorldStore.getState().newWorld()` + `useFileStore`'s `setFilePath(null)`/`setShowHome(false)`, replacing the old `useSimulationStore.reset()`/`useMetricsHistoryStore.clearHistory()`/`useCanvasStore.setState()` v1 reset) + the `showHome ? <HomeScreen/> : <WorldShell/>` gate. The old 30s v1 autosave `setInterval` effect (serializing `canvas.store` to `localStorage` via `serialize()`) was deleted outright, not ported — v2 autosave against `world.store`/the v2 serializer is a later task, so **autosave does not exist right now** on this branch |
+
+**Test-infra fix needed to land this (not part of the brief, discovered during TDD):**
+`@testing-library/react`'s auto-cleanup-between-tests only self-registers when it detects a
+*global* `afterEach` (`typeof afterEach === 'function'`); this repo doesn't set Vitest's
+`test.globals`, so every test file imports `afterEach` from `'vitest'` into its own module
+scope only, and RTL's check never sees it. Without a fix, multiple `render()` calls in the same
+`*.test.tsx` file leak DOM across tests (`Breadcrumb.test.tsx`'s second test failed with
+"multiple elements" for exactly this reason). Fixed by explicitly registering
+`afterEach(() => cleanup())` in `vitest.setup.ts` — this repo's one shared setup file, already
+wired via `vite.config.ts`'s `test.setupFiles` — rather than per-test-file, so every future
+`@testing-library/react` test gets isolation for free. Anyone adding the *next* React component
+test should not need to rediscover this. Separately, `tsconfig.json`'s `include` gained
+`"vitest.setup.ts"` (was `["src"]` only) — `@testing-library/jest-dom/vitest`'s `Assertion`
+module-augmentation only reaches files inside the same `tsc` program, and `vitest.setup.ts`
+lives at the repo root, outside `src/`; without this, `npm run build`'s `tsc` step fails on
+every `toBeInTheDocument()` call even though `vitest` itself (esbuild-transpiled, not
+type-checked) runs the same tests fine.
+
+**Blast radius:** `nav.store.ts` has 2 consumers so far (`Breadcrumb.tsx`, `WorldShell.tsx`) plus
+its own test; `WorldShell.tsx` has exactly 1 caller (`App.tsx`). None of the legacy files listed
+in the orphaning note above changed — they have zero remaining callers from the app root but
+are otherwise untouched, so reverting `App.tsx` alone would fully restore the old app if ever
+needed.
+
 ---
 
 ## 2. Shared "hub" files (everyone touches these — high conflict risk)
