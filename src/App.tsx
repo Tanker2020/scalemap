@@ -15,6 +15,7 @@ import { WorldShell } from './app/world/WorldShell'
 import { useFileStore } from './app/store/file.store'
 import { useWorldStore } from './app/store/world.store'
 import { useUiStore } from './app/store/ui.store'
+import { serializeWorld } from './lib/serializer'
 import styles from './App.module.css'
 
 function useThemeBootstrap() {
@@ -56,6 +57,25 @@ export default function App() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
+  }, [])
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      const { dirty, fileName, createdIso } = useFileStore.getState()
+      if (!dirty) return
+      try {
+        const json = serializeWorld(
+          useWorldStore.getState().doc,
+          fileName?.replace('.scalemap', '') || 'untitled',
+          createdIso ?? new Date().toISOString(),
+        )
+        localStorage.setItem('scalemap-autosave-v2', json)
+        useFileStore.getState().setLastAutosave(new Date())
+      } catch {
+        // localStorage full or unavailable — silently skip
+      }
+    }, 30_000)
+    return () => clearInterval(id)
   }, [])
 
   return (

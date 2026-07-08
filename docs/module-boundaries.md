@@ -163,30 +163,38 @@ entries below). All of these files are untouched and still compile; they are sim
 reachable from the running app. Everything above this note describes their internals
 accurately — it's only the "who mounts this" wiring that changed.
 
-### J. World navigation shell (Task 10, 2026-07-08) — new app root, replaces Toolbar/Canvas/panels wiring
+### J. World model & navigation shell (Phase 1 of the world rebuild, 2026-07-08)
 
-Part of the `world-rebuild` branch's Phase 1-2 (Tasks 1-9 built `src/lib/world/`, the
-`world.store`/`useCompiledWorld` compiler pipeline, the v2 `.scalemap` serializer, and deleted
-the structural linter — see §C). Task 10 is the first task to change what `App.tsx` actually
-*mounts*: the entire legacy body (§I's `Toolbar`, `NodePalette`, `Canvas`, `PropertiesPanel`,
-`StatusBar`, `MetricsDrawer`, §H's `UtilityDock`, `SimConfigPanel`, `PacketEditor`) is unmounted
-in favor of a single `<WorldShell />`, gated behind the same `showHome` flag HomeScreen already
-used. `HomeScreen.tsx` itself is untouched here (still drives v1 stores — `canvas.store`,
-`simulation.store`, `metricsHistory.store`) and gets rewired in a later task; today, clicking
-"New Diagram" flips `showHome` to `false` without touching `world.store`, so `WorldShell` opens
-onto whatever `world.store` already holds (an empty `createWorld()` doc on first load) — this is
-expected, not a bug, until that rewire lands.
+Branch: `world-rebuild`. Spec: `docs/superpowers/specs/2026-07-08-world-model-multiscale-simulation-design.md`;
+plan: `docs/superpowers/plans/2026-07-08-phase1-world-model-shell.md`. Built incrementally across
+Tasks 9-14 (Tasks 1-9 built `src/lib/world/`'s pure model/compiler/serializer and deleted the
+structural linter — see §C; Task 10 swapped `App.tsx`'s mounted tree from the legacy
+Toolbar/Canvas/panels stack, §I's note above, to `<WorldShell />`; Task 11 added the `WorldPanel`
+authoring dock's `Topology` tab; Task 12 added `Blueprints`/`Placements`; Task 13 added the AZ
+canvas; Task 14 — this entry's final pass — added file operations, dirty tracking, and autosave).
+This section describes the final Phase-1 state, not any single task's snapshot.
 
 | File | Role |
 |---|---|
-| `src/app/store/nav.store.ts` | New, independent Zustand store — `WorldLevel = 'globe' \| 'region' \| 'az' \| 'server'` plus `regionId`/`azId`/`serverId` focus and `goGlobe`/`goRegion`/`goAz`/`goServer`/`up()`. Deliberately has no dependency on `world.store` — it's pure UI focus/breadcrumb state, decoupled from the document so navigating never itself pushes undo/redo history. `up()` climbs exactly one level and clears only the level(s) below the new one |
-| `src/app/world/WorldShell.tsx` | The app's entire post-home body: a header (`Breadcrumb` + "esc = up one level" hint) over a `flex` row of the active level view (`GlobeView`/`RegionView`/an inline `AzView` placeholder/`ServerView`, chosen by `nav.level`) and `WorldPanel` (§ below). Wraps the level view in `framer-motion`'s `AnimatePresence mode="wait"` keyed by the full `level:regionId:azId:serverId` path (so re-entering the same level with a different focus still re-animates) and respects `useReducedMotion()`. Owns a window-level `Escape` listener calling `useNavStore.getState().up()` — the only global keyboard binding this task adds |
-| `src/app/world/Breadcrumb.tsx` | Reads `useNavStore` + `useWorldStore(s => s.doc)` directly (no props) and renders `World › <region.catalogId> › <az.label> › <server.label>` up to the current level, each non-current segment a clickable button jumping straight to that level (skips intermediate `goAz`/`goRegion` calls — clicking "World" from server level calls `goGlobe()` directly, not three `up()`s) |
-| `src/app/world/GlobeView.tsx`, `RegionView.tsx`, `ServerView.tsx` | Phase-1 placeholders — deliberately spartan grid/card layouts, not the approved mockup designs (those land in Phases 3-5). All three call `useCompiledWorld()` (Task 7's `compileWorld` memoized on `world.store`'s `doc`) so findings/instance counts are already live end-to-end, not stubbed. `ServerView` is the most complete of the three: a full readout of a server's specs/services/firewall/compose-stacks, meant as a verifiable ground-truth view of what the compiler produced for that node until Task 3's circuit-board redesign replaces it |
-| `src/app/world/panels/WorldPanel.tsx` (Task 11, 2026-07-08) | Real authoring dock — replaces the Task-10 `null` stub. A 300px right-side `<aside>` (styled via `panelStyles.ts`'s `panel`) with a `Topology \| Blueprints \| Placements` tab strip (local `useState<Tab>`, not `nav.store` — tab selection is presentation-only and never needs to survive a level change). Only `Topology` renders real content today; `BlueprintPanel`/`PlacementPanel` are local `() => null` stubs Task 12 replaces with real components in this same file |
-| `src/app/world/panels/TopologyPanel.tsx` (Task 11) | Region → AZ → server authoring. Add-region `<select>` is filtered to `WORLD_REGIONS` entries not yet used by any `doc.region` (so the catalog can't produce duplicate regions); `+ AZ` auto-suffixes the label (`${catalogId}${a,b,c…}` keyed off existing AZ count for that region — not stored, recomputed from `doc.azs` every render); `+ Server` reads a per-AZ preset choice (local `Record<azId, presetId>` state, defaulting to `'vps-medium'`) via `getPreset()` and calls `store.addServer`. Per-server `ServerRow` (only this file, not exported) expands into label/firewall/compose-stack editors — firewall rules and compose-stack network/volume lists are edited as whole-array replacements via `store.updateServer({ firewall: [...] })`/`{ stacks: [...] }` (no dedicated per-rule/per-stack actions in `world.store`). **Intentional exception to "always go through a store action":** the region-role `<select>` writes via `useWorldStore.setState(...)` directly, not a dedicated `updateRegion` action — a deliberate two-value toggle with no undo/redo push, documented inline; add `updateRegion` if role-change undo is ever wanted. Clicking a server's `→` calls `useNavStore.getState().goServer(...)` — the one cross-panel-to-nav-store link in this file |
-| `src/app/world/panels/panelStyles.ts` (Task 11) | Shared `CSSProperties` constants (`panel`/`sectionLabel`/`field`/`smallBtn`/`dangerBtn`/`row`) for all three World tabs — same purpose as `theme.ts`'s tokens but scoped to this panel family's form chrome rather than app-wide; import from here rather than re-declaring inline styles when Task 12 builds `BlueprintPanel`/`PlacementPanel` |
-| `src/App.tsx` | Reduced to `useThemeBootstrap()` + a single `⌘N` handler (now calls `useWorldStore.getState().newWorld()` + `useFileStore`'s `setFilePath(null)`/`setShowHome(false)`, replacing the old `useSimulationStore.reset()`/`useMetricsHistoryStore.clearHistory()`/`useCanvasStore.setState()` v1 reset) + the `showHome ? <HomeScreen/> : <WorldShell/>` gate. The old 30s v1 autosave `setInterval` effect (serializing `canvas.store` to `localStorage` via `serialize()`) was deleted outright, not ported — v2 autosave against `world.store`/the v2 serializer is a later task, so **autosave does not exist right now** on this branch |
+| `src/lib/world/types.ts` | `WorldDoc` entities + `CompiledWorld` output types — the schema of `.scalemap` v2 |
+| `src/lib/world/factories.ts`, `instanceCatalog.ts`, `regionGeo.ts` | Entity constructors, server presets, region coordinates |
+| `src/lib/world/compileWorld.ts` (+ `network.ts`, `routing.ts`) | Pure resolver: blueprints × placements → instances, permitted/blocked paths (firewall/ports/docker networks), routing tables, findings. Golden-tested; every consumer (views now, engine in Phase 2, analysis in Phase 6) reads its output, never the raw doc, for derived facts |
+| `src/lib/world/layoutAz.ts` (Task 13) | `layoutAzGrid(serverIds, managedIds)` — deterministic grid-position assignment for the static AZ canvas (3-column grid, managed services on their own row below). Positions are recomputed per render, not persisted on the doc — Phase 1 has no drag-persistence for AZ-level layout |
+| `src/app/store/world.store.ts` | Document store + undo/redo + cascading CRUD. Every mutation funnels through the internal `mutate()` helper, which (Task 14) now also calls `useFileStore.getState().setDirty(true)` after pushing history and applying the doc transform — so every CRUD action (`addServer`, `updateBlueprint`, `updateRouting`, …) marks the open file dirty with no per-action wiring needed |
+| `src/app/store/nav.store.ts` | Independent Zustand store — `WorldLevel = 'globe' \| 'region' \| 'az' \| 'server'` plus `regionId`/`azId`/`serverId` focus and `goGlobe`/`goRegion`/`goAz`/`goServer`/`up()`. Deliberately has no dependency on `world.store` — pure UI focus/breadcrumb state, decoupled from the document so navigating never itself pushes undo/redo history. `up()` climbs exactly one level and clears only the level(s) below the new one |
+| `src/app/world/WorldShell.tsx` | The app's entire post-home body: a header (`Breadcrumb` + "esc = up one level" hint + (Task 14) a right-side file-actions cluster — dirty dot, New/Open/Save/Save As buttons — plus a dismissible error ribbon under the header for failed open/save) over a `flex` row of the active level view (`GlobeView`/`RegionView`/`AzCanvas`/`ServerView`, chosen by `nav.level`) and `WorldPanel`. AZ level renders the real `AzCanvas` (Task 13) — not a placeholder. Wraps the level view in `framer-motion`'s `AnimatePresence mode="wait"` keyed by the full `level:regionId:azId:serverId` path (so re-entering the same level with a different focus still re-animates) and respects `useReducedMotion()`. Owns a window-level `Escape` listener calling `useNavStore.getState().up()` |
+| `src/app/world/fileOps.ts` (Task 14) | Shared v2 file flows used by both `WorldShell` and `HomeScreen`: `openWorldFromPath(path)` (load → `deserializeWorld` → `replaceWorld` → restore `createdIso` + `viewState`'s level/focus → `markSaved`), `openWorldViaDialog()` (wraps the above behind `openFileDialog()`), and `saveWorld({ forceDialog? })` (reuses the current `filePath` unless forced or absent, in which case it prompts via `saveFileDialog()`; serializes with the current nav focus as `viewState` so save-then-reopen restores position). The single place that knows how to round-trip a `.scalemap` v2 file end-to-end — anything else needing to open/save a world should call these, not reimplement the load/serialize calls inline |
+| `src/app/world/Breadcrumb.tsx` | Reads `useNavStore` + `useWorldStore(s => s.doc)` directly (no props) and renders `World › <region.catalogId> › <az.label> › <server.label>` up to the current level, each non-current segment a clickable button jumping straight to that level (skips intermediate `goAz`/`goRegion` calls) |
+| `src/app/world/GlobeView.tsx`, `RegionView.tsx`, `ServerView.tsx` | Phase-1 placeholders — deliberately spartan grid/card layouts, not the approved mockup designs (those land in Phases 3-5). All three call `useCompiledWorld()` so findings/instance counts are already live end-to-end, not stubbed |
+| `src/app/world/AzCanvas.tsx` (Task 13) | Read-only static React Flow render of the focused AZ — servers + in-scope managed services as nodes (`WorldServerNode`/`WorldManagedNode`, positioned via `layoutAzGrid`), instance-level compiled paths aggregated to one edge per server pair (any blocked path turns the whole aggregate edge red/dashed; same-server-internal blocks surface as a node badge instead of an edge). Reads `useCompiledWorld()` + `world.store`/`nav.store`; clicking a server node calls `goServer(...)` |
+| `src/app/world/WorldServerNode.tsx` (Task 13) | `WorldServerNode`/`WorldManagedNode` — the two custom React Flow node renderers `AzCanvas` registers via `nodeTypes`. Presentation-only; no store access of their own, everything comes in via node `data` |
+| `src/app/world/panels/WorldPanel.tsx` | Authoring dock — a 300px right-side `<aside>` with a `Topology \| Blueprints \| Placements` tab strip (local `useState<Tab>`, not `nav.store` — tab selection is presentation-only and never needs to survive a level change). All three tabs render real content as of Task 12 |
+| `src/app/world/panels/TopologyPanel.tsx` (Task 11) | Region → AZ → server authoring. Add-region `<select>` is filtered to `WORLD_REGIONS` entries not yet used by any `doc.region`; `+ AZ` auto-suffixes the label (`${catalogId}${a,b,c…}`, recomputed from `doc.azs` every render, not stored); `+ Server` reads a per-AZ preset choice (local `Record<azId, presetId>` state) via `getPreset()` and calls `store.addServer`. Per-server `ServerRow` expands into label/firewall/compose-stack editors, edited as whole-array replacements (`store.updateServer({ firewall: [...] })`/`{ stacks: [...] }`). **Intentional exception to "always go through a store action":** the region-role `<select>` writes via `useWorldStore.setState(...)` directly (a deliberate two-value toggle with no undo/redo push, documented inline). Clicking a server's `→` calls `useNavStore.getState().goServer(...)` |
+| `src/app/world/panels/BlueprintPanel.tsx` (Task 12) | Service-blueprint CRUD — name/runtime/port config plus a dependency editor (`BlueprintDependency` targets either another blueprint or a managed service) |
+| `src/app/world/panels/PlacementPanel.tsx` (Task 12) | Placement CRUD (blueprint × server) plus managed-service CRUD (`MANAGED_TYPES`: rds/s3/sqs/redis/cdn/apiGateway/lambda), each managed service scoped to a region or AZ |
+| `src/app/world/panels/panelStyles.ts` (Task 11) | Shared `CSSProperties` constants (`panel`/`sectionLabel`/`field`/`smallBtn`/`dangerBtn`/`row`) for all World tabs — same purpose as `theme.ts`'s tokens but scoped to this panel family's form chrome; import from here rather than re-declaring inline styles |
+| `src/lib/serializer.ts` | v1 exports (`serialize`/`deserialize`) retained only so unmounted legacy UI keeps compiling; v2 (`serializeWorld`/`deserializeWorld`) is the live format, consumed exclusively via `fileOps.ts` (Task 14) — `HomeScreen.tsx` no longer calls `deserializeWorld` directly, it goes through `openWorldFromPath` |
+| `src/App.tsx` | `useThemeBootstrap()` + a `⌘N` handler (`useWorldStore.getState().newWorld()` + `useFileStore`'s `setFilePath(null)`/`setShowHome(false)`) + (Task 14) a 30s autosave `setInterval` effect that, when `useFileStore`'s `dirty` is true, serializes `world.store`'s doc via `serializeWorld` into `localStorage['scalemap-autosave-v2']` and stamps `lastAutosave` — **deliberately does not call `markSaved()`**, since an autosave snapshot isn't the user's file and the dirty dot must survive until a real Save — + the `showHome ? <HomeScreen/> : <WorldShell/>` gate |
 
 **Test-infra fix needed to land this (not part of the brief, discovered during TDD):**
 `@testing-library/react`'s auto-cleanup-between-tests only self-registers when it detects a
@@ -197,22 +205,28 @@ scope only, and RTL's check never sees it. Without a fix, multiple `render()` ca
 "multiple elements" for exactly this reason). Fixed by explicitly registering
 `afterEach(() => cleanup())` in `vitest.setup.ts` — this repo's one shared setup file, already
 wired via `vite.config.ts`'s `test.setupFiles` — rather than per-test-file, so every future
-`@testing-library/react` test gets isolation for free. Anyone adding the *next* React component
-test should not need to rediscover this. Separately, `tsconfig.json`'s `include` gained
-`"vitest.setup.ts"` (was `["src"]` only) — `@testing-library/jest-dom/vitest`'s `Assertion`
-module-augmentation only reaches files inside the same `tsc` program, and `vitest.setup.ts`
-lives at the repo root, outside `src/`; without this, `npm run build`'s `tsc` step fails on
-every `toBeInTheDocument()` call even though `vitest` itself (esbuild-transpiled, not
-type-checked) runs the same tests fine.
+`@testing-library/react` test gets isolation for free. Separately, `tsconfig.json`'s `include`
+gained `"vitest.setup.ts"` (was `["src"]` only) — `@testing-library/jest-dom/vitest`'s
+`Assertion` module-augmentation only reaches files inside the same `tsc` program, and
+`vitest.setup.ts` lives at the repo root, outside `src/`; without this, `npm run build`'s `tsc`
+step fails on every `toBeInTheDocument()` call even though `vitest` itself (esbuild-transpiled,
+not type-checked) runs the same tests fine.
 
-**Blast radius:** `nav.store.ts` has 3 consumers now (`Breadcrumb.tsx`, `WorldShell.tsx`,
-`TopologyPanel.tsx`'s `ServerRow`) plus its own test; `WorldShell.tsx` has exactly 1 caller
-(`App.tsx`). `panelStyles.ts` has 2 importers so far (`WorldPanel.tsx`, `TopologyPanel.tsx`) —
-Task 12's `BlueprintPanel`/`PlacementPanel` will be the 3rd/4th; treat it like `theme.ts` (§2) —
-append new shared constants, don't restructure the existing ones out from under other panels.
-None of the legacy files listed in the orphaning note above changed — they have zero remaining
-callers from the app root but are otherwise untouched, so reverting `App.tsx` alone would fully
-restore the old app if ever needed.
+**Blast radius:** `types.ts` is imported by everything above — additive changes are safe,
+renames fan out to the whole world module. `compileWorld` output shape is consumed by all
+views; extend it rather than reshaping. `nav.store.ts` has 3 consumers (`Breadcrumb.tsx`,
+`WorldShell.tsx`, `TopologyPanel.tsx`'s `ServerRow`) plus its own test; `WorldShell.tsx` has
+exactly 1 caller (`App.tsx`). `fileOps.ts` has 2 callers (`WorldShell.tsx`'s header buttons,
+`HomeScreen.tsx`'s recent-file open) — both now share one load/save implementation instead of
+each hand-rolling the deserialize/nav-restore sequence. `panelStyles.ts` has 4 importers
+(`WorldPanel.tsx`, `TopologyPanel.tsx`, `BlueprintPanel.tsx`, `PlacementPanel.tsx`) — treat it
+like `theme.ts` (§2): append new shared constants, don't restructure the existing ones out from
+under other panels. **Legacy UI (Toolbar/Canvas/PropertiesPanel/particleEngine/canvas.store
+etc.) is unmounted but still compiling** — it is reference material for Phases 2-4; don't import
+it from `world/` files, don't delete it piecemeal. The linter (`src/lib/lint/`),
+`diagnostics.store`, and `DiagnosticsPanel` were deleted (§C). None of the legacy files have any
+remaining callers from the app root but are otherwise untouched, so reverting `App.tsx` alone
+would fully restore the old app if ever needed.
 
 ---
 

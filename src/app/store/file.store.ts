@@ -8,6 +8,7 @@ interface FileStore {
   lastAutosave: Date | null
   recentFiles: RecentFile[]
   showHome: boolean
+  createdIso: string | null
 
   setFilePath: (path: string | null) => void
   setDirty: (dirty: boolean) => void
@@ -15,6 +16,7 @@ interface FileStore {
   setShowHome: (show: boolean) => void
   markSaved: (path?: string) => void
   setLastAutosave: (date: Date) => void
+  setCreatedIso: (iso: string | null) => void
 }
 
 export const useFileStore = create<FileStore>((set) => ({
@@ -24,6 +26,7 @@ export const useFileStore = create<FileStore>((set) => ({
   lastAutosave: null,
   recentFiles: [],
   showHome: true,
+  createdIso: null,
 
   setFilePath: (path) =>
     set({ filePath: path, fileName: path ? (path.split('/').pop() ?? path) : null }),
@@ -42,4 +45,6 @@ export const useFileStore = create<FileStore>((set) => ({
     })),
 
   setLastAutosave: (date) => set({ lastAutosave: date }),
+
+  setCreatedIso: (iso) => set({ createdIso: iso }),
 }))

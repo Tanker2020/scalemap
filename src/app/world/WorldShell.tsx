@@ -1,18 +1,29 @@
 // The app's entire post-home body: breadcrumb header + animated level router.
 // AZ level renders <AzCanvas/> (Task 13); Task 14 adds file actions here.
-import { useEffect } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { useNavStore } from '../store/nav.store'
+import { useFileStore } from '../store/file.store'
+import { useWorldStore } from '../store/world.store'
 import { Breadcrumb } from './Breadcrumb'
 import { GlobeView } from './GlobeView'
 import { RegionView } from './RegionView'
 import { ServerView } from './ServerView'
 import { WorldPanel } from './panels/WorldPanel'
 import { AzCanvas } from './AzCanvas'
+import { openWorldViaDialog, saveWorld } from './fileOps'
+
+const hdrBtn: CSSProperties = {
+  background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
+  borderRadius: 4, padding: '3px 10px', cursor: 'pointer',
+  font: '11px var(--font-mono)', color: 'var(--color-text-secondary)',
+}
 
 export function WorldShell() {
   const nav = useNavStore()
   const reduced = useReducedMotion()
+  const dirty = useFileStore(s => s.dirty)
+  const [fileError, setFileError] = useState<string | null>(null)
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -39,8 +50,20 @@ export function WorldShell() {
         background: 'var(--color-toolbar)',
       }}>
         <Breadcrumb />
-        <span style={{ font: '10px var(--font-mono)', color: 'var(--color-text-muted)' }}>esc = up one level</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ font: '10px var(--font-mono)', color: 'var(--color-text-muted)' }}>esc = up one level</span>
+          {dirty && <span style={{ color: 'var(--color-warning)', font: '10px var(--font-mono)' }}>● unsaved</span>}
+          <button style={hdrBtn} onClick={() => { useWorldStore.getState().newWorld(); useFileStore.getState().setFilePath(null); useFileStore.getState().setCreatedIso(null); useNavStore.getState().goGlobe() }}>New</button>
+          <button style={hdrBtn} onClick={() => { openWorldViaDialog().catch(e => setFileError(e instanceof Error ? e.message : 'open failed')) }}>Open</button>
+          <button style={hdrBtn} onClick={() => { saveWorld().catch(e => setFileError(e instanceof Error ? e.message : 'save failed')) }}>Save</button>
+          <button style={hdrBtn} onClick={() => { saveWorld({ forceDialog: true }).catch(e => setFileError(e instanceof Error ? e.message : 'save failed')) }}>Save As</button>
+        </div>
       </header>
+      {fileError && (
+        <div style={{ padding: '4px 16px', font: '11px var(--font-mono)', color: 'var(--color-danger)', borderBottom: '1px solid var(--color-toolbar-border)' }}>
+          {fileError} <button style={{ ...hdrBtn, padding: '0 6px' }} onClick={() => setFileError(null)}>dismiss</button>
+        </div>
+      )}
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <main style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
           <AnimatePresence mode="wait">

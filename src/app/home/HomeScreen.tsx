@@ -3,14 +3,14 @@ import { FilePlus, Clock, Import } from 'lucide-react'
 import { useFileStore } from '../store/file.store'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
-import { getRecentFiles, loadDiagram, type RecentFile } from '../../lib/tauri'
-import { deserializeWorld } from '../../lib/serializer'
+import { getRecentFiles, type RecentFile } from '../../lib/tauri'
+import { openWorldFromPath } from '../world/fileOps'
 import styles from './HomeScreen.module.css'
 
 export function HomeScreen() {
   const [recents, setRecents] = useState<RecentFile[]>([])
   const [openError, setOpenError] = useState<string | null>(null)
-  const { setShowHome, markSaved, setRecentFiles } = useFileStore()
+  const { setShowHome, setRecentFiles } = useFileStore()
 
   useEffect(() => {
     getRecentFiles().then(files => {
@@ -28,16 +28,7 @@ export function HomeScreen() {
 
   const openFile = async (path: string) => {
     try {
-      const raw = await loadDiagram(path)
-      const file = deserializeWorld(raw)
-      useWorldStore.getState().replaceWorld(file.world)
-      const vs = file.viewState
-      const nav = useNavStore.getState()
-      if (vs?.level === 'server' && vs.regionId && vs.azId && vs.serverId) nav.goServer(vs.regionId, vs.azId, vs.serverId)
-      else if (vs?.level === 'az' && vs.regionId && vs.azId) nav.goAz(vs.regionId, vs.azId)
-      else if (vs?.level === 'region' && vs.regionId) nav.goRegion(vs.regionId)
-      else nav.goGlobe()
-      markSaved(path)
+      await openWorldFromPath(path)
       setShowHome(false)
     } catch (e) {
       console.error('Failed to open file:', e)

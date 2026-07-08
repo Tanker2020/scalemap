@@ -10,6 +10,7 @@ import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
   createPopulation, nextWorldId, type InstancePresetLike,
 } from '../../lib/world/factories'
+import { useFileStore } from './file.store'
 
 const deepCopy = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T
 
@@ -93,6 +94,7 @@ export const useWorldStore = create<WorldStore>((set, get) => {
   const mutate = (fn: (doc: WorldDoc) => WorldDoc) => {
     get().pushHistory()
     set(s => ({ doc: fn(s.doc) }))
+    useFileStore.getState().setDirty(true)
   }
 
   return {
