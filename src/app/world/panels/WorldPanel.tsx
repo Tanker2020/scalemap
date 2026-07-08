@@ -20,7 +20,7 @@ export function WorldPanel() {
       <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
         {tabs.map(t => (
           <button key={t.id}
-            style={{ ...smallBtn, ...(tab === t.id ? { color: 'var(--color-text-primary)', borderColor: 'var(--color-text-muted)' } : {}) }}
+            style={{ ...smallBtn, ...(tab === t.id ? { color: 'var(--color-text-primary)', border: '1px solid var(--color-text-muted)' } : {}) }}
             onClick={() => setTab(t.id)}>
             {t.label}
           </button>
