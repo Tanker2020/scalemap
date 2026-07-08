@@ -25,7 +25,6 @@ import { useFileStore } from './app/store/file.store'
 import { useCanvasStore } from './app/store/canvas.store'
 import { useSimulationStore } from './app/store/simulation.store'
 import { useMetricsHistoryStore } from './app/store/metricsHistory.store'
-import { useDiagnosticsStore } from './app/store/diagnostics.store'
 import { useUiStore } from './app/store/ui.store'
 import { serialize } from './lib/serializer'
 import styles from './App.module.css'
@@ -73,7 +72,6 @@ export default function App() {
         e.preventDefault()
         useSimulationStore.getState().reset()
         useMetricsHistoryStore.getState().clearHistory()
-        useDiagnosticsStore.getState().clearDiagnostics()
         useCanvasStore.setState({ nodes: [], edges: [], history: [], future: [] })
         useFileStore.getState().setShowHome(false)
       }

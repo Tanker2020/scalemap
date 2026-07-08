@@ -537,7 +537,7 @@
   color: var(--color-text-muted);
 }
 
-/* ── Panels group (Inspect / Dock / Packets / Diagnostics) ─────────
+/* ── Panels group (Inspect / Dock / Packets) ─────────
    Visually groups the persistent-UI toggle buttons together, with a small caption label, so
    they read as "things that open a panel" distinct from one-shot actions (Undo/Redo/Export)
    to their left and the Simulate action-button to their right. This is the toolbar-side half
@@ -679,48 +679,6 @@
   color: var(--color-accent);
   background: color-mix(in srgb, #A78BFA 20%, var(--color-surface));
   border: 1px solid color-mix(in srgb, #A78BFA 40%, transparent);
-  border-radius: 9px;
-  padding: 0 5px;
-  min-width: 16px;
-  text-align: center;
-  line-height: 16px;
-  height: 16px;
-}
-
-/* ── Diagnostics (architectural linter) ───────────── */
-
-.btnDiagnostics {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  background: var(--color-node-base);
-  border: 1px solid var(--color-node-border);
-  border-radius: 6px;
-  color: var(--color-text-muted);
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  transition: background 0.1s, border-color 0.1s, color 0.1s;
-}
-
-/* Border uses a distinct teal (network-family accent) with no corresponding ColorTokens entry —
-   same category as the messaging-purple TODO above; decorative, not text, so no contrast concern.
-   Hover TEXT was the one genuine light-mode legibility break (final-branch-review finding): the
-   pale teal read at ~1.4:1 against the theme-aware light hover background. Fixed to the
-   theme-aware primary text color, same treatment as .btnReports:hover above. */
-.btnDiagnostics:hover {
-  background: var(--color-surface-hover);
-  border-color: #2DD4BF44;
-  color: var(--color-text-primary);
-}
-
-.diagnosticsBadge {
-  font-size: 8px;
-  font-weight: 700;
-  color: var(--color-warning);
-  background: color-mix(in srgb, var(--color-warning) 13%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-warning) 40%, transparent);
   border-radius: 9px;
   padding: 0 5px;
   min-width: 16px;
@@ -912,7 +870,7 @@
    remove the capability. The ScaleScript pill is informational (the script itself keeps
    running); losing its toolbar visibility at extreme widths is an acceptable trade. The Panels
    group's "Panels" caption is decorative (the icons+labels are still self-explanatory without
-   it), and its four text labels (Inspect/Dock/Packets/Diagnostics) collapse to the same
+   it), and its three text labels (Inspect/Dock/Packets) collapse to the same
    icon-only treatment already used for Select/Hand/Connect — titles/tooltips still carry the
    full label. Breakpoints were tuned empirically against a continuous 640-1440px width scan
    with a real diagram loaded (Load Balanced Cluster vault template) checking .toolbarMain's
@@ -933,8 +891,7 @@
      icon+text (10-12px horizontal) and left excess whitespace once just an icon remains,
      so tighten it to match .btnToolIcon's icon-only padding. */
   .panelGroup .btnInspect,
-  .panelGroup .btnReports,
-  .panelGroup .btnDiagnostics {
+  .panelGroup .btnReports {
     padding: 5px 7px;
     gap: 0;
   }

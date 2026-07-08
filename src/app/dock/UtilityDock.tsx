@@ -1,24 +1,21 @@
 import { useEffect } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { X, ShieldCheck, ClipboardList } from 'lucide-react'
+import { X, ClipboardList } from 'lucide-react'
 import { useUiStore, type DockTab } from '../store/ui.store'
-import { useDiagnosticsStore } from '../store/diagnostics.store'
 import { useSimulationStore } from '../store/simulation.store'
-import { useCanvasStore } from '../store/canvas.store'
-import { DiagnosticsPanel } from '../diagnostics/DiagnosticsPanel'
 import { ReportsPanel } from '../reports/ReportsPanel'
 import styles from './UtilityDock.module.css'
 
 /**
- * Unified bottom-right drawer for Diagnostics + Reports.
+ * Bottom-right drawer hosting the Reports panel.
  *
- * Previously these were two independent `position: fixed; right: 0` overlays
- * (DiagnosticsPanel, ReportsPanel), each toggled by its own Toolbar button with no
- * coordination — a user could open both and have them render stacked on top of each other
- * at the exact same screen position. This shell owns the single dock slot and a tab strip;
- * only one tab's content is ever mounted-visible at a time, so the two panels can no longer
- * collide. Each panel's own internal logic (filters, run detail overlay, etc.) is untouched —
- * only their outer chrome (position/header/close button) moved up into this file.
+ * Was originally a two-tab dock (Diagnostics + Reports) unifying what had been two independent
+ * `position: fixed; right: 0` overlays that could stack on top of each other at the same screen
+ * position. The Diagnostics tab was removed along with the structural linter (2026-07-08,
+ * replaced by the Phase 6 Analysis system) — this shell still owns the single dock slot/tab
+ * strip so a future panel can reuse the same shared-slot pattern without reintroducing that
+ * stacking bug. ReportsPanel's own internal logic (run list, run detail overlay, etc.) is
+ * untouched — only the outer chrome (position/header/close button) lives in this file.
  *
  * `position: fixed`, self-gated on `dockOpen` (2026-07-02 canvas-first-overlay pass — see
  * docs/superpowers/specs/2026-07-02-canvas-first-overlay-layout-design.md). This supersedes the
@@ -39,14 +36,7 @@ export function UtilityDock() {
   const openDockTab = useUiStore(s => s.openDockTab)
   const reduceMotion = useReducedMotion()
 
-  const nodes = useCanvasStore(s => s.nodes)
-  const diagnostics = useDiagnosticsStore(s => s.diagnostics)
   const runs = useSimulationStore(s => s.runs)
-
-  // Same "drop issues whose node was deleted" logic DiagnosticsPanel uses for its own count —
-  // duplicated here (cheaply, it's a short filter) so the tab badge matches the list exactly.
-  const nodeIds = new Set(nodes.map(n => n.id))
-  const liveDiagnosticsCount = diagnostics.filter(i => !i.nodeId || nodeIds.has(i.nodeId)).length
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setDockOpen(false) }
@@ -54,8 +44,7 @@ export function UtilityDock() {
     return () => document.removeEventListener('keydown', onKey)
   }, [setDockOpen])
 
-  const tabs: { key: DockTab; label: string; icon: typeof ShieldCheck; count: number }[] = [
-    { key: 'diagnostics', label: 'Diagnostics', icon: ShieldCheck, count: liveDiagnosticsCount },
+  const tabs: { key: DockTab; label: string; icon: typeof ClipboardList; count: number }[] = [
     { key: 'reports', label: 'Reports', icon: ClipboardList, count: runs.length },
   ]
 
@@ -90,29 +79,16 @@ export function UtilityDock() {
 
       <div className={styles.content}>
         <AnimatePresence mode="wait" initial={false}>
-          {dockTab === 'diagnostics' ? (
-            <motion.div
-              key="diagnostics"
-              className={styles.tabPane}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.1 }}
-            >
-              <DiagnosticsPanel />
-            </motion.div>
-          ) : (
-            <motion.div
-              key="reports"
-              className={styles.tabPane}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.1 }}
-            >
-              <ReportsPanel />
-            </motion.div>
-          )}
+          <motion.div
+            key="reports"
+            className={styles.tabPane}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.1 }}
+          >
+            <ReportsPanel />
+          </motion.div>
         </AnimatePresence>
       </div>
         </motion.aside>

@@ -103,8 +103,8 @@ function CanvasInner() {
     return () => ro.disconnect()
   }, [])
 
-  // Diagnostics panel "focus" — pan/zoom to fit whatever node(s) were just highlighted
-  // (a single issue's node, or the whole path for a cycle/deep-sync-chain issue).
+  // "Focus" — pan/zoom to fit whatever node(s) a panel just highlighted via
+  // useUiStore.setHighlightedNodes() (e.g. a single node, or a whole path for a chain).
   useEffect(() => {
     if (highlightedNodeIds.length === 0) return
     const targets = highlightedNodeIds

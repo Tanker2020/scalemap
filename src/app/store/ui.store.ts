@@ -2,7 +2,7 @@ import { create } from 'zustand'
 
 export type ActiveTool = 'select' | 'hand' | 'connect'
 export type RightTab = 'properties' | 'analytics'
-export type DockTab = 'diagnostics' | 'reports'
+export type DockTab = 'reports'
 
 interface UiStore {
   activeTool: ActiveTool
@@ -16,13 +16,14 @@ interface UiStore {
   contextMenu: { x: number; y: number; targetId: string; targetType: 'node' | 'edge' } | null
   simConfigOpen: boolean
   simConfigPanelNodeId: string | null
-  /** Unified Diagnostics/Reports dock (see UtilityDock.tsx) — one overlay slot, two tabs,
-   *  replacing the formerly-independent reportsPanelOpen/diagnosticsOpen flags that could
-   *  both be true at once and stack on top of each other at the same right-edge position. */
+  /** Reports dock (see UtilityDock.tsx) — one overlay slot. Formerly shared with a Diagnostics
+   *  tab (removed along with the structural linter, 2026-07-08); dockTab is kept as a
+   *  single-member union rather than collapsed away in case a future panel (the Phase 6
+   *  Analysis system) wants the same shared-slot dock pattern. */
   dockOpen: boolean
   dockTab: DockTab
   packetEditorOpen: boolean
-  highlightedNodeIds: string[]   // transient "look here" pulse driven by the diagnostics panel
+  highlightedNodeIds: string[]   // transient "look here" pulse, e.g. to focus a node from a panel
   themeMode: 'dark' | 'light'
 
   setActiveTool: (tool: ActiveTool) => void
@@ -56,7 +57,7 @@ export const useUiStore = create<UiStore>((set) => ({
   simConfigOpen: false,
   simConfigPanelNodeId: null,
   dockOpen: false,
-  dockTab: 'diagnostics',
+  dockTab: 'reports',
   packetEditorOpen: false,
   highlightedNodeIds: [],
   themeMode: (localStorage.getItem('scalemap-theme-mode') as 'dark' | 'light') ?? 'dark',

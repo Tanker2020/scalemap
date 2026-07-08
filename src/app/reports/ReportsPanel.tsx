@@ -404,8 +404,8 @@ function RunCard({ run, runIndex, onClick }: { run: SimulationRun; runIndex: num
  * Reports tab body — mounted inside UtilityDock (src/app/dock/UtilityDock.tsx), which owns
  * the shared right-edge shell (position, header, tab strip, Escape-to-close). This component
  * only renders the run list + footer; it no longer manages its own fixed-position chrome or
- * close button (previously duplicated DiagnosticsPanel's, which is how the two ended up
- * stacking on top of each other at the same right-edge position). The full-screen
+ * close button (previously duplicated the dock's former Diagnostics tab's, which is how the
+ * two ended up stacking on top of each other at the same right-edge position). The full-screen
  * RunDetailOverlay modal below is unaffected — it already renders above everything via its
  * own backdrop, independent of the dock.
  */

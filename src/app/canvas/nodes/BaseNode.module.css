@@ -205,22 +205,6 @@
   justify-content: center;
 }
 
-/* Architectural lint badge — colour set inline via --lint-color (error red / warn amber) */
-.lintBadge {
-  font-size: 8px;
-  font-weight: 700;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: color-mix(in srgb, var(--lint-color, var(--color-warning)) 18%, transparent);
-  border: 1px solid color-mix(in srgb, var(--lint-color, var(--color-warning)) 55%, transparent);
-  color: var(--lint-color, var(--color-warning));
-  cursor: help;
-}
-
 /* Simulation-driven bottleneck badge */
 .bottleneckBadge {
   font-size: 8px;
@@ -237,9 +221,10 @@
   cursor: help;
 }
 
-/* Diagnostics-panel "look here" pulse — a transient ring distinct from .selected, triggered by
-   clicking an issue in DiagnosticsPanel.tsx. Self-clears after ~2.2s (see BaseNode.tsx). Uses the
-   node's own accent color so it doesn't compete with severity colors already on the badge/dot. */
+/* "Look here" pulse — a transient ring distinct from .selected, triggered by setHighlightedNodes()
+   (ui.store.ts) from whichever panel wants to focus a node. Self-clears after ~2.2s (see
+   BaseNode.tsx). Uses the node's own accent color so it doesn't compete with severity colors
+   already on the badge/dot. */
 @keyframes diagnosticPulseAnim {
   0%   { box-shadow: 0 0 0 0px color-mix(in srgb, var(--accent, #4A9EFF) 55%, transparent), 0 4px 18px rgba(0,0,0,0.55); }
   70%  { box-shadow: 0 0 0 10px color-mix(in srgb, var(--accent, #4A9EFF) 0%, transparent), 0 4px 18px rgba(0,0,0,0.55); }

@@ -1,12 +1,10 @@
 import { useCallback, useState, useRef, useEffect } from 'react'
-import { ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, ClipboardList, ShieldCheck, Package, Sun, Moon, Cloud, Lock } from 'lucide-react'
+import { ChevronDown, MousePointer2, Hand, Zap, SlidersHorizontal, ClipboardList, Package, Sun, Moon, Cloud, Lock } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
 import type { CloudProvider } from '../../lib/cloudRegistry'
 import { useSimulationStore, type TrafficMode } from '../store/simulation.store'
 import { useUiStore } from '../store/ui.store'
-import { useDiagnosticsStore } from '../store/diagnostics.store'
 import { useFileStore } from '../store/file.store'
-import { lintGraph } from '../../lib/lint/lintGraph'
 import { FileMenu } from './FileMenu'
 import styles from './Toolbar.module.css'
 
@@ -154,18 +152,8 @@ export function Toolbar() {
   const { running, paused, setRunning, setPaused, activeScript, setActiveScript, runs, simulationMode, globalMultiplier } = useSimulationStore()
   const { activeTool, setActiveTool, setSimConfigOpen, simConfigOpen, dockOpen, dockTab, openDockTab, setDockOpen, packetEditorOpen, setPacketEditorOpen, themeMode, setThemeMode } = useUiStore()
   const packetMode = useCanvasStore(s => s.packetMode)
-  const diagnosticsCount = useDiagnosticsStore(s => s.diagnostics.length)
   const { showHome, fileName } = useFileStore()
 
-  // Re-runs the linter and opens the dock on the Diagnostics tab. If the dock is already open
-  // on Diagnostics, clicking again just re-runs (dock stays open) rather than toggling closed —
-  // "Diagnostics" here is primarily an action (run the linter), the dock visibility is a
-  // secondary effect, unlike Inspect/Dock-on-Reports which are pure visibility toggles.
-  const runDiagnostics = useCallback(() => {
-    const { nodes, edges } = useCanvasStore.getState()
-    useDiagnosticsStore.getState().setDiagnostics(lintGraph(nodes, edges))
-    openDockTab('diagnostics')
-  }, [openDockTab])
   const [scriptPreviewOpen, setScriptPreviewOpen] = useState(false)
   const [simSettingsOpen, setSimSettingsOpen] = useState(false)
   const simWrapRef = useRef<HTMLDivElement>(null)
@@ -267,12 +255,12 @@ export function Toolbar() {
                   if (dockOpen && dockTab === 'reports') { setDockOpen(false); return }
                   openDockTab('reports')
                 }}
-                title="Reports & Diagnostics dock — simulation run history and architectural lint results"
+                title="Reports dock — simulation run history"
               >
                 <ClipboardList size={12} />
                 <span className={styles.panelBtnLabel}>Dock</span>
-                {(runs.length > 0 || diagnosticsCount > 0) && (
-                  <span className={styles.reportsBadge}>{runs.length + diagnosticsCount}</span>
+                {runs.length > 0 && (
+                  <span className={styles.reportsBadge}>{runs.length}</span>
                 )}
               </button>
 
@@ -285,18 +273,6 @@ export function Toolbar() {
                 <span className={styles.panelBtnLabel}>Packets</span>
                 {packetMode === 'custom' && (
                   <span className={styles.reportsBadge}>on</span>
-                )}
-              </button>
-
-              <button
-                className={styles.btnDiagnostics}
-                onClick={runDiagnostics}
-                title="Run architectural diagnostics — detect anti-patterns in the current design"
-              >
-                <ShieldCheck size={12} />
-                <span className={styles.panelBtnLabel}>Diagnostics</span>
-                {diagnosticsCount > 0 && (
-                  <span className={styles.diagnosticsBadge}>{diagnosticsCount}</span>
                 )}
               </button>
             </div>
