@@ -79,9 +79,14 @@ describe('tracer', () => {
     expect(traces).toHaveLength(1)
     const t = traces[0]
     expect(t.hops).toHaveLength(1)
-    expect(t.hops[0]).toMatchObject({ fromId: f.apiInst, toId: f.pgInst, hopClass: 'same-az', outcome: 'ok', latencyMs: 4 })
+    expect(t.hops[0]).toMatchObject({ fromId: f.apiInst, toId: f.pgInst, hopClass: 'same-az', outcome: 'ok' })
+    // hop latency = same-az network latency (0.5ms +-10% jitter) + pg's serviceLatencyMs (4)
+    expect(t.hops[0].latencyMs).toBeGreaterThanOrEqual(4 + 0.45)
+    expect(t.hops[0].latencyMs).toBeLessThanOrEqual(4 + 0.55)
     expect(t.outcome).toBe('ok')
-    expect(t.totalMs).toBeCloseTo(12, 5)   // entry 8 + hop 4
+    // totalMs = entry serviceLatencyMs (8) + hop latencyMs
+    expect(t.totalMs).toBeGreaterThanOrEqual(8 + 4 + 0.45)
+    expect(t.totalMs).toBeLessThanOrEqual(8 + 4 + 0.55)
     expect(t.populationId).toBeNull()
     // The traced hop corresponds to a compiled permitted path.
     expect(f.compiled.paths.some(p =>

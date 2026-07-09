@@ -4,6 +4,9 @@
 import type { ReplayFrame, TracedRequest, RenderScope } from './types'
 import type { Rng } from './rng'
 import type { InstanceFlow } from './flows'
+import { MANAGED_SERVICE_LATENCY_MS } from './flows'
+import { hopLatencyMs } from './networkRuntime'
+import { REGION_GEO } from '../world/regionGeo'
 import type { WorldDoc, CompiledWorld, InstanceId, PopulationId } from '../world/types'
 
 export interface ReplayBuffer {
@@ -62,7 +65,7 @@ export function createTracer(rng: Rng): Tracer {
   }
 
   return {
-    sample(flows, compiled, _doc, simMs, populationOf) {
+    sample(flows, compiled, doc, simMs, populationOf) {
       // Entry instances: offered demand and nothing upstream feeding them.
       const fedByOthers = new Set<string>()
       for (const f of Object.values(flows)) {
@@ -82,7 +85,18 @@ export function createTracer(rng: Rng): Tracer {
         if (!f || f.downstream.length === 0) break
         const row = rng.pick(f.downstream)
         const toId = row.toInstanceId ?? row.toManagedServiceId ?? ''
-        const latencyMs = row.blocked ? 0 : row.toInstanceId ? (flows[row.toInstanceId]?.serviceLatencyMs ?? 1) : 3
+        let latencyMs = 0
+        if (!row.blocked) {
+          const fromRegionCatalogId = doc.regions[compiled.instances[cur]?.regionId]?.catalogId ?? null
+          const downstreamServiceMs = row.toInstanceId
+            ? (flows[row.toInstanceId]?.serviceLatencyMs ?? 1)
+            : MANAGED_SERVICE_LATENCY_MS
+          const toRegionCatalogId = row.toInstanceId
+            ? (doc.regions[compiled.instances[row.toInstanceId]?.regionId]?.catalogId ?? null)
+            : null
+          const networkHopLatencyMs = hopLatencyMs(row.hopClass, fromRegionCatalogId, toRegionCatalogId, null, REGION_GEO, rng)
+          latencyMs = networkHopLatencyMs + downstreamServiceMs
+        }
         hops.push({
           fromId: cur,
           toId,

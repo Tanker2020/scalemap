@@ -166,7 +166,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         if (inst) into[inst] = (into[inst] ?? 0) + perBp
       }
     }
-    void simMs   // reserved for future drain-aware ingest; drain currently applied at the flow layer
+    void simMs   // reserved; AZ drain is currently visual-only — buildAzParticles fades a draining AZ's particles, but rps re-splits instantly via azSplit when an AZ goes down
   }
 
   const applyHealth = (scope: 'server' | 'az' | 'region', id: string, inputs: { errorRate: number; cpuPressure: number; checkFailed: boolean; manualDown: boolean }, simMs: number): void => {
