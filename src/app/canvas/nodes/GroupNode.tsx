@@ -4,7 +4,7 @@ import type { NodeData, NodeType } from '../../../lib/nodeConfig'
 import { NODE_CONFIG } from '../../../lib/nodeConfig'
 import { CATEGORY_COLORS } from '../../../lib/theme'
 import { useCanvasStore } from '../../store/canvas.store'
-import { useSimulationStore } from '../../store/simulation.store'
+import { useSimulationStore } from '../../store/simulationLegacy.store'
 import { useUiStore } from '../../store/ui.store'
 import styles from './GroupNode.module.css'
 

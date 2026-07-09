@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X } from 'lucide-react'
-import { useSimulationStore } from '../../store/simulation.store'
+import { useSimulationStore } from '../../store/simulationLegacy.store'
 import styles from './RequestInspector.module.css'
 
 const METHOD_COLORS: Record<string, string> = {

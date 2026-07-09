@@ -1,5 +1,5 @@
 import { useFileStore } from './store/file.store'
-import { useSimulationStore } from './store/simulation.store'
+import { useSimulationStore } from './store/simulationLegacy.store'
 import styles from './StatusBar.module.css'
 
 function formatAutosave(date: Date | null): string {

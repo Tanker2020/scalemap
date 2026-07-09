@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useCanvasStore } from '../store/canvas.store'
-import { useSimulationStore } from '../store/simulation.store'
+import { useSimulationStore } from '../store/simulationLegacy.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
 import { NODE_CONFIG, type NodeType, type NodeData } from '../../lib/nodeConfig'
 import { DEFAULT_SLO } from '../simulation/defaults'

@@ -15,7 +15,7 @@ import {
 import '@xyflow/react/dist/style.css'
 
 import { useCanvasStore } from '../store/canvas.store'
-import { useSimulationStore } from '../store/simulation.store'
+import { useSimulationStore } from '../store/simulationLegacy.store'
 import { useUiStore } from '../store/ui.store'
 import { useFileStore } from '../store/file.store'
 import { BaseNode } from './nodes/BaseNode'

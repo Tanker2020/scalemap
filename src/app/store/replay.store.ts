@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { NodeMetrics } from './simulation.store'
+import type { NodeMetrics } from './simulationLegacy.store'
 
 // Outage Playback Recorder — health-snapshot ring buffer.
 // Mirrors the ring-buffer pattern in metricsHistory.store.ts. Holds one full per-node

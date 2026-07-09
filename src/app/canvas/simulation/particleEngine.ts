@@ -8,7 +8,7 @@ import type {
 import { GROUPING_TYPES, DEFAULT_EVENT_EDGE_CONFIG, edgeAcceptsProtocol, FORWARD_ONLY_NODE_TYPES, canDefineOutboundThroughput } from '../../../lib/nodeConfig'
 import { useCanvasStore } from '../../store/canvas.store'
 import { sampleInterRegionLatencyMs } from '../../../lib/regionConfig'
-import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventType, type CircuitState, type RequestSnapshot, type TemplateInfo } from '../../store/simulation.store'
+import { useSimulationStore, type TrafficMode, type NodeMetrics, type SimEventType, type CircuitState, type RequestSnapshot, type TemplateInfo } from '../../store/simulationLegacy.store'
 import { useReplayStore } from '../../store/replay.store'
 import { NODE_SIM_DEFAULTS, DEFAULT_PACKET_WORKLOAD } from '../../simulation/defaults'
 import { CLOUD_REGISTRY, type CloudProvider } from '../../../lib/cloudRegistry'

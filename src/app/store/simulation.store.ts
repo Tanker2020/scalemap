@@ -1,258 +1,76 @@
+// src/app/store/simulation.store.ts — v2 (Phase 2). The legacy shape retired here with the
+// legacy engine; the old store lives on verbatim as simulationLegacy.store.ts until Task 17
+// deletes it with the rest of the legacy tree. Views read this store; only its actions call
+// the worldEngine facade. Shape: frozen contracts §"Store publication" + the sanctioned
+// additive fields scrubIndex/scrubBatch (T15 consumer) and degraded (perf watch — T12 owns it).
 import { create } from 'zustand'
-import type { NodeSimConfig } from '../../lib/nodeConfig'
-import type { CostSummary } from '../../lib/costModel'
+import type { WorldDoc, CompiledWorld } from '../../lib/world/types'
+import type {
+  MetricsBatch, EngineEvent, RenderScope, FramePayload, DetachFn, ReplayFrame, TracedRequest,
+} from '../../lib/worldEngine/types'
+import { worldEngine } from '../../lib/worldEngine'
 
-export type TrafficMode = 'steady' | 'ramp' | 'spike' | 'chaos'
+const EVENT_CAP = 500
 
-export type CircuitState = 'closed' | 'open' | 'half-open'
-
-export interface NodeMetrics {
-  inRps: number
-  outRps: number
-  utilization: number
-  errorRate: number
-  p50LatencyMs: number
-  p75LatencyMs: number
-  p90LatencyMs: number
-  p99LatencyMs: number
-  queueDepth?: number
-  consumerLagMs?: number                      // stream nodes only: time-to-drain at current outRps
-  concurrency?: number
-  circuitState?: CircuitState
-  activeRequests?: number                         // in-flight requests currently being processed
-  healthScore?: number                            // 0.0 (critical) – 1.0 (perfect)
-  healthState?: 'healthy' | 'degraded' | 'down'  // computed or forced
-  droppedRequests?: number                        // cumulative drops at this node since sim start
-  deadLetterCount?: number                        // event edges: cumulative dead-lettered messages
-  dbSaturation?: 'read' | 'write'                // DB nodes: which capacity limit was the bottleneck
-  egressBytesPerSec?: number                      // live outbound response bandwidth (drives egress cost)
-  bottleneckResource?: 'cpu' | 'memory'          // EC2 compute model: which limit is binding
-}
-
-export type SimEventType =
-  | 'saturation_start' | 'saturation_end'
-  | 'circuit_open' | 'circuit_close' | 'circuit_half_open'
-  | 'cascade_detected'
-  | 'simulation_start' | 'simulation_stop'
-  | 'chaos_failure' | 'chaos_recovery'
-  | 'connection_pool_exhausted'
-  | 'lambda_cold_start'
-  | 'request_timeout'
-  | 'slo_violation'
-  | 'slo_recovery'
-  | 'autoscale_triggered'
-  | 'autoscale_complete'
-  | 'autoscale_scaledin'
-  | 'crash_loop_detected'
-  | 'retry_storm'
-  | 'quota_constrained'
-  | 'cluster_exhausted'
-  | 'hpa_blocked'
-  | 'dead_letter'
-  | 'edge_backpressure'
-
-export interface SimEvent {
-  id: string
-  type: SimEventType
-  nodeId?: string
-  causedByNodeId?: string  // provably caused by this node failing (not inferred from time proximity)
-  at: number
-  elapsedS: number
-  message: string
-  severity: 'info' | 'warn' | 'critical'
-  metricsSnapshot?: Partial<NodeMetrics>
-}
-
-export interface SimulationRun {
-  id: string
-  startedAt: number
-  endedAt: number
-  durationS: number
-  peakRps: number
-  peakUtilization: number
-  avgErrorRate: number
-  sloViolations: number
-  bottleneckNodeIds: string[]
-  events: SimEvent[]
-  nodeSnapshots: Map<string, NodeMetrics>
-  trafficMode: TrafficMode
-  globalMultiplier: number
-  costSummary?: CostSummary
-}
-
-export interface SloStatus {
-  passing: boolean
-  violations: string[]
-}
-
-// Resolved, render-ready packet info attached at pick time so the inspector needs no
-// registry lookup. Fields are protocol-specific; only the matching ones are populated.
-export interface TemplateInfo {
-  name: string
-  protocol: 'http' | 'event' | 'stream' | 'db'
-  sizeKb: number
-  // http
-  method?: string
-  path?: string
-  statusCode?: number
-  // event
-  topic?: string
-  eventType?: string
-  deliveryMode?: string
-  // stream
-  streamId?: string
-  compressionType?: string
-  // db
-  queryType?: string
-  isWAL?: boolean
-  resultSizeKb?: number
-}
-
-export interface RequestSnapshot {
-  particleId: number
-  edgeId: string
-  sourceLabel: string
-  targetLabel: string
-  edgeType: string
-  retries: number
-  progress: number       // t value 0–1, position along edge
-  httpMethod: string
-  httpPath: string
-  payloadBytes: number
-  templateId?: number
-  templateInfo?: TemplateInfo  // present only in custom mode on a typed particle
-}
-
-import type { ScaleScript } from '../../lib/scalescript'
-
-interface SimulationStore {
+interface SimulationStoreV2 {
   running: boolean
-  paused: boolean
-  speed: number
-  simulationMode: TrafficMode
-  globalMultiplier: number
-  nodeMetrics: Map<string, NodeMetrics>
-  bottlenecks: Set<string>
-  nodeConfigs: Map<string, NodeSimConfig>
-  edgeRps: Map<string, number>
-  events: SimEvent[]
-  sloStatus: Map<string, SloStatus>
-  activeScript: ScaleScript | null
-  inspectedRequest: RequestSnapshot | null
+  timeScale: number
+  latestBatch: MetricsBatch | null
+  events: EngineEvent[]
+  healthOverrides: Record<string, boolean>
+  scrubIndex: number | null
+  scrubBatch: MetricsBatch | null
+  degraded: boolean
 
-  setRunning: (running: boolean) => void
-  toggleRunning: () => void
-  setPaused: (paused: boolean) => void
-  setSpeed: (speed: number) => void
-  setSimulationMode: (mode: TrafficMode) => void
-  setGlobalMultiplier: (value: number) => void
-  runs: SimulationRun[]
-  activeRunStart: number | null
-
-  setNodeMetrics: (nodeId: string, metrics: NodeMetrics) => void
-  setAllNodeMetrics: (batch: Map<string, NodeMetrics>) => void
-  markBottleneck: (nodeId: string, isSaturated: boolean) => void
-  setNodeConfig: (nodeId: string, config: Partial<NodeSimConfig>) => void
-  setEdgeRps: (edgeId: string, rps: number) => void
-  getEdgeRps: (edgeId: string) => number
-  addEvent: (event: Omit<SimEvent, 'id'>) => void
-  clearEvents: () => void
-  setSloStatus: (nodeId: string, status: SloStatus) => void
-  setActiveScript: (script: ScaleScript | null) => void
-  pushRun: (run: SimulationRun) => void
-  setInspectedRequest: (r: RequestSnapshot | null) => void
-  reset: () => void
+  start: (doc: WorldDoc, compiled: CompiledWorld) => void
+  stop: () => void
+  setTimeScale: (scale: number) => void
+  setOutage: (scope: 'server' | 'az' | 'region', id: string, down: boolean) => void
+  setScrubIndex: (i: number | null) => void
+  attachRenderer: (scope: RenderScope, onFrame: (p: FramePayload) => void) => DetachFn
+  getReplayFrames: () => ReplayFrame[]
+  getTracedRequests: (scope: RenderScope) => TracedRequest[]
 }
 
-let _eventCounter = 0
-
-const MAX_EVENTS = 200
-
-export const useSimulationStore = create<SimulationStore>((set, get) => ({
+export const useSimulationStore = create<SimulationStoreV2>((set) => ({
   running: false,
-  paused: false,
-  speed: 1,
-  simulationMode: 'steady',
-  globalMultiplier: 1,
-  nodeMetrics: new Map(),
-  bottlenecks: new Set(),
-  nodeConfigs: new Map(),
-  edgeRps: new Map(),
+  timeScale: 1,
+  latestBatch: null,
   events: [],
-  sloStatus: new Map(),
-  activeScript: null,
-  inspectedRequest: null,
-  runs: [],
-  activeRunStart: null,
+  healthOverrides: {},
+  scrubIndex: null,
+  scrubBatch: null,
+  degraded: false,
 
-  setRunning: (running) => set({ running }),
-  toggleRunning: () => set(s => ({ running: !s.running })),
-  setPaused: (paused) => set({ paused }),
-  setSpeed: (speed) => set({ speed }),
-  setSimulationMode: (mode) => set({ simulationMode: mode }),
-  setGlobalMultiplier: (value) => set({ globalMultiplier: value }),
-
-  setNodeMetrics: (nodeId, metrics) =>
-    set(s => {
-      const next = new Map(s.nodeMetrics)
-      next.set(nodeId, metrics)
-      return { nodeMetrics: next }
-    }),
-
-  setAllNodeMetrics: (batch) => set(() => ({ nodeMetrics: new Map(batch) })),
-
-  markBottleneck: (nodeId, isSaturated) =>
-    set(s => {
-      const next = new Set(s.bottlenecks)
-      isSaturated ? next.add(nodeId) : next.delete(nodeId)
-      return { bottlenecks: next }
-    }),
-
-  setNodeConfig: (nodeId, config) =>
-    set(s => {
-      const next = new Map(s.nodeConfigs)
-      const existing = next.get(nodeId)
-      next.set(nodeId, { ...(existing ?? { maxRps: 1000, processingMs: 10, errorRate: 0 }), ...config })
-      return { nodeConfigs: next }
-    }),
-
-  setEdgeRps: (edgeId, rps) =>
-    set(s => {
-      const next = new Map(s.edgeRps)
-      next.set(edgeId, rps)
-      return { edgeRps: next }
-    }),
-
-  getEdgeRps: (edgeId) => get().edgeRps.get(edgeId) ?? 100,
-
-  addEvent: (event) =>
-    set(s => {
-      const id = String(++_eventCounter)
-      const next = [{ ...event, id }, ...s.events].slice(0, MAX_EVENTS)
-      return { events: next }
-    }),
-
-  clearEvents: () => set({ events: [] }),
-
-  setSloStatus: (nodeId, status) =>
-    set(s => {
-      const next = new Map(s.sloStatus)
-      next.set(nodeId, status)
-      return { sloStatus: next }
-    }),
-
-  setActiveScript: (script) => set({ activeScript: script }),
-
-  pushRun: (run) => set(s => ({ runs: [run, ...s.runs].slice(0, 10) })),
-  setInspectedRequest: (r) => set({ inspectedRequest: r }),
-
-  reset: () =>
-    set({
-      running: false,
-      paused: false,
-      nodeMetrics: new Map(),
-      bottlenecks: new Set(),
-      events: [],
-      sloStatus: new Map(),
-    }),
+  start: (doc, compiled) => {
+    set({ running: true, latestBatch: null, events: [], degraded: false, scrubIndex: null, scrubBatch: null })
+    worldEngine.start(doc, compiled, {
+      onMetrics: (batch) => set({ latestBatch: batch }),
+      onEvent: (event) =>
+        set((s) => {
+          const next = s.events.length >= EVENT_CAP ? [...s.events.slice(s.events.length - EVENT_CAP + 1), event] : [...s.events, event]
+          return event.kind === 'engine_degraded' ? { events: next, degraded: true } : { events: next }
+        }),
+      onHealthChange: () => {},
+    })
+  },
+  stop: () => {
+    worldEngine.stop()
+    set({ running: false })
+  },
+  setTimeScale: (scale) => {
+    worldEngine.setTimeScale(scale)
+    set({ timeScale: scale })
+  },
+  setOutage: (scope, id, down) => {
+    worldEngine.setOutage(scope, id, down)
+    set((s) => ({ healthOverrides: { ...s.healthOverrides, [id]: down } }))
+  },
+  setScrubIndex: (i) => {
+    const frames = worldEngine.getReplayFrames()
+    set({ scrubIndex: i, scrubBatch: i === null ? null : frames[i]?.batch ?? null })
+  },
+  attachRenderer: (scope, onFrame) => worldEngine.attachRenderer(scope, onFrame),
+  getReplayFrames: () => worldEngine.getReplayFrames(),
+  getTracedRequests: (scope) => worldEngine.getTracedRequests(scope),
 }))

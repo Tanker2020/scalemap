@@ -4,7 +4,7 @@ import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import { NODE_CONFIG, PALETTE_CATEGORIES, type NodeType } from '../../lib/nodeConfig'
 import { CATEGORY_COLORS } from '../../lib/theme'
 import { useUiStore } from '../store/ui.store'
-import { useSimulationStore } from '../store/simulation.store'
+import { useSimulationStore } from '../store/simulationLegacy.store'
 import styles from './NodePalette.module.css'
 
 // Grace period between the pointer leaving the rail/flyout and the flyout actually closing —

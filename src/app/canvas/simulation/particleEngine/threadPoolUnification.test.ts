@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { Node, Edge } from '@xyflow/react'
 import type { NodeData, EdgeData, NodeSimConfig, RequestEdgeConfig, ComputeProfile } from '../../../../lib/nodeConfig'
-import { useSimulationStore, type NodeMetrics } from '../../../store/simulation.store'
+import { useSimulationStore, type NodeMetrics } from '../../../store/simulationLegacy.store'
 import { startSimulation, stopSimulation, setCallbacks, setNodeConfigs } from '../particleEngine'
 import { getActiveWorkers, clearBackpressureState } from './backpressure'
 import { clearBreakers } from './circuitBreakers'

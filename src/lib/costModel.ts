@@ -9,7 +9,7 @@
 
 import type { Node } from '@xyflow/react'
 import { NODE_CONFIG, type NodeData, type NodeCategory, type NodeType } from './nodeConfig'
-import type { NodeMetrics } from '../app/store/simulation.store'
+import type { NodeMetrics } from '../app/store/simulationLegacy.store'
 import { NODE_SIM_DEFAULTS } from '../app/simulation/defaults'
 import {
   getServiceSpec,

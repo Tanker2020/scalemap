@@ -1,6 +1,6 @@
 import type { Node, Edge } from '@xyflow/react'
 import type { NodeData, EdgeData, NodeType, NodeSimConfig, NodeSlo } from './nodeConfig'
-import type { TrafficMode } from '../app/store/simulation.store'
+import type { TrafficMode } from '../app/store/simulationLegacy.store'
 
 // ─── Schema types ─────────────────────────────────────────────────────────────
 

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Node } from '@xyflow/react'
 import type { NodeData } from './nodeConfig'
-import type { NodeMetrics } from '../app/store/simulation.store'
+import type { NodeMetrics } from '../app/store/simulationLegacy.store'
 import { computeCost } from './costModel'
 
 // A dbSql node priced through the AWS RDS/Aurora spec: instanceHourly + storageGbMonth + egress

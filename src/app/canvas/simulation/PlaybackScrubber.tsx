@@ -1,5 +1,5 @@
 import { useShallow } from 'zustand/react/shallow'
-import { useSimulationStore } from '../../store/simulation.store'
+import { useSimulationStore } from '../../store/simulationLegacy.store'
 import { useReplayStore } from '../../store/replay.store'
 import styles from './PlaybackScrubber.module.css'
 

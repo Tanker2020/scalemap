@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { availableBackendEdges } from './lbRouting'
-import type { CircuitState } from '../../../store/simulation.store'
+import type { CircuitState } from '../../../store/simulationLegacy.store'
 
 type HealthState = 'healthy' | 'degraded' | 'down'
 

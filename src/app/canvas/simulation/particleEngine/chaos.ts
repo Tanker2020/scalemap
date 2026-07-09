@@ -1,7 +1,7 @@
 import type { Node } from '@xyflow/react'
 import type { NodeData, NodeType } from '../../../../lib/nodeConfig'
 import { GROUPING_TYPES } from '../../../../lib/nodeConfig'
-import type { TrafficMode, SimEventType, NodeMetrics } from '../../../store/simulation.store'
+import type { TrafficMode, SimEventType, NodeMetrics } from '../../../store/simulationLegacy.store'
 
 // ─── Traffic mode: effective spawn multiplier + chaos/spike state ─────────────
 // Moved verbatim out of particleEngine.ts (Task 0 — pure code motion, no behavior change).

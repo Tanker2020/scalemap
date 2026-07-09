@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FilePlus, FolderOpen, Save, Download, Upload, ChevronDown, ChevronRight } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
-import { useSimulationStore } from '../store/simulation.store'
+import { useSimulationStore } from '../store/simulationLegacy.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
 import { useCostHistoryStore } from '../store/costHistory.store'
 import { useFileStore } from '../store/file.store'

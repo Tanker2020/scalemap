@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import type { Node, Edge } from '@xyflow/react'
 import { useCanvasStore } from '../../store/canvas.store'
-import { useSimulationStore, type SimEventType, type NodeMetrics, type SimulationRun } from '../../store/simulation.store'
+import { useSimulationStore, type SimEventType, type NodeMetrics, type SimulationRun } from '../../store/simulationLegacy.store'
 import { useMetricsHistoryStore } from '../../store/metricsHistory.store'
 import { useCostHistoryStore } from '../../store/costHistory.store'
 import { useReplayStore } from '../../store/replay.store'

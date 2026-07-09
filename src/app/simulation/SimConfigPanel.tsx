@@ -3,7 +3,7 @@ import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import { X, Search, SlidersHorizontal, ChevronUp, ChevronDown, Activity, Bell } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
 import { useUiStore } from '../store/ui.store'
-import { useSimulationStore } from '../store/simulation.store'
+import { useSimulationStore } from '../store/simulationLegacy.store'
 import { useMetricsHistoryStore } from '../store/metricsHistory.store'
 import { useDisplayMetrics } from '../canvas/simulation/useDisplayMetrics'
 import { NODE_CONFIG, GROUPING_TYPES, type NodeType, type TrafficOrigin } from '../../lib/nodeConfig'
@@ -74,7 +74,7 @@ function UtilBar({ value }: { value: number }) {
 
 // ─── Event type helpers ───────────────────────────────────────────────────────
 
-type SimEventType = import('../store/simulation.store').SimEventType
+type SimEventType = import('../store/simulationLegacy.store').SimEventType
 
 const EVENT_META: Record<SimEventType, { label: string; icon: string }> = {
   saturation_start:          { label: 'Saturated',          icon: '⚠' },
@@ -104,7 +104,7 @@ const EVENT_META: Record<SimEventType, { label: string; icon: string }> = {
   edge_backpressure:         { label: 'Backpressure',        icon: '⏸' },
 }
 
-type SimEvent = import('../store/simulation.store').SimEvent
+type SimEvent = import('../store/simulationLegacy.store').SimEvent
 
 function EventDetailOverlay({
   ev, meta, nodeLabel, nodeType, nodeConfig, severityColor, onClose,

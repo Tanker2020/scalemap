@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { X, Plus, Trash2, Package, Sparkles } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
-import { useSimulationStore } from '../store/simulation.store'
+import { useSimulationStore } from '../store/simulationLegacy.store'
 import { useUiStore } from '../store/ui.store'
 import type {
   PacketProtocol, PacketTemplate, NewPacketTemplate, HttpTemplate, EventTemplate, StreamTemplate, DbTemplate,

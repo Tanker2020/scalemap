@@ -1,5 +1,5 @@
 // src/app/canvas/simulation/particleEngine/lbRouting.ts
-import type { CircuitState } from '../../../store/simulation.store'
+import type { CircuitState } from '../../../store/simulationLegacy.store'
 
 type HealthState = 'healthy' | 'degraded' | 'down'
 

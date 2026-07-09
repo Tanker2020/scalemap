@@ -1,5 +1,5 @@
 import { useShallow } from 'zustand/react/shallow'
-import { useSimulationStore, type NodeMetrics } from '../../store/simulation.store'
+import { useSimulationStore, type NodeMetrics } from '../../store/simulationLegacy.store'
 import { useReplayStore } from '../../store/replay.store'
 
 // Single indirection so consumers don't each branch on replay state:

@@ -6,7 +6,7 @@ import { NODE_CONFIG, GROUPING_TYPES, type NodeType } from '../../../lib/nodeCon
 import { CATEGORY_COLORS } from '../../../lib/theme'
 import { PROVIDER_COLORS, PROVIDER_LABELS } from '../../../lib/cloudRegistry'
 import { useCanvasStore } from '../../store/canvas.store'
-import { useSimulationStore } from '../../store/simulation.store'
+import { useSimulationStore } from '../../store/simulationLegacy.store'
 import { useDisplayMetrics } from '../simulation/useDisplayMetrics'
 import { useUiStore } from '../../store/ui.store'
 import styles from './BaseNode.module.css'

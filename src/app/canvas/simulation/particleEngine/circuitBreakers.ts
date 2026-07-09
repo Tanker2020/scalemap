@@ -1,6 +1,6 @@
 import type { Node, Edge } from '@xyflow/react'
 import type { EdgeData, NodeData, NodeType, NodeSimConfig } from '../../../../lib/nodeConfig'
-import type { CircuitState, SimEventType, NodeMetrics } from '../../../store/simulation.store'
+import type { CircuitState, SimEventType, NodeMetrics } from '../../../store/simulationLegacy.store'
 
 // ─── Circuit breaker state ────────────────────────────────────────────────────
 // Moved verbatim out of particleEngine.ts (Task 0 — pure code motion, no behavior change).

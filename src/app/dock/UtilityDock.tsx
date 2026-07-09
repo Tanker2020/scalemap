@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { X, ClipboardList } from 'lucide-react'
 import { useUiStore, type DockTab } from '../store/ui.store'
-import { useSimulationStore } from '../store/simulation.store'
+import { useSimulationStore } from '../store/simulationLegacy.store'
 import { ReportsPanel } from '../reports/ReportsPanel'
 import styles from './UtilityDock.module.css'
 

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X } from 'lucide-react'
 import { useCanvasStore } from '../store/canvas.store'
-import { useSimulationStore, type SimulationRun } from '../store/simulation.store'
+import { useSimulationStore, type SimulationRun } from '../store/simulationLegacy.store'
 import { NODE_CONFIG, type NodeType, type NodeData } from '../../lib/nodeConfig'
 import { formatUsd } from '../../lib/costModel'
 import { EventCard } from '../simulation/SimConfigPanel'

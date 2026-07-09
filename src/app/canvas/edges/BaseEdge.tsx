@@ -11,7 +11,7 @@ import {
 import type { EdgeData } from '../../../lib/nodeConfig'
 import { useCanvasStore } from '../../store/canvas.store'
 import { useUiStore } from '../../store/ui.store'
-import { useSimulationStore } from '../../store/simulation.store'
+import { useSimulationStore } from '../../store/simulationLegacy.store'
 import { CATEGORY_COLORS } from '../../../lib/theme'
 import styles from './edges.module.css'
 
