@@ -10,6 +10,7 @@ import type { Server, InstanceId } from '../../../lib/world/types'   // id types
 import type { ServerMetrics } from '../../../lib/worldEngine/types'
 import type { CoreAttribution } from './boardLayout'
 import type { BoardSelection } from './selection'
+import { HEALTH_COLOR } from './healthColor'
 
 const AMBER = '#F5A623', CPU_BLUE = '#4A9EFF'
 
@@ -57,7 +58,6 @@ export function HardwarePlatform(props: HardwarePlatformProps): ReactElement {
   const systemGb = diskGb * 0.15
   const usedGb = systemGb + volumes.reduce((a, v) => a + v.sizeGb, 0)
   const io = metrics?.diskIoFraction ?? 0
-  const HEALTH_COLOR = { healthy: 'var(--color-success)', degraded: 'var(--color-warning)', down: 'var(--color-danger)' } as const
   const hostHealth = metrics?.health ?? 'healthy'
 
   return (

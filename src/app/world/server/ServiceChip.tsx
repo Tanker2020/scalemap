@@ -5,10 +5,7 @@ import type { CSSProperties, ReactElement } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import type { ChipLayout } from './boardLayout'
 import type { HealthState } from '../../../lib/worldEngine/types'
-
-const HEALTH_COLOR: Record<HealthState, string> = {
-  healthy: 'var(--color-success)', degraded: 'var(--color-warning)', down: 'var(--color-danger)',
-}
+import { HEALTH_COLOR } from './healthColor'
 
 export interface ServiceChipProps {
   chip: ChipLayout
