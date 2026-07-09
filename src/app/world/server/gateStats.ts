@@ -12,6 +12,9 @@ export function blockedPerSecond(
   events: EngineEvent[], serverId: string, residentInstanceIds: string[], nowSimMs: number, windowMs = 5000,
 ): number {
   const lo = nowSimMs - windowMs
+  // `serverId` itself is included defensively/for back-compat — the current engine only ever
+  // stamps instance ids (never the serverId) into `affected`, so `residentInstanceIds` is the
+  // load-bearing half of this set; the serverId branch exists in case that ever changes upstream.
   const ids = new Set<string>([serverId, ...residentInstanceIds])
   let count = 0
   for (const e of events) {

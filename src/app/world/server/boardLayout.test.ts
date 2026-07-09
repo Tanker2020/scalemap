@@ -109,6 +109,9 @@ describe('layoutServerBoard — zones', () => {
     const l = layoutServerBoard(server, doc, compileWorld(doc))
     expect(l.chips).toHaveLength(MAX_BOARD_CHIPS)
     expect(l.overflowCount).toBe(3)
+    // residentInstanceIds is the UNTRUNCATED list — must include the overflow residents too,
+    // so gate-block attribution (gateStats.blockedPerSecond) doesn't undercount past 12.
+    expect(l.residentInstanceIds).toHaveLength(MAX_BOARD_CHIPS + 3)
   })
 
   it('anchorFor resolves instance and nic ids and rejects unknown ids', () => {

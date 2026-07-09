@@ -1,8 +1,10 @@
 // src/app/world/server/PacketLayer.tsx
 // Canvas over the (unscaled) 1000x560 stage — lives INSIDE the scaled stage div so logical coords
-// need no conversion. Attaches the server renderer once per (serverId, running); draws via refs.
-// Particle position = point at `progress` along layout.tracePath, resolved with a cached hidden
-// SVG path per unique pair. Blocked bursts render at the gate (nic origin) or target anchor (D6).
+// need no conversion. Attaches the server renderer once per (serverId, running, layout); draws via
+// refs. Particle position = point at `progress` along layout.tracePath, resolved with a cached
+// hidden SVG path per unique pair — the cache is a local Map rebuilt on every effect attach (not a
+// persistent ref), so a layout reflow (chip positions change) can't leave stale-geometry paths
+// behind. Blocked bursts render at the gate (nic origin) or target anchor (D6).
 import { useEffect, useRef, type ReactElement } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { useSimulationStore } from '../../store/simulation.store'
@@ -20,7 +22,6 @@ export function PacketLayer({ serverId, layout }: PacketLayerProps): ReactElemen
   const running = useSimulationStore(s => s.running)
   const reduced = useReducedMotion()
   const lastDrawRef = useRef(0)
-  const pathCache = useRef(new Map<string, SVGPathElement>())
 
   useEffect(() => {
     if (!running) {
@@ -28,16 +29,19 @@ export function PacketLayer({ serverId, layout }: PacketLayerProps): ReactElemen
       if (ctx && canvasRef.current) ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height)
       return
     }
+    // Recreated on every effect attach (i.e. whenever `layout` changes, since it's a dep below) —
+    // a persistent cache across layout changes would keep drawing at stale (pre-reflow) geometry.
+    const pathCache = new Map<string, SVGPathElement>()
     const svgNS = 'http://www.w3.org/2000/svg'
     const pointAt = (fromId: string, toId: string, progress: number) => {
       const key = `${fromId}→${toId}`
-      let path = pathCache.current.get(key)
+      let path = pathCache.get(key)
       if (!path) {
         const d = layout.tracePath(fromId, toId)
         if (!d) return null
         path = document.createElementNS(svgNS, 'path')
         path.setAttribute('d', d)
-        pathCache.current.set(key, path)
+        pathCache.set(key, path)
       }
       const len = path.getTotalLength?.() ?? 0
       if (!len) return null

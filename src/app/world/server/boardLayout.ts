@@ -35,7 +35,8 @@ export interface BoardLayout {
   stageH: number                // 560
   nic: { box: Box; anchor: Anchor }
   gate: { box: Box; inAnchor: Anchor; outAnchor: Anchor }
-  chips: ChipLayout[]           // ALL chips: process chips AND container chips
+  chips: ChipLayout[]           // ALL chips: process chips AND container chips (capped at MAX_BOARD_CHIPS)
+  residentInstanceIds: string[] // UNTRUNCATED: every resident instance id, incl. overflow past MAX_BOARD_CHIPS
   overflowCount: number         // instances beyond MAX_BOARD_CHIPS
   stacks: StackLayout[]
   hardware: { box: Box; cpu: Box; ram: Box; disk: Box }
@@ -68,6 +69,7 @@ export function layoutServerBoard(server: Server, doc: WorldDoc, compiled: Compi
 
   // Resident instances in deterministic compiled iteration order; overflow past MAX_BOARD_CHIPS.
   const residents = Object.values(compiled.instances).filter(i => i.serverId === server.id)
+  const residentInstanceIds = residents.map(i => i.id)   // untruncated — captured BEFORE the slice below
   const kept = residents.slice(0, MAX_BOARD_CHIPS)
   const overflowCount = residents.length - kept.length
 
@@ -159,7 +161,10 @@ export function layoutServerBoard(server: Server, doc: WorldDoc, compiled: Compi
     return cubic(a, b)
   }
 
-  return { stageW: STAGE_W, stageH: STAGE_H, nic, gate, chips, overflowCount, stacks, hardware, anchorFor, tracePath }
+  return {
+    stageW: STAGE_W, stageH: STAGE_H, nic, gate, chips, residentInstanceIds, overflowCount, stacks,
+    hardware, anchorFor, tracePath,
+  }
 }
 
 export interface StaticTrace {
