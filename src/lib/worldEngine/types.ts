@@ -137,7 +137,12 @@ export type RenderScope =
 export interface VisualParticle {
   id: number
   // Path endpoints as entity ids; the VIEW owns geometry (screen positions).
-  fromId: string                 // serverId | managedServiceId | 'edge:<populationId>'
+  // Id vocabulary is scope-specific (additive clarification 2026-07-09, for Phase 3):
+  //   az scope:     serverId | managedServiceId | 'edge:<populationId>'
+  //   server scope: resident instanceId | 'nic:<serverId>' (every off-server endpoint —
+  //                 inbound clients, remote servers, managed services — collapses to the
+  //                 NIC; the view routes nic-originated traffic through the firewall gate)
+  fromId: string
   toId: string
   progress: number               // 0..1 along the view's path for this pair
   protocol: 'http' | 'db' | 'event' | 'stream'

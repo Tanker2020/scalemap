@@ -41,6 +41,7 @@ const OOM_RESTART_MS = 5000                 // spec decision 3: instance_restart
 const PARTICLE_RATIO = 10                    // rps per sampled AZ particle (skeleton T12)
 const MAX_AZ_PARTICLES = 400                 // az render cap (contracts "≤ current particle cap")
 const MAX_GLOBE_ARCS = 200
+const MAX_SERVER_PARTICLES = 50              // server render cap (contracts: server ≤ 50 traces)
 const REFUSED_EVENT_MIN_GAP_MS = 1000        // ≤1 connection_refused per pathKey per second
 const DEGRADE_THRESHOLD_MS = 4               // spec decision 9 / Global Constraints
 const DEGRADE_WINDOW_STEPS = 30              // 3s of 100ms steps
@@ -109,7 +110,7 @@ interface EngineState {
   rendererSeq: number
 }
 
-export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_step: (steps?: number) => void } {
+export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_step: (steps?: number) => void; __test_render: (wallMs?: number) => void } {
   // Constructed lazily on start(); this placeholder keeps the closure typed before the first run.
   let state: EngineState | null = null
 
@@ -453,7 +454,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const simMs = s.clock.simMs
     if (scope.level === 'globe') return { simMs, particles: [], arcs: buildArcs() }
     if (scope.level === 'az') return { simMs, particles: buildAzParticles(scope.azId, wallMs), arcs: [] }
-    // region/server rich particle surfaces arrive in Phases 4/3; Phase 2 ships empty-but-valid payloads.
+    if (scope.level === 'server') return { simMs, particles: buildServerParticles(scope.serverId, wallMs), arcs: [] }
+    // region rich particle surface arrives in Phase 4; ships empty-but-valid until then.
     return { simMs, particles: [], arcs: [] }
   }
 
@@ -505,6 +507,42 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     return particles
   }
 
+  // Server-scope particles (D3): every off-server endpoint collapses to the NIC; the view routes
+  // nic-originated traffic through the firewall gate. Mirrors buildAzParticles' sampling/phase.
+  function buildServerParticles(serverId: ServerId, wallMs: number): VisualParticle[] {
+    const s = state!
+    const phase = wallMs * RENDER_PROGRESS_PER_MS
+    const particles: VisualParticle[] = []
+    let pid = 0
+    const nicId = `nic:${serverId}`
+    for (const f of Object.values(s.prevFlows)) {
+      const from = s.compiled.instances[f.instanceId]
+      if (!from || from.serverId !== serverId) continue
+      const fromBp = s.doc.blueprints[from.blueprintId]
+      const isEntry = s.entryBlueprintIds.includes(from.blueprintId)
+      // inbound entry: nic -> receiving instance; colorHint = the receiving service's hue
+      if (isEntry && f.offeredRps > 0) {
+        const n = Math.min(MAX_SERVER_PARTICLES, Math.round(f.offeredRps / PARTICLE_RATIO))
+        for (let k = 0; k < n && particles.length < MAX_SERVER_PARTICLES; k++) {
+          particles.push({ id: pid++, fromId: nicId, toId: from.id, progress: frac(phase + k * 0.137), protocol: 'http', blocked: false, colorHint: fromBp?.color ?? null })
+        }
+      }
+      for (const row of f.downstream) {
+        const target = row.toInstanceId ? s.compiled.instances[row.toInstanceId] : undefined
+        const resident = !!target && target.serverId === serverId
+        const toId = resident ? target!.id : nicId          // off-server/managed -> nic
+        const dep = fromBp?.dependencies.find(d => d.id === row.dependencyId)
+        // intra: receiving service's hue; instance->nic outbound: the sending service's hue
+        const colorHint = resident ? (s.doc.blueprints[target!.blueprintId]?.color ?? null) : (fromBp?.color ?? null)
+        const n = Math.min(MAX_SERVER_PARTICLES, Math.max(row.blocked ? 1 : 0, Math.round(row.rps / PARTICLE_RATIO)))
+        for (let k = 0; k < n && particles.length < MAX_SERVER_PARTICLES; k++) {
+          particles.push({ id: pid++, fromId: from.id, toId, progress: frac(phase + k * 0.191), protocol: dep?.protocol ?? 'http', blocked: row.blocked, colorHint })
+        }
+      }
+    }
+    return particles
+  }
+
   function renderAll(wallMs: number): void {
     const s = state!
     for (const { scope, onFrame } of s.renderers.values()) onFrame(buildPayload(scope, wallMs))
@@ -520,7 +558,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     if (typeof requestAnimationFrame === 'function') s.rafId = requestAnimationFrame(tick)
   }
 
-  const api: WorldEngineApi & { __test_step: (steps?: number) => void } = {
+  const api: WorldEngineApi & { __test_step: (steps?: number) => void; __test_render: (wallMs?: number) => void } = {
     start(doc, compiled, callbacks) {
       state = {
         running: true, seed, rng: createRng(seed), clock: createClock(DEFAULT_STEP_MS), stepMs: DEFAULT_STEP_MS,
@@ -569,6 +607,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     __test_step(steps = 1) {
       for (let i = 0; i < steps; i++) runFrame(state!.stepMs)
     },
+    __test_render(wallMs = 1) { renderAll(wallMs) },
   }
   return api
 }
