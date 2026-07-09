@@ -4,9 +4,10 @@ import { BlueprintPanel } from './BlueprintPanel'
 import { PlacementPanel } from './PlacementPanel'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { EventsTab } from '../EventsTab'
+import { CostTab } from '../CostTab'
 import { panel, smallBtn, sectionLabel } from './panelStyles'
 
-type Tab = 'topology' | 'blueprints' | 'placements' | 'findings' | 'events'
+type Tab = 'topology' | 'blueprints' | 'placements' | 'findings' | 'events' | 'cost'
 
 export function WorldPanel({ running }: { running: boolean }) {
   const [tab, setTab] = useState<Tab>('topology')
@@ -17,6 +18,7 @@ export function WorldPanel({ running }: { running: boolean }) {
     { id: 'placements', label: 'Placements' },
     { id: 'findings', label: `Findings (${findings.length})` },
     { id: 'events', label: 'Events' },
+    { id: 'cost', label: 'Cost' },
   ]
   return (
     <aside style={panel}>
@@ -58,6 +60,7 @@ export function WorldPanel({ running }: { running: boolean }) {
           </div>
         )}
         {tab === 'events' && <EventsTab />}
+        {tab === 'cost' && <CostTab />}
       </fieldset>
     </aside>
   )
