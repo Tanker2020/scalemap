@@ -18,7 +18,7 @@ export function GlobeView() {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const goRegion = useNavStore(s => s.goRegion)
-  const latestBatch = useSimulationStore(s => s.latestBatch)
+  const latestBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const regions = Object.values(doc.regions)
 
   return (

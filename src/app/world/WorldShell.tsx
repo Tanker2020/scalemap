@@ -8,6 +8,7 @@ import { useWorldStore } from '../store/world.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { Breadcrumb } from './Breadcrumb'
 import { SimControls } from './SimControls'
+import { ScrubberV2 } from './ScrubberV2'
 import { GlobeView } from './GlobeView'
 import { RegionView } from './RegionView'
 import { ServerView } from './ServerView'
@@ -103,6 +104,7 @@ export function WorldShell() {
         </main>
         <WorldPanel running={running} />
       </div>
+      <ScrubberV2 />
     </div>
   )
 }

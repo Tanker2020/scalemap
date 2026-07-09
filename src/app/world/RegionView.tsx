@@ -17,7 +17,7 @@ export function RegionView() {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const { regionId, goAz } = useNavStore()
-  const latestBatch = useSimulationStore(s => s.latestBatch)
+  const latestBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const running = useSimulationStore(s => s.running)
   const isDown = useSimulationStore(s => s.healthOverrides[regionId ?? ''] ?? false)
   const setOutage = useSimulationStore(s => s.setOutage)

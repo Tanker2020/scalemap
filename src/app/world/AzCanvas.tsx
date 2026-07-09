@@ -10,13 +10,14 @@ import { useCompiledWorld } from './useCompiledWorld'
 import { layoutAzGrid } from '../../lib/world/layoutAz'
 import { WorldServerNode, WorldManagedNode } from './WorldServerNode'
 import { AzSimOverlay } from './AzSimOverlay'
+import { InspectorV2 } from './InspectorV2'
 
 const nodeTypes = { worldServer: WorldServerNode, worldManaged: WorldManagedNode }
 
 export function AzCanvas() {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
-  const latestBatch = useSimulationStore(s => s.latestBatch)
+  const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const { regionId, azId, goServer } = useNavStore()
 
   const { nodes, edges } = useMemo(() => {
@@ -75,13 +76,13 @@ export function AzCanvas() {
               return { color: bp?.color ?? '#888', name: bp?.name ?? '?', role: i.role, runtime: pl?.runtime.type ?? 'process' }
             }),
           internalBlocked: internalBlockedByServer.get(server.id) ?? 0,
-          health: latestBatch?.servers[server.id]?.health,
-          cpuPct: latestBatch?.servers[server.id]
-            ? (latestBatch.servers[server.id].coreUtilization.reduce((a, b) => a + b, 0) /
-               Math.max(1, latestBatch.servers[server.id].coreUtilization.length)) * 100
+          health: batch?.servers[server.id]?.health,
+          cpuPct: batch?.servers[server.id]
+            ? (batch.servers[server.id].coreUtilization.reduce((a, b) => a + b, 0) /
+               Math.max(1, batch.servers[server.id].coreUtilization.length)) * 100
             : undefined,
-          ramUsedMb: latestBatch?.servers[server.id]?.ramUsedMb,
-          ramTotalMb: latestBatch?.servers[server.id]?.ramTotalMb,
+          ramUsedMb: batch?.servers[server.id]?.ramUsedMb,
+          ramTotalMb: batch?.servers[server.id]?.ramTotalMb,
         },
       })),
       ...managed.map(m => ({
@@ -102,7 +103,7 @@ export function AzCanvas() {
     }))
 
     return { nodes, edges }
-  }, [doc, compiled, azId, regionId, latestBatch])
+  }, [doc, compiled, azId, regionId, batch])
 
   if (!azId || !regionId) return null
 
@@ -128,6 +129,7 @@ export function AzCanvas() {
           <Background gap={24} color="var(--color-canvas-dots)" />
         </ReactFlow>
         <AzSimOverlay azId={azId} />
+        <InspectorV2 azId={azId} />
       </div>
     </ReactFlowProvider>
   )
