@@ -22,7 +22,7 @@ export function ServerView(): ReactElement | null {
   const gb = Math.round(server.specs.ramMb / 1024)
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--color-node-border)', font: '11px var(--font-mono)', color: 'var(--color-text-secondary)' }}>
         <span style={{ color: 'var(--color-text-primary)' }}>{server.label}</span> · {server.kind} · {server.specs.vcpu} vCPU / {gb} GB
         {' — '}{az?.label ?? '?'} › {server.rack.rackId} › U{server.rack.unit}
