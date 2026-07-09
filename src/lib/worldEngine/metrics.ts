@@ -126,9 +126,9 @@ export function buildBatch(
     const bp = doc.blueprints[inst.blueprintId]
     const w = state.window.get(inst.id) ?? { steps: 1, admittedSum: 0, errorSum: 0, latencies: [0] }
     const windowRps = w.admittedSum / Math.max(1, w.steps)
-    // Error rate = fraction of admitted traffic that errored (errorSum/refusedSum accumulated
-    // alongside, not instead of, admittedSum — see accumulateStep).
-    const windowErrRate = w.admittedSum > 0 ? w.errorSum / w.admittedSum : 0
+    // Error rate = fraction of offered traffic (admitted + errored/refused) that failed —
+    // always in [0,1]; a fully-down instance (admitted 0, errors>0) reports 1.0.
+    const windowErrRate = w.admittedSum + w.errorSum > 0 ? w.errorSum / (w.admittedSum + w.errorSum) : 0
     const sorted = [...w.latencies].sort((a, b) => a - b)
     const rps = ema(state, `i:${inst.id}:rps`, windowRps)
     const errorRate = ema(state, `i:${inst.id}:err`, windowErrRate)

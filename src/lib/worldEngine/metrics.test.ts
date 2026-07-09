@@ -96,12 +96,12 @@ describe('metrics pyramid', () => {
   it('computes healthScore = 100 × (1 − errorRate) × healthFactor', () => {
     const f = fixture()
     const state = createMetricsState()
-    // 20 err of 100 admitted on i1, i2 idle → az errorRate 0.2; az degraded.
+    // 20 err of 100 admitted on i1, i2 idle → az errorRate 20/120 (bounded form); az degraded.
     const health: (id: string) => HealthState = (id) => (id === f.az.id ? 'degraded' : 'healthy')
     accumulate1s(state, f, 100, 0, health, 20)
     const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
-    expect(batch.azs[f.az.id].errorRate).toBeCloseTo(0.2, 2)
-    expect(batch.azs[f.az.id].healthScore).toBeCloseTo(100 * 0.8 * 0.6, 1)   // 48
+    expect(batch.azs[f.az.id].errorRate).toBeCloseTo(20 / 120, 2)
+    expect(batch.azs[f.az.id].healthScore).toBeCloseTo(100 * (1 - 20 / 120) * 0.6, 1)   // ≈50
     expect(batch.azs[f.az.id].health).toBe('degraded')
   })
 
