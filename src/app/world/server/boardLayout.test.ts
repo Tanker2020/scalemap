@@ -207,6 +207,58 @@ describe('serverTraces', () => {
     expect(inbound.length).toBeGreaterThanOrEqual(1)
     expect(inbound.every(t => t.verdict === 'permitted')).toBe(true)
   })
+
+  // D7 acceptance story: a server's own firewall deny on an INBOUND path (source resident
+  // elsewhere) must show up on ITS board — since firewallVerdict() evaluates the TARGET
+  // server's rules — so the inspector rail on that server's board can actually fix it.
+  it('surfaces the target server\'s own firewall deny as an inbound trace, and flips on repair', () => {
+    const { doc, server: serverA } = base()   // serverA will host db
+    const az = doc.azs[Object.keys(doc.azs)[0]]
+    const serverB = createServer(az.id, getPreset('vps-medium')!)
+    doc.servers[serverB.id] = serverB
+
+    const db = createBlueprint('db', 0)
+    db.ports = [{ port: 5432, protocol: 'tcp', visibility: 'internal' }]   // bind the dep port
+    const api = createBlueprint('api', 1)
+    api.dependencies = [
+      { id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 5432, protocol: 'db', packetTemplateId: null },
+    ]
+    Object.assign(doc.blueprints, { [db.id]: db, [api.id]: api })
+
+    const plDb = createPlacement(db.id, serverA.id); doc.placements[plDb.id] = plDb
+    const plApi = createPlacement(api.id, serverB.id); doc.placements[plApi.id] = plApi
+    const dbIid = instanceId(plDb.id, 0)
+    const apiIid = instanceId(plApi.id, 0)
+
+    // TARGET server (serverA) denies port 5432.
+    serverA.firewall = [{ id: 'fw-deny', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' }]
+
+    let compiled = compileWorld(doc)
+    const tracesA = serverTraces(serverA.id, doc, compiled)
+    const inboundDb = tracesA.find(t => t.fromId === `nic:${serverA.id}` && t.toId === dbIid)
+    expect(inboundDb).toBeDefined()
+    expect(inboundDb?.verdict).toBe('blocked')
+    expect(inboundDb?.label).toBeTruthy()
+    expect(inboundDb?.protocol).toBe('db')
+
+    // Additive, not a replacement: the SOURCE server (serverB) still shows its own outbound
+    // blocked trace (collapsed to its nic, unchanged behavior).
+    const tracesB = serverTraces(serverB.id, doc, compiled)
+    const outboundApi = tracesB.find(t => t.fromId === apiIid && t.toId === `nic:${serverB.id}`)
+    expect(outboundApi).toBeDefined()
+    expect(outboundApi?.verdict).toBe('blocked')
+
+    // Repair: allow rule placed ABOVE the deny on the TARGET server (serverA) — recompile.
+    serverA.firewall = [
+      { id: 'fw-allow', action: 'allow', port: 5432, protocol: 'tcp', source: 'any' },
+      { id: 'fw-deny', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' },
+    ]
+    compiled = compileWorld(doc)
+    const tracesA2 = serverTraces(serverA.id, doc, compiled)
+    const inboundDb2 = tracesA2.find(t => t.fromId === `nic:${serverA.id}` && t.toId === dbIid)
+    expect(inboundDb2?.verdict).toBe('permitted')
+    expect(inboundDb2?.label).toBeNull()
+  })
 })
 
 describe('attributeCores', () => {

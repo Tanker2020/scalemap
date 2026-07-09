@@ -176,7 +176,11 @@ export interface StaticTrace {
 }
 
 // One trace per unique (fromId, toId, protocol) among the server's resident source endpoints,
-// plus one nic->chip inbound trace per resident instance whose blueprint has a 'public' port.
+// plus one nic->chip inbound trace per resident instance whose blueprint has a 'public' port,
+// plus one nic->chip inbound trace per compiled path whose resident TARGET is on this server and
+// whose source is off-server — carrying that path's real verdict, since firewallVerdict() is
+// evaluated against the TARGET server (D7: makes a resident's own firewall deny visible/fixable
+// on ITS board, not just as an outbound trace on the source server's board).
 // Off-server / managed targets collapse to `nic:<sid>` (D3/D6).
 export function serverTraces(serverId: ServerId, doc: WorldDoc, compiled: CompiledWorld): StaticTrace[] {
   const nicId = `nic:${serverId}`
@@ -219,6 +223,35 @@ export function serverTraces(serverId: ServerId, doc: WorldDoc, compiled: Compil
     const key = `${nicId}→${inst.id}→http`
     if (!byKey.has(key)) {
       byKey.set(key, { fromId: nicId, toId: inst.id, protocol: 'http', verdict: 'permitted', label: null, pathIds: [] })
+    }
+  }
+
+  // Inbound target traces: paths whose resident TARGET's own firewall governs the verdict
+  // (firewallVerdict() in network.ts is evaluated against the TARGET server). A source resident
+  // elsewhere reaching into this server must show up here so this server's firewall editor is
+  // the one that can fix it — intra-server paths are already covered by the outbound loop above.
+  for (const path of compiled.paths) {
+    if (path.to.kind !== 'instance') continue
+    const to = compiled.instances[path.to.instanceId]
+    if (!to || to.serverId !== serverId) continue
+    const from = compiled.instances[path.fromInstanceId]
+    if (!from || from.serverId === serverId) continue   // intra-server → outbound loop already covers it
+    const dep = doc.blueprints[from.blueprintId]?.dependencies.find(d => d.id === path.dependencyId)
+    const protocol = dep?.protocol ?? 'http'
+    const key = `${nicId}→${to.id}→${protocol}`
+    const existing = byKey.get(key)
+    if (existing) {
+      existing.pathIds.push(path.id)
+      if (path.verdict === 'blocked' && existing.verdict !== 'blocked') {
+        existing.verdict = 'blocked'
+        existing.label = path.blockReason?.detail ?? null
+      }
+    } else {
+      byKey.set(key, {
+        fromId: nicId, toId: to.id, protocol, verdict: path.verdict,
+        label: path.verdict === 'blocked' ? (path.blockReason?.detail ?? null) : null,
+        pathIds: [path.id],
+      })
     }
   }
 
