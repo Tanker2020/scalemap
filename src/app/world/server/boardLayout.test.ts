@@ -149,8 +149,8 @@ describe('layoutServerBoard — zones', () => {
 })
 
 describe('serverTraces', () => {
-  // web(public) -> api(intra, same server) ; api -> db(cross-server) ; api -> managed(off) ;
-  // a firewall-blocked dep produces a blocked trace.
+  // web(public) + api on server1; db on server2 (off-server, binds 5432); api -> db
+  // (cross-server, port 5432) and api -> managed cache (off-server).
   function tracedWorld() {
     const { doc, server } = base()
     const az = doc.azs[Object.keys(doc.azs)[0]]
@@ -161,30 +161,40 @@ describe('serverTraces', () => {
     web.ports = [{ port: 8080, protocol: 'tcp', visibility: 'public' }]
     const api = createBlueprint('api', 1)
     const db = createBlueprint('db', 2)
+    db.ports = [{ port: 5432, protocol: 'tcp', visibility: 'internal' }]   // bind the dep port so a real firewall verdict is reached
+    const cache = { id: 'ms-cache', label: 'cache', nodeType: 'redis', scope: { kind: 'az' as const, azId: az.id }, provider: 'aws' as const, port: 6379 }
+    doc.managedServices[cache.id] = cache
     web.dependencies = [{ id: 'd-api', target: { kind: 'blueprint', blueprintId: api.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
-    api.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 5432, protocol: 'db', packetTemplateId: null }]
+    api.dependencies = [
+      { id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 5432, protocol: 'db', packetTemplateId: null },
+      { id: 'd-cache', target: { kind: 'managed', managedServiceId: cache.id }, port: 6379, protocol: 'event', packetTemplateId: null },
+    ]
     Object.assign(doc.blueprints, { [web.id]: web, [api.id]: api, [db.id]: db })
 
     createPlacementInto(doc, web.id, server.id)
     createPlacementInto(doc, api.id, server.id)
     createPlacementInto(doc, db.id, server2.id)   // db off-server → collapses to nic
-    return { doc, server, web, api, db }
+    return { doc, server, server2 }
   }
   function createPlacementInto(doc: WorldDoc, bpId: string, serverId: string) {
     const pl = createPlacement(bpId, serverId); doc.placements[pl.id] = pl; return pl
   }
 
-  it('collapses off-server targets to nic and carries blocked labels', () => {
+  it('collapses off-server and managed targets to nic', () => {
     const { doc, server } = tracedWorld()
-    // block the api->db path with a firewall deny on 5432
-    server.firewall = [
-      { id: 'fw-deny', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' },
-      { id: 'fw-allow', action: 'allow', port: 'any', protocol: 'any', source: 'internal' },
-    ]
     const traces = serverTraces(server.id, doc, compileWorld(doc))
-    const off = traces.find(t => t.toId === `nic:${server.id}` && t.protocol === 'db')
-    expect(off).toBeDefined()                          // api -> db collapsed to nic
-    if (off?.verdict === 'blocked') expect(off.label).not.toBeNull()
+    expect(traces.find(t => t.protocol === 'db')?.toId).toBe(`nic:${server.id}`)      // off-server db
+    expect(traces.find(t => t.protocol === 'event')?.toId).toBe(`nic:${server.id}`)   // managed cache
+  })
+
+  it('carries the firewall-deny label for a blocked path', () => {
+    const { doc, server, server2 } = tracedWorld()
+    server2.firewall = [{ id: 'fw-deny', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' }]  // TARGET server denies 5432
+    const traces = serverTraces(server.id, doc, compileWorld(doc))
+    const dbTrace = traces.find(t => t.protocol === 'db')
+    expect(dbTrace?.verdict).toBe('blocked')
+    expect(dbTrace?.label).toBeTruthy()
+    expect(dbTrace?.label).toMatch(/firewall/i)
   })
 
   it('adds an inbound trace for public-port blueprints', () => {
