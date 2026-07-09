@@ -29,7 +29,7 @@ export function FirewallGate({ box, ruleCount, blockedPerSecond, selected, dimme
       <div style={{ position: 'absolute', bottom: -26, width: 130, left: (box.w - 130) / 2, textAlign: 'center', fontSize: 7, color: '#D9A24A', font: '7px var(--font-mono)' }}>
         FIREWALL · {ruleCount} rules
         {blockedPerSecond !== undefined && blockedPerSecond > 0 && (
-          <><br /><span style={{ color: 'var(--color-danger)' }}>✕ {blockedPerSecond.toFixed(0)}/s blocked</span></>
+          <><br /><span style={{ color: 'var(--color-danger)' }}>✕ {blockedPerSecond >= 1 ? blockedPerSecond.toFixed(0) : blockedPerSecond.toFixed(1)}/s blocked</span></>
         )}
       </div>
     </div>

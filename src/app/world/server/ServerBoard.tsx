@@ -41,7 +41,7 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
   const display = useServerDisplayMetrics(serverId)
   const events = useSimulationStore(s => s.events)
   const latestBatch = useSimulationStore(s => s.latestBatch)
-  const gateBlockedPerSecond = blockedPerSecond(events, serverId, latestBatch?.simMs ?? 0)
+  const gateBlockedPerSecond = blockedPerSecond(events, serverId, layout.chips.map(c => c.instanceId), latestBatch?.simMs ?? 0)
 
   useEffect(() => {
     const el = containerRef.current
