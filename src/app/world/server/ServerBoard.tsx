@@ -106,23 +106,36 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
         {/* z0 traces */}
         <TraceLayer layout={layout} traces={traces} selection={props.selection} onSelect={props.onSelect} hoveredBlueprintId={props.hoveredBlueprintId} />
         {/* z1 DOM blocks */}
-        {layout.stacks.map(st => <StackPlate key={st.stackName} stack={st} selection={props.selection} onSelect={props.onSelect} />)}
+        {layout.stacks.map(st => {
+          const stackChips = layout.chips.filter(c => c.stackName === st.stackName)
+          const stackDimmed = props.hoveredBlueprintId !== null && !stackChips.some(c => c.blueprintId === props.hoveredBlueprintId)
+          return <StackPlate key={st.stackName} stack={st} dimmed={stackDimmed} selection={props.selection} onSelect={props.onSelect} />
+        })}
         <NicBlock
           box={layout.nic.box} nicMbps={server?.specs.nicMbps ?? 0}
           inMbps={display.server?.nicInMbps} outMbps={display.server?.nicOutMbps}
           utilFraction={display.server && server?.specs.nicMbps ? (display.server.nicInMbps + display.server.nicOutMbps) / server.specs.nicMbps : undefined}
+          selected={props.selection?.kind === 'nic'}
           onSelect={() => props.onSelect({ kind: 'nic' })} onHover={() => {}}
         />
-        <FirewallGate box={layout.gate.box} ruleCount={server?.firewall.length ?? 0} blockedPerSecond={gateBlockedPerSecond} onSelect={() => props.onSelect({ kind: 'firewall' })} />
+        <FirewallGate
+          box={layout.gate.box} ruleCount={server?.firewall.length ?? 0} blockedPerSecond={gateBlockedPerSecond}
+          selected={props.selection?.kind === 'firewall' || props.selection?.kind === 'rule'}
+          onSelect={() => props.onSelect({ kind: 'firewall' })}
+        />
         {layout.chips.map(chip => {
           const bp = doc.blueprints[chip.blueprintId]
           const m = display.instances[chip.instanceId]
+          const hovered = props.hoveredBlueprintId !== null && chip.blueprintId === props.hoveredBlueprintId
+          const dimmed = props.hoveredBlueprintId !== null && chip.blueprintId !== props.hoveredBlueprintId
+          const selected = props.selection?.kind === 'instance' && props.selection.instanceId === chip.instanceId
           return (
             <ServiceChip
               key={chip.instanceId} chip={chip} name={bp?.name ?? '?'} color={bp?.color ?? '#888'}
               portsLabel={portsLabel(chip)}
               health={m?.health}
               connLabel={m ? `${m.activeConnections} conn · p50 ${m.p50Ms.toFixed(1)}ms` : '—'}
+              selected={selected} hovered={hovered} dimmed={dimmed}
               onSelect={() => props.onSelect({ kind: 'instance', instanceId: chip.instanceId })}
               onHover={v => props.onHoverBlueprint(v ? chip.blueprintId : null)}
             />

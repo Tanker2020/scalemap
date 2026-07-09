@@ -1,6 +1,8 @@
 // src/app/world/server/ServiceChip.tsx
-// Process/container service chip. T4 fills the conn/p50 line + health dot; T6 adds dim/glow.
+// Process/container service chip. T4 fills the conn/p50 line + health dot; T6 adds dim/glow
+// (cross-highlight, D8) and gates the hover transition behind prefers-reduced-motion.
 import type { CSSProperties, ReactElement } from 'react'
+import { useReducedMotion } from 'framer-motion'
 import type { ChipLayout } from './boardLayout'
 import type { HealthState } from '../../../lib/worldEngine/types'
 
@@ -23,13 +25,14 @@ export interface ServiceChipProps {
 }
 
 export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy', connLabel = '—', selected, hovered, dimmed, onSelect, onHover }: ServiceChipProps): ReactElement {
+  const reduced = useReducedMotion()
   const style: CSSProperties = {
     position: 'absolute', left: chip.box.x, top: chip.box.y, width: chip.box.w, minHeight: chip.box.h,
     background: 'linear-gradient(160deg,#16202E,#0E141E)',
     border: `1px solid ${selected || hovered ? color : color + '88'}`, borderRadius: 6, padding: 6,
     boxShadow: hovered ? `0 0 16px ${color}` : `0 0 10px ${color}22`,
     opacity: dimmed ? 0.45 : 1, cursor: 'pointer', font: '9px var(--font-mono)',
-    transition: 'opacity 0.15s, box-shadow 0.15s',
+    transition: reduced ? undefined : 'opacity 0.15s, box-shadow 0.15s',
   }
   return (
     <div data-chip data-instance={chip.instanceId} style={style} onClick={onSelect}

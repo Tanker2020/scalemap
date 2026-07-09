@@ -2,6 +2,8 @@
 // SVG etched traces beneath the DOM blocks (z0). One <path> per StaticTrace via
 // layout.tracePath; permitted = protocol-colored with a soft glow, blocked = danger dashed with
 // the rule label at the path midpoint. Paths are clickable (T6 refines to trace inspect).
+// Cross-highlight (D8): a trace whose endpoint chip's blueprint matches hoveredBlueprintId gets a
+// stronger glow; every other trace dims to opacity 0.45 while a blueprint is hovered.
 import type { ReactElement } from 'react'
 import type { BoardLayout, StaticTrace } from './boardLayout'
 import type { BlueprintId } from '../../../lib/world/types'
@@ -19,7 +21,9 @@ export interface TraceLayerProps {
   hoveredBlueprintId: BlueprintId | null
 }
 
-export function TraceLayer({ layout, traces, onSelect }: TraceLayerProps): ReactElement {
+export function TraceLayer({ layout, traces, onSelect, hoveredBlueprintId }: TraceLayerProps): ReactElement {
+  const blueprintOf = (id: string): BlueprintId | null => layout.chips.find(c => c.instanceId === id)?.blueprintId ?? null
+
   return (
     <svg width={layout.stageW} height={layout.stageH}
       style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
@@ -28,6 +32,8 @@ export function TraceLayer({ layout, traces, onSelect }: TraceLayerProps): React
         if (!d) return null
         const blocked = t.verdict === 'blocked'
         const color = blocked ? 'var(--color-danger)' : PROTOCOL_COLOR[t.protocol]
+        const related = hoveredBlueprintId !== null && (blueprintOf(t.fromId) === hoveredBlueprintId || blueprintOf(t.toId) === hoveredBlueprintId)
+        const dimmed = hoveredBlueprintId !== null && !related
         const a = layout.anchorFor(t.fromId)
         const b = layout.anchorFor(t.toId)
         const mx = a && b ? (a.x + b.x) / 2 : 0
@@ -36,10 +42,10 @@ export function TraceLayer({ layout, traces, onSelect }: TraceLayerProps): React
           <g key={i}>
             <path
               d={d} fill="none" stroke={color}
-              strokeWidth={blocked ? 1.6 : 2.2}
+              strokeWidth={blocked ? 1.6 : (related ? 2.8 : 2.2)}
               strokeDasharray={blocked ? '4 4' : undefined}
-              opacity={blocked ? 0.85 : 0.85}
-              style={{ filter: blocked ? undefined : `drop-shadow(0 0 4px ${color})`, cursor: 'pointer', pointerEvents: 'stroke' }}
+              opacity={dimmed ? 0.45 : 0.85}
+              style={{ filter: blocked ? undefined : `drop-shadow(0 0 ${related ? 7 : 4}px ${color})`, cursor: 'pointer', pointerEvents: 'stroke' }}
               onClick={() => onSelect(null)}
             />
             {blocked && t.label && (
