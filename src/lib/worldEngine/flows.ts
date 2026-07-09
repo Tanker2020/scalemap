@@ -1,0 +1,221 @@
+// Per-step flow solver: contribution-based BFS from entry instances across compiled paths.
+// The heart of the engine — everything downstream (host loads, metrics, particles, cost
+// bytes) reads this module's output. Spec decision 6 + skeleton T8 semantics:
+//   admitted = offered x admittedScale(server) x healthFactor (down 0 / degraded 0.7)
+//   every dependency fans out the FULL admitted rps (call-per-request, like legacy),
+//   split evenly across the dependency's compiled targets — blocked ones included
+//   (the caller can't see the misconfig; attempts on blocked paths are LIVE failures)
+//   blocked share -> caller refusedRps + blocked downstream row (no bytes, no propagation)
+//   breakerOpen(pathKey) short-circuits the whole dependency (refused, no rows)
+//   depth cap 8; cycles guarded per request chain (visited set carried on each item)
+import type {
+  CompiledWorld, WorldDoc, CompiledPath, InstanceId, ServerId, HopClass,
+} from '../world/types'
+import type { HealthState } from './types'
+import type { Rng } from './rng'
+import { sampleLatencyMs } from './latency'
+import { pathKey } from './breakers'
+
+// 2KB per request in EACH direction (request out + response back, so every hop books
+// 2 x 2048 bytes per request). A deliberately simple Phase-2 constant — packet templates
+// refine per-protocol sizes in a later phase. Totals are bytes/sec (inputs are rps).
+export const BYTES_PER_REQUEST_EACH_WAY = 2048
+
+// Managed targets have no capacity model in Phase 2: fixed service latency, always
+// admits. Exported for metrics (T10) and tracing (T11) to attribute managed-hop time.
+export const MANAGED_SERVICE_LATENCY_MS = 3
+
+const MAX_DEPTH = 8                 // hop-depth cap; demand landing at depth 8 stops there
+const DEGRADED_ADMIT_FACTOR = 0.7   // degraded instances still serve most of their load
+const EPSILON_RPS = 1e-9            // below this, a contribution is dead — don't propagate
+// Blueprints carry no authored latency model (only workload.cpuMsPerRequest), so service
+// latency samples log-normal with p50 = cpuMsPerRequest and this p99 spread — legacy
+// NODE_SIM_DEFAULTS spreads ran 10-12.5x. SKELETON CONCERNS #5.
+const SERVICE_P99_OVER_P50 = 10
+
+export interface FlowInput {
+  compiled: CompiledWorld
+  doc: WorldDoc
+  entryDemand: Record<InstanceId, number>          // rps landed on entry instances this step (from routing)
+  admittedScaleByServer: Record<ServerId, number>  // from host scheduler (previous sub-step)
+  latencyMultiplierByServer: Record<ServerId, number>
+  breakerOpen: (pathKey: string) => boolean
+  healthOf: (instanceId: InstanceId) => HealthState
+  rng: Rng
+}
+
+export interface DownstreamFlow {
+  dependencyId: string
+  toInstanceId?: InstanceId
+  toManagedServiceId?: string
+  rps: number
+  hopClass: HopClass
+  blocked: boolean
+}
+
+export interface InstanceFlow {
+  instanceId: InstanceId
+  offeredRps: number
+  admittedRps: number
+  errorRps: number
+  refusedRps: number
+  serviceLatencyMs: number                          // sampled, multiplied
+  downstream: DownstreamFlow[]
+}
+
+export interface FlowTotals {
+  crossAzBytes: number
+  crossRegionBytes: number
+  internetBytes: number
+}
+
+interface QueueItem {
+  instanceId: InstanceId
+  offered: number
+  depth: number
+  visited: Set<InstanceId>   // instances already on this request chain (cycle guard)
+}
+
+export function solveFlows(input: FlowInput): { flows: Record<InstanceId, InstanceFlow>; totals: FlowTotals } {
+  const {
+    compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
+    breakerOpen, healthOf, rng,
+  } = input
+
+  // Index candidate paths once: fromInstanceId -> dependencyId -> CompiledPath[]
+  // (compiled.paths order is deterministic, so the even split is too).
+  const pathsByFromDep = new Map<InstanceId, Map<string, CompiledPath[]>>()
+  for (const p of compiled.paths) {
+    let byDep = pathsByFromDep.get(p.fromInstanceId)
+    if (!byDep) {
+      byDep = new Map()
+      pathsByFromDep.set(p.fromInstanceId, byDep)
+    }
+    const list = byDep.get(p.dependencyId)
+    if (list) list.push(p)
+    else byDep.set(p.dependencyId, [p])
+  }
+
+  const flows: Record<InstanceId, InstanceFlow> = {}
+  const totals: FlowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0 }
+
+  // First-touch flow record; serviceLatencyMs is sampled exactly once per instance, in
+  // BFS creation order (deterministic under a seeded rng).
+  const getFlow = (id: InstanceId): InstanceFlow => {
+    let f = flows[id]
+    if (!f) {
+      const inst = compiled.instances[id]
+      const bp = inst ? doc.blueprints[inst.blueprintId] : undefined
+      const p50 = Math.max(0.1, bp?.workload.cpuMsPerRequest ?? 1)
+      const multiplier = inst ? (latencyMultiplierByServer[inst.serverId] ?? 1) : 1
+      f = {
+        instanceId: id,
+        offeredRps: 0,
+        admittedRps: 0,
+        errorRps: 0,
+        refusedRps: 0,
+        serviceLatencyMs: sampleLatencyMs(p50, p50 * SERVICE_P99_OVER_P50, rng) * multiplier,
+        downstream: [],
+      }
+      flows[id] = f
+    }
+    return f
+  }
+
+  // Contributions from different entries/chains can land on the same downstream row —
+  // aggregate rps into one row per (dependency, target, blocked) triple.
+  const addDownstream = (
+    f: InstanceFlow,
+    dependencyId: string,
+    target: { toInstanceId?: InstanceId; toManagedServiceId?: string },
+    rps: number,
+    hopClass: HopClass,
+    blocked: boolean,
+  ): void => {
+    const row = f.downstream.find(d =>
+      d.dependencyId === dependencyId &&
+      d.toInstanceId === target.toInstanceId &&
+      d.toManagedServiceId === target.toManagedServiceId &&
+      d.blocked === blocked)
+    if (row) row.rps += rps
+    else f.downstream.push({ dependencyId, ...target, rps, hopClass, blocked })
+  }
+
+  const bucketBytes = (hopClass: HopClass, rps: number): void => {
+    const bytes = rps * BYTES_PER_REQUEST_EACH_WAY * 2   // request + response
+    if (hopClass === 'cross-az') totals.crossAzBytes += bytes
+    else if (hopClass === 'cross-region') totals.crossRegionBytes += bytes
+    // localhost / same-az transfer is free — no cost line for it
+  }
+
+  const queue: QueueItem[] = []
+  for (const [instanceId, rps] of Object.entries(entryDemand)) {
+    if (rps <= 0) continue
+    queue.push({ instanceId, offered: rps, depth: 0, visited: new Set([instanceId]) })
+    // Client -> entry traffic rides the public internet.
+    totals.internetBytes += rps * BYTES_PER_REQUEST_EACH_WAY * 2
+  }
+
+  // BFS via head index (no O(n) shift; perf budget is 4ms/step at 2,000 instances).
+  let head = 0
+  while (head < queue.length) {
+    const item = queue[head++]
+    const inst = compiled.instances[item.instanceId]
+    if (!inst) continue   // stale entry id — routing/compile drift, skip defensively
+    const flow = getFlow(item.instanceId)
+    flow.offeredRps += item.offered
+
+    const health = healthOf(item.instanceId)
+    const healthFactor = health === 'down' ? 0 : health === 'degraded' ? DEGRADED_ADMIT_FACTOR : 1
+    const admittedScale = admittedScaleByServer[inst.serverId] ?? 1
+    const admitted = item.offered * admittedScale * healthFactor
+    flow.admittedRps += admitted
+    flow.errorRps += item.offered - admitted   // shed + down demand errors HERE
+
+    if (admitted <= EPSILON_RPS) continue      // a down instance zeroes its whole subtree
+    if (item.depth >= MAX_DEPTH) continue      // landed, but fans out no further
+
+    const bp = doc.blueprints[inst.blueprintId]
+    if (!bp) continue
+    const byDep = pathsByFromDep.get(item.instanceId)
+
+    for (const dep of bp.dependencies) {
+      // Per-dependency breaker short-circuit: whole call volume refused, no rows.
+      if (breakerOpen(pathKey(item.instanceId, dep.id))) {
+        flow.refusedRps += admitted
+        continue
+      }
+      const candidates = byDep?.get(dep.id)
+      if (!candidates || candidates.length === 0) continue   // dangling dep: compile emitted nothing
+      // Call-per-request: the dependency sees the FULL admitted rps, split evenly across
+      // ALL compiled targets — blocked ones included (the caller can't see the misconfig).
+      const share = admitted / candidates.length
+      if (share <= EPSILON_RPS) continue
+
+      for (const path of candidates) {
+        const target = path.to.kind === 'instance'
+          ? { toInstanceId: path.to.instanceId }
+          : { toManagedServiceId: path.to.managedServiceId }
+
+        if (path.verdict === 'blocked') {
+          // Refused ON THE CALLER; the blocked row is what events/particles render.
+          flow.refusedRps += share
+          addDownstream(flow, dep.id, target, share, path.hopClass, true)
+          continue   // refused attempts carry no payload and reach nothing
+        }
+
+        addDownstream(flow, dep.id, target, share, path.hopClass, false)
+        bucketBytes(path.hopClass, share)
+
+        if (path.to.kind === 'managed') continue   // no capacity model in Phase 2
+        const toId = path.to.instanceId
+        if (item.visited.has(toId)) continue        // cycle guard: row recorded, no re-entry
+        const visited = new Set(item.visited)
+        visited.add(toId)
+        queue.push({ instanceId: toId, offered: share, depth: item.depth + 1, visited })
+      }
+    }
+  }
+
+  return { flows, totals }
+}
