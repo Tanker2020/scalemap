@@ -5,6 +5,7 @@
 import { useState, type ReactElement } from 'react'
 import { useSimulationStore } from '../../store/simulation.store'
 import { useWorldStore } from '../../store/world.store'
+import { nextWorldId } from '../../../lib/world/factories'
 import type { WorkloadProfile, FirewallRule, ComposeVolume } from '../../../lib/world/types'
 
 const lockNote = { font: '6.5px var(--font-mono)', color: 'var(--color-text-muted)', marginTop: 4 } as const
@@ -100,7 +101,7 @@ export function FirewallEditor({ serverId }: { serverId: string }): ReactElement
           <button aria-label="remove rule" onClick={() => commit(rules.filter((_, k) => k !== i))}>✕</button>
         </div>
       ))}
-      <button aria-label="add rule" style={{ marginTop: 4 }} onClick={() => commit([...rules, { id: `fw-${Date.now().toString(36)}`, action: 'allow', port: 'any', protocol: 'tcp', source: 'any' }])}>+ add rule</button>
+      <button aria-label="add rule" style={{ marginTop: 4 }} onClick={() => commit([...rules, { id: nextWorldId('fw'), action: 'allow', port: 'any', protocol: 'tcp', source: 'any' }])}>+ add rule</button>
       {running && <div style={lockNote}>stop simulation to edit</div>}
     </fieldset>
   )
@@ -114,6 +115,12 @@ export function VolumesEditor({ serverId, stackName }: { serverId: string; stack
   const stack = server.stacks.find(s => s.name === stackName)
   if (!stack) return <></>
   const commitVols = (volumes: ComposeVolume[]) => update(serverId, { stacks: server.stacks.map(s => (s.name === stackName ? { ...s, volumes } : s)) })
+  const nextVolumeName = () => {
+    const taken = new Set(stack.volumes.map(v => v.name))
+    let n = 1
+    while (taken.has(`vol-${n}`)) n++
+    return `vol-${n}`
+  }
   return (
     <fieldset disabled={running} style={fs(running)}>
       {stack.volumes.map((v, i) => (
@@ -123,7 +130,7 @@ export function VolumesEditor({ serverId, stackName }: { serverId: string; stack
           <button aria-label={`remove volume ${v.name}`} onClick={() => commitVols(stack.volumes.filter((_, k) => k !== i))}>✕</button>
         </div>
       ))}
-      <button aria-label="add volume" onClick={() => commitVols([...stack.volumes, { name: `vol-${stack.volumes.length + 1}`, sizeGb: 10 }])}>+ add volume</button>
+      <button aria-label="add volume" onClick={() => commitVols([...stack.volumes, { name: nextVolumeName(), sizeGb: 10 }])}>+ add volume</button>
       {running && <div style={lockNote}>stop simulation to edit</div>}
     </fieldset>
   )

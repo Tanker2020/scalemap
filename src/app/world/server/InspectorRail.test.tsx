@@ -11,7 +11,7 @@ import {
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { instanceId, compileWorld } from '../../../lib/world/compileWorld'
 import type { WorldDoc } from '../../../lib/world/types'
-import { WorkloadForm, FirewallEditor } from './inspectorForms'
+import { WorkloadForm, FirewallEditor, VolumesEditor } from './inspectorForms'
 
 function seed(configure: (doc: WorldDoc, serverId: string) => void) {
   const doc = createWorld()
@@ -176,5 +176,54 @@ describe('inspector editing forms', () => {
     useSimulationStore.setState({ running: true })
     render(<FirewallEditor serverId={serverId} />)
     expect(screen.getByLabelText('add rule')).toBeDisabled()
+  })
+
+  it('switching the inspected instance remounts WorkloadForm and reseeds the NumberField from stale text', () => {
+    // Regression for the NumberField staleness bug: it seeds its text via useState(String(value))
+    // only on mount and never resyncs when `value` changes on prop update. Without a key tied to
+    // the entity id at the InspectorRail mount site, selecting instance A then instance B (both
+    // selection.kind === 'instance', no intermediate null render) would reuse the same WorkloadForm
+    // instance and keep showing A's stale value instead of B's.
+    const { serverId } = seed((d, sid) => {
+      const bpA = createBlueprint('svc-a', 0); bpA.workload.cpuMsPerRequest = 5
+      const bpB = createBlueprint('svc-b', 1); bpB.workload.cpuMsPerRequest = 12
+      d.blueprints[bpA.id] = bpA; d.blueprints[bpB.id] = bpB
+      const plA = createPlacement(bpA.id, sid); d.placements[plA.id] = plA
+      const plB = createPlacement(bpB.id, sid); d.placements[plB.id] = plB
+    })
+    const doc = useWorldStore.getState().doc
+    const [plA, plB] = Object.values(doc.placements)
+    const iidA = instanceId(plA.id, 0)
+    const iidB = instanceId(plB.id, 0)
+
+    const { rerender } = render(
+      <InspectorRail serverId={serverId} selection={{ kind: 'instance', instanceId: iidA }} onSelect={() => {}} />
+    )
+    expect(screen.getByLabelText('cpuMsPerRequest')).toHaveValue('5')
+
+    rerender(
+      <InspectorRail serverId={serverId} selection={{ kind: 'instance', instanceId: iidB }} onSelect={() => {}} />
+    )
+    expect(screen.getByLabelText('cpuMsPerRequest')).toHaveValue('12')
+  })
+
+  it('adding a volume after removing one does not create a duplicate name', () => {
+    const { serverId } = seed((d, sid) => {
+      d.servers[sid].stacks = [{
+        name: 'app',
+        networks: [],
+        volumes: [{ name: 'vol-1', sizeGb: 5 }, { name: 'vol-2', sizeGb: 5 }, { name: 'vol-3', sizeGb: 5 }],
+      }]
+    })
+    render(<VolumesEditor serverId={serverId} stackName="app" />)
+
+    fireEvent.click(screen.getByLabelText('remove volume vol-2'))
+    fireEvent.click(screen.getByLabelText('add volume'))
+
+    const stack = useWorldStore.getState().doc.servers[serverId].stacks.find(s => s.name === 'app')!
+    const names = stack.volumes.map(v => v.name)
+    expect(names).toHaveLength(3)
+    expect(new Set(names).size).toBe(3) // no duplicates
+    expect(names).toEqual(['vol-1', 'vol-3', 'vol-2']) // vol-2 is the smallest unused suffix
   })
 })

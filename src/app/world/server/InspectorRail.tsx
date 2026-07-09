@@ -49,8 +49,8 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
         {rt?.type === 'container' && <div style={{ color: oom ? 'var(--color-danger)' : undefined }}>mem {m ? Math.round(m.ramMb) : '—'}M / {memLimit ?? '∞'}M {oom && '⚠'}</div>}
         <div style={{ marginTop: 7, color: '#475569', letterSpacing: '0.08em' }}>RESOURCES ON HOST</div>
         <div>p50 {m?.p50Ms?.toFixed(1) ?? '—'}ms · {m?.activeConnections ?? '—'} conn</div>
-        {inst && <WorkloadForm blueprintId={inst.blueprintId} />}
-        {inst && rt?.type === 'container' && <RuntimeForm placementId={inst.placementId} />}
+        {inst && <WorkloadForm key={inst.blueprintId} blueprintId={inst.blueprintId} />}
+        {inst && rt?.type === 'container' && <RuntimeForm key={inst.placementId} placementId={inst.placementId} />}
       </div>
     )
   } else if (selection.kind === 'nic') {
@@ -68,7 +68,7 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
           {r.action.toUpperCase()} :{r.port} {r.protocol} from {r.source}
         </div>
       ))}
-      <FirewallEditor serverId={serverId} />
+      <FirewallEditor key={serverId} serverId={serverId} />
     </div>
   } else if (selection.kind === 'stack') {
     const st = server?.stacks.find(s => s.name === selection.stackName)
@@ -80,7 +80,7 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
       <div>networks {st?.networks.map(n => n.cidr).join(', ') || '—'}</div>
       <div>volumes {st?.volumes.map(v => `${v.name} ${v.sizeGb}G`).join(', ') || '—'}</div>
       <div>members {members.map(i => doc.blueprints[i.blueprintId]?.name).join(', ') || '—'}</div>
-      <VolumesEditor serverId={serverId} stackName={selection.stackName} />
+      <VolumesEditor key={`${serverId}:${selection.stackName}`} serverId={serverId} stackName={selection.stackName} />
     </div>
   } else if (selection.kind === 'volume') {
     const consumers = Object.values(doc.blueprints).filter(b => b.volumeName === selection.volumeName)
