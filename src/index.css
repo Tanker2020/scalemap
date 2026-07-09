@@ -101,3 +101,8 @@ input, textarea, select {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Generic rotation util — e.g. disk-platter io scanner sweep (HardwarePlatform). */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

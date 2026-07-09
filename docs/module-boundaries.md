@@ -265,6 +265,40 @@ never reshape.
 
 ---
 
+### L. Server interior board — Phase 3 Level-4 view (`src/app/world/server/`, 2026-07-09)
+
+The "circuit board" view: drilling into a single server renders a fixed 1000×560 logical
+stage (`ServerView.tsx` composition root → `ServerBoard.tsx` stage) with resident service
+chips wired to a NIC/firewall gate on the left and a unified hardware platform on the right.
+Built across Tasks 1/3/4 (this doc previously only tracked the engine-side Task 2 particle
+work in §K — the view-side files below went undocumented until Task 4; backfilled here).
+
+| File | Role |
+|---|---|
+| `src/app/world/server/boardLayout.ts` (Task 1, 254 lines) | Pure layout functions, no React: `layoutServerBoard(server, doc, compiled)` computes the fixed-zone `BoardLayout` (nic/gate/chips/stacks/**hardware** boxes at hardcoded logical coordinates — D2) plus `chips[].{inAnchor,outAnchor}`/`anchorFor`/`tracePath` (SVG path strings, nic-endpoints routed through the firewall gate). `serverTraces(serverId, doc, compiled)` collapses `compiled.paths` into one `StaticTrace` per unique `(fromId,toId,protocol)`, off-server/managed targets collapsing to `nic:<serverId>` (D3/D6). `attributeCores(coreCount, instances)` (also Task 1) does greedy per-vCPU blueprint attribution from live `cpuCoresUsed` — sort instances desc, each claims whole cores then a fraction of the next; a core's `dominantBlueprintId` is null when idle. Consumed by `ServerBoard.tsx`/`TraceLayer.tsx`/`HardwarePlatform.tsx`(via `CoreAttribution` type)/`ServerView.tsx`. Unit-tested (`boardLayout.test.ts`) |
+| `src/app/world/server/selection.ts` (Task 3, type-only) | `BoardSelection` discriminated union — every selectable thing on the board (`instance`/`nic`/`firewall`/`rule`/`stack`/`volume`/`hardware`/`core`). Pure types, no logic; the inspector rail that will actually consume selection state is future work (T6) — today `ServerView.tsx` passes `selection={null}`/no-op `onSelect` straight through |
+| `src/app/world/server/ServerBoard.tsx` (Task 3, live-wired Task 4) | The stage: scale-to-fit via `ResizeObserver`, PCB grid background, layer stack `TraceLayer` (SVG z0) → `StackPlate`/`NicBlock`/`FirewallGate`/`ServiceChip`/**`HardwarePlatform`** (DOM z1) → PacketLayer slot (z2, not yet built). **2026-07-09 (Task 4):** calls `useServerDisplayMetrics(serverId)` and derives, every render: `residentBlueprints` (color/name/`ramBaseMb` per resident chip, sourced from `doc.blueprints[bp].workload.ramBaseMb` — feeds `HardwarePlatform`'s at-rest RAM estimate, D5), live `attribution` via `attributeCores(server.specs.vcpu, ...)` fed from `display.instances[id].cpuCoresUsed`, and `memLimits`/`instanceRamMb` (container `runtime.memLimitMb` + live per-instance `ramMb`, for the RAM reservoir's oom warning). Mounts `HardwarePlatform` absolutely-positioned at `layout.hardware.box`; passes live `connLabel`/`health` into each `ServiceChip` and live `inMbps`/`outMbps`/`utilFraction` into `NicBlock`; renders a "● scrubbing" pill (top-right of the outer, unscaled container) when `display.scrubbing` |
+| `src/app/world/server/useServerDisplayMetrics.ts` (Task 4, 26 lines) | `useServerDisplayMetrics(serverId): { server, instances, scrubbing }` — scrub-aware slice of the metrics pyramid (D5): reads `scrubBatch`/`latestBatch` as two separate store selectors, then a `useMemo` keyed on `[scrubBatch, latestBatch, serverId]` resolves `scrubBatch ?? latestBatch` and picks out `batch.servers[serverId]`. Returns the **full** `batch.instances` map (not filtered to residents) deliberately — callers already hold the resident instance-id set from the layout, so filtering here would duplicate it. Plain store selector — no renderer subscription, no per-frame `setState` (the T14 lesson: particle-frequency data must never touch Zustand) |
+| `src/app/world/server/HardwarePlatform.tsx` (Task 4, 145 lines) | Unified host platform (D4): CPU die (SVG ring, mean-utilization arc + hatched amber steal arc for VPS with `stealFraction>0`, per-core grid of `data-testid="core-cell"` divs colored by `attribution[i].dominantBlueprintId`) + stratified RAM reservoir (one colored stratum per resident instance in `ramByInstance` order + an os/cache remainder stratum, unconditionally rendered) + sliced disk platter (system 15% + one slice per `server.stacks[].volumes`, remainder free, with an io-rate scanner sweep). Renders every `ServerMetrics` field, incl. a host-health dot (`HEALTH_COLOR[health]`). At-rest estimate (D5): when `metrics === null`, RAM strata come from each `residentBlueprints[].ramBaseMb` instead of `ramByInstance`. `prefers-reduced-motion` (via `useReducedMotion()`) and `!metrics` both suppress the disk scanner's `spin` animation. 6-test jsdom suite (`HardwarePlatform.test.tsx`) covers core-cell count, steal-arc conditionality, RAM stratum count/ordering, the at-rest fallback, disk-volume proportionality, and the 90%-of-`memLimitMb` oom warning |
+| `src/app/world/server/ServiceChip.tsx` / `NicBlock.tsx` (Task 3, live-filled Task 4) | Process/container chip and NIC connector components. Task 3 landed both with the live-data props already declared optional (`ServiceChip.health?`/`connLabel?`, `NicBlock.inMbps?`/`outMbps?`/`utilFraction?`) so Task 4 only had to fill them at the `ServerBoard.tsx` call site — neither component file itself changed in Task 4 |
+| `src/app/world/server/FirewallGate.tsx` / `StackPlate.tsx` / `TraceLayer.tsx` (Task 3) | Firewall rule-count gate block, compose-stack plate (container chips + volumes), and the SVG trace layer (bowed béziers via `boardLayout.tracePath`, dashed+labeled when a trace's `verdict==='blocked'`). No live-metrics surface in Phase 3 Task 4 — untouched this task |
+| `src/app/world/ServerView.tsx` (Task 3, 41 lines) | Level-4 composition root: header strip (label/kind/specs/rack position) + `ServerBoard` (flex 2.6) + an inspector-rail placeholder `<aside>` (T6 replaces it). Memoizes `layoutServerBoard`/`serverTraces` off `[server, doc, compiled]`. Still passes `selection={null}`/no-op handlers to `ServerBoard` — selection state doesn't live here yet |
+
+**Frozen-contract note:** `ServerMetrics`/`InstanceMetrics` (`worldEngine/types.ts`, §K) are read-only
+here — every field must be rendered somewhere in `HardwarePlatform`/`ServiceChip`/`NicBlock`, never
+reshaped. Id types (`InstanceId` etc.) are imported from `lib/world/types.ts`, **not**
+`worldEngine/types.ts` (which uses but does not re-export them — importing id types from the wrong
+module fails strict `tsc`).
+
+**Blast radius:** `boardLayout.ts`'s `BoardLayout`/`CoreAttribution` types fan out to
+`ServerBoard.tsx`/`TraceLayer.tsx`/`HardwarePlatform.tsx`/`ServerView.tsx` — extend additively.
+`useServerDisplayMetrics.ts` has one consumer (`ServerBoard.tsx`) today; future Phase 3 tasks
+(inspector rail, packet layer) are expected to call it too rather than reaching into
+`useSimulationStore` directly, keeping the scrub-aware read (`scrubBatch ?? latestBatch`, D5) in
+one place.
+
+---
+
 ## 2. Shared "hub" files (everyone touches these — high conflict risk)
 
 These aren't feature modules; they're registries other code plugs into. The fix
