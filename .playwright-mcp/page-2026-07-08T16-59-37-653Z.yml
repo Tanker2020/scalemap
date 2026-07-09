@@ -1,0 +1,114 @@
+- generic [ref=e34]:
+  - banner [ref=e35]:
+    - navigation "World navigation" [ref=e36]:
+      - button "World" [ref=e199] [cursor=pointer]
+      - generic [ref=e200]:
+        - generic [ref=e201]: ›
+        - button "us-east-1" [ref=e210] [cursor=pointer]
+      - generic [ref=e211]:
+        - generic [ref=e212]: ›
+        - generic [ref=e213]: us-east-1a
+    - generic [ref=e39]:
+      - generic [ref=e40]: esc = up one level
+      - generic [ref=e64]: ● unsaved
+      - button "New" [ref=e41] [cursor=pointer]
+      - button "Open" [ref=e42] [cursor=pointer]
+      - button "Save" [ref=e43] [cursor=pointer]
+      - button "Save As" [ref=e44] [cursor=pointer]
+  - generic [ref=e45]:
+    - main [ref=e46]:
+      - application [ref=e216]:
+        - generic [ref=e218]:
+          - generic:
+            - generic:
+              - img:
+                - group "Edge from srv-3-mrcbk461 to srv-5-mrcbkdqk" [ref=e219] [cursor=pointer]:
+                  - generic [ref=e220]:
+                    - generic: 1 dep
+            - generic:
+              - group [ref=e222] [cursor=pointer]:
+                - generic [ref=e223]:
+                  - generic [ref=e225]:
+                    - strong [ref=e226]: server-1
+                    - generic [ref=e227]: vps
+                  - generic [ref=e228]: 4 vCPU · 8 GB · 1 fw rules
+                  - generic [ref=e229]:
+                    - generic [ref=e231]: api
+                    - generic [ref=e232]: primary · process
+              - group [ref=e234] [cursor=pointer]:
+                - generic [ref=e235]:
+                  - generic [ref=e237]:
+                    - strong [ref=e238]: server-2
+                    - generic [ref=e239]: vps
+                  - generic [ref=e240]: 4 vCPU · 8 GB · 1 fw rules
+                  - generic [ref=e241]:
+                    - generic [ref=e243]: pg
+                    - generic [ref=e244]: primary · process
+        - img
+    - complementary [ref=e53]:
+      - generic [ref=e54]:
+        - button "Topology" [active] [ref=e55] [cursor=pointer]
+        - button "Blueprints" [ref=e56] [cursor=pointer]
+        - button "Placements" [ref=e57] [cursor=pointer]
+        - button "Findings (0)" [ref=e58] [cursor=pointer]
+      - generic [ref=e247]:
+        - generic [ref=e248]: Regions
+        - generic [ref=e249]:
+          - combobox "add-region-select" [ref=e250]:
+            - option "us-east-2" [selected]
+            - option "us-west-1"
+            - option "us-west-2"
+            - option "ca-central-1"
+            - option "sa-east-1"
+            - option "eu-west-1"
+            - option "eu-west-2"
+            - option "eu-west-3"
+            - option "eu-central-1"
+            - option "eu-south-1"
+            - option "eu-north-1"
+            - option "me-south-1"
+            - option "af-south-1"
+            - option "ap-south-1"
+            - option "ap-southeast-1"
+            - option "ap-southeast-2"
+            - option "ap-northeast-1"
+            - option "ap-northeast-2"
+            - option "ap-northeast-3"
+            - option "ap-east-1"
+          - button "+ Region" [ref=e251] [cursor=pointer]
+        - generic [ref=e252]:
+          - generic [ref=e253]:
+            - strong [ref=e254]: us-east-1
+            - combobox [ref=e255]:
+              - option "active" [selected]
+              - option "passive"
+            - button "×" [ref=e256] [cursor=pointer]
+          - button "+ AZ" [ref=e257] [cursor=pointer]
+          - generic [ref=e258]:
+            - generic [ref=e259]:
+              - generic [ref=e260]: us-east-1a
+              - button "×" [ref=e261] [cursor=pointer]
+            - generic [ref=e262]:
+              - combobox [ref=e263]:
+                - option "VPS Small (2 vCPU / 4 GB)"
+                - option "VPS Medium (4 vCPU / 8 GB)" [selected]
+                - option "VPS Large (8 vCPU / 16 GB)"
+                - option "AWS t3.medium (2 vCPU / 4 GB)"
+                - option "AWS m7i.large (2 vCPU / 8 GB)"
+                - option "GCP e2-standard-4 (4 vCPU / 16 GB)"
+                - option "Dedicated 8-core / 32 GB"
+                - option "Dedicated 16-core / 64 GB"
+                - option "Dedicated 32-core / 128 GB"
+              - button "+ Server" [ref=e264] [cursor=pointer]
+            - generic [ref=e266]:
+              - button "▸ server-1 (vps)" [ref=e267] [cursor=pointer]:
+                - text: ▸ server-1
+                - generic [ref=e268]: (vps)
+              - button "→" [ref=e269] [cursor=pointer]
+              - button "×" [ref=e270] [cursor=pointer]
+            - generic [ref=e272]:
+              - button "▸ server-2 (vps)" [ref=e273] [cursor=pointer]:
+                - text: ▸ server-2
+                - generic [ref=e274]: (vps)
+              - button "→" [ref=e275] [cursor=pointer]
+              - button "×" [ref=e276] [cursor=pointer]

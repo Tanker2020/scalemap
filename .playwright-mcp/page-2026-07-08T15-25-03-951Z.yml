@@ -1,0 +1,53 @@
+- generic [ref=f4e23]:
+  - banner [ref=f4e24]:
+    - navigation "World navigation" [ref=f4e25]:
+      - generic [ref=f4e27]: World
+    - generic [ref=f4e28]: esc = up one level
+  - generic [ref=f4e29]:
+    - main [ref=f4e30]:
+      - generic [ref=f4e32]:
+        - generic [ref=f4e33]: World — 1 region · 0 service instances
+        - generic [ref=f4e34]: no findings
+        - button "us-east-1 US East (N. Virginia) 2 AZ · 2 servers · active" [ref=f4e80] [cursor=pointer]:
+          - generic [ref=f4e48]: us-east-1
+          - generic [ref=f4e49]: US East (N. Virginia)
+          - generic [ref=f4e50]: 2 AZ · 2 servers · active
+    - complementary [ref=f4e37]:
+      - generic [ref=f4e38]:
+        - button "Topology" [ref=f4e39] [cursor=pointer]
+        - button "Blueprints" [ref=f4e40] [cursor=pointer]
+        - button "Placements" [ref=f4e41] [cursor=pointer]
+      - generic [ref=f4e106]:
+        - generic [ref=f4e107]: Blueprints
+        - generic [ref=f4e108]:
+          - textbox "new blueprint name" [ref=f4e109]
+          - button "+ Blueprint" [disabled] [ref=f4e110] [cursor=pointer]
+        - generic [ref=f4e111]:
+          - generic [ref=f4e112]:
+            - textbox "bp-name" [ref=f4e114]: web
+            - button "×" [ref=f4e115] [cursor=pointer]
+          - generic [ref=f4e116]: Ports
+          - generic [ref=f4e117]:
+            - spinbutton "port-0" [ref=f4e118]: "8080"
+            - combobox [ref=f4e119]:
+              - option "internal" [selected]
+              - option "public"
+            - button "×" [ref=f4e120] [cursor=pointer]
+          - button "+ Port" [ref=f4e121] [cursor=pointer]
+          - generic [ref=f4e122]: Workload
+          - generic [ref=f4e123]:
+            - generic [ref=f4e124]: cpu ms/req
+            - spinbutton [ref=f4e125]: "5"
+          - generic [ref=f4e126]:
+            - generic [ref=f4e127]: ram base MB
+            - spinbutton [ref=f4e128]: "128"
+          - generic [ref=f4e129]:
+            - generic [ref=f4e130]: ram/conn MB
+            - spinbutton [ref=f4e131]: "0.5"
+          - generic [ref=f4e132]:
+            - generic [ref=f4e133]: disk io/req
+            - spinbutton [ref=f4e134]: "0"
+          - generic [ref=f4e136]:
+            - checkbox "stateful" [ref=f4e137]
+            - text: stateful
+          - button "▸ deps" [ref=f4e138] [cursor=pointer]

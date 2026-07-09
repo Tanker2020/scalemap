@@ -1,0 +1,52 @@
+- generic [ref=e82]:
+  - banner [ref=e83]:
+    - navigation "World navigation" [ref=e84]:
+      - generic [ref=e86]: World
+    - generic [ref=e87]: esc = up one level
+  - generic [ref=e88]:
+    - main [ref=e89]:
+      - generic [ref=e91]:
+        - generic [ref=e92]: World — 1 region · 0 service instances
+        - generic [ref=e93]: no findings
+        - button "us-east-1 US East (N. Virginia) 0 AZ · 0 servers · active" [ref=e106] [cursor=pointer]:
+          - generic [ref=e107]: us-east-1
+          - generic [ref=e108]: US East (N. Virginia)
+          - generic [ref=e109]: 0 AZ · 0 servers · active
+    - complementary [ref=e96]:
+      - generic [ref=e97]:
+        - button "Topology" [ref=e98] [cursor=pointer]
+        - button "Blueprints" [ref=e99] [cursor=pointer]
+        - button "Placements" [ref=e100] [cursor=pointer]
+      - generic [ref=e101]:
+        - generic [ref=e102]: Regions
+        - generic [ref=e103]:
+          - combobox "add-region-select" [ref=e104]:
+            - option "us-east-2" [selected]
+            - option "us-west-1"
+            - option "us-west-2"
+            - option "ca-central-1"
+            - option "sa-east-1"
+            - option "eu-west-1"
+            - option "eu-west-2"
+            - option "eu-west-3"
+            - option "eu-central-1"
+            - option "eu-south-1"
+            - option "eu-north-1"
+            - option "me-south-1"
+            - option "af-south-1"
+            - option "ap-south-1"
+            - option "ap-southeast-1"
+            - option "ap-southeast-2"
+            - option "ap-northeast-1"
+            - option "ap-northeast-2"
+            - option "ap-northeast-3"
+            - option "ap-east-1"
+          - button "+ Region" [active] [ref=e105] [cursor=pointer]
+        - generic [ref=e110]:
+          - generic [ref=e111]:
+            - strong [ref=e112]: us-east-1
+            - combobox [ref=e113]:
+              - option "active" [selected]
+              - option "passive"
+            - button "×" [ref=e114] [cursor=pointer]
+          - button "+ AZ" [ref=e115] [cursor=pointer]

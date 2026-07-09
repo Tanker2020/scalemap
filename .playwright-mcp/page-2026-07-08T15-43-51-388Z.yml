@@ -1,0 +1,137 @@
+- generic [ref=f6e31]:
+  - banner [ref=f6e32]:
+    - navigation "World navigation" [ref=f6e33]:
+      - generic [ref=f6e35]: World
+    - generic [ref=f6e36]: esc = up one level
+  - generic [ref=f6e37]:
+    - main [ref=f6e38]:
+      - generic [ref=f6e40]:
+        - generic [ref=f6e41]: World — 1 region · 0 service instances
+        - generic [ref=f6e42]: no findings
+        - button "us-east-1 US East (N. Virginia) 1 AZ · 2 servers · active" [ref=f6e80] [cursor=pointer]:
+          - generic [ref=f6e56]: us-east-1
+          - generic [ref=f6e57]: US East (N. Virginia)
+          - generic [ref=f6e58]: 1 AZ · 2 servers · active
+    - complementary [ref=f6e45]:
+      - generic [ref=f6e46]:
+        - button "Topology" [ref=f6e47] [cursor=pointer]
+        - button "Blueprints" [ref=f6e48] [cursor=pointer]
+        - button "Placements" [ref=f6e49] [cursor=pointer]
+      - generic [ref=f6e87]:
+        - generic [ref=f6e88]: Blueprints
+        - generic [ref=f6e89]:
+          - textbox "new blueprint name" [ref=f6e90]
+          - button "+ Blueprint" [disabled] [ref=f6e91] [cursor=pointer]
+        - generic [ref=f6e92]:
+          - generic [ref=f6e93]:
+            - textbox "bp-name" [ref=f6e95]: web
+            - button "×" [ref=f6e96] [cursor=pointer]
+          - generic [ref=f6e97]: Ports
+          - generic [ref=f6e98]:
+            - spinbutton "port-0" [ref=f6e99]: "8080"
+            - combobox [ref=f6e100]:
+              - option "internal" [selected]
+              - option "public"
+            - button "×" [ref=f6e101] [cursor=pointer]
+          - button "+ Port" [ref=f6e102] [cursor=pointer]
+          - generic [ref=f6e103]: Workload
+          - generic [ref=f6e104]:
+            - generic [ref=f6e105]: cpu ms/req
+            - spinbutton [ref=f6e106]: "5"
+          - generic [ref=f6e107]:
+            - generic [ref=f6e108]: ram base MB
+            - spinbutton [ref=f6e109]: "128"
+          - generic [ref=f6e110]:
+            - generic [ref=f6e111]: ram/conn MB
+            - spinbutton [ref=f6e112]: "0.5"
+          - generic [ref=f6e113]:
+            - generic [ref=f6e114]: disk io/req
+            - spinbutton [ref=f6e115]: "0"
+          - generic [ref=f6e117]:
+            - checkbox "stateful" [ref=f6e118]
+            - text: stateful
+          - button "▾ deps" [ref=f6e176] [cursor=pointer]
+          - generic [ref=f6e177]:
+            - generic [ref=f6e179]:
+              - combobox [ref=f6e180]:
+                - option "api" [selected]
+                - option "pg"
+              - spinbutton "dep-port-0" [ref=f6e181]: "8080"
+              - combobox [ref=f6e182]:
+                - option "http" [selected]
+                - option "db"
+                - option "event"
+                - option "stream"
+              - button "×" [ref=f6e183] [cursor=pointer]
+            - button "+ Dependency" [ref=f6e178] [cursor=pointer]
+        - generic [ref=f6e120]:
+          - generic [ref=f6e121]:
+            - textbox "bp-name" [ref=f6e123]: api
+            - button "×" [ref=f6e124] [cursor=pointer]
+          - generic [ref=f6e125]: Ports
+          - generic [ref=f6e126]:
+            - spinbutton "port-0" [ref=f6e127]: "8080"
+            - combobox [ref=f6e128]:
+              - option "internal" [selected]
+              - option "public"
+            - button "×" [ref=f6e129] [cursor=pointer]
+          - button "+ Port" [ref=f6e130] [cursor=pointer]
+          - generic [ref=f6e131]: Workload
+          - generic [ref=f6e132]:
+            - generic [ref=f6e133]: cpu ms/req
+            - spinbutton [ref=f6e134]: "5"
+          - generic [ref=f6e135]:
+            - generic [ref=f6e136]: ram base MB
+            - spinbutton [ref=f6e137]: "128"
+          - generic [ref=f6e138]:
+            - generic [ref=f6e139]: ram/conn MB
+            - spinbutton [ref=f6e140]: "0.5"
+          - generic [ref=f6e141]:
+            - generic [ref=f6e142]: disk io/req
+            - spinbutton [ref=f6e143]: "0"
+          - generic [ref=f6e145]:
+            - checkbox "stateful" [ref=f6e146]
+            - text: stateful
+          - button "▾ deps" [ref=f6e184] [cursor=pointer]
+          - generic [ref=f6e185]:
+            - generic [ref=f6e187]:
+              - combobox [ref=f6e188]:
+                - option "web"
+                - option "pg" [selected]
+              - spinbutton "dep-port-0" [active] [ref=f6e189]: "8080"
+              - combobox [ref=f6e190]:
+                - option "http"
+                - option "db" [selected]
+                - option "event"
+                - option "stream"
+              - button "×" [ref=f6e191] [cursor=pointer]
+            - button "+ Dependency" [ref=f6e186] [cursor=pointer]
+        - generic [ref=f6e148]:
+          - generic [ref=f6e149]:
+            - textbox "bp-name" [ref=f6e151]: pg
+            - button "×" [ref=f6e152] [cursor=pointer]
+          - generic [ref=f6e153]: Ports
+          - generic [ref=f6e154]:
+            - spinbutton "port-0" [ref=f6e155]: "5432"
+            - combobox [ref=f6e156]:
+              - option "internal" [selected]
+              - option "public"
+            - button "×" [ref=f6e157] [cursor=pointer]
+          - button "+ Port" [ref=f6e158] [cursor=pointer]
+          - generic [ref=f6e159]: Workload
+          - generic [ref=f6e160]:
+            - generic [ref=f6e161]: cpu ms/req
+            - spinbutton [ref=f6e162]: "5"
+          - generic [ref=f6e163]:
+            - generic [ref=f6e164]: ram base MB
+            - spinbutton [ref=f6e165]: "128"
+          - generic [ref=f6e166]:
+            - generic [ref=f6e167]: ram/conn MB
+            - spinbutton [ref=f6e168]: "0.5"
+          - generic [ref=f6e169]:
+            - generic [ref=f6e170]: disk io/req
+            - spinbutton [ref=f6e171]: "0"
+          - generic [ref=f6e173]:
+            - checkbox "stateful" [ref=f6e174]
+            - text: stateful
+          - button "▸ deps" [ref=f6e175] [cursor=pointer]

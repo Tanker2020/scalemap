@@ -1,0 +1,60 @@
+- generic [ref=f2e3]:
+  - generic [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - button "File" [ref=f2e7] [cursor=pointer]:
+        - img [ref=f2e8]
+        - text: File
+        - img [ref=f2e11]
+      - button "Provider" [disabled] [ref=f2e114]:
+        - img [ref=f2e115]
+        - generic [ref=f2e117]: Provider
+        - img [ref=f2e118]
+      - button "Select (V)" [ref=f2e14] [cursor=pointer]:
+        - img [ref=f2e15]
+      - button "Hand (H)" [ref=f2e17] [cursor=pointer]:
+        - img [ref=f2e18]
+      - button "Connect (C)" [ref=f2e23] [cursor=pointer]:
+        - img [ref=f2e24]
+      - generic [ref=f2e120]:
+        - button "Undo" [ref=f2e122] [cursor=pointer]
+        - button "Redo" [ref=f2e123] [cursor=pointer]
+      - generic [ref=f2e124]:
+        - generic [ref=f2e125]: Panels
+        - button "Inspect" [ref=f2e126] [cursor=pointer]:
+          - img [ref=f2e127]
+          - generic [ref=f2e128]: Inspect
+        - button "Dock" [ref=f2e129] [cursor=pointer]:
+          - img [ref=f2e130]
+          - generic [ref=f2e133]: Dock
+        - button "Packets" [ref=f2e134] [cursor=pointer]:
+          - img [ref=f2e135]
+          - generic [ref=f2e139]: Packets
+        - button "Diagnostics" [ref=f2e140] [cursor=pointer]:
+          - img [ref=f2e141]
+          - generic [ref=f2e144]: Diagnostics
+      - generic [ref=f2e146]:
+        - button "Simulate" [ref=f2e147] [cursor=pointer]: Simulate
+        - button "Simulation settings — speed, traffic mode, volume" [ref=f2e149] [cursor=pointer]:
+          - img [ref=f2e150]
+    - button "Switch to light mode" [ref=f2e26] [cursor=pointer]:
+      - img [ref=f2e27]
+  - generic [ref=f2e33]:
+    - generic [ref=f2e152]:
+      - button "Compute" [ref=f2e153] [cursor=pointer]:
+        - img [ref=f2e154]
+      - button "Network" [ref=f2e157] [cursor=pointer]:
+        - img [ref=f2e158]
+      - button "Storage" [ref=f2e162] [cursor=pointer]:
+        - img [ref=f2e163]
+      - button "Messaging" [ref=f2e167] [cursor=pointer]:
+        - img [ref=f2e168]
+      - button "Caching" [ref=f2e169] [cursor=pointer]:
+        - img [ref=f2e170]
+      - button "Orchestration" [ref=f2e174] [cursor=pointer]:
+        - img [ref=f2e175]
+      - button "Grouping" [ref=f2e178] [cursor=pointer]:
+        - img [ref=f2e179]
+    - application [ref=f2e183]:
+      - img
+      - img "Mini Map" [ref=f2e187]
+  - generic [ref=f2e112]: untitled · not yet saved

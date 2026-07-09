@@ -1,0 +1,24 @@
+- generic [ref=f4e23]:
+  - banner [ref=f4e24]:
+    - navigation "World navigation" [ref=f4e25]:
+      - generic [ref=f4e27]: World
+    - generic [ref=f4e28]: esc = up one level
+  - generic [ref=f4e29]:
+    - main [ref=f4e30]:
+      - generic [ref=f4e32]:
+        - generic [ref=f4e33]: World — 1 region · 0 service instances
+        - generic [ref=f4e34]: no findings
+        - button "us-east-1 US East (N. Virginia) 2 AZ · 2 servers · active" [ref=f4e80] [cursor=pointer]:
+          - generic [ref=f4e48]: us-east-1
+          - generic [ref=f4e49]: US East (N. Virginia)
+          - generic [ref=f4e50]: 2 AZ · 2 servers · active
+    - complementary [ref=f4e37]:
+      - generic [ref=f4e38]:
+        - button "Topology" [ref=f4e39] [cursor=pointer]
+        - button "Blueprints" [active] [ref=f4e40] [cursor=pointer]
+        - button "Placements" [ref=f4e41] [cursor=pointer]
+      - generic [ref=f4e106]:
+        - generic [ref=f4e107]: Blueprints
+        - generic [ref=f4e108]:
+          - textbox "new blueprint name" [ref=f4e109]
+          - button "+ Blueprint" [disabled] [ref=f4e110] [cursor=pointer]

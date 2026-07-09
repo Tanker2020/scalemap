@@ -1,0 +1,86 @@
+- generic [ref=e82]:
+  - banner [ref=e83]:
+    - navigation "World navigation" [ref=e84]:
+      - button "World" [ref=e131] [cursor=pointer]
+      - generic [ref=e132]:
+        - generic [ref=e133]: ›
+        - button "us-east-1" [ref=e134] [cursor=pointer]
+      - generic [ref=e135]:
+        - generic [ref=e136]: ›
+        - button "us-east-1a" [ref=e137] [cursor=pointer]
+      - generic [ref=e138]:
+        - generic [ref=e139]: ›
+        - generic [ref=e140]: server-1
+    - generic [ref=e87]: esc = up one level
+  - generic [ref=e88]:
+    - main [ref=e89]:
+      - generic [ref=e142]:
+        - generic [ref=e143]:
+          - generic [ref=e144]: server-1
+          - generic [ref=e145]: vps · 4 vCPU / 8 GB · 80 GB disk · 1000 Mbps · 4:1 oversubscribed · $0.036/hr
+        - generic [ref=e146]:
+          - generic [ref=e147]: SERVICES (0)
+          - generic [ref=e148]: nothing deployed — add a placement in the World panel
+        - generic [ref=e149]:
+          - generic [ref=e150]: FIREWALL (1 rules, default deny)
+          - generic [ref=e151]: ALLOW :any any from internal
+    - complementary [ref=e96]:
+      - generic [ref=e97]:
+        - button "Topology" [ref=e98] [cursor=pointer]
+        - button "Blueprints" [ref=e99] [cursor=pointer]
+        - button "Placements" [ref=e100] [cursor=pointer]
+      - generic [ref=e101]:
+        - generic [ref=e102]: Regions
+        - generic [ref=e103]:
+          - combobox "add-region-select" [ref=e104]:
+            - option "us-east-2" [selected]
+            - option "us-west-1"
+            - option "us-west-2"
+            - option "ca-central-1"
+            - option "sa-east-1"
+            - option "eu-west-1"
+            - option "eu-west-2"
+            - option "eu-west-3"
+            - option "eu-central-1"
+            - option "eu-south-1"
+            - option "eu-north-1"
+            - option "me-south-1"
+            - option "af-south-1"
+            - option "ap-south-1"
+            - option "ap-southeast-1"
+            - option "ap-southeast-2"
+            - option "ap-northeast-1"
+            - option "ap-northeast-2"
+            - option "ap-northeast-3"
+            - option "ap-east-1"
+          - button "+ Region" [ref=e105] [cursor=pointer]
+        - generic [ref=e110]:
+          - generic [ref=e111]:
+            - strong [ref=e112]: us-east-1
+            - combobox [ref=e113]:
+              - option "active" [selected]
+              - option "passive"
+            - button "×" [ref=e114] [cursor=pointer]
+          - button "+ AZ" [ref=e115] [cursor=pointer]
+          - generic [ref=e117]:
+            - generic [ref=e118]:
+              - generic [ref=e119]: us-east-1a
+              - button "×" [ref=e120] [cursor=pointer]
+            - generic [ref=e121]:
+              - combobox [ref=e122]:
+                - option "VPS Small (2 vCPU / 4 GB)"
+                - option "VPS Medium (4 vCPU / 8 GB)" [selected]
+                - option "VPS Large (8 vCPU / 16 GB)"
+                - option "AWS t3.medium (2 vCPU / 4 GB)"
+                - option "AWS m7i.large (2 vCPU / 8 GB)"
+                - option "GCP e2-standard-4 (4 vCPU / 16 GB)"
+                - option "Dedicated 8-core / 32 GB"
+                - option "Dedicated 16-core / 64 GB"
+                - option "Dedicated 32-core / 128 GB"
+              - button "+ Server" [ref=e123] [cursor=pointer]
+            - generic [ref=e126]:
+              - button "▸ server-1 (vps)" [ref=e127] [cursor=pointer]:
+                - text: ▸ server-1
+                - generic [ref=e128]: (vps)
+              - button "→" [active] [ref=e129] [cursor=pointer]
+              - button "×" [ref=e130] [cursor=pointer]

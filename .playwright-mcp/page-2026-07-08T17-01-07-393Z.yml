@@ -1,0 +1,60 @@
+- generic [ref=e34]:
+  - banner [ref=e35]:
+    - navigation "World navigation" [ref=e36]:
+      - button "World" [ref=e199] [cursor=pointer]
+      - generic [ref=e200]:
+        - generic [ref=e201]: ›
+        - button "us-east-1" [ref=e210] [cursor=pointer]
+      - generic [ref=e211]:
+        - generic [ref=e212]: ›
+        - generic [ref=e213]: us-east-1a
+    - generic [ref=e39]:
+      - generic [ref=e40]: esc = up one level
+      - generic [ref=e64]: ● unsaved
+      - button "New" [ref=e41] [cursor=pointer]
+      - button "Open" [ref=e42] [cursor=pointer]
+      - button "Save" [ref=e43] [cursor=pointer]
+      - button "Save As" [ref=e44] [cursor=pointer]
+  - generic [ref=e45]:
+    - main [ref=e46]:
+      - application [ref=e216]:
+        - generic [ref=e218]:
+          - generic:
+            - generic:
+              - img:
+                - group "Edge from srv-3-mrcbk461 to srv-5-mrcbkdqk" [ref=e309] [cursor=pointer]:
+                  - generic [ref=e310]:
+                    - generic: ✕ firewall-deny
+            - generic:
+              - group [ref=e222] [cursor=pointer]:
+                - generic [ref=e223]:
+                  - generic [ref=e225]:
+                    - strong [ref=e226]: server-1
+                    - generic [ref=e227]: vps
+                  - generic [ref=e228]: 4 vCPU · 8 GB · 1 fw rules
+                  - generic [ref=e229]:
+                    - generic [ref=e231]: api
+                    - generic [ref=e232]: primary · process
+              - group [ref=e234] [cursor=pointer]:
+                - generic [ref=e235]:
+                  - generic [ref=e237]:
+                    - strong [ref=e238]: server-2
+                    - generic [ref=e239]: vps
+                  - generic [ref=e240]: 4 vCPU · 8 GB · 2 fw rules
+                  - generic [ref=e241]:
+                    - generic [ref=e243]: pg
+                    - generic [ref=e244]: primary · process
+        - img
+    - complementary [ref=e53]:
+      - generic [ref=e54]:
+        - button "Topology" [ref=e55] [cursor=pointer]
+        - button "Blueprints" [ref=e56] [cursor=pointer]
+        - button "Placements" [ref=e57] [cursor=pointer]
+        - button "Findings (1)" [active] [ref=e312] [cursor=pointer]
+      - generic [ref=e315]:
+        - generic [ref=e316]: Findings
+        - generic [ref=e317]:
+          - generic [ref=e318]:
+            - generic [ref=e319]: error
+            - generic [ref=e320]: blocked-path
+          - generic [ref=e321]: "api → pg:5432 is blocked: denied by firewall rule on server-2 (port 5432)"

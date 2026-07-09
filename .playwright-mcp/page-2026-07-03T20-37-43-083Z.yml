@@ -1,0 +1,214 @@
+- generic [ref=f3e3]:
+  - generic [ref=f3e4]:
+    - generic [ref=f3e5]:
+      - button "File" [ref=f3e7] [cursor=pointer]:
+        - img [ref=f3e8]
+        - text: File
+        - img [ref=f3e11]
+      - button "Provider" [ref=f3e1619] [cursor=pointer]:
+        - img [ref=f3e1620]
+        - generic [ref=f3e1622]: Provider
+        - img [ref=f3e1623]
+      - button "Select (V)" [ref=f3e14] [cursor=pointer]:
+        - img [ref=f3e15]
+      - button "Hand (H)" [ref=f3e17] [cursor=pointer]:
+        - img [ref=f3e18]
+      - button "Connect (C)" [ref=f3e23] [cursor=pointer]:
+        - img [ref=f3e24]
+      - generic [ref=f3e1625]:
+        - button "Undo" [ref=f3e1627] [cursor=pointer]
+        - button "Redo" [ref=f3e1628] [cursor=pointer]
+      - generic [ref=f3e124]:
+        - generic [ref=f3e125]: Panels
+        - button "Inspect" [ref=f3e126] [cursor=pointer]:
+          - img [ref=f3e127]
+          - generic [ref=f3e128]: Inspect
+        - button "Dock 1" [ref=f3e1629] [cursor=pointer]:
+          - img [ref=f3e130]
+          - generic [ref=f3e133]: Dock
+          - generic [ref=f3e1630]: "1"
+        - button "Packets" [ref=f3e134] [cursor=pointer]:
+          - img [ref=f3e135]
+          - generic [ref=f3e139]: Packets
+        - button "Diagnostics" [ref=f3e140] [cursor=pointer]:
+          - img [ref=f3e141]
+          - generic [ref=f3e144]: Diagnostics
+      - generic [ref=f3e146]:
+        - button "Simulate" [ref=f3e1631] [cursor=pointer]: Simulate
+        - button "Chaos · 2×" [ref=f3e321] [cursor=pointer]:
+          - generic [ref=f3e320]: Chaos · 2×
+          - img [ref=f3e150]
+    - button "Switch to dark mode" [ref=f3e1003] [cursor=pointer]:
+      - img [ref=f3e1004]
+  - generic [ref=f3e33]:
+    - generic [ref=f3e152]:
+      - button "Compute" [ref=f3e153] [cursor=pointer]:
+        - img [ref=f3e154]
+      - button "Network" [ref=f3e157] [cursor=pointer]:
+        - img [ref=f3e158]
+      - button "Storage" [ref=f3e162] [cursor=pointer]:
+        - img [ref=f3e163]
+      - button "Messaging" [ref=f3e167] [cursor=pointer]:
+        - img [ref=f3e168]
+      - button "Caching" [ref=f3e169] [cursor=pointer]:
+        - img [ref=f3e170]
+      - button "Orchestration" [ref=f3e174] [cursor=pointer]:
+        - img [ref=f3e175]
+      - button "Grouping" [ref=f3e178] [cursor=pointer]:
+        - img [ref=f3e179]
+    - generic [ref=f3e181]:
+      - application [ref=f3e183]:
+        - generic [ref=f3e185] [cursor=pointer]:
+          - generic:
+            - generic:
+              - img:
+                - group "Edge from lb-cdn to lb-alb":
+                  - img
+              - img:
+                - group "Edge from lb-alb to lb-ec1" [ref=f3e186]:
+                  - img
+              - img:
+                - group "Edge from lb-alb to lb-ec2" [ref=f3e189]:
+                  - img
+              - img:
+                - group "Edge from lb-ec1 to lb-db" [ref=f3e192]:
+                  - img
+              - img:
+                - group "Edge from lb-ec2 to lb-db" [ref=f3e195]:
+                  - img
+            - generic:
+              - group [ref=f3e1632]:
+                - generic [ref=f3e199]:
+                  - img [ref=f3e205]
+                  - generic [ref=f3e209]:
+                    - generic [ref=f3e210]: CloudFront
+                    - generic [ref=f3e211]: CDN layer
+              - group [ref=f3e1633]:
+                - generic [ref=f3e215]:
+                  - img [ref=f3e221]
+                  - generic [ref=f3e225]:
+                    - generic [ref=f3e226]: App Load Balancer
+                    - generic [ref=f3e227]: ALB
+              - group [ref=f3e1634]:
+                - generic [ref=f3e231]:
+                  - img [ref=f3e237]
+                  - generic [ref=f3e240]:
+                    - generic [ref=f3e241]: app-server-1
+                    - generic [ref=f3e242]: t3.medium
+              - group [ref=f3e1635]:
+                - generic [ref=f3e246]:
+                  - img [ref=f3e252]
+                  - generic [ref=f3e255]:
+                    - generic [ref=f3e256]: app-server-2
+                    - generic [ref=f3e257]: t3.medium
+              - group [ref=f3e1636]:
+                - generic [ref=f3e261]:
+                  - img [ref=f3e267]
+                  - generic [ref=f3e271]:
+                    - generic [ref=f3e272]: RDS Postgres
+                    - generic [ref=f3e273]: db.t3.large
+        - img
+        - img "Mini Map" [ref=f3e277]
+      - generic [ref=f3e339]:
+        - button "Last Run ▾ ▶ 3m 23s · 1 SLO violation →" [ref=f3e1637] [cursor=pointer]:
+          - generic [ref=f3e341]: Last Run ▾
+          - generic [ref=f3e1638]: ▶ 3m 23s · 1 SLO violation →
+        - generic [ref=f3e343]:
+          - generic [ref=f3e344]:
+            - generic [ref=f3e345]: Nodes
+            - generic [ref=f3e346]:
+              - button "CloudFront — 100% — click to inspect" [ref=f3e1639] [cursor=pointer]
+              - button "App Load Balancer — 0% — click to inspect" [ref=f3e1640] [cursor=pointer]
+              - button "app-server-1 — 0% — click to inspect" [ref=f3e1641] [cursor=pointer]
+              - button "app-server-2 — 0% — click to inspect" [ref=f3e1642] [cursor=pointer]
+              - button "RDS Postgres — 0% — click to inspect" [ref=f3e1643] [cursor=pointer]
+          - generic [ref=f3e352]:
+            - generic [ref=f3e1644]:
+              - generic [ref=f3e1645]: ●
+              - generic [ref=f3e1646]: 199s
+              - generic [ref=f3e1647]: "App Load Balancer SLO breached: Error rate 0.4% > 0.1%"
+            - generic [ref=f3e1648]:
+              - generic [ref=f3e1649]: ●
+              - generic [ref=f3e1650]: 199s
+              - generic [ref=f3e1651]: "Circuit open: App Load Balancer → app-server-1"
+            - generic [ref=f3e1652]:
+              - generic [ref=f3e1653]: ●
+              - generic [ref=f3e1654]: 199s
+              - generic [ref=f3e1655]: "Circuit open: App Load Balancer → app-server-2"
+            - generic [ref=f3e1656]:
+              - generic [ref=f3e1657]: ●
+              - generic [ref=f3e1658]: 197s
+              - generic [ref=f3e1659]: CloudFront saturated (100%)
+            - generic [ref=f3e1660]:
+              - generic [ref=f3e1661]: ●
+              - generic [ref=f3e1662]: 197s
+              - generic [ref=f3e1663]: CloudFront crash (chaos)
+            - generic [ref=f3e1518]:
+              - generic [ref=f3e1519]: ●
+              - generic [ref=f3e1520]: 189s
+              - generic [ref=f3e1521]: CloudFront health recovered
+            - generic [ref=f3e1522]:
+              - generic [ref=f3e1523]: ●
+              - generic [ref=f3e1524]: 189s
+              - generic [ref=f3e1525]: CloudFront recovered
+            - generic [ref=f3e1526]:
+              - generic [ref=f3e1527]: ●
+              - generic [ref=f3e1528]: 189s
+              - generic [ref=f3e1529]: CloudFront recovered
+    - complementary [ref=f3e357]:
+      - generic [ref=f3e358]:
+        - button "Properties" [ref=f3e359] [cursor=pointer]
+        - button "Analytics" [ref=f3e360] [cursor=pointer]
+      - generic [ref=f3e361]:
+        - img [ref=f3e1664]
+        - generic [ref=f3e389]: System Analytics
+        - generic [ref=f3e394]: Run a simulation to see system-wide throughput, bottlenecks, and SLO status.
+        - generic [ref=f3e370]:
+          - generic [ref=f3e371]: Last Run Events
+          - 'button "✗ SLO VIOLATED App Load Balancer +199s → App Load Balancer SLO breached: Error rate 0.4% > 0.1% P90: 8ms Util: 0% Err: 0.4%" [ref=f3e1666] [cursor=pointer]':
+            - generic [ref=f3e1667]:
+              - generic [ref=f3e1668]: ✗
+              - generic [ref=f3e1669]: SLO VIOLATED
+              - generic [ref=f3e1670]: App Load Balancer
+              - generic [ref=f3e1671]: +199s
+              - generic [ref=f3e1672]: →
+            - generic [ref=f3e1673]: "App Load Balancer SLO breached: Error rate 0.4% > 0.1%"
+            - generic [ref=f3e1674]:
+              - generic [ref=f3e1675]: "P90: 8ms"
+              - generic [ref=f3e1676]: "Util: 0%"
+              - generic [ref=f3e1677]: "Err: 0.4%"
+          - 'button "⊘ CIRCUIT OPEN app-server-1 +199s → Circuit open: App Load Balancer → app-server-1" [ref=f3e1678] [cursor=pointer]':
+            - generic [ref=f3e1679]:
+              - generic [ref=f3e1680]: ⊘
+              - generic [ref=f3e1681]: CIRCUIT OPEN
+              - generic [ref=f3e1682]: app-server-1
+              - generic [ref=f3e1683]: +199s
+              - generic [ref=f3e1684]: →
+            - generic [ref=f3e1685]: "Circuit open: App Load Balancer → app-server-1"
+          - 'button "⊘ CIRCUIT OPEN app-server-2 +199s → Circuit open: App Load Balancer → app-server-2" [ref=f3e1686] [cursor=pointer]':
+            - generic [ref=f3e1687]:
+              - generic [ref=f3e1688]: ⊘
+              - generic [ref=f3e1689]: CIRCUIT OPEN
+              - generic [ref=f3e1690]: app-server-2
+              - generic [ref=f3e1691]: +199s
+              - generic [ref=f3e1692]: →
+            - generic [ref=f3e1693]: "Circuit open: App Load Balancer → app-server-2"
+          - button "⚠ SATURATED CloudFront +197s → CloudFront saturated (100%)" [ref=f3e1694] [cursor=pointer]:
+            - generic [ref=f3e1695]:
+              - generic [ref=f3e1696]: ⚠
+              - generic [ref=f3e1697]: SATURATED
+              - generic [ref=f3e1698]: CloudFront
+              - generic [ref=f3e1699]: +197s
+              - generic [ref=f3e1700]: →
+            - generic [ref=f3e1701]: CloudFront saturated (100%)
+          - button "✕ CHAOS FAILURE CloudFront +197s → CloudFront crash (chaos)" [ref=f3e1702] [cursor=pointer]:
+            - generic [ref=f3e1703]:
+              - generic [ref=f3e1704]: ✕
+              - generic [ref=f3e1705]: CHAOS FAILURE
+              - generic [ref=f3e1706]: CloudFront
+              - generic [ref=f3e1707]: +197s
+              - generic [ref=f3e1708]: →
+            - generic [ref=f3e1709]: CloudFront crash (chaos)
+  - generic [ref=f3e111]:
+    - generic [ref=f3e112]: ● unsaved
+    - button "Metrics ▾" [ref=f3e384] [cursor=pointer]

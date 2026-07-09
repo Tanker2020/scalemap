@@ -1,0 +1,125 @@
+- generic [ref=f2e3]:
+  - generic [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - button "File" [ref=f2e7] [cursor=pointer]:
+        - img [ref=f2e8]
+        - text: File
+        - img [ref=f2e11]
+      - button "Provider" [disabled] [ref=f2e110]:
+        - img [ref=f2e111]
+        - generic [ref=f2e113]: Provider
+        - img [ref=f2e114]
+      - button "Select (V)" [ref=f2e14] [cursor=pointer]:
+        - img [ref=f2e15]
+      - button "Hand (H)" [ref=f2e17] [cursor=pointer]:
+        - img [ref=f2e18]
+      - button "Connect (C)" [ref=f2e23] [cursor=pointer]:
+        - img [ref=f2e24]
+      - generic [ref=f2e116]:
+        - button "Undo" [ref=f2e118] [cursor=pointer]
+        - button "Redo" [ref=f2e119] [cursor=pointer]
+      - generic [ref=f2e120]:
+        - generic [ref=f2e121]: Panels
+        - button "Inspect" [ref=f2e122] [cursor=pointer]:
+          - img [ref=f2e123]
+          - generic [ref=f2e124]: Inspect
+        - button "Dock" [ref=f2e125] [cursor=pointer]:
+          - img [ref=f2e126]
+          - generic [ref=f2e129]: Dock
+        - button "Packets" [ref=f2e130] [cursor=pointer]:
+          - img [ref=f2e131]
+          - generic [ref=f2e135]: Packets
+        - button "Diagnostics" [ref=f2e136] [cursor=pointer]:
+          - img [ref=f2e137]
+          - generic [ref=f2e140]: Diagnostics
+      - generic [ref=f2e142]:
+        - button "Simulate" [ref=f2e143] [cursor=pointer]: Simulate
+        - button "Simulation settings — speed, traffic mode, volume" [ref=f2e145] [cursor=pointer]:
+          - img [ref=f2e146]
+    - button "Switch to dark mode" [ref=f2e26] [cursor=pointer]:
+      - img [ref=f2e27]
+  - generic [ref=f2e29]:
+    - generic [ref=f2e148]:
+      - button "Compute" [ref=f2e149] [cursor=pointer]:
+        - img [ref=f2e150]
+      - button "Network" [ref=f2e153] [cursor=pointer]:
+        - img [ref=f2e154]
+      - button "Storage" [ref=f2e158] [cursor=pointer]:
+        - img [ref=f2e159]
+      - button "Messaging" [ref=f2e163] [cursor=pointer]:
+        - img [ref=f2e164]
+      - button "Caching" [ref=f2e165] [cursor=pointer]:
+        - img [ref=f2e166]
+      - button "Orchestration" [ref=f2e170] [cursor=pointer]:
+        - img [ref=f2e171]
+      - button "Grouping" [ref=f2e174] [cursor=pointer]:
+        - img [ref=f2e175]
+    - application [ref=f2e179]:
+      - img
+      - img "Mini Map" [ref=f2e183]
+  - generic [ref=f2e108]: untitled · not yet saved
+  - generic [ref=f2e186]:
+    - generic [ref=f2e187]:
+      - generic [ref=f2e188]:
+        - img [ref=f2e189]
+        - text: Packet Templates
+      - group [ref=f2e193]:
+        - generic [ref=f2e194]:
+          - button "Generic" [ref=f2e195] [cursor=pointer]
+          - button "Custom" [ref=f2e196] [cursor=pointer]
+      - button "Close" [ref=f2e198] [cursor=pointer]:
+        - img [ref=f2e199]
+    - generic [ref=f2e202]:
+      - text: Generic mode — all requests are uniform. Switch to
+      - strong [ref=f2e203]: Custom
+      - text: to use the templates below and assign traffic mixes per node.
+    - generic [ref=f2e204]:
+      - generic [ref=f2e205]:
+        - 'button "New HTTP request #1" [ref=f2e228] [cursor=pointer]':
+          - generic [ref=f2e230]: New HTTP request
+          - generic [ref=f2e231]: "#1"
+        - group [ref=f2e208]:
+          - button "Add Packet" [ref=f2e210] [cursor=pointer]:
+            - img [ref=f2e211]
+            - text: Add Packet
+      - group [ref=f2e212]:
+        - generic [ref=f2e232]:
+          - generic [ref=f2e233]:
+            - generic [ref=f2e234]: HTTP
+            - textbox "Template name" [ref=f2e235]: New HTTP request
+            - generic [ref=f2e236]: "#1"
+            - button "Delete template" [ref=f2e237] [cursor=pointer]:
+              - img [ref=f2e238]
+          - generic [ref=f2e241]:
+            - generic [ref=f2e242]:
+              - generic [ref=f2e243]: Payload
+              - generic [ref=f2e244]: 2 KB
+            - slider "Payload size" [ref=f2e245]
+          - generic [ref=f2e248]:
+            - generic [ref=f2e249]:
+              - generic [ref=f2e250]: Method
+              - button "GET" [ref=f2e252] [cursor=pointer]
+            - generic [ref=f2e253]:
+              - generic [ref=f2e254]: Status
+              - button "200" [ref=f2e256] [cursor=pointer]
+            - generic [ref=f2e257]:
+              - generic [ref=f2e258]: Path
+              - button "/api/v1/resource" [ref=f2e260] [cursor=pointer]
+          - generic [ref=f2e261]:
+            - generic [ref=f2e262]:
+              - generic [ref=f2e263]: Tier
+              - combobox [active] [ref=f2e280]:
+                - option "simple_crud"
+                - option "moderate_logic" [selected]
+                - option "heavy_compute"
+                - option "custom"
+            - generic [ref=f2e266]:
+              - generic [ref=f2e267]: Instr (B)
+              - button "1" [ref=f2e281] [cursor=pointer]
+            - generic [ref=f2e270]:
+              - generic [ref=f2e271]: Mem/req (MB)
+              - button "32" [ref=f2e273] [cursor=pointer]
+            - generic [ref=f2e274]:
+              - generic [ref=f2e275]: IO-bound (%)
+              - button "80" [ref=f2e277] [cursor=pointer]
+          - generic [ref=f2e278]: 5xx → request dropped at target (retries + error pressure). 4xx → completes but counts as an error.

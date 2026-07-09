@@ -1,0 +1,82 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - button "File" [ref=e7] [cursor=pointer]:
+        - img [ref=e8]
+        - text: File
+        - img [ref=e11]
+      - button "Select (V)" [ref=e14] [cursor=pointer]:
+        - img [ref=e15]
+      - button "Hand (H)" [ref=e17] [cursor=pointer]:
+        - img [ref=e18]
+      - button "Connect (C)" [ref=e23] [cursor=pointer]:
+        - img [ref=e24]
+    - button "Switch to dark mode" [ref=e26] [cursor=pointer]:
+      - img [ref=e27]
+  - generic [ref=e31]:
+    - generic [ref=e32]:
+      - generic [ref=e33]: scalemap
+      - generic [ref=e34]: Infrastructure visualization
+    - generic [ref=e35]:
+      - button "New Diagram Start from scratch" [ref=e36] [cursor=pointer]:
+        - img [ref=e37]
+        - generic [ref=e40]: New Diagram
+        - generic [ref=e41]: Start from scratch
+      - button "Import Terraform Coming soon" [disabled] [ref=e42]:
+        - img [ref=e43]
+        - generic [ref=e46]: Import Terraform
+        - generic [ref=e47]: Coming soon
+    - generic [ref=e48]:
+      - generic [ref=e49]:
+        - text: Template Vault
+        - generic [ref=e50]: 6 templates
+      - generic [ref=e51]:
+        - button "network 4 nodes Basic VPC + EC2 Single-region VPC with public subnet, EC2 instance, and Route 53" [ref=e52] [cursor=pointer]:
+          - generic [ref=e53]:
+            - generic [ref=e54]:
+              - img [ref=e55]
+              - text: network
+            - generic [ref=e60]: 4 nodes
+          - generic [ref=e61]: Basic VPC + EC2
+          - generic [ref=e62]: Single-region VPC with public subnet, EC2 instance, and Route 53
+        - button "web 5 nodes Load Balanced Cluster ALB distributing traffic across EC2 instances with RDS backend" [ref=e63] [cursor=pointer]:
+          - generic [ref=e64]:
+            - generic [ref=e65]:
+              - img [ref=e66]
+              - text: web
+            - generic [ref=e69]: 5 nodes
+          - generic [ref=e70]: Load Balanced Cluster
+          - generic [ref=e71]: ALB distributing traffic across EC2 instances with RDS backend
+        - button "serverless 5 nodes Serverless Stack API Gateway fronting Lambda functions with DynamoDB and S3" [ref=e72] [cursor=pointer]:
+          - generic [ref=e73]:
+            - generic [ref=e74]:
+              - img [ref=e75]
+              - text: serverless
+            - generic [ref=e77]: 5 nodes
+          - generic [ref=e78]: Serverless Stack
+          - generic [ref=e79]: API Gateway fronting Lambda functions with DynamoDB and S3
+        - button "serverless 7 nodes Event-Driven Pipeline EventBridge routing to SQS queues consumed by Lambda workers" [ref=e80] [cursor=pointer]:
+          - generic [ref=e81]:
+            - generic [ref=e82]:
+              - img [ref=e83]
+              - text: serverless
+            - generic [ref=e85]: 7 nodes
+          - generic [ref=e86]: Event-Driven Pipeline
+          - generic [ref=e87]: EventBridge routing to SQS queues consumed by Lambda workers
+        - button "k8s 8 nodes Kubernetes Microservices EKS cluster with service pods, Redis cache, and RDS Postgres" [ref=e88] [cursor=pointer]:
+          - generic [ref=e89]:
+            - generic [ref=e90]:
+              - img [ref=e91]
+              - text: k8s
+            - generic [ref=e94]: 8 nodes
+          - generic [ref=e95]: Kubernetes Microservices
+          - generic [ref=e96]: EKS cluster with service pods, Redis cache, and RDS Postgres
+        - button "data 6 nodes Data Pipeline Kinesis streaming ingestion, Lambda processing, S3 data lake + Redshift" [ref=e97] [cursor=pointer]:
+          - generic [ref=e98]:
+            - generic [ref=e99]:
+              - img [ref=e100]
+              - text: data
+            - generic [ref=e104]: 6 nodes
+          - generic [ref=e105]: Data Pipeline
+          - generic [ref=e106]: Kinesis streaming ingestion, Lambda processing, S3 data lake + Redshift
+  - generic [ref=e108]: untitled · not yet saved

@@ -1,0 +1,61 @@
+- generic [ref=f8e31]:
+  - banner [ref=f8e32]:
+    - navigation "World navigation" [ref=f8e33]:
+      - generic [ref=f8e35]: World
+    - generic [ref=f8e36]: esc = up one level
+  - generic [ref=f8e37]:
+    - main [ref=f8e38]:
+      - generic [ref=f8e40]:
+        - generic [ref=f8e41]: World — 1 region · 1 service instances
+        - generic [ref=f8e42]: no findings
+        - button "us-east-1 US East (N. Virginia) 1 AZ · 1 server · active" [ref=f8e73] [cursor=pointer]:
+          - generic [ref=f8e56]: us-east-1
+          - generic [ref=f8e57]: US East (N. Virginia)
+          - generic [ref=f8e58]: 1 AZ · 1 server · active
+    - complementary [ref=f8e45]:
+      - generic [ref=f8e46]:
+        - button "Topology" [ref=f8e47] [cursor=pointer]
+        - button "Blueprints" [ref=f8e48] [cursor=pointer]
+        - button "Placements" [ref=f8e49] [cursor=pointer]
+      - generic [ref=f8e168]:
+        - generic [ref=f8e169]: Placements
+        - generic [ref=f8e170]:
+          - generic [ref=f8e171]:
+            - strong [ref=f8e173]: app
+            - button "+ Place" [active] [ref=f8e174] [cursor=pointer]
+          - generic [ref=f8e185]:
+            - generic [ref=f8e186]:
+              - combobox [ref=f8e187]:
+                - option "server-1" [selected]
+              - spinbutton "pl-count" [ref=f8e188]: "1"
+              - combobox [ref=f8e189]:
+                - option "primary" [selected]
+                - option "replica"
+                - option "canary"
+              - button "×" [ref=f8e190] [cursor=pointer]
+            - generic [ref=f8e191]:
+              - combobox [ref=f8e192]:
+                - option "process"
+                - option "container" [selected]
+              - combobox [ref=f8e193]:
+                - option "stack-1" [selected]
+            - textbox "pl-mappings" [ref=f8e194]:
+              - /placeholder: "port mappings: host:container, host:container"
+        - generic [ref=f8e176]:
+          - strong [ref=f8e178]: db
+          - button "+ Place" [ref=f8e179] [cursor=pointer]
+        - generic [ref=f8e180]: Managed services
+        - generic [ref=f8e181]:
+          - combobox [ref=f8e182]:
+            - option "rds" [selected]
+            - option "s3"
+            - option "sqs"
+            - option "redis"
+            - option "cdn"
+            - option "apiGateway"
+            - option "lambda"
+          - combobox [ref=f8e183]:
+            - option "scope…" [selected]
+            - option "region us-east-1"
+            - option "az us-east-1a"
+          - button "+ Add" [disabled] [ref=f8e184] [cursor=pointer]

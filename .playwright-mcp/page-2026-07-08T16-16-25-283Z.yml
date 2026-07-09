@@ -1,0 +1,30 @@
+- generic [ref=f10e31]:
+  - banner [ref=f10e32]:
+    - navigation "World navigation" [ref=f10e33]:
+      - generic [ref=f10e35]: World
+    - generic [ref=f10e36]:
+      - generic [ref=f10e37]: esc = up one level
+      - generic [ref=f10e60]: ● unsaved
+      - button "New" [ref=f10e38] [cursor=pointer]
+      - button "Open" [ref=f10e39] [cursor=pointer]
+      - button "Save" [ref=f10e40] [cursor=pointer]
+      - button "Save As" [ref=f10e41] [cursor=pointer]
+  - generic [ref=f10e42]:
+    - main [ref=f10e43]:
+      - generic [ref=f10e45]:
+        - generic [ref=f10e46]: World — 1 region · 0 service instances
+        - generic [ref=f10e47]: no findings
+        - button "us-east-1 US East (N. Virginia) 2 AZ · 2 servers · active" [ref=f10e94] [cursor=pointer]:
+          - generic [ref=f10e62]: us-east-1
+          - generic [ref=f10e63]: US East (N. Virginia)
+          - generic [ref=f10e64]: 2 AZ · 2 servers · active
+    - complementary [ref=f10e50]:
+      - generic [ref=f10e51]:
+        - button "Topology" [ref=f10e52] [cursor=pointer]
+        - button "Blueprints" [active] [ref=f10e53] [cursor=pointer]
+        - button "Placements" [ref=f10e54] [cursor=pointer]
+      - generic [ref=f10e101]:
+        - generic [ref=f10e102]: Blueprints
+        - generic [ref=f10e103]:
+          - textbox "new blueprint name" [ref=f10e104]
+          - button "+ Blueprint" [disabled] [ref=f10e105] [cursor=pointer]

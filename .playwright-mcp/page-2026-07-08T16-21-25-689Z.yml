@@ -1,0 +1,134 @@
+- generic [ref=f10e31]:
+  - banner [ref=f10e32]:
+    - navigation "World navigation" [ref=f10e33]:
+      - button "World" [ref=f10e252] [cursor=pointer]
+      - generic [ref=f10e253]:
+        - generic [ref=f10e254]: ›
+        - button "us-east-1" [ref=f10e266] [cursor=pointer]
+      - generic [ref=f10e267]:
+        - generic [ref=f10e268]: ›
+        - generic [ref=f10e269]: us-east-1a
+    - generic [ref=f10e36]:
+      - generic [ref=f10e37]: esc = up one level
+      - generic [ref=f10e60]: ● unsaved
+      - button "New" [ref=f10e38] [cursor=pointer]
+      - button "Open" [ref=f10e39] [cursor=pointer]
+      - button "Save" [ref=f10e40] [cursor=pointer]
+      - button "Save As" [ref=f10e41] [cursor=pointer]
+  - generic [ref=f10e42]:
+    - main [ref=f10e43]:
+      - application [ref=f10e272]:
+        - generic [ref=f10e274]:
+          - generic:
+            - generic:
+              - img:
+                - group "Edge from srv-4-mrca59ml to srv-16-mrcabnfw" [ref=f10e390] [cursor=pointer]:
+                  - generic [ref=f10e393]:
+                    - generic: 1 dep
+              - img:
+                - group "Edge from srv-16-mrcabnfw to srv-4-mrca59ml" [ref=f10e395] [cursor=pointer]:
+                  - generic [ref=f10e398]:
+                    - generic: 1 dep
+            - generic:
+              - group [ref=f10e275] [cursor=pointer]:
+                - generic [ref=f10e276]:
+                  - generic [ref=f10e278]:
+                    - strong [ref=f10e279]: server-1
+                    - generic [ref=f10e280]: vps
+                  - generic [ref=f10e281]: 4 vCPU · 8 GB · 1 fw rules
+                  - generic [ref=f10e282]:
+                    - generic [ref=f10e284]: web
+                    - generic [ref=f10e285]: primary · process
+                  - generic [ref=f10e286]:
+                    - generic [ref=f10e288]: db
+                    - generic [ref=f10e289]: primary · process
+              - group [ref=f10e329] [cursor=pointer]:
+                - generic [ref=f10e330]:
+                  - generic [ref=f10e332]:
+                    - strong [ref=f10e333]: server-3
+                    - generic [ref=f10e334]: vps
+                  - generic [ref=f10e335]: 4 vCPU · 8 GB · 1 fw rules
+                  - generic [ref=f10e400]:
+                    - generic [ref=f10e402]: api
+                    - generic [ref=f10e403]: primary · process
+        - img
+    - complementary [ref=f10e50]:
+      - generic [ref=f10e51]:
+        - button "Topology" [ref=f10e52] [cursor=pointer]
+        - button "Blueprints" [ref=f10e53] [cursor=pointer]
+        - button "Placements" [active] [ref=f10e54] [cursor=pointer]
+      - generic [ref=f10e344]:
+        - generic [ref=f10e345]: Placements
+        - generic [ref=f10e346]:
+          - generic [ref=f10e347]:
+            - strong [ref=f10e349]: web
+            - button "+ Place" [ref=f10e350] [cursor=pointer]
+          - generic [ref=f10e351]:
+            - generic [ref=f10e352]:
+              - combobox [ref=f10e353]:
+                - option "server-1" [selected]
+                - option "server-2"
+                - option "server-3"
+              - spinbutton "pl-count" [ref=f10e354]: "1"
+              - combobox [ref=f10e355]:
+                - option "primary" [selected]
+                - option "replica"
+                - option "canary"
+              - button "×" [ref=f10e356] [cursor=pointer]
+            - combobox [ref=f10e358]:
+              - option "process" [selected]
+              - option "container"
+        - generic [ref=f10e359]:
+          - generic [ref=f10e360]:
+            - strong [ref=f10e362]: api
+            - button "+ Place" [ref=f10e363] [cursor=pointer]
+          - generic [ref=f10e364]:
+            - generic [ref=f10e365]:
+              - combobox [ref=f10e366]:
+                - option "server-1"
+                - option "server-2"
+                - option "server-3" [selected]
+              - spinbutton "pl-count" [ref=f10e367]: "1"
+              - combobox [ref=f10e368]:
+                - option "primary" [selected]
+                - option "replica"
+                - option "canary"
+              - button "×" [ref=f10e369] [cursor=pointer]
+            - combobox [ref=f10e371]:
+              - option "process" [selected]
+              - option "container"
+        - generic [ref=f10e372]:
+          - generic [ref=f10e373]:
+            - strong [ref=f10e375]: db
+            - button "+ Place" [ref=f10e376] [cursor=pointer]
+          - generic [ref=f10e377]:
+            - generic [ref=f10e378]:
+              - combobox [ref=f10e379]:
+                - option "server-1" [selected]
+                - option "server-2"
+                - option "server-3"
+              - spinbutton "pl-count" [ref=f10e380]: "1"
+              - combobox [ref=f10e381]:
+                - option "primary" [selected]
+                - option "replica"
+                - option "canary"
+              - button "×" [ref=f10e382] [cursor=pointer]
+            - combobox [ref=f10e384]:
+              - option "process" [selected]
+              - option "container"
+        - generic [ref=f10e385]: Managed services
+        - generic [ref=f10e386]:
+          - combobox [ref=f10e387]:
+            - option "rds" [selected]
+            - option "s3"
+            - option "sqs"
+            - option "redis"
+            - option "cdn"
+            - option "apiGateway"
+            - option "lambda"
+          - combobox [ref=f10e388]:
+            - option "scope…" [selected]
+            - option "region us-east-1"
+            - option "az us-east-1a"
+            - option "az us-east-1b"
+          - button "+ Add" [disabled] [ref=f10e389] [cursor=pointer]

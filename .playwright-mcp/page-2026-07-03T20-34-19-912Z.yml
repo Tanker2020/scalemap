@@ -1,0 +1,160 @@
+- generic [ref=f3e3]:
+  - generic [ref=f3e4]:
+    - generic [ref=f3e5]:
+      - button "File" [ref=f3e7] [cursor=pointer]:
+        - img [ref=f3e8]
+        - text: File
+        - img [ref=f3e11]
+      - button "Select (V)" [ref=f3e14] [cursor=pointer]:
+        - img [ref=f3e15]
+      - button "Hand (H)" [ref=f3e17] [cursor=pointer]:
+        - img [ref=f3e18]
+      - button "Connect (C)" [ref=f3e23] [cursor=pointer]:
+        - img [ref=f3e24]
+      - generic "Provider, Undo, and Redo are locked while a simulation is running" [ref=f3e322]:
+        - img [ref=f3e323]
+      - generic [ref=f3e124]:
+        - generic [ref=f3e125]: Panels
+        - button "Inspect" [ref=f3e126] [cursor=pointer]:
+          - img [ref=f3e127]
+          - generic [ref=f3e128]: Inspect
+        - button "Dock" [ref=f3e129] [cursor=pointer]:
+          - img [ref=f3e130]
+          - generic [ref=f3e133]: Dock
+        - button "Packets" [ref=f3e134] [cursor=pointer]:
+          - img [ref=f3e135]
+          - generic [ref=f3e139]: Packets
+        - button "Diagnostics" [ref=f3e140] [cursor=pointer]:
+          - img [ref=f3e141]
+          - generic [ref=f3e144]: Diagnostics
+      - generic [ref=f3e145]:
+        - generic [ref=f3e146]:
+          - button "Pause" [active] [ref=f3e326] [cursor=pointer]: Pause
+          - button "Chaos · 2×" [ref=f3e321] [cursor=pointer]:
+            - generic [ref=f3e320]: Chaos · 2×
+            - img [ref=f3e150]
+        - button "End" [ref=f3e329] [cursor=pointer]: End
+    - button "Switch to light mode" [ref=f3e26] [cursor=pointer]:
+      - img [ref=f3e27]
+  - generic [ref=f3e33]:
+    - generic:
+      - generic:
+        - button "Compute":
+          - img
+        - button "Network":
+          - img
+        - button "Storage":
+          - img
+        - button "Messaging":
+          - img
+        - button "Caching":
+          - img
+        - button "Orchestration":
+          - img
+        - button "Grouping":
+          - img
+    - generic [ref=f3e181]:
+      - generic [ref=f3e182]:
+        - generic: Simulation running — editing locked
+        - application [ref=f3e183]:
+          - generic [ref=f3e185]:
+            - generic:
+              - generic:
+                - img:
+                  - group "Edge from lb-cdn to lb-alb" [ref=f3e331] [cursor=pointer]:
+                    - img
+                - img:
+                  - group "Edge from lb-alb to lb-ec1" [ref=f3e186] [cursor=pointer]:
+                    - img
+                - img:
+                  - group "Edge from lb-alb to lb-ec2" [ref=f3e189] [cursor=pointer]:
+                    - img
+                - img:
+                  - group "Edge from lb-ec1 to lb-db" [ref=f3e192] [cursor=pointer]:
+                    - img
+                - img:
+                  - group "Edge from lb-ec2 to lb-db" [ref=f3e195] [cursor=pointer]:
+                    - img
+              - generic:
+                - generic [ref=f3e334]:
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - generic: CloudFront
+                      - generic: CDN layer
+                - generic [ref=f3e335]:
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - generic: App Load Balancer
+                      - generic: ALB
+                - generic [ref=f3e336]:
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - generic: app-server-1
+                      - generic: t3.medium
+                - generic [ref=f3e337]:
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - generic: app-server-2
+                      - generic: t3.medium
+                - generic [ref=f3e338]:
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - generic: RDS Postgres
+                      - generic: db.t3.large
+          - img
+          - img "Mini Map" [ref=f3e277]
+      - generic [ref=f3e339]:
+        - button "Live Metrics ▾ ● LIVE" [ref=f3e340] [cursor=pointer]:
+          - generic [ref=f3e341]: Live Metrics ▾
+          - generic [ref=f3e342]: ● LIVE
+        - generic [ref=f3e343]:
+          - generic [ref=f3e344]:
+            - generic [ref=f3e345]: Nodes
+            - generic [ref=f3e346]:
+              - button "CloudFront — 0% — click to inspect" [ref=f3e347] [cursor=pointer]
+              - button "App Load Balancer — 2% — click to inspect" [ref=f3e348] [cursor=pointer]
+              - button "app-server-1 — 20% — click to inspect" [ref=f3e349] [cursor=pointer]
+              - button "app-server-2 — 20% — click to inspect" [ref=f3e350] [cursor=pointer]
+              - button "RDS Postgres — 15% — click to inspect" [ref=f3e351] [cursor=pointer]
+          - generic [ref=f3e353]:
+            - generic [ref=f3e354]: ●
+            - generic [ref=f3e355]: 0s
+            - generic [ref=f3e356]: chaos mode · 2× volume
+    - complementary [ref=f3e357]:
+      - generic [ref=f3e358]:
+        - button "Properties" [ref=f3e359] [cursor=pointer]
+        - button "Analytics" [ref=f3e360] [cursor=pointer]
+      - generic [ref=f3e361]:
+        - generic [ref=f3e362]:
+          - generic [ref=f3e363]: System
+          - generic [ref=f3e364]:
+            - generic [ref=f3e365]: Total Traffic
+            - generic [ref=f3e366]: 489 RPS
+          - generic [ref=f3e367]:
+            - generic [ref=f3e368]: Bottlenecks
+            - generic [ref=f3e369]: 0 nodes
+        - generic [ref=f3e370]:
+          - generic [ref=f3e371]: Event Log
+          - button "▶ SIM STARTED +0s → chaos mode · 2× volume" [ref=f3e373] [cursor=pointer]:
+            - generic [ref=f3e374]:
+              - generic [ref=f3e375]: ▶
+              - generic [ref=f3e376]: SIM STARTED
+              - generic [ref=f3e377]: +0s
+              - generic [ref=f3e378]: →
+            - generic [ref=f3e379]: chaos mode · 2× volume
+        - button "⚙ Open Simulation Inspector →" [ref=f3e381] [cursor=pointer]:
+          - generic [ref=f3e382]: ⚙ Open Simulation Inspector
+          - generic [ref=f3e383]: →
+  - generic [ref=f3e111]:
+    - generic [ref=f3e112]: ● unsaved
+    - button "Metrics ▾" [ref=f3e384] [cursor=pointer]

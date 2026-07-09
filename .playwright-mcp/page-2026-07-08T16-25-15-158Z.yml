@@ -1,0 +1,105 @@
+- generic [ref=f10e31]:
+  - banner [ref=f10e32]:
+    - navigation "World navigation" [ref=f10e33]:
+      - button "World" [ref=f10e594] [cursor=pointer]
+      - generic [ref=f10e595]:
+        - generic [ref=f10e596]: ›
+        - generic [ref=f10e597]: us-east-1
+    - generic [ref=f10e36]:
+      - generic [ref=f10e37]: esc = up one level
+      - generic [ref=f10e593]: ● unsaved
+      - button "New" [ref=f10e38] [cursor=pointer]
+      - button "Open" [ref=f10e39] [cursor=pointer]
+      - button "Save" [ref=f10e40] [cursor=pointer]
+      - button "Save As" [ref=f10e41] [cursor=pointer]
+  - generic [ref=f10e42]:
+    - main [ref=f10e43]:
+      - generic [ref=f10e599]:
+        - generic [ref=f10e600]: us-east-1 — 2 availability zones
+        - generic [ref=f10e601]:
+          - button "us-east-1a 2 servers · 2 instances" [ref=f10e602] [cursor=pointer]:
+            - generic [ref=f10e603]: us-east-1a
+            - generic [ref=f10e604]: 2 servers · 2 instances
+          - button "us-east-1b 1 server · 1 instance" [ref=f10e605] [cursor=pointer]:
+            - generic [ref=f10e606]: us-east-1b
+            - generic [ref=f10e607]: 1 server · 1 instance
+    - complementary [ref=f10e50]:
+      - generic [ref=f10e51]:
+        - button "Topology" [ref=f10e52] [cursor=pointer]
+        - button "Blueprints" [ref=f10e53] [cursor=pointer]
+        - button "Placements" [ref=f10e54] [cursor=pointer]
+      - generic [ref=f10e470]:
+        - generic [ref=f10e471]: Placements
+        - generic [ref=f10e472]:
+          - generic [ref=f10e473]:
+            - strong [ref=f10e475]: web
+            - button "+ Place" [ref=f10e476] [cursor=pointer]
+          - generic [ref=f10e477]:
+            - generic [ref=f10e478]:
+              - combobox [ref=f10e479]:
+                - option "server-1" [selected]
+                - option "server-2"
+                - option "server-3"
+              - spinbutton "pl-count" [ref=f10e480]: "1"
+              - combobox [ref=f10e481]:
+                - option "primary" [selected]
+                - option "replica"
+                - option "canary"
+              - button "×" [ref=f10e482] [cursor=pointer]
+            - combobox [ref=f10e484]:
+              - option "process" [selected]
+              - option "container"
+        - generic [ref=f10e485]:
+          - generic [ref=f10e486]:
+            - strong [ref=f10e488]: api
+            - button "+ Place" [ref=f10e489] [cursor=pointer]
+          - generic [ref=f10e490]:
+            - generic [ref=f10e491]:
+              - combobox [ref=f10e492]:
+                - option "server-1"
+                - option "server-2"
+                - option "server-3" [selected]
+              - spinbutton "pl-count" [ref=f10e493]: "1"
+              - combobox [ref=f10e494]:
+                - option "primary" [selected]
+                - option "replica"
+                - option "canary"
+              - button "×" [ref=f10e495] [cursor=pointer]
+            - combobox [ref=f10e497]:
+              - option "process" [selected]
+              - option "container"
+        - generic [ref=f10e498]:
+          - generic [ref=f10e499]:
+            - strong [ref=f10e501]: db
+            - button "+ Place" [ref=f10e502] [cursor=pointer]
+          - generic [ref=f10e503]:
+            - generic [ref=f10e504]:
+              - combobox [ref=f10e505]:
+                - option "server-1"
+                - option "server-2" [selected]
+                - option "server-3"
+              - spinbutton "pl-count" [ref=f10e506]: "1"
+              - combobox [ref=f10e507]:
+                - option "primary" [selected]
+                - option "replica"
+                - option "canary"
+              - button "×" [ref=f10e508] [cursor=pointer]
+            - combobox [ref=f10e510]:
+              - option "process" [selected]
+              - option "container"
+        - generic [ref=f10e511]: Managed services
+        - generic [ref=f10e512]:
+          - combobox [ref=f10e513]:
+            - option "rds" [selected]
+            - option "s3"
+            - option "sqs"
+            - option "redis"
+            - option "cdn"
+            - option "apiGateway"
+            - option "lambda"
+          - combobox [ref=f10e514]:
+            - option "scope…" [selected]
+            - option "region us-east-1"
+            - option "az us-east-1a"
+            - option "az us-east-1b"
+          - button "+ Add" [disabled] [ref=f10e515] [cursor=pointer]

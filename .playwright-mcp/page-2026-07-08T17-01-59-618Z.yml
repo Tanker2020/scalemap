@@ -1,0 +1,153 @@
+- generic [ref=e34]:
+  - banner [ref=e35]:
+    - navigation "World navigation" [ref=e36]:
+      - button "World" [ref=e199] [cursor=pointer]
+      - generic [ref=e200]:
+        - generic [ref=e201]: ›
+        - button "us-east-1" [ref=e210] [cursor=pointer]
+      - generic [ref=e211]:
+        - generic [ref=e212]: ›
+        - generic [ref=e213]: us-east-1a
+    - generic [ref=e39]:
+      - generic [ref=e40]: esc = up one level
+      - generic [ref=e64]: ● unsaved
+      - button "New" [ref=e41] [cursor=pointer]
+      - button "Open" [ref=e42] [cursor=pointer]
+      - button "Save" [ref=e43] [cursor=pointer]
+      - button "Save As" [ref=e44] [cursor=pointer]
+  - generic [ref=e45]:
+    - main [ref=e46]:
+      - application [ref=e216]:
+        - generic [ref=e218]:
+          - generic:
+            - generic:
+              - img:
+                - group "Edge from srv-3-mrcbk461 to srv-5-mrcbkdqk" [ref=e309] [cursor=pointer]:
+                  - generic [ref=e310]:
+                    - generic: ✕ firewall-deny
+            - generic:
+              - group [ref=e222] [cursor=pointer]:
+                - generic [ref=e223]:
+                  - generic [ref=e225]:
+                    - strong [ref=e226]: server-1
+                    - generic [ref=e227]: vps
+                  - generic [ref=e228]: 4 vCPU · 8 GB · 1 fw rules
+                  - generic [ref=e229]:
+                    - generic [ref=e231]: api
+                    - generic [ref=e232]: primary · process
+              - group [ref=e234] [cursor=pointer]:
+                - generic [ref=e235]:
+                  - generic [ref=e237]:
+                    - strong [ref=e238]: server-2
+                    - generic [ref=e239]: vps
+                  - generic [ref=e240]: 4 vCPU · 8 GB · 2 fw rules
+                  - generic [ref=e241]:
+                    - generic [ref=e243]: pg
+                    - generic [ref=e244]: primary · process
+        - img
+    - complementary [ref=e53]:
+      - generic [ref=e54]:
+        - button "Topology" [ref=e55] [cursor=pointer]
+        - button "Blueprints" [ref=e56] [cursor=pointer]
+        - button "Placements" [ref=e57] [cursor=pointer]
+        - button "Findings (1)" [ref=e312] [cursor=pointer]
+      - generic [ref=e322]:
+        - generic [ref=e323]: Regions
+        - generic [ref=e324]:
+          - combobox "add-region-select" [ref=e325]:
+            - option "us-east-2" [selected]
+            - option "us-west-1"
+            - option "us-west-2"
+            - option "ca-central-1"
+            - option "sa-east-1"
+            - option "eu-west-1"
+            - option "eu-west-2"
+            - option "eu-west-3"
+            - option "eu-central-1"
+            - option "eu-south-1"
+            - option "eu-north-1"
+            - option "me-south-1"
+            - option "af-south-1"
+            - option "ap-south-1"
+            - option "ap-southeast-1"
+            - option "ap-southeast-2"
+            - option "ap-northeast-1"
+            - option "ap-northeast-2"
+            - option "ap-northeast-3"
+            - option "ap-east-1"
+          - button "+ Region" [ref=e326] [cursor=pointer]
+        - generic [ref=e327]:
+          - generic [ref=e328]:
+            - strong [ref=e329]: us-east-1
+            - combobox [ref=e330]:
+              - option "active" [selected]
+              - option "passive"
+            - button "×" [ref=e331] [cursor=pointer]
+          - button "+ AZ" [ref=e332] [cursor=pointer]
+          - generic [ref=e333]:
+            - generic [ref=e334]:
+              - generic [ref=e335]: us-east-1a
+              - button "×" [ref=e336] [cursor=pointer]
+            - generic [ref=e337]:
+              - combobox [ref=e338]:
+                - option "VPS Small (2 vCPU / 4 GB)"
+                - option "VPS Medium (4 vCPU / 8 GB)" [selected]
+                - option "VPS Large (8 vCPU / 16 GB)"
+                - option "AWS t3.medium (2 vCPU / 4 GB)"
+                - option "AWS m7i.large (2 vCPU / 8 GB)"
+                - option "GCP e2-standard-4 (4 vCPU / 16 GB)"
+                - option "Dedicated 8-core / 32 GB"
+                - option "Dedicated 16-core / 64 GB"
+                - option "Dedicated 32-core / 128 GB"
+              - button "+ Server" [ref=e339] [cursor=pointer]
+            - generic [ref=e341]:
+              - button "▸ server-1 (vps)" [ref=e342] [cursor=pointer]:
+                - text: ▸ server-1
+                - generic [ref=e343]: (vps)
+              - button "→" [ref=e344] [cursor=pointer]
+              - button "×" [ref=e345] [cursor=pointer]
+            - generic [ref=e346]:
+              - generic [ref=e347]:
+                - button "▾ server-2 (vps)" [ref=e352] [cursor=pointer]:
+                  - text: ▾ server-2
+                  - generic [ref=e349]: (vps)
+                - button "→" [ref=e350] [cursor=pointer]
+                - button "×" [ref=e351] [cursor=pointer]
+              - generic [ref=e353]:
+                - textbox "server-label" [active] [ref=e354]: server-2
+                - generic [ref=e355]: Firewall (top-down, default deny)
+                - generic [ref=e356]:
+                  - combobox [ref=e357]:
+                    - option "allow"
+                    - option "deny" [selected]
+                  - textbox "fw-port-0" [ref=e358]: "5432"
+                  - combobox [ref=e359]:
+                    - option "tcp" [selected]
+                    - option "udp"
+                    - option "any"
+                  - combobox [ref=e360]:
+                    - option "internal"
+                    - option "any" [selected]
+                    - option "cidr…"
+                  - button "↑" [disabled] [ref=e361] [cursor=pointer]
+                  - button "↓" [ref=e362] [cursor=pointer]
+                  - button "×" [ref=e363] [cursor=pointer]
+                - generic [ref=e364]:
+                  - combobox [ref=e365]:
+                    - option "allow" [selected]
+                    - option "deny"
+                  - textbox "fw-port-1" [ref=e366]: any
+                  - combobox [ref=e367]:
+                    - option "tcp"
+                    - option "udp"
+                    - option "any" [selected]
+                  - combobox [ref=e368]:
+                    - option "internal" [selected]
+                    - option "any"
+                    - option "cidr…"
+                  - button "↑" [ref=e369] [cursor=pointer]
+                  - button "↓" [disabled] [ref=e370] [cursor=pointer]
+                  - button "×" [ref=e371] [cursor=pointer]
+                - button "+ Rule" [ref=e372] [cursor=pointer]
+                - generic [ref=e373]: Compose stacks
+                - button "+ Stack" [ref=e374] [cursor=pointer]

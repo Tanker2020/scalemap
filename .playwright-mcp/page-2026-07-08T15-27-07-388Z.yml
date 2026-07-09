@@ -1,0 +1,46 @@
+- generic [ref=f4e23]:
+  - banner [ref=f4e24]:
+    - navigation "World navigation" [ref=f4e25]:
+      - generic [ref=f4e27]: World
+    - generic [ref=f4e28]: esc = up one level
+  - generic [ref=f4e29]:
+    - main [ref=f4e30]:
+      - generic [ref=f4e32]:
+        - generic [ref=f4e33]: World — 1 region · 0 service instances
+        - generic [ref=f4e34]: no findings
+        - button "us-east-1 US East (N. Virginia) 2 AZ · 2 servers · active" [ref=f4e80] [cursor=pointer]:
+          - generic [ref=f4e48]: us-east-1
+          - generic [ref=f4e49]: US East (N. Virginia)
+          - generic [ref=f4e50]: 2 AZ · 2 servers · active
+    - complementary [ref=f4e37]:
+      - generic [ref=f4e38]:
+        - button "Topology" [ref=f4e39] [cursor=pointer]
+        - button "Blueprints" [ref=f4e40] [cursor=pointer]
+        - button "Placements" [active] [ref=f4e41] [cursor=pointer]
+      - generic [ref=f4e211]:
+        - generic [ref=f4e212]: Placements
+        - generic [ref=f4e214]:
+          - strong [ref=f4e216]: web
+          - button "+ Place" [ref=f4e217] [cursor=pointer]
+        - generic [ref=f4e219]:
+          - strong [ref=f4e221]: api
+          - button "+ Place" [ref=f4e222] [cursor=pointer]
+        - generic [ref=f4e224]:
+          - strong [ref=f4e226]: pg
+          - button "+ Place" [ref=f4e227] [cursor=pointer]
+        - generic [ref=f4e228]: Managed services
+        - generic [ref=f4e229]:
+          - combobox [ref=f4e230]:
+            - option "rds" [selected]
+            - option "s3"
+            - option "sqs"
+            - option "redis"
+            - option "cdn"
+            - option "apiGateway"
+            - option "lambda"
+          - combobox [ref=f4e231]:
+            - option "scope…" [selected]
+            - option "region us-east-1"
+            - option "az us-east-1a"
+            - option "az us-east-1b"
+          - button "+ Add" [disabled] [ref=f4e232] [cursor=pointer]

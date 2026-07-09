@@ -1,0 +1,109 @@
+- generic [ref=f3e3]:
+  - generic [ref=f3e4]:
+    - generic [ref=f3e5]:
+      - button "File" [ref=f3e7] [cursor=pointer]:
+        - img [ref=f3e8]
+        - text: File
+        - img [ref=f3e11]
+      - button "Provider" [ref=f3e114] [cursor=pointer]:
+        - img [ref=f3e115]
+        - generic [ref=f3e117]: Provider
+        - img [ref=f3e118]
+      - button "Select (V)" [ref=f3e14] [cursor=pointer]:
+        - img [ref=f3e15]
+      - button "Hand (H)" [ref=f3e17] [cursor=pointer]:
+        - img [ref=f3e18]
+      - button "Connect (C)" [ref=f3e23] [cursor=pointer]:
+        - img [ref=f3e24]
+      - generic [ref=f3e120]:
+        - button "Undo" [ref=f3e122] [cursor=pointer]
+        - button "Redo" [ref=f3e123] [cursor=pointer]
+      - generic [ref=f3e124]:
+        - generic [ref=f3e125]: Panels
+        - button "Inspect" [ref=f3e126] [cursor=pointer]:
+          - img [ref=f3e127]
+          - generic [ref=f3e128]: Inspect
+        - button "Dock" [ref=f3e129] [cursor=pointer]:
+          - img [ref=f3e130]
+          - generic [ref=f3e133]: Dock
+        - button "Packets" [ref=f3e134] [cursor=pointer]:
+          - img [ref=f3e135]
+          - generic [ref=f3e139]: Packets
+        - button "Diagnostics" [ref=f3e140] [cursor=pointer]:
+          - img [ref=f3e141]
+          - generic [ref=f3e144]: Diagnostics
+      - generic [ref=f3e146]:
+        - button "Simulate" [ref=f3e147] [cursor=pointer]: Simulate
+        - button "Simulation settings — speed, traffic mode, volume" [ref=f3e149] [cursor=pointer]:
+          - img [ref=f3e150]
+    - button "Switch to light mode" [ref=f3e26] [cursor=pointer]:
+      - img [ref=f3e27]
+  - generic [ref=f3e33]:
+    - generic [ref=f3e152]:
+      - button "Compute" [ref=f3e153] [cursor=pointer]:
+        - img [ref=f3e154]
+      - button "Network" [ref=f3e157] [cursor=pointer]:
+        - img [ref=f3e158]
+      - button "Storage" [ref=f3e162] [cursor=pointer]:
+        - img [ref=f3e163]
+      - button "Messaging" [ref=f3e167] [cursor=pointer]:
+        - img [ref=f3e168]
+      - button "Caching" [ref=f3e169] [cursor=pointer]:
+        - img [ref=f3e170]
+      - button "Orchestration" [ref=f3e174] [cursor=pointer]:
+        - img [ref=f3e175]
+      - button "Grouping" [ref=f3e178] [cursor=pointer]:
+        - img [ref=f3e179]
+    - application [ref=f3e183]:
+      - generic [ref=f3e185] [cursor=pointer]:
+        - generic:
+          - generic:
+            - img:
+              - group "Edge from lb-cdn to lb-alb":
+                - img
+            - img:
+              - group "Edge from lb-alb to lb-ec1" [ref=f3e186]:
+                - img
+            - img:
+              - group "Edge from lb-alb to lb-ec2" [ref=f3e189]:
+                - img
+            - img:
+              - group "Edge from lb-ec1 to lb-db" [ref=f3e192]:
+                - img
+            - img:
+              - group "Edge from lb-ec2 to lb-db" [ref=f3e195]:
+                - img
+          - generic:
+            - group [ref=f3e198]:
+              - generic [ref=f3e199]:
+                - img [ref=f3e205]
+                - generic [ref=f3e209]:
+                  - generic [ref=f3e210]: CloudFront
+                  - generic [ref=f3e211]: CDN layer
+            - group [ref=f3e214]:
+              - generic [ref=f3e215]:
+                - img [ref=f3e221]
+                - generic [ref=f3e225]:
+                  - generic [ref=f3e226]: App Load Balancer
+                  - generic [ref=f3e227]: ALB
+            - group [ref=f3e230]:
+              - generic [ref=f3e231]:
+                - img [ref=f3e237]
+                - generic [ref=f3e240]:
+                  - generic [ref=f3e241]: app-server-1
+                  - generic [ref=f3e242]: t3.medium
+            - group [ref=f3e245]:
+              - generic [ref=f3e246]:
+                - img [ref=f3e252]
+                - generic [ref=f3e255]:
+                  - generic [ref=f3e256]: app-server-2
+                  - generic [ref=f3e257]: t3.medium
+            - group [ref=f3e260]:
+              - generic [ref=f3e261]:
+                - img [ref=f3e267]
+                - generic [ref=f3e271]:
+                  - generic [ref=f3e272]: RDS Postgres
+                  - generic [ref=f3e273]: db.t3.large
+      - img
+      - img "Mini Map" [ref=f3e277]
+  - generic [ref=f3e112]: ● unsaved

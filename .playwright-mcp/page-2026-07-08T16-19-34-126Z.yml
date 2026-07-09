@@ -1,0 +1,82 @@
+- generic [ref=f10e31]:
+  - banner [ref=f10e32]:
+    - navigation "World navigation" [ref=f10e33]:
+      - generic [ref=f10e35]: World
+    - generic [ref=f10e36]:
+      - generic [ref=f10e37]: esc = up one level
+      - generic [ref=f10e60]: ● unsaved
+      - button "New" [ref=f10e38] [cursor=pointer]
+      - button "Open" [ref=f10e39] [cursor=pointer]
+      - button "Save" [ref=f10e40] [cursor=pointer]
+      - button "Save As" [ref=f10e41] [cursor=pointer]
+  - generic [ref=f10e42]:
+    - main [ref=f10e43]:
+      - generic [ref=f10e45]:
+        - generic [ref=f10e46]: World — 1 region · 2 service instances
+        - generic [ref=f10e47]: no findings
+        - button "us-east-1 US East (N. Virginia) 2 AZ · 2 servers · active" [ref=f10e94] [cursor=pointer]:
+          - generic [ref=f10e62]: us-east-1
+          - generic [ref=f10e63]: US East (N. Virginia)
+          - generic [ref=f10e64]: 2 AZ · 2 servers · active
+    - complementary [ref=f10e50]:
+      - generic [ref=f10e51]:
+        - button "Topology" [ref=f10e52] [cursor=pointer]
+        - button "Blueprints" [ref=f10e53] [cursor=pointer]
+        - button "Placements" [ref=f10e54] [cursor=pointer]
+      - generic [ref=f10e206]:
+        - generic [ref=f10e207]: Placements
+        - generic [ref=f10e208]:
+          - generic [ref=f10e209]:
+            - strong [ref=f10e211]: web
+            - button "+ Place" [ref=f10e212] [cursor=pointer]
+          - generic [ref=f10e228]:
+            - generic [ref=f10e229]:
+              - combobox [ref=f10e230]:
+                - option "server-1" [selected]
+                - option "server-2"
+              - spinbutton "pl-count" [ref=f10e231]: "1"
+              - combobox [ref=f10e232]:
+                - option "primary" [selected]
+                - option "replica"
+                - option "canary"
+              - button "×" [ref=f10e233] [cursor=pointer]
+            - combobox [ref=f10e235]:
+              - option "process" [selected]
+              - option "container"
+        - generic [ref=f10e213]:
+          - generic [ref=f10e214]:
+            - strong [ref=f10e216]: api
+            - button "+ Place" [active] [ref=f10e217] [cursor=pointer]
+          - generic [ref=f10e236]:
+            - generic [ref=f10e237]:
+              - combobox [ref=f10e238]:
+                - option "server-1"
+                - option "server-2" [selected]
+              - spinbutton "pl-count" [ref=f10e239]: "1"
+              - combobox [ref=f10e240]:
+                - option "primary" [selected]
+                - option "replica"
+                - option "canary"
+              - button "×" [ref=f10e241] [cursor=pointer]
+            - combobox [ref=f10e243]:
+              - option "process" [selected]
+              - option "container"
+        - generic [ref=f10e219]:
+          - strong [ref=f10e221]: db
+          - button "+ Place" [ref=f10e222] [cursor=pointer]
+        - generic [ref=f10e223]: Managed services
+        - generic [ref=f10e224]:
+          - combobox [ref=f10e225]:
+            - option "rds" [selected]
+            - option "s3"
+            - option "sqs"
+            - option "redis"
+            - option "cdn"
+            - option "apiGateway"
+            - option "lambda"
+          - combobox [ref=f10e226]:
+            - option "scope…" [selected]
+            - option "region us-east-1"
+            - option "az us-east-1a"
+            - option "az us-east-1b"
+          - button "+ Add" [disabled] [ref=f10e227] [cursor=pointer]

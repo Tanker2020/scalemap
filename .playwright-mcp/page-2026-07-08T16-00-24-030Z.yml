@@ -1,0 +1,95 @@
+- generic [ref=f8e31]:
+  - banner [ref=f8e32]:
+    - navigation "World navigation" [ref=f8e33]:
+      - generic [ref=f8e35]: World
+    - generic [ref=f8e36]: esc = up one level
+  - generic [ref=f8e37]:
+    - main [ref=f8e38]:
+      - generic [ref=f8e40]:
+        - generic [ref=f8e41]: World — 1 region · 0 service instances
+        - generic [ref=f8e42]: no findings
+        - button "us-east-1 US East (N. Virginia) 1 AZ · 1 server · active" [ref=f8e73] [cursor=pointer]:
+          - generic [ref=f8e56]: us-east-1
+          - generic [ref=f8e57]: US East (N. Virginia)
+          - generic [ref=f8e58]: 1 AZ · 1 server · active
+    - complementary [ref=f8e45]:
+      - generic [ref=f8e46]:
+        - button "Topology" [ref=f8e47] [cursor=pointer]
+        - button "Blueprints" [ref=f8e48] [cursor=pointer]
+        - button "Placements" [ref=f8e49] [cursor=pointer]
+      - generic [ref=f8e50]:
+        - generic [ref=f8e51]: Regions
+        - generic [ref=f8e52]:
+          - combobox "add-region-select" [ref=f8e53]:
+            - option "us-east-2" [selected]
+            - option "us-west-1"
+            - option "us-west-2"
+            - option "ca-central-1"
+            - option "sa-east-1"
+            - option "eu-west-1"
+            - option "eu-west-2"
+            - option "eu-west-3"
+            - option "eu-central-1"
+            - option "eu-south-1"
+            - option "eu-north-1"
+            - option "me-south-1"
+            - option "af-south-1"
+            - option "ap-south-1"
+            - option "ap-southeast-1"
+            - option "ap-southeast-2"
+            - option "ap-northeast-1"
+            - option "ap-northeast-2"
+            - option "ap-northeast-3"
+            - option "ap-east-1"
+          - button "+ Region" [ref=f8e54] [cursor=pointer]
+        - generic [ref=f8e59]:
+          - generic [ref=f8e60]:
+            - strong [ref=f8e61]: us-east-1
+            - combobox [ref=f8e62]:
+              - option "active" [selected]
+              - option "passive"
+            - button "×" [ref=f8e63] [cursor=pointer]
+          - button "+ AZ" [ref=f8e64] [cursor=pointer]
+          - generic [ref=f8e66]:
+            - generic [ref=f8e67]:
+              - generic [ref=f8e68]: us-east-1a
+              - button "×" [ref=f8e69] [cursor=pointer]
+            - generic [ref=f8e70]:
+              - combobox [ref=f8e71]:
+                - option "VPS Small (2 vCPU / 4 GB)"
+                - option "VPS Medium (4 vCPU / 8 GB)" [selected]
+                - option "VPS Large (8 vCPU / 16 GB)"
+                - option "AWS t3.medium (2 vCPU / 4 GB)"
+                - option "AWS m7i.large (2 vCPU / 8 GB)"
+                - option "GCP e2-standard-4 (4 vCPU / 16 GB)"
+                - option "Dedicated 8-core / 32 GB"
+                - option "Dedicated 16-core / 64 GB"
+                - option "Dedicated 32-core / 128 GB"
+              - button "+ Server" [ref=f8e72] [cursor=pointer]
+            - generic [ref=f8e74]:
+              - generic [ref=f8e75]:
+                - button "▾ server-1 (vps)" [active] [ref=f8e80] [cursor=pointer]:
+                  - text: ▾ server-1
+                  - generic [ref=f8e77]: (vps)
+                - button "→" [ref=f8e78] [cursor=pointer]
+                - button "×" [ref=f8e79] [cursor=pointer]
+              - generic [ref=f8e81]:
+                - textbox "server-label" [ref=f8e82]: server-1
+                - generic [ref=f8e83]: Firewall (top-down, default deny)
+                - generic [ref=f8e84]:
+                  - combobox [ref=f8e85]:
+                    - option "allow" [selected]
+                    - option "deny"
+                  - textbox "fw-port-0" [ref=f8e86]: any
+                  - combobox [ref=f8e87]:
+                    - option "tcp"
+                    - option "udp"
+                    - option "any" [selected]
+                  - combobox [ref=f8e88]:
+                    - option "internal" [selected]
+                    - option "any"
+                    - option "cidr…"
+                  - button "×" [ref=f8e89] [cursor=pointer]
+                - button "+ Rule" [ref=f8e90] [cursor=pointer]
+                - generic [ref=f8e91]: Compose stacks
+                - button "+ Stack" [ref=f8e92] [cursor=pointer]

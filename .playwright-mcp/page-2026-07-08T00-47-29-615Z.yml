@@ -1,0 +1,60 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - button "File" [ref=e7] [cursor=pointer]:
+        - img [ref=e8]
+        - text: File
+        - img [ref=e11]
+      - button "Provider" [disabled] [ref=e110]:
+        - img [ref=e111]
+        - generic [ref=e113]: Provider
+        - img [ref=e114]
+      - button "Select (V)" [ref=e14] [cursor=pointer]:
+        - img [ref=e15]
+      - button "Hand (H)" [ref=e17] [cursor=pointer]:
+        - img [ref=e18]
+      - button "Connect (C)" [ref=e23] [cursor=pointer]:
+        - img [ref=e24]
+      - generic [ref=e116]:
+        - button "Undo" [ref=e118] [cursor=pointer]
+        - button "Redo" [ref=e119] [cursor=pointer]
+      - generic [ref=e120]:
+        - generic [ref=e121]: Panels
+        - button "Inspect" [ref=e122] [cursor=pointer]:
+          - img [ref=e123]
+          - generic [ref=e124]: Inspect
+        - button "Dock" [ref=e125] [cursor=pointer]:
+          - img [ref=e126]
+          - generic [ref=e129]: Dock
+        - button "Packets" [ref=e130] [cursor=pointer]:
+          - img [ref=e131]
+          - generic [ref=e135]: Packets
+        - button "Diagnostics" [ref=e136] [cursor=pointer]:
+          - img [ref=e137]
+          - generic [ref=e140]: Diagnostics
+      - generic [ref=e142]:
+        - button "Simulate" [ref=e143] [cursor=pointer]: Simulate
+        - button "Simulation settings — speed, traffic mode, volume" [ref=e145] [cursor=pointer]:
+          - img [ref=e146]
+    - button "Switch to dark mode" [ref=e26] [cursor=pointer]:
+      - img [ref=e27]
+  - generic [ref=e29]:
+    - generic [ref=e148]:
+      - button "Compute" [ref=e149] [cursor=pointer]:
+        - img [ref=e150]
+      - button "Network" [ref=e153] [cursor=pointer]:
+        - img [ref=e154]
+      - button "Storage" [ref=e158] [cursor=pointer]:
+        - img [ref=e159]
+      - button "Messaging" [ref=e163] [cursor=pointer]:
+        - img [ref=e164]
+      - button "Caching" [ref=e165] [cursor=pointer]:
+        - img [ref=e166]
+      - button "Orchestration" [ref=e170] [cursor=pointer]:
+        - img [ref=e171]
+      - button "Grouping" [ref=e174] [cursor=pointer]:
+        - img [ref=e175]
+    - application [ref=e179]:
+      - img
+      - img "Mini Map" [ref=e183]
+  - generic [ref=e108]: untitled · not yet saved

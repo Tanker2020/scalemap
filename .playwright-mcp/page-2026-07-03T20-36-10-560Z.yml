@@ -1,0 +1,268 @@
+- generic [ref=f3e3]:
+  - generic [ref=f3e4]:
+    - generic [ref=f3e5]:
+      - button "File" [ref=f3e7] [cursor=pointer]:
+        - img [ref=f3e8]
+        - text: File
+        - img [ref=f3e11]
+      - button "Select (V)" [ref=f3e14] [cursor=pointer]:
+        - img [ref=f3e15]
+      - button "Hand (H)" [ref=f3e17] [cursor=pointer]:
+        - img [ref=f3e18]
+      - button "Connect (C)" [ref=f3e23] [cursor=pointer]:
+        - img [ref=f3e24]
+      - generic "Provider, Undo, and Redo are locked while a simulation is running" [ref=f3e322]:
+        - img [ref=f3e323]
+      - generic [ref=f3e124]:
+        - generic [ref=f3e125]: Panels
+        - button "Inspect" [ref=f3e126] [cursor=pointer]:
+          - img [ref=f3e127]
+          - generic [ref=f3e128]: Inspect
+        - button "Dock" [ref=f3e129] [cursor=pointer]:
+          - img [ref=f3e130]
+          - generic [ref=f3e133]: Dock
+        - button "Packets" [ref=f3e134] [cursor=pointer]:
+          - img [ref=f3e135]
+          - generic [ref=f3e139]: Packets
+        - button "Diagnostics" [ref=f3e140] [cursor=pointer]:
+          - img [ref=f3e141]
+          - generic [ref=f3e144]: Diagnostics
+      - generic [ref=f3e145]:
+        - generic [ref=f3e146]:
+          - button "Pause" [ref=f3e326] [cursor=pointer]: Pause
+          - button "Chaos · 2×" [ref=f3e321] [cursor=pointer]:
+            - generic [ref=f3e320]: Chaos · 2×
+            - img [ref=f3e150]
+        - button "End" [ref=f3e329] [cursor=pointer]: End
+    - button "Switch to dark mode" [active] [ref=f3e1003] [cursor=pointer]:
+      - img [ref=f3e1004]
+  - generic [ref=f3e33]:
+    - generic:
+      - generic:
+        - button "Compute":
+          - img
+        - button "Network":
+          - img
+        - button "Storage":
+          - img
+        - button "Messaging":
+          - img
+        - button "Caching":
+          - img
+        - button "Orchestration":
+          - img
+        - button "Grouping":
+          - img
+    - generic [ref=f3e181]:
+      - generic [ref=f3e182]:
+        - generic: Simulation running — editing locked
+        - application [ref=f3e183]:
+          - generic [ref=f3e185]:
+            - generic:
+              - generic:
+                - img:
+                  - group "Edge from lb-cdn to lb-alb" [ref=f3e331] [cursor=pointer]:
+                    - img
+                - img:
+                  - group "Edge from lb-alb to lb-ec1" [ref=f3e186] [cursor=pointer]:
+                    - img
+                - img:
+                  - group "Edge from lb-alb to lb-ec2" [ref=f3e189] [cursor=pointer]:
+                    - img
+                - img:
+                  - group "Edge from lb-ec1 to lb-db" [ref=f3e192] [cursor=pointer]:
+                    - img
+                - img:
+                  - group "Edge from lb-ec2 to lb-db" [ref=f3e195] [cursor=pointer]:
+                    - img
+              - generic:
+                - generic [ref=f3e334]:
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - generic: CloudFront
+                      - generic: CDN layer
+                - generic [ref=f3e335]:
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - generic: App Load Balancer
+                      - generic: ALB
+                      - generic "Requests dropped at this node since simulation start": ↓ 1.6k dropped
+                    - generic:
+                      - generic "High utilization — approaching capacity": ▲
+                - generic [ref=f3e336]:
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - generic: app-server-1
+                      - generic: t3.medium
+                      - generic "Requests dropped at this node since simulation start": ↓ 1.9k dropped
+                - generic [ref=f3e337]:
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - generic: app-server-2
+                      - generic: t3.medium
+                      - generic "Requests dropped at this node since simulation start": ↓ 1.8k dropped
+                - generic [ref=f3e338]:
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - generic: RDS Postgres
+                      - generic: db.t3.large
+                      - generic "Requests dropped at this node since simulation start": ↓ 267 dropped
+                    - generic:
+                      - generic "High utilization — approaching capacity": ▲
+          - img
+          - img "Mini Map" [ref=f3e277]
+      - generic [ref=f3e339]:
+        - button "Live Metrics ▾ ● LIVE" [ref=f3e340] [cursor=pointer]:
+          - generic [ref=f3e341]: Live Metrics ▾
+          - generic [ref=f3e342]: ● LIVE
+        - generic [ref=f3e343]:
+          - generic [ref=f3e344]:
+            - generic [ref=f3e345]: Nodes
+            - generic [ref=f3e346]:
+              - button "CloudFront — 0% — click to inspect" [ref=f3e347] [cursor=pointer]
+              - button "App Load Balancer — 100% — click to inspect" [ref=f3e905] [cursor=pointer]
+              - button "app-server-1 — 9% — click to inspect" [ref=f3e1006] [cursor=pointer]
+              - button "app-server-2 — 9% — click to inspect" [ref=f3e1007] [cursor=pointer]
+              - button "RDS Postgres — 100% — click to inspect" [ref=f3e1008] [cursor=pointer]
+          - generic [ref=f3e352]:
+            - generic [ref=f3e1009]:
+              - generic [ref=f3e1010]: ●
+              - generic [ref=f3e1011]: 111s
+              - generic [ref=f3e1012]: "RDS Postgres SLO breached: P90 latency 4804ms > 100ms"
+            - generic [ref=f3e1013]:
+              - generic [ref=f3e1014]: ●
+              - generic [ref=f3e1015]: 109s
+              - generic [ref=f3e1016]: RDS Postgres saturated (100%)
+            - generic [ref=f3e1017]:
+              - generic [ref=f3e1018]: ●
+              - generic [ref=f3e1019]: 109s
+              - generic [ref=f3e1020]: RDS Postgres crash (chaos)
+            - generic [ref=f3e1021]:
+              - generic [ref=f3e1022]: ●
+              - generic [ref=f3e1023]: 108s
+              - generic [ref=f3e1024]: "Circuit half-open: App Load Balancer → app-server-2 (testing)"
+            - generic [ref=f3e1025]:
+              - generic [ref=f3e1026]: ●
+              - generic [ref=f3e1027]: 107s
+              - generic [ref=f3e1028]: CloudFront → App Load Balancer cascade
+            - generic [ref=f3e1029]:
+              - generic [ref=f3e1030]: ●
+              - generic [ref=f3e1031]: 107s
+              - generic [ref=f3e1032]: CloudFront → App Load Balancer cascade
+            - generic [ref=f3e1033]:
+              - generic [ref=f3e1034]: ●
+              - generic [ref=f3e1035]: 107s
+              - generic [ref=f3e1036]: CloudFront → App Load Balancer cascade
+            - generic [ref=f3e1037]:
+              - generic [ref=f3e1038]: ●
+              - generic [ref=f3e1039]: 107s
+              - generic [ref=f3e1040]: CloudFront → App Load Balancer cascade
+    - complementary [ref=f3e357]:
+      - generic [ref=f3e358]:
+        - button "Properties" [ref=f3e359] [cursor=pointer]
+        - button "Analytics" [ref=f3e360] [cursor=pointer]
+      - generic [ref=f3e361]:
+        - generic [ref=f3e362]:
+          - generic [ref=f3e363]: System
+          - generic [ref=f3e364]:
+            - generic [ref=f3e365]: Total Traffic
+            - generic [ref=f3e366]: 192 RPS
+          - generic [ref=f3e367]:
+            - generic [ref=f3e368]: Bottlenecks
+            - generic [ref=f3e369]: 2 nodes
+          - generic [ref=f3e386]:
+            - generic [ref=f3e387]: SLO Status
+            - generic [ref=f3e388]: 0 pass · 4 fail
+        - generic [ref=f3e389]:
+          - generic [ref=f3e390]: System Utilization (60s)
+          - img [ref=f3e391]
+        - generic [ref=f3e394]:
+          - generic [ref=f3e395]: Traffic (60s)
+          - img [ref=f3e396]
+        - generic [ref=f3e370]:
+          - generic [ref=f3e371]: Event Log
+          - generic [ref=f3e372]:
+            - 'button "✗ SLO VIOLATED RDS Postgres +111s → RDS Postgres SLO breached: P90 latency 4804ms > 100ms P90: 4804ms Util: 100% Err: 15.0%" [ref=f3e1041] [cursor=pointer]':
+              - generic [ref=f3e1042]:
+                - generic [ref=f3e1043]: ✗
+                - generic [ref=f3e1044]: SLO VIOLATED
+                - generic [ref=f3e1045]: RDS Postgres
+                - generic [ref=f3e1046]: +111s
+                - generic [ref=f3e1047]: →
+              - generic [ref=f3e1048]: "RDS Postgres SLO breached: P90 latency 4804ms > 100ms"
+              - generic [ref=f3e1049]:
+                - generic [ref=f3e1050]: "P90: 4804ms"
+                - generic [ref=f3e1051]: "Util: 100%"
+                - generic [ref=f3e1052]: "Err: 15.0%"
+            - button "⚠ SATURATED RDS Postgres +109s → RDS Postgres saturated (100%)" [ref=f3e1053] [cursor=pointer]:
+              - generic [ref=f3e1054]:
+                - generic [ref=f3e1055]: ⚠
+                - generic [ref=f3e1056]: SATURATED
+                - generic [ref=f3e1057]: RDS Postgres
+                - generic [ref=f3e1058]: +109s
+                - generic [ref=f3e1059]: →
+              - generic [ref=f3e1060]: RDS Postgres saturated (100%)
+            - button "✕ CHAOS FAILURE RDS Postgres +109s → RDS Postgres crash (chaos)" [ref=f3e1061] [cursor=pointer]:
+              - generic [ref=f3e1062]:
+                - generic [ref=f3e1063]: ✕
+                - generic [ref=f3e1064]: CHAOS FAILURE
+                - generic [ref=f3e1065]: RDS Postgres
+                - generic [ref=f3e1066]: +109s
+                - generic [ref=f3e1067]: →
+              - generic [ref=f3e1068]: RDS Postgres crash (chaos)
+            - 'button "⊡ HALF-OPEN app-server-2 +108s → Circuit half-open: App Load Balancer → app-server-2 (testing)" [ref=f3e1069] [cursor=pointer]':
+              - generic [ref=f3e1070]:
+                - generic [ref=f3e1071]: ⊡
+                - generic [ref=f3e1072]: HALF-OPEN
+                - generic [ref=f3e1073]: app-server-2
+                - generic [ref=f3e1074]: +108s
+                - generic [ref=f3e1075]: →
+              - generic [ref=f3e1076]: "Circuit half-open: App Load Balancer → app-server-2 (testing)"
+            - button "↯ CASCADE CloudFront +107s → CloudFront → App Load Balancer cascade" [ref=f3e1077] [cursor=pointer]:
+              - generic [ref=f3e1078]:
+                - generic [ref=f3e1079]: ↯
+                - generic [ref=f3e1080]: CASCADE
+                - generic [ref=f3e1081]: CloudFront
+                - generic [ref=f3e1082]: +107s
+                - generic [ref=f3e1083]: →
+              - generic [ref=f3e1084]: CloudFront → App Load Balancer cascade
+            - button "↯ CASCADE CloudFront +107s → CloudFront → App Load Balancer cascade" [ref=f3e1085] [cursor=pointer]:
+              - generic [ref=f3e1086]:
+                - generic [ref=f3e1087]: ↯
+                - generic [ref=f3e1088]: CASCADE
+                - generic [ref=f3e1089]: CloudFront
+                - generic [ref=f3e1090]: +107s
+                - generic [ref=f3e1091]: →
+              - generic [ref=f3e1092]: CloudFront → App Load Balancer cascade
+            - button "↯ CASCADE CloudFront +107s → CloudFront → App Load Balancer cascade" [ref=f3e1093] [cursor=pointer]:
+              - generic [ref=f3e1094]:
+                - generic [ref=f3e1095]: ↯
+                - generic [ref=f3e1096]: CASCADE
+                - generic [ref=f3e1097]: CloudFront
+                - generic [ref=f3e1098]: +107s
+                - generic [ref=f3e1099]: →
+              - generic [ref=f3e1100]: CloudFront → App Load Balancer cascade
+            - button "↯ CASCADE CloudFront +107s → CloudFront → App Load Balancer cascade" [ref=f3e1101] [cursor=pointer]:
+              - generic [ref=f3e1102]:
+                - generic [ref=f3e1103]: ↯
+                - generic [ref=f3e1104]: CASCADE
+                - generic [ref=f3e1105]: CloudFront
+                - generic [ref=f3e1106]: +107s
+                - generic [ref=f3e1107]: →
+              - generic [ref=f3e1108]: CloudFront → App Load Balancer cascade
+        - button "⚙ Open Simulation Inspector →" [ref=f3e381] [cursor=pointer]:
+          - generic [ref=f3e382]: ⚙ Open Simulation Inspector
+          - generic [ref=f3e383]: →
+  - generic [ref=f3e111]:
+    - generic [ref=f3e112]: ● unsaved
+    - button "Metrics ▾" [ref=f3e384] [cursor=pointer]

@@ -1,0 +1,52 @@
+- generic [ref=f6e31]:
+  - banner [ref=f6e32]:
+    - navigation "World navigation" [ref=f6e33]:
+      - generic [ref=f6e35]: World
+    - generic [ref=f6e36]: esc = up one level
+  - generic [ref=f6e37]:
+    - main [ref=f6e38]:
+      - generic [ref=f6e40]:
+        - generic [ref=f6e41]: World — 1 region · 0 service instances
+        - generic [ref=f6e42]: no findings
+        - button "us-east-1 US East (N. Virginia) 0 AZ · 0 servers · active" [ref=f6e55] [cursor=pointer]:
+          - generic [ref=f6e56]: us-east-1
+          - generic [ref=f6e57]: US East (N. Virginia)
+          - generic [ref=f6e58]: 0 AZ · 0 servers · active
+    - complementary [ref=f6e45]:
+      - generic [ref=f6e46]:
+        - button "Topology" [ref=f6e47] [cursor=pointer]
+        - button "Blueprints" [ref=f6e48] [cursor=pointer]
+        - button "Placements" [ref=f6e49] [cursor=pointer]
+      - generic [ref=f6e50]:
+        - generic [ref=f6e51]: Regions
+        - generic [ref=f6e52]:
+          - combobox "add-region-select" [ref=f6e53]:
+            - option "us-east-2" [selected]
+            - option "us-west-1"
+            - option "us-west-2"
+            - option "ca-central-1"
+            - option "sa-east-1"
+            - option "eu-west-1"
+            - option "eu-west-2"
+            - option "eu-west-3"
+            - option "eu-central-1"
+            - option "eu-south-1"
+            - option "eu-north-1"
+            - option "me-south-1"
+            - option "af-south-1"
+            - option "ap-south-1"
+            - option "ap-southeast-1"
+            - option "ap-southeast-2"
+            - option "ap-northeast-1"
+            - option "ap-northeast-2"
+            - option "ap-northeast-3"
+            - option "ap-east-1"
+          - button "+ Region" [active] [ref=f6e54] [cursor=pointer]
+        - generic [ref=f6e59]:
+          - generic [ref=f6e60]:
+            - strong [ref=f6e61]: us-east-1
+            - combobox [ref=f6e62]:
+              - option "active" [selected]
+              - option "passive"
+            - button "×" [ref=f6e63] [cursor=pointer]
+          - button "+ AZ" [ref=f6e64] [cursor=pointer]

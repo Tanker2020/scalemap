@@ -1,0 +1,20 @@
+- generic [ref=f8e6]:
+  - generic [ref=f8e7]:
+    - generic [ref=f8e8]: scalemap
+    - generic [ref=f8e9]: Infrastructure visualization
+  - generic [ref=f8e10]:
+    - button "New World Start from scratch" [ref=f8e11] [cursor=pointer]:
+      - img [ref=f8e12]
+      - generic [ref=f8e15]: New World
+      - generic [ref=f8e16]: Start from scratch
+    - button "Import Terraform Coming soon" [disabled] [ref=f8e17]:
+      - img [ref=f8e18]
+      - generic [ref=f8e21]: Import Terraform
+      - generic [ref=f8e22]: Coming soon
+  - generic [ref=f8e23]:
+    - generic [ref=f8e24]:
+      - img [ref=f8e25]
+      - text: Recent files
+    - button "legacy-v1-diagram.scalemap 7/8/2026" [ref=f8e28] [cursor=pointer]:
+      - generic [ref=f8e29]: legacy-v1-diagram.scalemap
+      - generic [ref=f8e30]: 7/8/2026

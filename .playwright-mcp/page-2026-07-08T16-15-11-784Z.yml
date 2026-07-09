@@ -1,0 +1,47 @@
+- generic [ref=f10e31]:
+  - banner [ref=f10e32]:
+    - navigation "World navigation" [ref=f10e33]:
+      - generic [ref=f10e35]: World
+    - generic [ref=f10e36]:
+      - generic [ref=f10e37]: esc = up one level
+      - button "New" [ref=f10e38] [cursor=pointer]
+      - button "Open" [ref=f10e39] [cursor=pointer]
+      - button "Save" [ref=f10e40] [cursor=pointer]
+      - button "Save As" [ref=f10e41] [cursor=pointer]
+  - generic [ref=f10e42]:
+    - main [ref=f10e43]:
+      - generic [ref=f10e45]:
+        - generic [ref=f10e46]: World — 0 regions · 0 service instances
+        - generic [ref=f10e47]: no findings
+        - generic [ref=f10e49]: No regions yet — add one in the World panel →
+    - complementary [ref=f10e50]:
+      - generic [ref=f10e51]:
+        - button "Topology" [ref=f10e52] [cursor=pointer]
+        - button "Blueprints" [ref=f10e53] [cursor=pointer]
+        - button "Placements" [ref=f10e54] [cursor=pointer]
+      - generic [ref=f10e55]:
+        - generic [ref=f10e56]: Regions
+        - generic [ref=f10e57]:
+          - combobox "add-region-select" [ref=f10e58]:
+            - option "us-east-1" [selected]
+            - option "us-east-2"
+            - option "us-west-1"
+            - option "us-west-2"
+            - option "ca-central-1"
+            - option "sa-east-1"
+            - option "eu-west-1"
+            - option "eu-west-2"
+            - option "eu-west-3"
+            - option "eu-central-1"
+            - option "eu-south-1"
+            - option "eu-north-1"
+            - option "me-south-1"
+            - option "af-south-1"
+            - option "ap-south-1"
+            - option "ap-southeast-1"
+            - option "ap-southeast-2"
+            - option "ap-northeast-1"
+            - option "ap-northeast-2"
+            - option "ap-northeast-3"
+            - option "ap-east-1"
+          - button "+ Region" [ref=f10e59] [cursor=pointer]
