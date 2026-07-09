@@ -10,12 +10,10 @@ const CROSS_REGION_USD_PER_GB = 0.02
 const BYTES_PER_GB = 1024 ** 3
 const SECONDS_PER_MONTH = 2_630_000   // spec decision 8's documented ~30.4-day constant
 
-// PlacementPanel.tsx's managed-service picker (Phase 1) stores a handful of short,
-// human-friendly nodeType strings ('rds', 's3', 'sqs') that predate — and don't match —
-// CLOUD_REGISTRY's actual keys ('dbSql', 'objectStorage', 'queue'). This alias table bridges
-// the two so managed-service pricing actually resolves instead of silently pricing at $0. If
-// PlacementPanel's MANAGED_TYPES ever changes to use canonical NodeTypes directly, every entry
-// below becomes an identity no-op.
+// PlacementPanel.tsx's managed-service picker now authors new services with CLOUD_REGISTRY keys
+// directly (D12). This alias table bridges LEGACY `.scalemap` documents saved with old nodeType
+// values ('rds', 's3', 'sqs') so they still price correctly when loaded; new documents never use
+// aliases. Every alias below will eventually become a no-op as legacy documents age out.
 const MANAGED_TYPE_ALIASES: Record<string, string> = {
   rds: 'dbSql', s3: 'objectStorage', sqs: 'queue',
   redis: 'redis', cdn: 'cdn', apiGateway: 'apiGateway', lambda: 'lambda',

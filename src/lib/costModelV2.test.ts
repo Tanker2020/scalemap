@@ -50,4 +50,30 @@ describe('computeWorldCost', () => {
     const azDelta = withMs.byAz.find(a => a.azId === azId)!.monthlyUsd - withoutMs.byAz.find(a => a.azId === azId)!.monthlyUsd
     expect(azDelta).toBeGreaterThan(0)
   })
+
+  it('prices new managed services authored with CLOUD_REGISTRY keys directly (dbSql)', () => {
+    const { doc, azId } = twoServerWorld()
+    // New authoring emits 'dbSql' directly (not 'rds')
+    doc.managedServices['ms-new'] = {
+      id: 'ms-new', label: 'SQL DB', nodeType: 'dbSql', provider: 'aws',
+      scope: { kind: 'az', azId }, port: 5432,
+    }
+    const withMs = computeWorldCost(doc, null)
+    const withoutMs = computeWorldCost({ ...doc, managedServices: {} }, null)
+    // dbSql (aws) contributes a nonzero instanceHourly cost.
+    expect(withMs.monthlyUsd).toBeGreaterThan(withoutMs.monthlyUsd)
+  })
+
+  it('still prices legacy managed services with old nodeType aliases (rds)', () => {
+    const { doc, regionId } = twoServerWorld()
+    // Legacy doc with the old 'rds' alias should still work via MANAGED_TYPE_ALIASES.
+    doc.managedServices['ms-legacy'] = {
+      id: 'ms-legacy', label: 'Legacy DB', nodeType: 'rds', provider: 'aws',
+      scope: { kind: 'region', regionId }, port: 5432,
+    }
+    const withMs = computeWorldCost(doc, null)
+    const withoutMs = computeWorldCost({ ...doc, managedServices: {} }, null)
+    // rds alias → dbSql contributes a nonzero instanceHourly cost.
+    expect(withMs.monthlyUsd).toBeGreaterThan(withoutMs.monthlyUsd)
+  })
 })

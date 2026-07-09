@@ -3,14 +3,24 @@ import { useWorldStore } from '../../store/world.store'
 import type { Placement, PlacementRuntime } from '../../../lib/world/types'
 import { sectionLabel, field, smallBtn, dangerBtn, row } from './panelStyles'
 
-const MANAGED_TYPES = ['rds', 's3', 'sqs', 'redis', 'cdn', 'apiGateway', 'lambda']
+// Author managed services with CLOUD_REGISTRY keys directly (D12) so Cost v2 prices them without
+// the alias table. Labels stay human-readable.
+const MANAGED_TYPES: { key: string; label: string }[] = [
+  { key: 'dbSql', label: 'SQL DB' },
+  { key: 'objectStorage', label: 'Object store' },
+  { key: 'queue', label: 'Queue' },
+  { key: 'redis', label: 'Redis' },
+  { key: 'cdn', label: 'CDN' },
+  { key: 'apiGateway', label: 'API Gateway' },
+  { key: 'lambda', label: 'Lambda' },
+]
 
 export function PlacementPanel() {
   const doc = useWorldStore(s => s.doc)
   const store = useWorldStore.getState()
   const blueprints = Object.values(doc.blueprints)
   const servers = Object.values(doc.servers)
-  const [msType, setMsType] = useState(MANAGED_TYPES[0])
+  const [msType, setMsType] = useState(MANAGED_TYPES[0].key)
   const [msScope, setMsScope] = useState('')
 
   const scopeOptions = [
@@ -39,7 +49,7 @@ export function PlacementPanel() {
       <div style={sectionLabel}>Managed services</div>
       <div style={row}>
         <select style={{ ...field, flex: 1, marginBottom: 0 }} value={msType} onChange={e => setMsType(e.target.value)}>
-          {MANAGED_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+          {MANAGED_TYPES.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
         </select>
         <select style={{ ...field, flex: 1, marginBottom: 0 }} value={msScope} onChange={e => setMsScope(e.target.value)}>
           <option value="">scope…</option>
@@ -47,7 +57,7 @@ export function PlacementPanel() {
         </select>
         <button style={smallBtn} disabled={!msScope} onClick={() => {
           const [kind, id] = msScope.split(':')
-          store.addManagedService(msType, msType.toUpperCase(),
+          store.addManagedService(msType, MANAGED_TYPES.find(t => t.key === msType)?.label ?? msType,
             kind === 'region' ? { kind: 'region', regionId: id } : { kind: 'az', azId: id }, 5432)
         }}>+ Add</button>
       </div>
