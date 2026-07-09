@@ -1,12 +1,15 @@
 // src/app/world/server/InspectorRail.tsx
 // HUD inspector rail: a read panel per BoardSelection kind. Reads doc (useWorldStore) + live
-// metrics (useServerDisplayMetrics); world writes arrive in T7's forms mounted here. Rule rows
-// drill into `{kind:'rule'}`.
+// metrics (useServerDisplayMetrics); each panel mounts its matching edit form from
+// `./inspectorForms.tsx` (WorkloadForm/RuntimeForm/FirewallEditor/VolumesEditor) — those forms own
+// all world-store writes and self-lock via <fieldset disabled={running}> (D9). Rule rows drill
+// into `{kind:'rule'}`.
 import type { ReactElement } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { useServerDisplayMetrics } from './useServerDisplayMetrics'
 import type { BoardSelection } from './selection'
+import { WorkloadForm, RuntimeForm, FirewallEditor, VolumesEditor } from './inspectorForms'
 
 const railText = { font: '7.5px var(--font-mono)', color: 'var(--color-text-secondary)', lineHeight: 1.9 } as const
 
@@ -46,7 +49,8 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
         {rt?.type === 'container' && <div style={{ color: oom ? 'var(--color-danger)' : undefined }}>mem {m ? Math.round(m.ramMb) : '—'}M / {memLimit ?? '∞'}M {oom && '⚠'}</div>}
         <div style={{ marginTop: 7, color: '#475569', letterSpacing: '0.08em' }}>RESOURCES ON HOST</div>
         <div>p50 {m?.p50Ms?.toFixed(1) ?? '—'}ms · {m?.activeConnections ?? '—'} conn</div>
-        {/* T7 mounts WorkloadForm + RuntimeForm below this line */}
+        {inst && <WorkloadForm blueprintId={inst.blueprintId} />}
+        {inst && rt?.type === 'container' && <RuntimeForm placementId={inst.placementId} />}
       </div>
     )
   } else if (selection.kind === 'nic') {
@@ -64,7 +68,7 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
           {r.action.toUpperCase()} :{r.port} {r.protocol} from {r.source}
         </div>
       ))}
-      {/* T7 mounts FirewallEditor below */}
+      <FirewallEditor serverId={serverId} />
     </div>
   } else if (selection.kind === 'stack') {
     const st = server?.stacks.find(s => s.name === selection.stackName)
@@ -76,7 +80,7 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
       <div>networks {st?.networks.map(n => n.cidr).join(', ') || '—'}</div>
       <div>volumes {st?.volumes.map(v => `${v.name} ${v.sizeGb}G`).join(', ') || '—'}</div>
       <div>members {members.map(i => doc.blueprints[i.blueprintId]?.name).join(', ') || '—'}</div>
-      {/* T7 mounts VolumesEditor below */}
+      <VolumesEditor serverId={serverId} stackName={selection.stackName} />
     </div>
   } else if (selection.kind === 'volume') {
     const consumers = Object.values(doc.blueprints).filter(b => b.volumeName === selection.volumeName)
