@@ -1,0 +1,100 @@
+import { describe, it, expect } from 'vitest'
+import {
+  getBreaker, recordResult, transition, admitRequest, clearBreakers, pathKey,
+  DEFAULT_BREAKER_CONFIG,
+} from './breakers'
+import type { Breaker } from './breakers'
+
+function freshBreaker(): { map: Map<string, Breaker>; b: Breaker } {
+  const map = new Map<string, Breaker>()
+  const b = getBreaker(map, pathKey('i-1', 'dep-1'))
+  return { map, b }
+}
+
+describe('breakers — state cycle', () => {
+  it('runs the full cycle: closed -> open -> half-open -> closed on trial success', () => {
+    const { b } = freshBreaker()
+    expect(b.state).toBe('closed')
+    for (let i = 0; i < 10; i++) recordResult(b, true, 1000)
+    expect(b.state).toBe('open')
+    expect(b.openedAt).toBe(1000)
+
+    expect(transition(b, 5_000)).toBe('open')          // resetMs (10s) not yet elapsed
+    expect(transition(b, 11_001)).toBe('half-open')    // > openedAt + resetMs
+
+    expect(admitRequest(b)).toBe(true)                 // the single trial
+    recordResult(b, false, 11_100)                     // trial succeeds
+    expect(b.state).toBe('closed')
+    expect(b.errorWindow).toEqual([])                  // window cleared on close
+  })
+
+  it('reopens with a fresh openedAt when the half-open trial fails', () => {
+    const { b } = freshBreaker()
+    for (let i = 0; i < 10; i++) recordResult(b, true, 1000)
+    transition(b, 11_001)
+    expect(b.state).toBe('half-open')
+    admitRequest(b)
+    recordResult(b, true, 11_200)                      // trial fails
+    expect(b.state).toBe('open')
+    expect(b.openedAt).toBe(11_200)
+    expect(transition(b, 21_000)).toBe('open')         // new resetMs window from 11_200
+    expect(transition(b, 21_201)).toBe('half-open')
+  })
+
+  it('half-open admits exactly one trial until it resolves', () => {
+    const { b } = freshBreaker()
+    for (let i = 0; i < 10; i++) recordResult(b, true, 0)
+    transition(b, 10_001)
+    expect(admitRequest(b)).toBe(true)    // claims the trial
+    expect(admitRequest(b)).toBe(false)   // second caller refused
+    expect(admitRequest(b)).toBe(false)
+    recordResult(b, false, 10_100)        // trial resolves -> closed
+    expect(admitRequest(b)).toBe(true)    // closed admits freely again
+  })
+
+  it('closed always admits; open never admits', () => {
+    const { b } = freshBreaker()
+    expect(admitRequest(b)).toBe(true)
+    for (let i = 0; i < 10; i++) recordResult(b, true, 0)
+    expect(b.state).toBe('open')
+    expect(admitRequest(b)).toBe(false)
+    expect(admitRequest(b)).toBe(false)
+  })
+})
+
+describe('breakers — window behavior', () => {
+  it('never opens below the 10-sample minimum even at 100% errors', () => {
+    const { b } = freshBreaker()
+    for (let i = 0; i < 9; i++) recordResult(b, true, 0)
+    expect(b.state).toBe('closed')
+    recordResult(b, true, 0)              // 10th sample crosses the minimum
+    expect(b.state).toBe('open')
+  })
+
+  it('stays closed under the error threshold and caps the window at 20 samples', () => {
+    const { b } = freshBreaker()
+    // 20 successes, then 9 failures: window holds the last 20 -> 9/20 = 0.45 < 0.5
+    for (let i = 0; i < 20; i++) recordResult(b, false, 0)
+    for (let i = 0; i < 9; i++) recordResult(b, true, 0)
+    expect(b.errorWindow.length).toBe(20)
+    expect(b.state).toBe('closed')
+    recordResult(b, true, 0)              // 10/20 = 0.5 >= threshold
+    expect(b.state).toBe('open')
+  })
+
+  it('getBreaker creates once and reuses; clearBreakers empties the map', () => {
+    const map = new Map<string, Breaker>()
+    const a = getBreaker(map, 'k1')
+    expect(getBreaker(map, 'k1')).toBe(a)
+    expect(a.config).toEqual(DEFAULT_BREAKER_CONFIG)
+    getBreaker(map, 'k2', { errorThreshold: 0.2, windowSize: 20, resetMs: 5_000 })
+    expect(map.size).toBe(2)
+    expect(getBreaker(map, 'k2').config.errorThreshold).toBe(0.2)
+    clearBreakers(map)
+    expect(map.size).toBe(0)
+  })
+
+  it('pathKey formats `${fromInstanceId}->${dependencyId}`', () => {
+    expect(pathKey('pl-1#0', 'dep-9')).toBe('pl-1#0->dep-9')
+  })
+})
