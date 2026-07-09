@@ -213,9 +213,10 @@ export interface TracedRequest {
 ## Store publication (simulation.store v2)
 
 `src/app/store/simulation.store.ts` is REWRITTEN in Phase 2 (old shape retired with the
-legacy engine) to hold exactly: `running`, `timeScale`, `latestBatch: MetricsBatch | null`,
+legacy engine) to hold at minimum: `running`, `timeScale`, `latestBatch: MetricsBatch | null`,
 `events: EngineEvent[]` (ring, 500), `healthOverrides` (manual outages), and actions
-mirroring `WorldEngineApi` control calls. Views never import the engine directly for
+mirroring `WorldEngineApi` control calls. Additive fields serving Phase-2 UI (e.g.
+`scrubIndex`, `degraded`) are sanctioned; reshaping or renaming the listed fields is not. Views never import the engine directly for
 state — they read this store; only control actions call the facade.
 
 ## Determinism
