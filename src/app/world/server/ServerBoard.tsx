@@ -93,6 +93,16 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
     if (m) instanceRamMb[chip.instanceId] = m.ramMb
   }
 
+  // Volume -> consumer blueprint id (D8 disk-slice cross-highlight): attribute each volume to
+  // the resident blueprint whose volumeName matches it.
+  const volumeConsumers: Record<string, string> = {}
+  for (const st of server?.stacks ?? []) {
+    for (const v of st.volumes) {
+      const bp = Object.values(doc.blueprints).find(b => b.volumeName === v.name)
+      if (bp) volumeConsumers[v.name] = bp.id
+    }
+  }
+
   return (
     <div ref={containerRef} style={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', background: 'radial-gradient(ellipse at 40% 35%, #0C1018 0%, #07090D 70%)' }}>
       {display.scrubbing && (
@@ -153,7 +163,7 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
               server={server} metrics={display.server} residentBlueprints={residentBlueprints}
               attribution={attribution} hoveredBlueprintId={props.hoveredBlueprintId}
               onHoverBlueprint={props.onHoverBlueprint} onSelect={props.onSelect}
-              memLimits={memLimits} instanceRamMb={instanceRamMb}
+              memLimits={memLimits} instanceRamMb={instanceRamMb} volumeConsumers={volumeConsumers}
             />
           </div>
         )}

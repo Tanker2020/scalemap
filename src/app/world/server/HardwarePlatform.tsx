@@ -24,6 +24,7 @@ export interface HardwarePlatformProps {
   box?: { x: number; y: number; w: number; h: number }   // hardware.box from layout (optional)
   memLimits?: Record<InstanceId, number>                  // container memLimitMb by instance
   instanceRamMb?: Record<InstanceId, number>              // live per-instance ramMb (oom check)
+  volumeConsumers?: Record<string, string>                // volumeName -> consumer blueprintId (D8 disk-slice cross-highlight)
 }
 
 export function HardwarePlatform(props: HardwarePlatformProps): ReactElement {
@@ -124,13 +125,13 @@ export function HardwarePlatform(props: HardwarePlatformProps): ReactElement {
             const circ = 2 * Math.PI * 11.5
             let off = 0
             const slices: ReactElement[] = []
-            const push = (gb: number, color: string, key: string) => {
+            const push = (gb: number, color: string, key: string, opacity: number, testId?: string) => {
               const len = diskGb ? (gb / diskGb) * circ : 0
-              slices.push(<circle key={key} cx={26} cy={26} r={11.5} fill="none" stroke={color} strokeWidth={21} strokeDasharray={`${len} ${circ - len}`} strokeDashoffset={-off} transform="rotate(-90 26 26)" opacity={0.85} />)
+              slices.push(<circle key={key} data-testid={testId} cx={26} cy={26} r={11.5} fill="none" stroke={color} strokeWidth={21} strokeDasharray={`${len} ${circ - len}`} strokeDashoffset={-off} transform="rotate(-90 26 26)" opacity={opacity} />)
               off += len
             }
-            push(systemGb, '#33415888', 'system')
-            volumes.forEach(v => push(v.sizeGb, AMBER, v.name))
+            push(systemGb, '#33415888', 'system', 0.85)
+            volumes.forEach(v => push(v.sizeGb, AMBER, v.name, 0.85 * dimFor(props.volumeConsumers?.[v.name] ?? null), `disk-slice-${v.name}`))
             return slices
           })()}
           <line x1={26} y1={26} x2={26} y2={4} stroke="#7CFFE9" strokeWidth={1} opacity={0.7}

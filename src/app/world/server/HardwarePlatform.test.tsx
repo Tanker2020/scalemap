@@ -73,6 +73,20 @@ describe('HardwarePlatform', () => {
     expect(screen.getByText(/pgdata/)).toBeInTheDocument()
   })
 
+  it('disk-slice cross-highlight (D8): hovered volume consumer keeps slice bright, others dim it', () => {
+    const s = server()
+    s.stacks = [{ name: 'app', networks: [], volumes: [{ name: 'pgdata', sizeGb: 12 }] }]
+    const { rerender } = render(<HardwarePlatform server={s} metrics={metrics()} residentBlueprints={residents}
+      attribution={[]} hoveredBlueprintId="b1" onHoverBlueprint={() => {}} onSelect={() => {}}
+      volumeConsumers={{ pgdata: 'b1' }} />)
+    expect(screen.getByTestId('disk-slice-pgdata')).toHaveAttribute('opacity', '0.85')
+
+    rerender(<HardwarePlatform server={s} metrics={metrics()} residentBlueprints={residents}
+      attribution={[]} hoveredBlueprintId="b2" onHoverBlueprint={() => {}} onSelect={() => {}}
+      volumeConsumers={{ pgdata: 'b1' }} />)
+    expect(screen.getByTestId('disk-slice-pgdata')).toHaveAttribute('opacity', `${0.85 * 0.45}`)
+  })
+
   it('oom warning appears at 90% of memLimit', () => {
     const s = server()
     render(<HardwarePlatform server={s} metrics={metrics()} residentBlueprints={residents}
