@@ -106,3 +106,9 @@ input, textarea, select {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* Generic opacity pulse util — e.g. RAM meniscus shimmer (HardwarePlatform). */
+@keyframes shimmer {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 0.85; }
+}

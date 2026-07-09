@@ -102,11 +102,14 @@ export function HardwarePlatform(props: HardwarePlatformProps): ReactElement {
             acc += pct; return el
           }) })()}
           <div data-testid="ram-stratum" style={{ position: 'absolute', bottom: `${ramTotal ? (ramUsed - osCache) / ramTotal * 100 : 0}%`, width: '100%', height: `${ramTotal ? osCache / ramTotal * 100 : 0}%`, background: 'linear-gradient(0deg,#F5A62388,#F5A62333)' }} />
+          {!reduced && metrics && (
+            <div style={{ position: 'absolute', bottom: `${ramTotal ? (ramUsed / ramTotal) * 100 : 0}%`, width: '100%', height: 1.5, background: 'linear-gradient(90deg,transparent,#FFE9C2,transparent)', opacity: 0.8, animation: 'shimmer 1.8s ease-in-out infinite' }} />
+          )}
         </div>
         <div style={{ flex: 1, lineHeight: 1.7 }}>
           <div style={{ color: '#E2E8F0' }}>ram {(ramUsed / 1024).toFixed(1)}/{(ramTotal / 1024).toFixed(0)}G {atRest && <span style={{ color: 'var(--color-text-muted)' }}>(at rest)</span>}</div>
           {strata.map(s => {
-            const oom = props.memLimits?.[s.instanceId] && props.instanceRamMb?.[s.instanceId] && props.instanceRamMb[s.instanceId] >= props.memLimits[s.instanceId] * 0.9
+            const oom = !!(props.memLimits?.[s.instanceId] && props.instanceRamMb?.[s.instanceId] && props.instanceRamMb[s.instanceId] >= props.memLimits[s.instanceId] * 0.9)
             return <div key={s.instanceId} style={{ opacity: dimFor(s.blueprintId) }}><span style={{ color: s.color }}>▮</span> {s.name} {Math.round(s.ramMb)}M {oom && <span style={{ color: 'var(--color-danger)' }}>⚠oom</span>}</div>
           })}
           <div><span style={{ color: AMBER }}>▮</span> os + cache {Math.round(osCache)}M</div>

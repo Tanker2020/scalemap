@@ -81,7 +81,10 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
     if (rt?.type === 'container' && rt.memLimitMb != null) memLimits[chip.instanceId] = rt.memLimitMb
   }
   const instanceRamMb: Record<InstanceId, number> = {}
-  for (const [id, m] of Object.entries(display.instances)) instanceRamMb[id] = m.ramMb
+  for (const chip of layout.chips) {
+    const m = display.instances[chip.instanceId]
+    if (m) instanceRamMb[chip.instanceId] = m.ramMb
+  }
 
   return (
     <div ref={containerRef} style={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', background: 'radial-gradient(ellipse at 40% 35%, #0C1018 0%, #07090D 70%)' }}>

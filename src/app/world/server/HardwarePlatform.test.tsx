@@ -51,6 +51,19 @@ describe('HardwarePlatform', () => {
     const s = server()
     render(<HardwarePlatform server={s} metrics={null} residentBlueprints={residents} attribution={[]} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
     expect(screen.getByText(/at rest/i)).toBeInTheDocument()
+    // strata should reflect each resident's ramBaseMb (256, 128), not 0
+    expect(screen.getByText(/256/)).toBeInTheDocument()
+    expect(screen.getByText(/128/)).toBeInTheDocument()
+  })
+
+  it('oom falsy-zero guard: memLimits/instanceRamMb of 0 renders no stray "0" or oom marker', () => {
+    const s = server()
+    render(<HardwarePlatform server={s} metrics={metrics()} residentBlueprints={residents}
+      attribution={[]} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}}
+      memLimits={{ i2: 0 }} instanceRamMb={{ i2: 0 }} />)
+    expect(screen.queryByText('⚠oom')).not.toBeInTheDocument()
+    const apiRow = screen.getByText(/api/)
+    expect(apiRow.textContent).not.toMatch(/\b0\b/)
   })
 
   it('disk slices proportional to volume sizes', () => {
