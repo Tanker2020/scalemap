@@ -1,19 +1,22 @@
 // Read-only render of the focused AZ from the compiled world. Instance-level paths are
 // aggregated to server-pair edges; any blocked path turns the whole edge red/dashed.
 import { useMemo } from 'react'
-import { ReactFlow, Background, type Node, type Edge } from '@xyflow/react'
+import { ReactFlow, ReactFlowProvider, Background, type Node, type Edge } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
+import { useSimulationStore } from '../store/simulation.store'
 import { useCompiledWorld } from './useCompiledWorld'
 import { layoutAzGrid } from '../../lib/world/layoutAz'
 import { WorldServerNode, WorldManagedNode } from './WorldServerNode'
+import { AzSimOverlay } from './AzSimOverlay'
 
 const nodeTypes = { worldServer: WorldServerNode, worldManaged: WorldManagedNode }
 
 export function AzCanvas() {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
+  const latestBatch = useSimulationStore(s => s.latestBatch)
   const { regionId, azId, goServer } = useNavStore()
 
   const { nodes, edges } = useMemo(() => {
@@ -72,6 +75,13 @@ export function AzCanvas() {
               return { color: bp?.color ?? '#888', name: bp?.name ?? '?', role: i.role, runtime: pl?.runtime.type ?? 'process' }
             }),
           internalBlocked: internalBlockedByServer.get(server.id) ?? 0,
+          health: latestBatch?.servers[server.id]?.health,
+          cpuPct: latestBatch?.servers[server.id]
+            ? (latestBatch.servers[server.id].coreUtilization.reduce((a, b) => a + b, 0) /
+               Math.max(1, latestBatch.servers[server.id].coreUtilization.length)) * 100
+            : undefined,
+          ramUsedMb: latestBatch?.servers[server.id]?.ramUsedMb,
+          ramTotalMb: latestBatch?.servers[server.id]?.ramTotalMb,
         },
       })),
       ...managed.map(m => ({
@@ -92,26 +102,33 @@ export function AzCanvas() {
     }))
 
     return { nodes, edges }
-  }, [doc, compiled, azId, regionId])
+  }, [doc, compiled, azId, regionId, latestBatch])
 
   if (!azId || !regionId) return null
 
   return (
-    <div style={{ width: '100%', height: '100%' }}>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        fitView
-        nodesDraggable={false}
-        nodesConnectable={false}
-        onNodeClick={(_, node) => {
-          if (node.type === 'worldServer') goServer(regionId, azId, node.id)
-        }}
-        proOptions={{ hideAttribution: true }}
-      >
-        <Background gap={24} color="var(--color-canvas-dots)" />
-      </ReactFlow>
-    </div>
+    // ReactFlowProvider wraps both <ReactFlow> and its sibling <AzSimOverlay>: React Flow's own
+    // internal provider (established inside <ReactFlow>) only covers elements passed as ITS
+    // children (e.g. <Background>), not later JSX siblings — useReactFlow()/useViewport() in a
+    // sibling throw without an ambient provider. Wrapping here supplies one context for both.
+    <ReactFlowProvider>
+      <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          fitView
+          nodesDraggable={false}
+          nodesConnectable={false}
+          onNodeClick={(_, node) => {
+            if (node.type === 'worldServer') goServer(regionId, azId, node.id)
+          }}
+          proOptions={{ hideAttribution: true }}
+        >
+          <Background gap={24} color="var(--color-canvas-dots)" />
+        </ReactFlow>
+        <AzSimOverlay azId={azId} />
+      </div>
+    </ReactFlowProvider>
   )
 }

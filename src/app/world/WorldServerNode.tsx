@@ -1,18 +1,29 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import type { Server } from '../../lib/world/types'
+import type { HealthState } from '../../lib/worldEngine/types'
 
 export interface WorldServerNodeData {
   server: Server
   chips: { color: string; name: string; role: string; runtime: string }[]
   internalBlocked: number
+  health?: HealthState
+  cpuPct?: number
+  ramUsedMb?: number
+  ramTotalMb?: number
   [key: string]: unknown
 }
 
+const HEALTH_BORDER: Record<HealthState, string> = {
+  healthy: '1px solid var(--color-node-border)',
+  degraded: '1px solid var(--color-warning)',
+  down: '1px solid var(--color-danger)',
+}
+
 export function WorldServerNode({ data }: NodeProps) {
-  const { server, chips, internalBlocked } = data as WorldServerNodeData
+  const { server, chips, internalBlocked, health, cpuPct, ramUsedMb, ramTotalMb } = data as WorldServerNodeData
   return (
     <div style={{
-      width: 220, background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
+      width: 220, background: 'var(--color-node-base)', border: HEALTH_BORDER[health ?? 'healthy'],
       borderRadius: 8, padding: 10, font: '11px var(--font-mono)', color: 'var(--color-text-primary)',
     }}>
       <Handle type="target" position={Position.Left} />
@@ -23,6 +34,11 @@ export function WorldServerNode({ data }: NodeProps) {
       <div style={{ color: 'var(--color-text-muted)', fontSize: 10, marginBottom: 6 }}>
         {server.specs.vcpu} vCPU · {Math.round(server.specs.ramMb / 1024)} GB · {server.firewall.length} fw rules
       </div>
+      {cpuPct !== undefined && (
+        <div style={{ color: 'var(--color-text-muted)', fontSize: 10, marginBottom: 6 }}>
+          CPU {cpuPct.toFixed(0)}% · RAM {Math.round(ramUsedMb ?? 0)}/{Math.round(ramTotalMb ?? 0)} MB
+        </div>
+      )}
       {chips.map((c, i) => (
         <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
           <span style={{ width: 7, height: 7, borderRadius: 2, background: c.color, flexShrink: 0 }} />

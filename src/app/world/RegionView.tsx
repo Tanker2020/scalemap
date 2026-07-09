@@ -16,15 +16,33 @@ const HEALTH_COLOR = { healthy: 'var(--color-success)', degraded: 'var(--color-w
 export function RegionView() {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
-  const latestBatch = useSimulationStore(s => s.latestBatch)
   const { regionId, goAz } = useNavStore()
+  const latestBatch = useSimulationStore(s => s.latestBatch)
+  const running = useSimulationStore(s => s.running)
+  const isDown = useSimulationStore(s => s.healthOverrides[regionId ?? ''] ?? false)
+  const setOutage = useSimulationStore(s => s.setOutage)
   if (!regionId || !doc.regions[regionId]) return null
   const azs = Object.values(doc.azs).filter(a => a.regionId === regionId)
 
   return (
     <div style={{ padding: 24 }}>
-      <div style={{ font: '600 14px var(--font-mono)', color: 'var(--color-text-primary)', marginBottom: 16 }}>
-        {doc.regions[regionId].catalogId} — {azs.length} availability zone{azs.length === 1 ? '' : 's'}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+        <div style={{ font: '600 14px var(--font-mono)', color: 'var(--color-text-primary)' }}>
+          {doc.regions[regionId].catalogId} — {azs.length} availability zone{azs.length === 1 ? '' : 's'}
+        </div>
+        {running && (
+          <button
+            style={{
+              background: 'var(--color-node-base)',
+              border: `1px solid ${isDown ? 'var(--color-danger)' : 'var(--color-node-border)'}`,
+              borderRadius: 4, padding: '3px 8px', cursor: 'pointer',
+              font: '11px var(--font-mono)', color: isDown ? 'var(--color-danger)' : 'var(--color-text-secondary)',
+            }}
+            onClick={() => setOutage('region', regionId, !isDown)}
+          >
+            {isDown ? '✓ Clear region outage' : '⚡ Simulate region outage'}
+          </button>
+        )}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
         {azs.map(az => {
