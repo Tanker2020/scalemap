@@ -2,6 +2,7 @@
 import type { CSSProperties } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
+import { useSimulationStore } from '../store/simulation.store'
 import { useCompiledWorld } from './useCompiledWorld'
 import { WORLD_REGIONS } from '../../lib/regionConfig'
 
@@ -11,10 +12,13 @@ const card: CSSProperties = {
   font: '12px var(--font-mono)', color: 'var(--color-text-primary)',
 }
 
+const HEALTH_COLOR = { healthy: 'var(--color-success)', degraded: 'var(--color-warning)', down: 'var(--color-danger)' } as const
+
 export function GlobeView() {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const goRegion = useNavStore(s => s.goRegion)
+  const latestBatch = useSimulationStore(s => s.latestBatch)
   const regions = Object.values(doc.regions)
 
   return (
@@ -39,6 +43,13 @@ export function GlobeView() {
               <div style={{ color: 'var(--color-text-muted)', marginTop: 8 }}>
                 {azs.length} AZ · {serverCount} server{serverCount === 1 ? '' : 's'} · {r.role}
               </div>
+              {latestBatch?.regions[r.id] && (
+                <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+                  <span style={{ color: HEALTH_COLOR[latestBatch.regions[r.id].health] }}>● {latestBatch.regions[r.id].health}</span>
+                  <span style={{ color: 'var(--color-text-secondary)' }}>{latestBatch.regions[r.id].rps.toFixed(0)} rps</span>
+                  <span style={{ color: 'var(--color-text-secondary)' }}>{(latestBatch.regions[r.id].errorRate * 100).toFixed(1)}% err</span>
+                </div>
+              )}
             </button>
           )
         })}

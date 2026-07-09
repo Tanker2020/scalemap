@@ -2,6 +2,7 @@
 import type { CSSProperties } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
+import { useSimulationStore } from '../store/simulation.store'
 import { useCompiledWorld } from './useCompiledWorld'
 
 const card: CSSProperties = {
@@ -10,9 +11,12 @@ const card: CSSProperties = {
   font: '12px var(--font-mono)', color: 'var(--color-text-primary)',
 }
 
+const HEALTH_COLOR = { healthy: 'var(--color-success)', degraded: 'var(--color-warning)', down: 'var(--color-danger)' } as const
+
 export function RegionView() {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
+  const latestBatch = useSimulationStore(s => s.latestBatch)
   const { regionId, goAz } = useNavStore()
   if (!regionId || !doc.regions[regionId]) return null
   const azs = Object.values(doc.azs).filter(a => a.regionId === regionId)
@@ -32,6 +36,13 @@ export function RegionView() {
               <div style={{ color: 'var(--color-text-muted)', marginTop: 8 }}>
                 {servers.length} server{servers.length === 1 ? '' : 's'} · {instanceCount} instance{instanceCount === 1 ? '' : 's'}
               </div>
+              {latestBatch?.azs[az.id] && (
+                <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+                  <span style={{ color: HEALTH_COLOR[latestBatch.azs[az.id].health] }}>● {latestBatch.azs[az.id].health}</span>
+                  <span style={{ color: 'var(--color-text-secondary)' }}>{latestBatch.azs[az.id].rps.toFixed(0)} rps</span>
+                  <span style={{ color: 'var(--color-text-secondary)' }}>{(latestBatch.azs[az.id].errorRate * 100).toFixed(1)}% err</span>
+                </div>
+              )}
             </button>
           )
         })}

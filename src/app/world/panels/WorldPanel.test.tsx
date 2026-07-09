@@ -11,14 +11,14 @@ describe('WorldPanel findings tab', () => {
     const bpId = useWorldStore.getState().addBlueprint('api')
     useWorldStore.getState().updateBlueprint(bpId, { stateful: true, volumeName: null })
 
-    render(<WorldPanel />)
+    render(<WorldPanel running={false} />)
     fireEvent.click(screen.getByText(/Findings \(\d+\)/))
 
     expect(screen.getByText(/is stateful but has no volume configured/)).toBeInTheDocument()
   })
 
   it('shows the empty state when there are no findings', () => {
-    render(<WorldPanel />)
+    render(<WorldPanel running={false} />)
     fireEvent.click(screen.getByText(/Findings \(0\)/))
     expect(screen.getByText('No findings — the compiled world is clean.')).toBeInTheDocument()
   })

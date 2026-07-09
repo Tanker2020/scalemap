@@ -5,7 +5,9 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { useNavStore } from '../store/nav.store'
 import { useFileStore } from '../store/file.store'
 import { useWorldStore } from '../store/world.store'
+import { useSimulationStore } from '../store/simulation.store'
 import { Breadcrumb } from './Breadcrumb'
+import { SimControls } from './SimControls'
 import { GlobeView } from './GlobeView'
 import { RegionView } from './RegionView'
 import { ServerView } from './ServerView'
@@ -24,6 +26,7 @@ export function WorldShell() {
   const reduced = useReducedMotion()
   const dirty = useFileStore(s => s.dirty)
   const [fileError, setFileError] = useState<string | null>(null)
+  const running = useSimulationStore(s => s.running)
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -68,6 +71,7 @@ export function WorldShell() {
         background: 'var(--color-toolbar)',
       }}>
         <Breadcrumb />
+        <SimControls />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ font: '10px var(--font-mono)', color: 'var(--color-text-muted)' }}>esc = up one level</span>
           {dirty && <span style={{ color: 'var(--color-warning)', font: '10px var(--font-mono)' }}>● unsaved</span>}
@@ -97,7 +101,7 @@ export function WorldShell() {
             </motion.div>
           </AnimatePresence>
         </main>
-        <WorldPanel />
+        <WorldPanel running={running} />
       </div>
     </div>
   )
