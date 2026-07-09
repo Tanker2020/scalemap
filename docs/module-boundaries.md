@@ -300,11 +300,12 @@ work in §K — the view-side files below went undocumented until Task 4; backfi
 and imports **nothing** under `src/app/world/panels/` (grep-verified: no `panels/` import anywhere
 in `server/*.ts(x)`, Task 9). The engine facade (`worldEngine/index.ts`) is untouched by every
 Phase 3 task except Task 2's server-particle branch in `buildPayload` and the additive test-only
-`__test_render` hook (§K) — no other file in `server/` imports `worldEngine/index.ts` directly,
-only `useSimulationStore`/`useServerDisplayMetrics.ts` do, per the existing seam rule. `boardLayout.ts`
+`__test_render` hook (§K) — no other file in `server/` imports `worldEngine/index.ts` directly;
+only `useSimulationStore` imports the executable facade, while `useServerDisplayMetrics.ts` imports
+types only from `worldEngine/types`, per the existing seam rule. `boardLayout.ts`
 is a pure, side-effect-free hub — no React, no store reads — imported by every other file in this
 directory (`ServerBoard.tsx`/`TraceLayer.tsx`/`HardwarePlatform.tsx`/`ServerView.tsx`/
-`PacketLayer.tsx`/`InspectorRail.tsx`/`FirewallGate.tsx`/`NicBlock.tsx`/`StackPlate.tsx`); its
+`PacketLayer.tsx`/`ServiceChip.tsx`/`FirewallGate.tsx`/`NicBlock.tsx`/`StackPlate.tsx`); its
 exported shapes (`BoardLayout`, `CoreAttribution`, `StaticTrace`) are high fan-in and must be
 extended additively, never reshaped (see Blast radius below). The board stage is a fixed
 1000×560 logical coordinate space (`STAGE_W`/`STAGE_H` in `boardLayout.ts`) that `ServerBoard.tsx`
@@ -327,7 +328,7 @@ module fails strict `tsc`). `PacketLayer.tsx` follows the same rule for its `Vis
 
 **Blast radius:** `boardLayout.ts`'s `BoardLayout`/`CoreAttribution` types fan out to
 `ServerBoard.tsx`/`TraceLayer.tsx`/`HardwarePlatform.tsx`/`ServerView.tsx`/`PacketLayer.tsx`/
-`InspectorRail.tsx` (Task 6) — extend additively. `useServerDisplayMetrics.ts` has two consumers
+`ServiceChip.tsx` (Task 6) — extend additively. `useServerDisplayMetrics.ts` has two consumers
 now (`ServerBoard.tsx`, and `InspectorRail.tsx` as of Task 6); **Task 5 clarified, rather than
 followed, this doc's prior forward-looking note** — the packet layer needs raw per-frame
 `attachRenderer` payloads and the raw `events` array, neither of which `useServerDisplayMetrics`
