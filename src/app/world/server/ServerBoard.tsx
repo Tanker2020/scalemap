@@ -1,13 +1,15 @@
 // src/app/world/server/ServerBoard.tsx
 // Fixed-composition stage (D1): scale-to-fit a 1000x560 logical space; PCB grid bg; layer stack
-// TraceLayer (SVG z0) → DOM blocks (z1) → PacketLayer slot (z2, added by T5).
+// TraceLayer (SVG z0) → DOM blocks (z1) → PacketLayer (canvas z2, T5: engine-driven particles).
 // T4 wires live metrics (useServerDisplayMetrics, D5) into ServiceChip/NicBlock and mounts the
-// unified HardwarePlatform (D4) at layout.hardware.box.
+// unified HardwarePlatform (D4) at layout.hardware.box. T5 also feeds gateStats.blockedPerSecond
+// into FirewallGate's "✕ N/s blocked" line from the store's events + latestBatch.simMs.
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { attributeCores, type BoardLayout, type CoreAttribution, type StaticTrace } from './boardLayout'
 import type { BlueprintId, InstanceId, ServerId } from '../../../lib/world/types'
 import type { BoardSelection } from './selection'
 import { useWorldStore } from '../../store/world.store'
+import { useSimulationStore } from '../../store/simulation.store'
 import { useServerDisplayMetrics } from './useServerDisplayMetrics'
 import { TraceLayer } from './TraceLayer'
 import { NicBlock } from './NicBlock'
@@ -15,6 +17,8 @@ import { FirewallGate } from './FirewallGate'
 import { ServiceChip } from './ServiceChip'
 import { StackPlate } from './StackPlate'
 import { HardwarePlatform } from './HardwarePlatform'
+import { PacketLayer } from './PacketLayer'
+import { blockedPerSecond } from './gateStats'
 
 const PCB_GRID = '#101620'
 
@@ -35,6 +39,9 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
   const containerRef = useRef<HTMLDivElement>(null)
   const [scale, setScale] = useState(1)
   const display = useServerDisplayMetrics(serverId)
+  const events = useSimulationStore(s => s.events)
+  const latestBatch = useSimulationStore(s => s.latestBatch)
+  const gateBlockedPerSecond = blockedPerSecond(events, serverId, latestBatch?.simMs ?? 0)
 
   useEffect(() => {
     const el = containerRef.current
@@ -106,7 +113,7 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
           utilFraction={display.server && server?.specs.nicMbps ? (display.server.nicInMbps + display.server.nicOutMbps) / server.specs.nicMbps : undefined}
           onSelect={() => props.onSelect({ kind: 'nic' })} onHover={() => {}}
         />
-        <FirewallGate box={layout.gate.box} ruleCount={server?.firewall.length ?? 0} onSelect={() => props.onSelect({ kind: 'firewall' })} />
+        <FirewallGate box={layout.gate.box} ruleCount={server?.firewall.length ?? 0} blockedPerSecond={gateBlockedPerSecond} onSelect={() => props.onSelect({ kind: 'firewall' })} />
         {layout.chips.map(chip => {
           const bp = doc.blueprints[chip.blueprintId]
           const m = display.instances[chip.instanceId]
@@ -137,7 +144,8 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
             />
           </div>
         )}
-        {/* z2: PacketLayer mounts here in T5 */}
+        {/* z2: engine-driven packets */}
+        <PacketLayer serverId={serverId} layout={layout} />
       </div>
     </div>
   )
