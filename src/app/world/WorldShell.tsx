@@ -30,6 +30,16 @@ export function WorldShell() {
   const running = useSimulationStore(s => s.running)
 
   useEffect(() => {
+    if (!import.meta.env.DEV) return
+    // Dev/test-only: lets a scripted Playwright smoke seed a real, cross-region-eligible
+    // ClientPopulation via the *already-built* world.store action (no population-authoring UI
+    // exists in Phase 2 by design) and call setOutage directly as a fallback if a UI control is
+    // awkward to click reliably. Never present in a production build (import.meta.env.DEV is
+    // false under `vite build`/`tauri build`).
+    ;(window as unknown as { __scalemapDebug: unknown }).__scalemapDebug = { useWorldStore, useSimulationStore }
+  }, [])
+
+  useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return
       const t = e.target as HTMLElement

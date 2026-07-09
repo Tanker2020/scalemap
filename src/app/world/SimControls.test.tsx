@@ -41,4 +41,10 @@ describe('SimControls', () => {
     render(<SimControls />)
     expect(screen.getByLabelText('time-scale')).toBeDisabled()
   })
+
+  it('shows the degraded chip when the store flag is set', () => {
+    useSimulationStore.setState({ running: true, degraded: true })
+    render(<SimControls />)
+    expect(screen.getByText('degraded tick')).toBeInTheDocument()
+  })
 })

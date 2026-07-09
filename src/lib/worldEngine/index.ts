@@ -9,6 +9,7 @@ import type {
 } from './types'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
+  ServiceInstance,
 } from '../world/types'
 import { createRng, type Rng } from './rng'
 import { createClock, type ClockHandle } from './engineClock'
@@ -47,6 +48,22 @@ const DEGRADED_STEP_MS = 200
 const RENDER_PROGRESS_PER_MS = 1 / 1200      // particle sweeps a pair in ~1.2s wall-time
 
 const SEVERITY: Record<HealthState, number> = { healthy: 0, degraded: 1, down: 2 }
+
+// Group compiled instances by server once (O(instances)) instead of re-filtering the full
+// instance set per server inside a loop (O(servers x instances), which dominated per-step cost
+// at world scale — ~30ms/step alone at ~2,000 instances / 216 servers, an unindexed-lookup
+// regression found and fixed via bench/enginePerf.bench.test.ts, Task 18). Order-preserving:
+// a single pass over compiled.instances yields the same per-server order
+// Object.values(compiled.instances).filter(i => i.serverId === server.id) would have.
+function groupInstancesByServer(compiled: CompiledWorld): Map<ServerId, ServiceInstance[]> {
+  const byServer = new Map<ServerId, ServiceInstance[]>()
+  for (const inst of Object.values(compiled.instances)) {
+    const list = byServer.get(inst.serverId)
+    if (list) list.push(inst)
+    else byServer.set(inst.serverId, [inst])
+  }
+  return byServer
+}
 
 interface Attached { scope: RenderScope; onFrame: (p: FramePayload) => void }
 
@@ -240,8 +257,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const vpsPublish: Record<ServerId, VpsPublish> = {}
     const nicByServer: Record<ServerId, NicState> = {}
 
+    const instancesByServer = groupInstancesByServer(compiled)
     for (const server of Object.values(doc.servers)) {
-      const resident = Object.values(compiled.instances).filter(i => i.serverId === server.id)
+      const resident = instancesByServer.get(server.id) ?? []
       const loads: InstanceLoad[] = resident.map(i => {
         const pf = s.prevFlows[i.id]
         const bp = doc.blueprints[i.blueprintId]

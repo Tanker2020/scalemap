@@ -1,7 +1,6 @@
 // Simulate/Stop + timeScale controls for WorldShell's header. Never touches the engine facade
 // directly — contracts: "views... read this store; only control actions call the facade."
-// (T18 later adds a `degraded` amber chip here once simulation.store gains that field — not
-// this task's job; see Task 18.)
+// (Task 18 adds a `degraded` amber chip, shown when the facade halved its step rate.)
 import type { CSSProperties } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useSimulationStore } from '../store/simulation.store'
@@ -18,10 +17,15 @@ const selectStyle: CSSProperties = {
   background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
   borderRadius: 4, padding: '3px 6px', font: '11px var(--font-mono)', color: 'var(--color-text-primary)',
 }
+const degradedChip: CSSProperties = {
+  padding: '2px 6px', borderRadius: 3, font: '10px var(--font-mono)',
+  color: 'var(--color-warning)', border: '1px solid var(--color-warning)',
+}
 
 export function SimControls() {
   const running = useSimulationStore(s => s.running)
   const timeScale = useSimulationStore(s => s.timeScale)
+  const degraded = useSimulationStore(s => s.degraded)
   const start = useSimulationStore(s => s.start)
   const stop = useSimulationStore(s => s.stop)
   const setTimeScale = useSimulationStore(s => s.setTimeScale)
@@ -56,6 +60,11 @@ export function SimControls() {
         <option value={2}>2x</option>
         <option value={4}>4x</option>
       </select>
+      {degraded && (
+        <span style={degradedChip} title="Sustained step-cost overrun — the engine halved its tick rate to keep up (see Events)">
+          degraded tick
+        </span>
+      )}
     </div>
   )
 }

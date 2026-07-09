@@ -9,7 +9,7 @@ import type { InstanceFlow } from './flows'
 import type { HostStepResult } from './hostScheduler'
 import type { NicState } from './networkRuntime'
 import type {
-  WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId,
+  WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, ServiceInstance,
 } from '../world/types'
 
 const EMA_ALPHA = 0.3
@@ -121,6 +121,20 @@ export function buildBatch(
   const azs: Record<AzId, AzMetrics> = {}
   const regions: Record<RegionId, RegionMetrics> = {}
 
+  // Group instances by server/az once (O(instances)) instead of re-filtering the full instance
+  // set per server/az inside their loops below (O(servers x instances) / O(azs x instances)) —
+  // the same unindexed-lookup regression found and fixed in worldEngine/index.ts's per-step host
+  // loop (Task 18 bench). buildBatch runs at 1 Hz, not every step, but at ~2,000-instance scale
+  // it was still the largest single contributor to the bench's per-step mean. Order-preserving.
+  const instancesByServer = new Map<ServerId, ServiceInstance[]>()
+  const instancesByAz = new Map<AzId, ServiceInstance[]>()
+  for (const inst of Object.values(compiled.instances)) {
+    const bySrv = instancesByServer.get(inst.serverId)
+    if (bySrv) bySrv.push(inst); else instancesByServer.set(inst.serverId, [inst])
+    const byAz = instancesByAz.get(inst.azId)
+    if (byAz) byAz.push(inst); else instancesByAz.set(inst.azId, [inst])
+  }
+
   // ── Instances ──
   for (const inst of Object.values(compiled.instances)) {
     const bp = doc.blueprints[inst.blueprintId]
@@ -151,7 +165,7 @@ export function buildBatch(
 
   // ── Servers ──
   for (const server of Object.values(doc.servers)) {
-    const resident = Object.values(compiled.instances).filter(i => i.serverId === server.id)
+    const resident = instancesByServer.get(server.id) ?? []
     const host = state.lastHost[server.id]
     const vps = state.lastVps[server.id]
     const sw = state.serverWindow.get(server.id) ?? { inBytes: 0, outBytes: 0 }
@@ -181,7 +195,7 @@ export function buildBatch(
 
   // ── AZs ──
   for (const az of Object.values(doc.azs)) {
-    const inAz = Object.values(compiled.instances).filter(i => i.azId === az.id)
+    const inAz = instancesByAz.get(az.id) ?? []
     const rps = inAz.reduce((s, i) => s + instances[i.id].rps, 0)
     const errWeighted = inAz.reduce((s, i) => s + instances[i.id].errorRate * instances[i.id].rps, 0)
     const errorRate = rps > 0 ? errWeighted / rps : 0
