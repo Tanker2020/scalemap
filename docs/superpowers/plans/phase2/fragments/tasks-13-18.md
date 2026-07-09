@@ -1719,6 +1719,7 @@ verified result, not a guess.
 - Delete: `src/app/StatusBar.tsx`, `src/app/StatusBar.module.css`
 - Delete: `src/app/hooks/useSaveDiagram.ts` (dead code — imports `useCanvasStore`/v1 `serialize`; unreferenced since Phase 1 Task 12 rewired `HomeScreen.tsx` to `fileOps.ts`, verified by grep below)
 - Delete: `src/app/store/canvas.store.ts`, `src/app/store/replay.store.ts`, `src/app/store/metricsHistory.store.ts`, `src/app/store/costHistory.store.ts`
+- Delete: `src/app/store/simulationLegacy.store.ts` — the verbatim build-green shim Task 12 introduced (a copy of the retired v1 `simulation.store`). Nothing outside the legacy trees deleted here imports it, and it itself imports `costModel`/`scalescript` (also deleted this task), so it MUST go with them or tsc breaks. (Step 1's grep surfaces it via those imports; it is on the list.)
 - Delete: `src/lib/costModel.ts`, `src/lib/costModel.test.ts`, `src/lib/costModel.compute.test.ts`
 - Delete: `src/lib/scalescript.ts`
 - Delete: `src/lib/terraform/` (entire directory — `exportTerraform.ts`)
@@ -1778,6 +1779,7 @@ git rm -r src/app/canvas src/app/simulation src/app/sidebar src/app/toolbar \
           src/app/hooks/useSaveDiagram.ts \
           src/app/store/canvas.store.ts src/app/store/replay.store.ts \
           src/app/store/metricsHistory.store.ts src/app/store/costHistory.store.ts \
+          src/app/store/simulationLegacy.store.ts \
           src/lib/costModel.ts src/lib/costModel.test.ts src/lib/costModel.compute.test.ts \
           src/lib/scalescript.ts src/lib/terraform src/lib/vault
 ```

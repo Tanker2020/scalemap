@@ -906,6 +906,927 @@ git commit -m "feat(engine): add replay ring buffer and per-scope request tracer
 
 ---
 
-<!-- CONTINUE -->
+### Task 12: Engine facade + simulation.store v2 + integration test
 
+**Files:**
+- Create: `src/lib/worldEngine/index.ts` (implements `WorldEngineApi` exactly, + a `createWorldEngine` factory and a module singleton `worldEngine`)
+- Create: `src/lib/worldEngine/index.test.ts` (headless integration test via the exported `__test_step` hook)
+- Rewrite: `src/app/store/simulation.store.ts` (v2 shape per the frozen contracts §"Store publication")
+- Create (build-green shim, SKELETON CONCERNS #5): `src/app/store/simulationLegacy.store.ts` (verbatim copy of the current legacy store), and re-point every current legacy importer of the old store to it.
+
+**Interfaces (facade — implements the frozen `WorldEngineApi` verbatim):**
+- Consumes EVERYTHING from Tasks 1–11 (this is the composition seam). Exact imports:
+  `createRng, Rng` (`./rng`); `createClock, ClockHandle` (`./engineClock`);
+  `populationDemandRps, baselineDemands` (`./demand`); `createRoutingState, resolveRegion,
+  runHealthChecks, azSplit, pickInstance, RoutingState` (`./routingRuntime`); `stepHost,
+  InstanceLoad, HostStepResult` (`./hostScheduler`); `createVpsState, stepVps, VpsState`
+  (`./vpsModel`); `createNicState, applyNicCap, NicState` (`./networkRuntime`); `getBreaker,
+  recordResult, transition, admitRequest, pathKey, Breaker, BreakerState` (`./breakers`);
+  `solveFlows, InstanceFlow, BYTES_PER_REQUEST_EACH_WAY` (`./flows`); `createFailoverState,
+  setOutage, computeHealth, promoteReplicas, drainFactor, beginDrain, clearDrain,
+  DEFAULT_HYSTERESIS, FailoverState` (`./failover`); `createMetricsState, accumulateStep,
+  buildBatch, MetricsState, RoutingSnapshot, VpsPublish` (`./metrics`); `createEventRing,
+  mkEvent, EventRing` (`./events`); `createReplayBuffer, createTracer, scopeKey, ReplayBuffer,
+  Tracer` (`./replay`); all contract types from `./types`; world types from `../world/types`.
+- Produces:
+
+```ts
+createWorldEngine(seed?: number): WorldEngineApi & { __test_step: (steps?: number) => void }
+worldEngine: WorldEngineApi & { __test_step: (steps?: number) => void }   // shared singleton the store drives
+```
+
+**Facade step order (documented in code, spec decision 1 + skeleton T12):** per fixed step —
+OOM-restart timers → demand → routing (health checks + TTL resolve; **baseline
+`baseline:<regionId>` populations bypass DNS and route straight to their own region**,
+controller ruling) → host scheduling (uses the PREVIOUS step's flows for load; documented
+one-step lag) → VPS (uses this step's host utilization; produces next step's vCPU factor) →
+flows → NIC caps → breaker record/transition → failover & health propagation (+ replica
+promotion, rate-limited `connection_refused`) → metrics accumulate. Once per simulated second:
+`buildBatch` → `onMetrics` + replay push + tracer sample; and the **perf-degradation watch**
+(controller ruling: T12 owns it) — rolling mean step cost > 4ms sustained 3s → `stepMs`
+100→200 + one `engine_degraded` info event + the store `degraded` flag. Render payloads are
+built per animation frame for every attached scope, cap-enforced engine-side (AZ particles
+sampled at `PARTICLE_RATIO = 10` rps/particle, ≤ `MAX_AZ_PARTICLES`; globe arcs ≤ 200; server
+≤ 50).
+
+**Store v2 (`simulation.store.ts`) — contracts §"Store publication" (with the sanctioned
+additive fields `scrubIndex`/`scrubBatch`/`degraded`, per SKELETON CONCERNS #3 and the
+controller ruling that T12 owns the degradation store flag):** holds `running`, `timeScale`,
+`latestBatch`, `events` (ring, 500), `healthOverrides`, `scrubIndex`, `scrubBatch`,
+`degraded`, and actions `start`/`stop`/`setTimeScale`/`setOutage`/`setScrubIndex`/
+`attachRenderer`/`getReplayFrames`/`getTracedRequests` that mirror `WorldEngineApi`. Views
+read the store; only these actions call the facade.
+
+**Build-green legacy shim (SKELETON CONCERNS #5, grep-verified against the repo):** rewriting
+`simulation.store.ts` breaks every file that imports its old exports (`NodeMetrics`,
+`useSimulationStore` old shape, `CostSummary`-bearing `SimState`, …). Grep shows those are the
+`src/app/{canvas,simulation,sidebar,toolbar,dock,analytics,reports}/**` trees + `StatusBar.tsx`
++ `src/lib/costModel.ts` + `src/lib/scalescript.ts` (all on Task 17's deletion list) plus the
+legacy `particleEngine/**` test files. Because `src/lib/costModel.ts` is imported for *values*
+(`computeCost`, `formatUsd`, …) by four legacy files also on the T17 list, deleting it early
+would break *their* compile — so the safe, provably-green move is a **verbatim-copy shim**:
+copy the old store to `simulationLegacy.store.ts` and mechanically re-point all current
+old-store importers at it; `costModel.ts` rides to T17 pointing at the copy. This keeps
+`npm run build` green from this commit through T16, and T17 deletes the copy with the rest.
+(See `.superpowers/sdd/contract-drift.md` — the handoff's "delete costModel.ts in T12"
+mechanism was reconciled to this shim after grep showed early deletion would red the build it
+was meant to keep green; the *purpose*, a green build through T16, is met.)
+
+- [ ] **Step 1: Write the failing integration test**
+
+```ts
+// src/lib/worldEngine/index.test.ts
+import { describe, it, expect } from 'vitest'
+import { createWorldEngine } from './index'
+import {
+  createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, createPopulation,
+} from '../world/factories'
+import { getPreset } from '../world/instanceCatalog'
+import { compileWorld, instanceId } from '../world/compileWorld'
+import type { WorldDoc } from '../world/types'
+import type { MetricsBatch, EngineEvent } from './types'
+
+// A public-facing entry blueprint: the facade routes client demand only to blueprints that
+// expose a 'public' port (documented entry rule).
+function publicBlueprint(name: string, colorIndex: number) {
+  const bp = createBlueprint(name, colorIndex)
+  bp.ports = [{ port: 8080, protocol: 'tcp', visibility: 'public' }]
+  return bp
+}
+
+// 2 regions / 3 AZ / 4 servers / 3 blueprints (web[entry] -> api -> db). One US population.
+function e2eFixture() {
+  const doc = createWorld()
+  doc.traffic.autoBaseline = false          // isolate the authored population for clean asserts
+  doc.routing.policy = 'geo'
+  doc.routing.dnsTtlSec = 5                  // short TTL so the failover lag is observable within 30s
+
+  const r1 = createRegion('us-east-1')
+  const r2 = createRegion('eu-west-1')
+  const az1a = createAz(r1.id, 'us-east-1a')
+  const az1b = createAz(r1.id, 'us-east-1b')
+  const az2a = createAz(r2.id, 'eu-west-1a')
+  Object.assign(doc.regions, { [r1.id]: r1, [r2.id]: r2 })
+  Object.assign(doc.azs, { [az1a.id]: az1a, [az1b.id]: az1b, [az2a.id]: az2a })
+
+  const s1 = createServer(az1a.id, getPreset('dedicated-8')!)
+  const s2 = createServer(az1b.id, getPreset('dedicated-8')!)
+  const s3 = createServer(az1a.id, getPreset('dedicated-8')!)
+  const s4 = createServer(az2a.id, getPreset('dedicated-8')!)
+  Object.assign(doc.servers, { [s1.id]: s1, [s2.id]: s2, [s3.id]: s3, [s4.id]: s4 })
+
+  const web = publicBlueprint('web', 0)
+  const api = createBlueprint('api', 1)
+  const db = createBlueprint('db', 2)
+  web.dependencies = [{ id: 'd-api', target: { kind: 'blueprint', blueprintId: api.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+  api.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 8080, protocol: 'db', packetTemplateId: null }]
+  Object.assign(doc.blueprints, { [web.id]: web, [api.id]: api, [db.id]: db })
+
+  // web + api + db present in both region-1 AZs and in region-2 (so failover has somewhere to land).
+  const place = (bpId: string, serverId: string) => {
+    const pl = createPlacement(bpId, serverId)
+    doc.placements[pl.id] = pl
+    return pl
+  }
+  const web1a = place(web.id, s1.id); place(api.id, s1.id); place(db.id, s3.id)
+  const web1b = place(web.id, s2.id); place(api.id, s2.id)
+  const web2 = place(web.id, s4.id); place(api.id, s4.id); place(db.id, s4.id)
+
+  const pop = createPopulation('nyc', 40.7, -74.0)   // near us-east-1
+  pop.peakRps = 120
+  doc.populations[pop.id] = pop
+
+  const compiled = compileWorld(doc)
+  return { doc, compiled, r1, r2, az1a, az1b, pop, web1aInst: instanceId(web1a.id, 0), web1bInst: instanceId(web1b.id, 0), web2Inst: instanceId(web2.id, 0) }
+}
+
+function drive(doc: WorldDoc, compiled: ReturnType<typeof compileWorld>) {
+  const engine = createWorldEngine(1)
+  const batches: MetricsBatch[] = []
+  const events: EngineEvent[] = []
+  engine.start(doc, compiled, {
+    onMetrics: b => batches.push(b),
+    onEvent: e => events.push(e),
+    onHealthChange: () => {},
+  })
+  const stepFor = (seconds: number) => engine.__test_step(seconds * 10)  // 100ms steps
+  return { engine, batches, events, stepFor, latest: () => batches[batches.length - 1] }
+}
+
+describe('world engine integration', () => {
+  it('flows client rps end-to-end through the compiled world', () => {
+    const f = e2eFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(3)
+    const b = sim.latest()
+    expect(b).toBeDefined()
+    expect(b.world.totalRps).toBeGreaterThan(0)
+    expect(b.regions[f.r1.id].rps).toBeGreaterThan(0)            // US population lands in us-east-1
+    expect(b.world.populationRoutes.find(r => r.populationId === f.pop.id)?.regionId).toBe(f.r1.id)
+    sim.engine.stop()
+  })
+
+  it('redistributes within 3s when an AZ is killed (region keeps serving)', () => {
+    const f = e2eFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(4)
+    const before = sim.latest().regions[f.r1.id].rps
+    expect(before).toBeGreaterThan(0)
+    sim.engine.setOutage('az', f.az1a.id, true)
+    sim.stepFor(3)
+    const after = sim.latest().regions[f.r1.id].rps
+    // az1b still carries region-1 traffic — region rps is not wiped out
+    expect(after).toBeGreaterThan(before * 0.3)
+    expect(sim.latest().azs[f.az1a.id].health).toBe('down')
+    sim.engine.stop()
+  })
+
+  it('honors DNS TTL: killing a region shifts populationRoutes only after dnsTtlSec', () => {
+    const f = e2eFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(3)                                    // warm the DNS cache -> us-east-1
+    const routeOf = () => sim.latest().world.populationRoutes.find(r => r.populationId === f.pop.id)?.regionId
+    expect(routeOf()).toBe(f.r1.id)
+    sim.engine.setOutage('region', f.r1.id, true)
+    sim.stepFor(2)                                    // still inside the 5s TTL -> cache lags
+    expect(routeOf()).toBe(f.r1.id)                   // the OBSERVABLE failover lag (spec D8)
+    sim.stepFor(6)                                    // past TTL -> re-resolves to eu-west-1
+    expect(routeOf()).toBe(f.r2.id)
+    expect(sim.events.some(e => e.kind === 'ttl_lag_expired')).toBe(true)
+    expect(sim.events.some(e => e.kind === 'failover_started')).toBe(true)
+    sim.engine.stop()
+  })
+
+  it('OOM-kills the largest consumer under a RAM-starved fixture and restarts it', () => {
+    const doc = createWorld()
+    doc.traffic.autoBaseline = false
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    // Tiny-RAM server + a RAM-hungry entry blueprint under heavy client load -> host OOM.
+    const server = createServer(az.id, getPreset('vps-small')!)
+    server.specs.ramMb = 256
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    doc.servers[server.id] = server
+    const web = publicBlueprint('web', 0)
+    // Base alone (220) fits in 256, but even a fraction of a connection pushes it over — a
+    // deterministic host-OOM regardless of the sampled service latency.
+    web.workload = { cpuMsPerRequest: 2, ramBaseMb: 220, ramPerConnMb: 150, diskIoPerRequest: 0 }
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id)
+    doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 400
+    doc.populations[pop.id] = pop
+
+    const compiled = compileWorld(doc)
+    const sim = drive(doc, compiled)
+    sim.stepFor(2)
+    expect(sim.events.some(e => e.kind === 'oom_kill')).toBe(true)
+    sim.stepFor(6)                                    // > 5s restart delay
+    expect(sim.events.some(e => e.kind === 'instance_restarted')).toBe(true)
+    sim.engine.stop()
+  })
+})
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/lib/worldEngine/index.test.ts`
+Expected: FAIL — `Cannot find module './index'`
+
+- [ ] **Step 3: Write `index.ts` (the facade)**
+
+```ts
+// src/lib/worldEngine/index.ts
+// The WorldEngineApi facade — the single composition point that ticks the whole compiled
+// world. It owns no simulation math itself; it sequences Tasks 1–11 in the documented step
+// order, publishes the metrics pyramid / events / replay at 1 Hz, feeds per-scope render
+// payloads to attached views, and enforces the render caps. Headless: never imports from
+// src/app/. Determinism: all randomness flows through the seeded rng built here.
+import type {
+  WorldEngineApi, EngineCallbacks, MetricsBatch, EngineEvent, EngineEventKind, HealthState,
+  RenderScope, FramePayload, DetachFn, ReplayFrame, TracedRequest, VisualParticle, VisualArc,
+} from './types'
+import type {
+  WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
+} from '../world/types'
+import { createRng, type Rng } from './rng'
+import { createClock, type ClockHandle } from './engineClock'
+import { populationDemandRps, baselineDemands } from './demand'
+import {
+  createRoutingState, resolveRegion, runHealthChecks, azSplit, pickInstance, type RoutingState,
+} from './routingRuntime'
+import { stepHost, type InstanceLoad, type HostStepResult } from './hostScheduler'
+import { createVpsState, stepVps, type VpsState } from './vpsModel'
+import { createNicState, applyNicCap, type NicState } from './networkRuntime'
+import {
+  getBreaker, recordResult, transition, admitRequest, pathKey, type Breaker,
+} from './breakers'
+import { solveFlows, type InstanceFlow, BYTES_PER_REQUEST_EACH_WAY } from './flows'
+import {
+  createFailoverState, setOutage as failoverSetOutage, computeHealth, promoteReplicas,
+  drainFactor, beginDrain, clearDrain, DEFAULT_HYSTERESIS, type FailoverState,
+} from './failover'
+import {
+  createMetricsState, accumulateStep, buildBatch, type MetricsState, type RoutingSnapshot,
+  type VpsPublish,
+} from './metrics'
+import { createEventRing, mkEvent, type EventRing } from './events'
+import { createReplayBuffer, createTracer, scopeKey, type ReplayBuffer, type Tracer } from './replay'
+
+const DEFAULT_STEP_MS = 100
+const OOM_RESTART_MS = 5000                 // spec decision 3: instance_restarted after 5s
+const PARTICLE_RATIO = 10                    // rps per sampled AZ particle (skeleton T12)
+const MAX_AZ_PARTICLES = 400                 // az render cap (contracts "≤ current particle cap")
+const MAX_GLOBE_ARCS = 200
+const REFUSED_EVENT_MIN_GAP_MS = 1000        // ≤1 connection_refused per pathKey per second
+const DEGRADE_THRESHOLD_MS = 4               // spec decision 9 / Global Constraints
+const DEGRADE_WINDOW_STEPS = 30              // 3s of 100ms steps
+const DEGRADED_STEP_MS = 200
+const RENDER_PROGRESS_PER_MS = 1 / 1200      // particle sweeps a pair in ~1.2s wall-time
+
+const SEVERITY: Record<HealthState, number> = { healthy: 0, degraded: 1, down: 2 }
+
+interface Attached { scope: RenderScope; onFrame: (p: FramePayload) => void }
+
+interface EngineState {
+  running: boolean
+  seed: number
+  rng: Rng
+  clock: ClockHandle
+  stepMs: number
+  timeScale: number
+  doc: WorldDoc
+  compiled: CompiledWorld
+  callbacks: EngineCallbacks
+  entryBlueprintIds: BlueprintId[]           // blueprints with a 'public' port = client entry points
+
+  routing: RoutingState
+  failover: FailoverState
+  vpsStates: Map<ServerId, VpsState | null>
+  vpsFactor: Map<ServerId, number>           // previous step's effective vCPU factor
+  breakers: Map<string, Breaker>
+  metrics: MetricsState
+  events: EventRing
+  replay: ReplayBuffer
+  tracer: Tracer
+
+  prevFlows: Record<InstanceId, InstanceFlow>
+  windowTotals: { crossAzBytes: number; crossRegionBytes: number; internetBytes: number }
+  lastRoutingSnapshot: RoutingSnapshot
+  popRegion: Map<PopulationId, RegionId>
+  pendingFailover: Map<PopulationId, RegionId>
+  checkFailedPrev: Map<string, boolean>
+  instanceHealth: Map<InstanceId, HealthState>
+  oomRestartAt: Map<InstanceId, number>
+  refusedRateLimit: Map<string, number>
+
+  idSeq: number
+  lastBatchMs: number
+  stepCosts: number[]
+  degraded: boolean
+  rafId: number | null
+  lastFrameMs: number | null
+  renderers: Map<number, Attached>
+  rendererSeq: number
+}
+
+export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_step: (steps?: number) => void } {
+  // Constructed lazily on start(); this placeholder keeps the closure typed before the first run.
+  let state: EngineState | null = null
+
+  const entryBlueprints = (doc: WorldDoc): BlueprintId[] =>
+    Object.values(doc.blueprints).filter(bp => bp.ports.some(p => p.visibility === 'public')).map(bp => bp.id)
+
+  const emitEvent = (e: EngineEvent): void => {
+    if (!state) return
+    state.events.push(e)
+    state.callbacks.onEvent(e)
+  }
+  const emit = (kind: EngineEventKind, severity: EngineEvent['severity'], message: string, affected: string[], simMs: number): void => {
+    if (!state) return
+    emitEvent(mkEvent(kind, severity, message, affected, simMs, state.idSeq++))
+  }
+
+  const healthOfScope = (id: string): HealthState => state!.failover.healthByScope.get(id) ?? 'healthy'
+
+  const healthOfInstance = (iid: InstanceId): HealthState => {
+    const s = state!
+    if (s.oomRestartAt.has(iid)) return 'down'
+    const inst = s.compiled.instances[iid]
+    if (inst) {
+      const worst = [inst.serverId, inst.azId, inst.regionId]
+        .map(healthOfScope)
+        .reduce((w, h) => (SEVERITY[h] > SEVERITY[w] ? h : w), 'healthy' as HealthState)
+      if (worst !== 'healthy') return worst
+    }
+    return s.instanceHealth.get(iid) ?? 'healthy'
+  }
+
+  // Distribute a region's inbound rps to entry-blueprint instances: healthy AZs (equal shares)
+  // → entry blueprints present in the AZ (equal shares) → round-robin instance.
+  const distributeToEntries = (regionId: RegionId, rps: number, simMs: number, into: Record<InstanceId, number>): void => {
+    const s = state!
+    if (rps <= 0) return
+    const azIds = azSplit(s.compiled.routing.regionAzSpread[regionId] ?? [], healthOfScope)
+    if (azIds.length === 0) return
+    const perAz = rps / azIds.length
+    for (const azId of azIds) {
+      const byBp = s.compiled.routing.azBlueprintTargets[azId] ?? {}
+      const entriesHere = s.entryBlueprintIds.filter(bpId => (byBp[bpId]?.length ?? 0) > 0)
+      if (entriesHere.length === 0) continue
+      const perBp = perAz / entriesHere.length
+      for (const bpId of entriesHere) {
+        const inst = pickInstance(s.routing, azId, bpId, byBp[bpId], healthOfInstance)
+        if (inst) into[inst] = (into[inst] ?? 0) + perBp
+      }
+    }
+    void simMs   // reserved for future drain-aware ingest; drain currently applied at the flow layer
+  }
+
+  const applyHealth = (scope: 'server' | 'az' | 'region', id: string, inputs: { errorRate: number; cpuPressure: number; checkFailed: boolean; manualDown: boolean }, simMs: number): void => {
+    const s = state!
+    const before = s.failover.healthByScope.get(id) ?? 'healthy'
+    const after = computeHealth(s.failover, id, inputs, simMs, DEFAULT_HYSTERESIS)
+    if (after !== before) {
+      s.callbacks.onHealthChange(scope, id, after)
+      if (scope === 'az') {
+        if (after === 'down') beginDrain(s.failover, id, simMs)
+        else if (before === 'down') clearDrain(s.failover, id)
+      }
+    }
+  }
+
+  const emitBreakerTransition = (from: Breaker['state'], to: Breaker['state'], affected: string[], simMs: number): void => {
+    if (from === to) return
+    if (to === 'open') emit('breaker_open', 'warning', 'circuit opened', affected, simMs)
+    else if (to === 'half-open') emit('breaker_half_open', 'info', 'circuit half-open', affected, simMs)
+    else if (to === 'closed') emit('breaker_closed', 'info', 'circuit closed', affected, simMs)
+  }
+
+  function runStep(simMs: number): void {
+    const s = state!
+    const { doc, compiled } = s
+    const stepMs = s.stepMs
+    const stepSec = stepMs / 1000
+
+    // ── 0. OOM restart timers ──
+    for (const [iid, restartAt] of [...s.oomRestartAt]) {
+      if (simMs >= restartAt) {
+        s.oomRestartAt.delete(iid)
+        s.instanceHealth.set(iid, 'healthy')
+        emit('instance_restarted', 'info', `instance ${iid} restarted`, [iid], simMs)
+      }
+    }
+
+    // ── 1. demand ──
+    const demandByPop: Record<PopulationId, number> = {}
+    for (const pop of Object.values(doc.populations)) demandByPop[pop.id] = populationDemandRps(pop, simMs, s.rng)
+    const baseline = baselineDemands(doc.traffic, doc.populations, doc.regions)
+
+    // ── 2. routing: health checks ──
+    const scopes = [
+      ...Object.values(doc.regions).map(r => ({ id: r.id, health: healthOfScope(r.id) })),
+      ...Object.values(doc.azs).map(a => ({ id: a.id, health: healthOfScope(a.id) })),
+    ]
+    const checkResults = runHealthChecks(s.routing, doc.routing, simMs, scopes)
+    const checkFailedById = new Map(checkResults.map(c => [c.id, c.checkFailed]))
+    for (const c of checkResults) {
+      if (c.checkFailed && !s.checkFailedPrev.get(c.id)) emit('health_check_failed', 'warning', `health check failed for ${c.id}`, [c.id], simMs)
+      s.checkFailedPrev.set(c.id, c.checkFailed)
+    }
+
+    // ── 3. routing: resolve + build entry demand ──
+    const populationRoutes: RoutingSnapshot['populationRoutes'] = []
+    const entryDemand: Record<InstanceId, number> = {}
+    for (const pop of Object.values(doc.populations)) {
+      const order = compiled.routing.populationRegionOrder[pop.id] ?? []
+      const prevRegion = s.popRegion.get(pop.id) ?? null
+      const region = resolveRegion(s.routing, pop.id, order, healthOfScope, doc.routing, simMs, s.rng)
+      if (!region) continue
+      if (prevRegion && prevRegion !== region) {
+        emit('ttl_lag_expired', 'info', `${pop.label} DNS re-resolved ${prevRegion} → ${region}`, [pop.id, prevRegion, region], simMs)
+        emit('failover_started', 'warning', `${pop.label} failing over ${prevRegion} → ${region}`, [pop.id, prevRegion, region], simMs)
+        s.pendingFailover.set(pop.id, region)
+      } else if (s.pendingFailover.get(pop.id) === region) {
+        emit('failover_completed', 'info', `${pop.label} now served by ${region}`, [pop.id, region], simMs)
+        s.pendingFailover.delete(pop.id)
+      }
+      s.popRegion.set(pop.id, region)
+      populationRoutes.push({ populationId: pop.id, regionId: region, rps: demandByPop[pop.id] })
+      distributeToEntries(region, demandByPop[pop.id], simMs, entryDemand)
+    }
+    // baseline synthetic populations bypass DNS — straight to their own region (controller ruling)
+    for (const [popId, rps] of Object.entries(baseline)) {
+      const regionId = popId.slice('baseline:'.length)
+      if (!doc.regions[regionId] || healthOfScope(regionId) === 'down') continue
+      populationRoutes.push({ populationId: popId, regionId, rps })
+      distributeToEntries(regionId, rps, simMs, entryDemand)
+    }
+    s.lastRoutingSnapshot = { populationRoutes }
+
+    // ── 4/5. host scheduling (prev-step load) + VPS ──
+    const admittedScaleByServer: Record<ServerId, number> = {}
+    const latencyMultiplierByServer: Record<ServerId, number> = {}
+    const hostResults: Record<ServerId, HostStepResult> = {}
+    const vpsPublish: Record<ServerId, VpsPublish> = {}
+    const nicByServer: Record<ServerId, NicState> = {}
+
+    for (const server of Object.values(doc.servers)) {
+      const resident = Object.values(compiled.instances).filter(i => i.serverId === server.id)
+      const loads: InstanceLoad[] = resident.map(i => {
+        const pf = s.prevFlows[i.id]
+        const bp = doc.blueprints[i.blueprintId]
+        const admitted = pf?.admittedRps ?? 0
+        const latency = pf?.serviceLatencyMs ?? bp?.workload.cpuMsPerRequest ?? 1
+        const runtime = doc.placements[i.placementId]?.runtime
+        return {
+          instanceId: i.id,
+          cpuMsPerRequest: bp?.workload.cpuMsPerRequest ?? 1,
+          admittedRps: admitted,
+          activeConnections: admitted * (latency / 1000),
+          ramBaseMb: bp?.workload.ramBaseMb ?? 0,
+          ramPerConnMb: bp?.workload.ramPerConnMb ?? 0,
+          memLimitMb: runtime && runtime.type === 'container' ? runtime.memLimitMb : null,
+        }
+      })
+      const effectiveVcpu = server.specs.vcpu * (s.vpsFactor.get(server.id) ?? 1)
+      const host = stepHost(server, loads, effectiveVcpu, s.rng)
+      hostResults[server.id] = host
+      admittedScaleByServer[server.id] = host.admittedScale
+      latencyMultiplierByServer[server.id] = host.latencyMultiplier
+      nicByServer[server.id] = createNicState()
+
+      if (host.oomVictim && !s.oomRestartAt.has(host.oomVictim)) {
+        s.oomRestartAt.set(host.oomVictim, simMs + OOM_RESTART_MS)
+        s.instanceHealth.set(host.oomVictim, 'down')
+        emit('oom_kill', 'critical', `${host.oomVictim} OOM-killed on ${server.label}`, [host.oomVictim, server.id], simMs)
+      }
+
+      const vpsState = s.vpsStates.get(server.id) ?? null
+      if (vpsState) {
+        const vps = stepVps(vpsState, server, Math.min(1, host.cpuPressure), stepMs, s.rng)
+        s.vpsFactor.set(server.id, vps.effectiveVcpuFactor)
+        vpsPublish[server.id] = { steal: vps.steal, effectiveVcpuFactor: vps.effectiveVcpuFactor, creditsFraction: vps.creditsFraction }
+        if (vps.noisySpikeStarted) emit('noisy_neighbor', 'warning', `noisy-neighbor steal spike on ${server.label}`, [server.id], simMs)
+        if (vps.creditsJustExhausted) emit('burst_credits_exhausted', 'warning', `${server.label} burst credits exhausted`, [server.id], simMs)
+      } else {
+        s.vpsFactor.set(server.id, 1)
+        vpsPublish[server.id] = { steal: 0, effectiveVcpuFactor: 1, creditsFraction: null }
+      }
+    }
+
+    // ── 6. flows ──
+    const breakerOpen = (key: string): boolean => {
+      const b = s.breakers.get(key)
+      if (!b) return false
+      transition(b, simMs)
+      return !admitRequest(b)
+    }
+    const { flows, totals } = solveFlows({
+      compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
+      breakerOpen, healthOf: healthOfInstance, rng: s.rng,
+    })
+
+    // ── 7. NIC caps (per-server byte accounting from this step's flows) ──
+    for (const f of Object.values(flows)) {
+      const inst = compiled.instances[f.instanceId]
+      const nic = inst ? nicByServer[inst.serverId] : undefined
+      if (!inst || !nic) continue
+      const bytes = f.admittedRps * BYTES_PER_REQUEST_EACH_WAY * stepSec
+      applyNicCap(nic, doc.servers[inst.serverId], bytes, bytes, stepMs)
+    }
+
+    // ── 8. breaker record + transition ──
+    for (const f of Object.values(flows)) {
+      for (const row of f.downstream) {
+        if (row.rps <= 0) continue
+        const key = pathKey(f.instanceId, row.dependencyId)
+        const b = getBreaker(s.breakers, key)
+        const from = b.state
+        recordResult(b, row.blocked, simMs)
+        transition(b, simMs)
+        emitBreakerTransition(from, b.state, [f.instanceId, row.toInstanceId ?? row.toManagedServiceId ?? ''], simMs)
+      }
+    }
+
+    // ── 9. failover / health propagation ──
+    const serverAgg = new Map<ServerId, { offered: number; errors: number }>()
+    for (const f of Object.values(flows)) {
+      const inst = compiled.instances[f.instanceId]
+      if (!inst) continue
+      const agg = serverAgg.get(inst.serverId) ?? { offered: 0, errors: 0 }
+      agg.offered += f.offeredRps
+      agg.errors += f.errorRps + f.refusedRps
+      serverAgg.set(inst.serverId, agg)
+    }
+    const rate = (a?: { offered: number; errors: number }): number => (a && a.offered > 0 ? a.errors / a.offered : 0)
+    for (const server of Object.values(doc.servers)) {
+      applyHealth('server', server.id, {
+        errorRate: rate(serverAgg.get(server.id)),
+        cpuPressure: hostResults[server.id]?.cpuPressure ?? 0,
+        checkFailed: false,
+        manualDown: s.failover.manualOutages.has(server.id),
+      }, simMs)
+    }
+    for (const az of Object.values(doc.azs)) {
+      const srv = Object.values(doc.servers).filter(v => v.azId === az.id)
+      const offered = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.offered ?? 0), 0)
+      const errors = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.errors ?? 0), 0)
+      const cpu = srv.reduce((m, v) => Math.max(m, hostResults[v.id]?.cpuPressure ?? 0), 0)
+      applyHealth('az', az.id, { errorRate: offered > 0 ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(az.id) ?? false, manualDown: s.failover.manualOutages.has(az.id) }, simMs)
+    }
+    for (const region of Object.values(doc.regions)) {
+      const azsIn = Object.values(doc.azs).filter(a => a.regionId === region.id)
+      const srv = Object.values(doc.servers).filter(v => azsIn.some(a => a.id === v.azId))
+      const offered = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.offered ?? 0), 0)
+      const errors = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.errors ?? 0), 0)
+      const cpu = srv.reduce((m, v) => Math.max(m, hostResults[v.id]?.cpuPressure ?? 0), 0)
+      applyHealth('region', region.id, { errorRate: offered > 0 ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(region.id) ?? false, manualDown: s.failover.manualOutages.has(region.id) }, simMs)
+    }
+    const downInstances = Object.values(compiled.instances).filter(i => healthOfInstance(i.id) === 'down').map(i => i.id)
+    for (const e of promoteReplicas(s.failover, compiled, doc, downInstances, simMs)) emitEvent(e)
+
+    // rate-limited connection_refused (blocked/breaker attempts are live failures, spec D6)
+    for (const f of Object.values(flows)) {
+      for (const row of f.downstream) {
+        if (!row.blocked) continue
+        const key = pathKey(f.instanceId, row.dependencyId)
+        const last = s.refusedRateLimit.get(key) ?? -Infinity
+        if (simMs - last >= REFUSED_EVENT_MIN_GAP_MS) {
+          s.refusedRateLimit.set(key, simMs)
+          emit('connection_refused', 'warning', `${f.instanceId} refused on ${row.dependencyId}`, [f.instanceId, row.toInstanceId ?? row.toManagedServiceId ?? ''], simMs)
+        }
+      }
+    }
+
+    // ── 10. metrics accumulate ──
+    accumulateStep(s.metrics, flows, hostResults, vpsPublish, nicByServer, healthOfInstance, simMs)
+    s.windowTotals.crossAzBytes += totals.crossAzBytes * stepSec
+    s.windowTotals.crossRegionBytes += totals.crossRegionBytes * stepSec
+    s.windowTotals.internetBytes += totals.internetBytes * stepSec
+    s.prevFlows = flows
+
+    // ── 11. 1 Hz batch + replay + trace ──
+    if (simMs - s.lastBatchMs >= 1000) {
+      s.lastBatchMs = simMs
+      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs)
+      s.callbacks.onMetrics(batch)
+      s.replay.push({ simMs, batch, events: s.events.drain() })
+      s.tracer.sample(flows, compiled, doc, simMs, entryId => populationForEntry(entryId))
+      s.windowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0 }
+    }
+  }
+
+  // Which population currently feeds a given entry instance (for TracedRequest.populationId).
+  const populationForEntry = (entryInstanceId: InstanceId): PopulationId | null => {
+    const inst = state!.compiled.instances[entryInstanceId]
+    if (!inst) return null
+    const route = state!.lastRoutingSnapshot.populationRoutes.find(r => r.regionId === inst.regionId && !r.populationId.startsWith('baseline:'))
+    return route?.populationId ?? null
+  }
+
+  // Advance the fixed-step clock by a real frame and run every whole step it produced.
+  function runFrame(frameMs: number): void {
+    const s = state!
+    const steps = s.clock.advance(frameMs, s.timeScale)
+    if (steps === 0) return
+    const endMs = s.clock.simMs
+    for (let i = steps; i >= 1; i--) {
+      const stepSimMs = endMs - (i - 1) * s.stepMs
+      const t0 = perfNow()
+      runStep(stepSimMs)
+      recordStepCost(perfNow() - t0, stepSimMs)
+    }
+  }
+
+  function recordStepCost(costMs: number, simMs: number): void {
+    const s = state!
+    s.stepCosts.push(costMs)
+    if (s.stepCosts.length > DEGRADE_WINDOW_STEPS) s.stepCosts.shift()
+    if (!s.degraded && s.stepCosts.length >= DEGRADE_WINDOW_STEPS) {
+      const mean = s.stepCosts.reduce((a, b) => a + b, 0) / s.stepCosts.length
+      if (mean > DEGRADE_THRESHOLD_MS) {
+        s.degraded = true
+        s.stepMs = DEGRADED_STEP_MS
+        s.clock = createClock(DEGRADED_STEP_MS)
+        emit('engine_degraded', 'info', `engine degraded: mean step ${mean.toFixed(1)}ms > ${DEGRADE_THRESHOLD_MS}ms — halving step rate to ${DEGRADED_STEP_MS}ms`, [], simMs)
+      }
+    }
+  }
+
+  // ── Render payloads (per animation frame, cap-enforced) ──
+  function buildPayload(scope: RenderScope, wallMs: number): FramePayload {
+    const s = state!
+    const simMs = s.clock.simMs
+    if (scope.level === 'globe') return { simMs, particles: [], arcs: buildArcs() }
+    if (scope.level === 'az') return { simMs, particles: buildAzParticles(scope.azId, wallMs), arcs: [] }
+    // region/server rich particle surfaces arrive in Phases 4/3; Phase 2 ships empty-but-valid payloads.
+    return { simMs, particles: [], arcs: [] }
+  }
+
+  function buildArcs(): VisualArc[] {
+    const s = state!
+    const routes = s.lastRoutingSnapshot.populationRoutes
+    const maxRps = Math.max(1, ...routes.map(r => r.rps))
+    const arcs: VisualArc[] = []
+    for (const r of routes) {
+      if (r.populationId.startsWith('baseline:')) continue
+      const pop = s.doc.populations[r.populationId]
+      const region = s.doc.regions[r.regionId]
+      const geo = region ? REGION_GEO_LOCAL[region.catalogId] : undefined
+      if (!pop || !geo) continue
+      arcs.push({ fromLatLon: [pop.lat, pop.lon], toLatLon: [geo.lat, geo.lon], intensity: Math.min(1, r.rps / maxRps), kind: 'client' })
+      if (arcs.length >= MAX_GLOBE_ARCS) break
+    }
+    return arcs
+  }
+
+  function buildAzParticles(azId: AzId, wallMs: number): VisualParticle[] {
+    const s = state!
+    const phase = (wallMs * RENDER_PROGRESS_PER_MS)
+    const particles: VisualParticle[] = []
+    let pid = 0
+    const drain = s.failover.drainUntil.has(azId) ? drainFactor(s.failover, azId, s.clock.simMs) : 1
+    for (const f of Object.values(s.prevFlows)) {
+      const from = s.compiled.instances[f.instanceId]
+      if (!from || from.azId !== azId) continue
+      const bp = s.doc.blueprints[from.blueprintId]
+      const isEntry = s.entryBlueprintIds.includes(from.blueprintId)
+      // entry ingress particles from the client edge
+      if (isEntry && f.offeredRps > 0) {
+        const n = Math.min(MAX_AZ_PARTICLES, Math.round((f.offeredRps / PARTICLE_RATIO) * drain))
+        for (let k = 0; k < n && particles.length < MAX_AZ_PARTICLES; k++) {
+          particles.push({ id: pid++, fromId: 'edge:client', toId: from.serverId, progress: frac(phase + k * 0.137), protocol: 'http', blocked: false, colorHint: bp?.color ?? null })
+        }
+      }
+      for (const row of f.downstream) {
+        const toId = row.toInstanceId ? s.compiled.instances[row.toInstanceId]?.serverId : row.toManagedServiceId
+        if (!toId) continue
+        const dep = bp?.dependencies.find(d => d.id === row.dependencyId)
+        const n = Math.min(MAX_AZ_PARTICLES, Math.max(row.blocked ? 1 : 0, Math.round(row.rps / PARTICLE_RATIO)))
+        for (let k = 0; k < n && particles.length < MAX_AZ_PARTICLES; k++) {
+          particles.push({ id: pid++, fromId: from.serverId, toId, progress: frac(phase + k * 0.191), protocol: dep?.protocol ?? 'http', blocked: row.blocked, colorHint: bp?.color ?? null })
+        }
+      }
+    }
+    return particles
+  }
+
+  function renderAll(wallMs: number): void {
+    const s = state!
+    for (const { scope, onFrame } of s.renderers.values()) onFrame(buildPayload(scope, wallMs))
+  }
+
+  function tick(nowMs: number): void {
+    const s = state
+    if (!s || !s.running) return
+    const frameMs = s.lastFrameMs === null ? s.stepMs : Math.min(250, nowMs - s.lastFrameMs)
+    s.lastFrameMs = nowMs
+    runFrame(frameMs)
+    renderAll(nowMs)
+    if (typeof requestAnimationFrame === 'function') s.rafId = requestAnimationFrame(tick)
+  }
+
+  const api: WorldEngineApi & { __test_step: (steps?: number) => void } = {
+    start(doc, compiled, callbacks) {
+      state = {
+        running: true, seed, rng: createRng(seed), clock: createClock(DEFAULT_STEP_MS), stepMs: DEFAULT_STEP_MS,
+        timeScale: 1, doc, compiled, callbacks, entryBlueprintIds: entryBlueprints(doc),
+        routing: createRoutingState(), failover: createFailoverState(),
+        vpsStates: new Map(Object.values(doc.servers).map(sv => [sv.id, createVpsState(sv)])),
+        vpsFactor: new Map(), breakers: new Map(), metrics: createMetricsState(),
+        events: createEventRing(500), replay: createReplayBuffer(300), tracer: createTracer(createRng(seed ^ 0x1234)),
+        prevFlows: {}, windowTotals: { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0 },
+        lastRoutingSnapshot: { populationRoutes: [] }, popRegion: new Map(), pendingFailover: new Map(),
+        checkFailedPrev: new Map(), instanceHealth: new Map(), oomRestartAt: new Map(), refusedRateLimit: new Map(),
+        idSeq: 0, lastBatchMs: -1000, stepCosts: [], degraded: false, rafId: null, lastFrameMs: null,
+        renderers: new Map(), rendererSeq: 0,
+      }
+      if (typeof requestAnimationFrame === 'function') state.rafId = requestAnimationFrame(tick)
+    },
+    stop() {
+      if (!state) return
+      state.running = false
+      if (state.rafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(state.rafId)
+      state.rafId = null
+    },
+    isRunning() {
+      return state?.running ?? false
+    },
+    setTimeScale(scale) {
+      if (state) state.timeScale = scale
+    },
+    setOutage(scope, id, down) {
+      if (!state) return
+      for (const e of failoverSetOutage(state.failover, scope, id, down, state.clock.simMs)) emitEvent(e)
+    },
+    attachRenderer(scope, onFrame) {
+      if (!state) return () => {}
+      const key = state.rendererSeq++
+      state.renderers.set(key, { scope, onFrame })
+      const s = state
+      return () => { s.renderers.delete(key) }
+    },
+    getReplayFrames() {
+      return state?.replay.getFrames() ?? []
+    },
+    getTracedRequests(scope) {
+      return state?.tracer.getTraced(scope) ?? []
+    },
+    __test_step(steps = 1) {
+      for (let i = 0; i < steps; i++) runFrame(state!.stepMs)
+    },
+  }
+  return api
+}
+
+// Great-circle region coordinates for globe arcs (mirror of world/regionGeo — imported to keep
+// the layering rule that worldEngine does not reach into app/, but regionGeo lives in lib/world
+// which IS allowed; imported below).
+import { REGION_GEO as REGION_GEO_LOCAL } from '../world/regionGeo'
+
+const frac = (x: number): number => x - Math.floor(x)
+const perfNow = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now())
+
+// Shared singleton the store drives; tests construct their own via createWorldEngine().
+export const worldEngine = createWorldEngine()
+```
+
+> Note: the `import { REGION_GEO ... }` sits mid-file above only for readability of the arc
+> builder; when writing the file, hoist it into the import block at the top with the other
+> `../world/*` imports (ESM hoists it either way — grouping keeps tsc/style clean).
+
+- [ ] **Step 4: Write the build-green legacy shim, then rewrite the store**
+
+First preserve the legacy store under a new name and re-point its importers (keeps `tsc` green
+through T16 — the trees are deleted wholesale in T17):
+
+```bash
+# 1) verbatim copy under the legacy name (git mv preserves history; the v2 file is written fresh next)
+git mv src/app/store/simulation.store.ts src/app/store/simulationLegacy.store.ts
+
+# 2) re-point every current importer of the old store at the copy (grep-verified list)
+grep -rl "store/simulation.store" src \
+  | grep -v "src/app/store/simulation.store.ts" \
+  | while read -r f; do
+      sed -i '' "s#store/simulation\\.store#store/simulationLegacy.store#g; s#\\.\\./simulation\\.store#../simulationLegacy.store#g" "$f"
+    done
+```
+
+Then verify nothing still points at the (soon to be v2) `simulation.store` except code you are
+about to write:
+
+```bash
+grep -rl "store/simulation.store\b" src | grep -v "simulationLegacy" || echo "clean"
+```
+
+Now write the v2 store fresh at `src/app/store/simulation.store.ts`:
+
+```ts
+// src/app/store/simulation.store.ts — v2 (Phase 2). The legacy shape retired here with the
+// legacy engine; the old store lives on verbatim as simulationLegacy.store.ts until Task 17
+// deletes it with the rest of the legacy tree. Views read this store; only its actions call
+// the worldEngine facade. Shape: frozen contracts §"Store publication" + the sanctioned
+// additive fields scrubIndex/scrubBatch (T15 consumer) and degraded (perf watch — T12 owns it).
+import { create } from 'zustand'
+import type { WorldDoc, CompiledWorld } from '../../lib/world/types'
+import type {
+  MetricsBatch, EngineEvent, RenderScope, FramePayload, DetachFn, ReplayFrame, TracedRequest,
+} from '../../lib/worldEngine/types'
+import { worldEngine } from '../../lib/worldEngine'
+
+const EVENT_CAP = 500
+
+interface SimulationStoreV2 {
+  running: boolean
+  timeScale: number
+  latestBatch: MetricsBatch | null
+  events: EngineEvent[]
+  healthOverrides: Record<string, boolean>
+  scrubIndex: number | null
+  scrubBatch: MetricsBatch | null
+  degraded: boolean
+
+  start: (doc: WorldDoc, compiled: CompiledWorld) => void
+  stop: () => void
+  setTimeScale: (scale: number) => void
+  setOutage: (scope: 'server' | 'az' | 'region', id: string, down: boolean) => void
+  setScrubIndex: (i: number | null) => void
+  attachRenderer: (scope: RenderScope, onFrame: (p: FramePayload) => void) => DetachFn
+  getReplayFrames: () => ReplayFrame[]
+  getTracedRequests: (scope: RenderScope) => TracedRequest[]
+}
+
+export const useSimulationStore = create<SimulationStoreV2>((set) => ({
+  running: false,
+  timeScale: 1,
+  latestBatch: null,
+  events: [],
+  healthOverrides: {},
+  scrubIndex: null,
+  scrubBatch: null,
+  degraded: false,
+
+  start: (doc, compiled) => {
+    set({ running: true, latestBatch: null, events: [], degraded: false, scrubIndex: null, scrubBatch: null })
+    worldEngine.start(doc, compiled, {
+      onMetrics: (batch) => set({ latestBatch: batch }),
+      onEvent: (event) =>
+        set((s) => {
+          const next = s.events.length >= EVENT_CAP ? [...s.events.slice(s.events.length - EVENT_CAP + 1), event] : [...s.events, event]
+          return event.kind === 'engine_degraded' ? { events: next, degraded: true } : { events: next }
+        }),
+      onHealthChange: () => {},
+    })
+  },
+  stop: () => {
+    worldEngine.stop()
+    set({ running: false })
+  },
+  setTimeScale: (scale) => {
+    worldEngine.setTimeScale(scale)
+    set({ timeScale: scale })
+  },
+  setOutage: (scope, id, down) => {
+    worldEngine.setOutage(scope, id, down)
+    set((s) => ({ healthOverrides: { ...s.healthOverrides, [id]: down } }))
+  },
+  setScrubIndex: (i) => {
+    const frames = worldEngine.getReplayFrames()
+    set({ scrubIndex: i, scrubBatch: i === null ? null : frames[i]?.batch ?? null })
+  },
+  attachRenderer: (scope, onFrame) => worldEngine.attachRenderer(scope, onFrame),
+  getReplayFrames: () => worldEngine.getReplayFrames(),
+  getTracedRequests: (scope) => worldEngine.getTracedRequests(scope),
+}))
+```
+
+- [ ] **Step 5: Run the integration test**
+
+Run: `npx vitest run src/lib/worldEngine/index.test.ts`
+Expected: PASS (4 tests)
+
+- [ ] **Step 6: Run the whole engine suite + full suite + tsc**
+
+Run: `npx vitest run src/lib/worldEngine/`
+Expected: PASS — every engine suite green including index (4).
+
+Run: `npx vitest run`
+Expected: PASS — the legacy `particleEngine/**` suites still pass (they import the verbatim
+`simulationLegacy.store`), the world suites pass, zero failures.
+
+Run: `npm run build`
+Expected: succeeds — the shim keeps every legacy importer resolving.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/lib/worldEngine/index.ts src/lib/worldEngine/index.test.ts \
+  src/app/store/simulation.store.ts src/app/store/simulationLegacy.store.ts \
+  src/app/canvas src/app/simulation src/app/sidebar src/app/toolbar src/app/dock \
+  src/app/analytics src/app/reports src/app/StatusBar.tsx src/lib/costModel.ts src/lib/scalescript.ts
+git commit -m "feat(engine): add WorldEngineApi facade, simulation.store v2, and integration test"
+```
 

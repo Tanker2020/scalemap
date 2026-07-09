@@ -179,6 +179,7 @@ export type EngineEventKind =
   | 'ttl_lag_expired'            // a population's DNS cache expired and re-resolved
   | 'replica_promoted'
   | 'outage_triggered' | 'outage_cleared'   // manual switches
+  | 'engine_degraded'            // perf watch halved the step rate (spec decision 9); info severity
 
 export interface EngineEvent {
   id: string

@@ -1274,4 +1274,408 @@ git commit -m "feat(engine): add per-step flow solver across instances"
 
 ---
 
-<!-- APPEND:NEXT -->
+### Task 9: Failover machinery — outages, health propagation, drain, promotion
+
+**Files:**
+- Create: `src/lib/worldEngine/failover.ts`
+- Test: `src/lib/worldEngine/failover.test.ts`
+
+**Interfaces:**
+- Consumes: `AzId, PlacementId, InstanceId, CompiledWorld, WorldDoc` from `../world/types`;
+  `EngineEvent, HealthState` from `./types`.
+- Produces (skeleton-exact, plus the additive members flagged in SKELETON CONCERNS #3, #4, #8):
+
+```ts
+interface FailoverState {
+  manualOutages: Set<string>                 // scope ids forced down via setOutage
+  healthByScope: Map<string, HealthState>    // last committed health per scope id (hysteresis output)
+  drainUntil: Map<AzId, number>              // simMs at which a down AZ's drain completes
+  promotedAt: Map<PlacementId, number>       // replica placement -> simMs it was promoted (emit-once guard)
+  // additive (SKELETON CONCERNS #4): per-scope hysteresis timers
+  onsetPendingSince: Map<string, number>     // first simMs a scope started worsening
+  recoveryUntil: Map<string, number>         // simMs a scope may recover at (recovery lock)
+}
+interface HealthHysteresis { onsetMs: number; recoveryMs: number }
+DEFAULT_HYSTERESIS: HealthHysteresis          // { onsetMs: 3000, recoveryMs: 5000 }
+createFailoverState(): FailoverState          // additive factory (T12 uses it; SKELETON CONCERNS #7 in tasks-10-12 reconciled — this export exists)
+setOutage(state, scope: 'server' | 'az' | 'region', id: string, down: boolean, simMs?: number): EngineEvent[]   // simMs optional=0, SKELETON CONCERNS #3
+computeHealth(state, scopeId: string, inputs: { errorRate: number; cpuPressure: number; checkFailed: boolean; manualDown: boolean }, simMs: number, hysteresis: HealthHysteresis): HealthState
+promoteReplicas(state, compiled: CompiledWorld, doc: WorldDoc, downInstanceIds: InstanceId[], simMs: number): EngineEvent[]
+drainFactor(state, azId: AzId, simMs: number): number   // 1 -> 0 across DRAIN_MS after the AZ goes down; 0 when not draining
+beginDrain(state, azId: AzId, simMs: number): void       // additive (SKELETON CONCERNS #8): facade calls on organic AZ->down
+clearDrain(state, azId: AzId): void
+```
+
+Semantics (spec decision 7 + skeleton T9):
+
+- **`setOutage`** is idempotent and returns events only on an actual state change: `down`
+  adds the id to `manualOutages`, pins `healthByScope[id] = 'down'`, and (AZ scope only)
+  `beginDrain`s; clearing removes it and (AZ scope) `clearDrain`s. Event ids are
+  deterministic content-derived strings (SKELETON CONCERNS #3) — T10's ring may re-sequence.
+- **`computeHealth`** ports the legacy onset-debounce / recovery-lock hysteresis (spec
+  decision 2). `manualDown` forces `'down'` immediately (and clears both timers). Otherwise an
+  instantaneous severity is derived from the live signals (`checkFailed` or high
+  `errorRate`/`cpuPressure` → `'down'`; moderate → `'degraded'`; else `'healthy'`) and blended
+  against the last committed state: **worsening** transitions must persist for `onsetMs` before
+  they commit (`onsetPendingSince`); **improving** transitions must hold for `recoveryMs`
+  before they commit (`recoveryUntil`). The committed state is written back to
+  `healthByScope[scopeId]` and returned.
+- **`promoteReplicas`**: for each down instance that is a `primary`, promote the oldest
+  eligible `replica` of the same blueprint in the same **region** (deterministic: lowest
+  instance id), emit `replica_promoted` exactly once per (blueprint, region) — guarded by
+  `promotedAt`. Phase 2 is visual/event-only: no data ownership is modeled (spec decision 7).
+- **`drainFactor`**: `max(0, min(1, (drainUntil − simMs) / DRAIN_MS))`; `0` when the AZ has no
+  drain entry (not draining, or already fully drained). Existing traffic on a downed AZ ramps
+  out over `DRAIN_MS = 2000`.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// src/lib/worldEngine/failover.test.ts
+import { describe, it, expect } from 'vitest'
+import {
+  createFailoverState, setOutage, computeHealth, promoteReplicas, drainFactor,
+  beginDrain, DEFAULT_HYSTERESIS,
+} from './failover'
+import {
+  createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
+} from '../world/factories'
+import { getPreset } from '../world/instanceCatalog'
+import { compileWorld, instanceId } from '../world/compileWorld'
+
+const healthy = { errorRate: 0, cpuPressure: 0.5, checkFailed: false, manualDown: false }
+const bad = { errorRate: 0.9, cpuPressure: 3, checkFailed: true, manualDown: false }
+
+describe('setOutage', () => {
+  it('forces a scope down, emits outage_triggered once, and is idempotent', () => {
+    const state = createFailoverState()
+    const events = setOutage(state, 'az', 'az-1', true, 1000)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ kind: 'outage_triggered', severity: 'critical', affected: ['az-1'], simMs: 1000 })
+    expect(state.manualOutages.has('az-1')).toBe(true)
+    expect(state.healthByScope.get('az-1')).toBe('down')
+    // idempotent — no second event for an already-down scope
+    expect(setOutage(state, 'az', 'az-1', true, 2000)).toEqual([])
+    // manualDown forces 'down' through computeHealth regardless of signals
+    expect(computeHealth(state, 'az-1', { ...healthy, manualDown: true }, 3000, DEFAULT_HYSTERESIS)).toBe('down')
+  })
+
+  it('clears an outage and emits outage_cleared exactly once', () => {
+    const state = createFailoverState()
+    setOutage(state, 'region', 'r-1', true, 0)
+    const cleared = setOutage(state, 'region', 'r-1', false, 5000)
+    expect(cleared).toHaveLength(1)
+    expect(cleared[0]).toMatchObject({ kind: 'outage_cleared', affected: ['r-1'], simMs: 5000 })
+    expect(state.manualOutages.has('r-1')).toBe(false)
+    expect(setOutage(state, 'region', 'r-1', false, 6000)).toEqual([]) // already cleared
+  })
+})
+
+describe('computeHealth — hysteresis', () => {
+  it('debounces onset: two bad ticks inside onsetMs keep the scope healthy', () => {
+    const state = createFailoverState()
+    expect(computeHealth(state, 's-1', bad, 0, DEFAULT_HYSTERESIS)).toBe('healthy')       // pending starts
+    expect(computeHealth(state, 's-1', bad, 2000, DEFAULT_HYSTERESIS)).toBe('healthy')     // 2s < 3s
+    expect(computeHealth(state, 's-1', bad, 3001, DEFAULT_HYSTERESIS)).toBe('down')        // >= onsetMs -> commit
+  })
+
+  it('locks recovery: a healed scope stays down until recoveryMs elapses', () => {
+    const state = createFailoverState()
+    // drive it down first
+    computeHealth(state, 's-2', bad, 0, DEFAULT_HYSTERESIS)
+    computeHealth(state, 's-2', bad, 3001, DEFAULT_HYSTERESIS)
+    expect(state.healthByScope.get('s-2')).toBe('down')
+    // now healthy signals — recovery lock holds
+    expect(computeHealth(state, 's-2', healthy, 4000, DEFAULT_HYSTERESIS)).toBe('down')    // lock starts
+    expect(computeHealth(state, 's-2', healthy, 8000, DEFAULT_HYSTERESIS)).toBe('down')    // 4s < 5s
+    expect(computeHealth(state, 's-2', healthy, 9001, DEFAULT_HYSTERESIS)).toBe('healthy') // >= recoveryMs
+  })
+})
+
+describe('drainFactor', () => {
+  it('ramps 1 -> 0 across DRAIN_MS (2000) after the AZ goes down', () => {
+    const state = createFailoverState()
+    beginDrain(state, 'az-9', 0)
+    expect(drainFactor(state, 'az-9', 0)).toBeCloseTo(1, 5)
+    expect(drainFactor(state, 'az-9', 1000)).toBeCloseTo(0.5, 5)
+    expect(drainFactor(state, 'az-9', 2000)).toBeCloseTo(0, 5)
+    expect(drainFactor(state, 'az-9', 2500)).toBe(0)
+    expect(drainFactor(state, 'az-other', 0)).toBe(0)   // no drain entry
+  })
+})
+
+describe('promoteReplicas', () => {
+  // 1 region, 2 AZs; a primary in az-a and a replica of the same blueprint in az-b.
+  function replicaFixture() {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const azA = createAz(region.id, 'us-east-1a')
+    const azB = createAz(region.id, 'us-east-1b')
+    const sA = createServer(azA.id, getPreset('dedicated-8')!)
+    const sB = createServer(azB.id, getPreset('dedicated-8')!)
+    const bp = createBlueprint('db', 0)
+    bp.stateful = true
+    const primary = createPlacement(bp.id, sA.id)          // role 'primary' by default
+    const replica = createPlacement(bp.id, sB.id)
+    replica.role = 'replica'
+    doc.regions[region.id] = region
+    Object.assign(doc.azs, { [azA.id]: azA, [azB.id]: azB })
+    Object.assign(doc.servers, { [sA.id]: sA, [sB.id]: sB })
+    doc.blueprints[bp.id] = bp
+    Object.assign(doc.placements, { [primary.id]: primary, [replica.id]: replica })
+    const compiled = compileWorld(doc)
+    return { doc, compiled, primaryInst: instanceId(primary.id, 0), replicaInst: instanceId(replica.id, 0) }
+  }
+
+  it('promotes the same-blueprint same-region replica and emits replica_promoted once', () => {
+    const f = replicaFixture()
+    const state = createFailoverState()
+    const events = promoteReplicas(state, f.compiled, f.doc, [f.primaryInst], 1000)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ kind: 'replica_promoted', simMs: 1000 })
+    expect(events[0].affected).toContain(f.replicaInst)
+    expect(events[0].affected).toContain(f.primaryInst)
+    // called again while still promoted -> no duplicate event
+    expect(promoteReplicas(state, f.compiled, f.doc, [f.primaryInst], 2000)).toEqual([])
+  })
+
+  it('does nothing when the down instance is not a primary', () => {
+    const f = replicaFixture()
+    const state = createFailoverState()
+    expect(promoteReplicas(state, f.compiled, f.doc, [f.replicaInst], 1000)).toEqual([])
+  })
+})
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/lib/worldEngine/failover.test.ts`
+Expected: FAIL — `Cannot find module './failover'`
+
+- [ ] **Step 3: Write `failover.ts`**
+
+```ts
+// src/lib/worldEngine/failover.ts
+// Failover machinery: manual outage switches, ported health onset/recovery hysteresis,
+// AZ drain ramp, and stateful replica promotion. Spec decision 7 (and decision 2 for the
+// hysteresis port), docs/superpowers/specs/2026-07-08-phase2-substrate-engine-design.md.
+// Emits contract EngineEvents; the facade (Task 12) owns id re-sequencing and observation.
+import type { AzId, PlacementId, InstanceId, CompiledWorld, WorldDoc } from '../world/types'
+import type { EngineEvent, HealthState } from './types'
+
+const DRAIN_MS = 2000               // existing traffic on a downed AZ ramps out over 2s (spec decision 7)
+
+// Instantaneous-severity thresholds (ported approximations of the legacy health signals).
+// Only the hysteresis timing is behaviourally load-bearing; these bands classify a single tick.
+const DOWN_ERROR_RATE = 0.5
+const DOWN_CPU_PRESSURE = 2
+const DEGRADED_ERROR_RATE = 0.1
+const DEGRADED_CPU_PRESSURE = 1
+
+export interface HealthHysteresis {
+  onsetMs: number     // a worsening must persist this long before it commits
+  recoveryMs: number  // an improvement must hold this long before it commits
+}
+
+// Legacy onset debounce 3000ms / recovery lock 5000ms (skeleton T9; legacy used an 8s
+// recovery lock — SKELETON CONCERNS #7 keeps the skeleton's 5s since it's a parameter).
+export const DEFAULT_HYSTERESIS: HealthHysteresis = { onsetMs: 3000, recoveryMs: 5000 }
+
+export interface FailoverState {
+  manualOutages: Set<string>
+  healthByScope: Map<string, HealthState>
+  drainUntil: Map<AzId, number>
+  promotedAt: Map<PlacementId, number>
+  onsetPendingSince: Map<string, number>
+  recoveryUntil: Map<string, number>
+}
+
+export function createFailoverState(): FailoverState {
+  return {
+    manualOutages: new Set(),
+    healthByScope: new Map(),
+    drainUntil: new Map(),
+    promotedAt: new Map(),
+    onsetPendingSince: new Map(),
+    recoveryUntil: new Map(),
+  }
+}
+
+const SEVERITY: Record<HealthState, number> = { healthy: 0, degraded: 1, down: 2 }
+
+function outageEvent(
+  kind: 'outage_triggered' | 'outage_cleared',
+  scope: 'server' | 'az' | 'region',
+  id: string,
+  simMs: number,
+): EngineEvent {
+  const down = kind === 'outage_triggered'
+  return {
+    id: `outage-${scope}-${id}-${down ? 'down' : 'up'}-${simMs}`,
+    simMs,
+    kind,
+    severity: down ? 'critical' : 'info',
+    message: `${scope} ${id} manually ${down ? 'taken down' : 'restored'}`,
+    affected: [id],
+  }
+}
+
+export function beginDrain(state: FailoverState, azId: AzId, simMs: number): void {
+  if (!state.drainUntil.has(azId)) state.drainUntil.set(azId, simMs + DRAIN_MS)
+}
+
+export function clearDrain(state: FailoverState, azId: AzId): void {
+  state.drainUntil.delete(azId)
+}
+
+export function drainFactor(state: FailoverState, azId: AzId, simMs: number): number {
+  const until = state.drainUntil.get(azId)
+  if (until === undefined) return 0
+  return Math.max(0, Math.min(1, (until - simMs) / DRAIN_MS))
+}
+
+// Idempotent manual switch: an event is returned ONLY when the outage set actually changes.
+export function setOutage(
+  state: FailoverState,
+  scope: 'server' | 'az' | 'region',
+  id: string,
+  down: boolean,
+  simMs = 0,
+): EngineEvent[] {
+  const already = state.manualOutages.has(id)
+  if (down && !already) {
+    state.manualOutages.add(id)
+    state.healthByScope.set(id, 'down')
+    if (scope === 'az') beginDrain(state, id, simMs)
+    return [outageEvent('outage_triggered', scope, id, simMs)]
+  }
+  if (!down && already) {
+    state.manualOutages.delete(id)
+    if (scope === 'az') clearDrain(state, id)
+    return [outageEvent('outage_cleared', scope, id, simMs)]
+  }
+  return []
+}
+
+export function computeHealth(
+  state: FailoverState,
+  scopeId: string,
+  inputs: { errorRate: number; cpuPressure: number; checkFailed: boolean; manualDown: boolean },
+  simMs: number,
+  hysteresis: HealthHysteresis,
+): HealthState {
+  if (inputs.manualDown) {
+    state.healthByScope.set(scopeId, 'down')
+    state.onsetPendingSince.delete(scopeId)
+    state.recoveryUntil.delete(scopeId)
+    return 'down'
+  }
+
+  const instant: HealthState =
+    inputs.checkFailed || inputs.errorRate >= DOWN_ERROR_RATE || inputs.cpuPressure >= DOWN_CPU_PRESSURE
+      ? 'down'
+      : inputs.errorRate >= DEGRADED_ERROR_RATE || inputs.cpuPressure >= DEGRADED_CPU_PRESSURE
+        ? 'degraded'
+        : 'healthy'
+
+  const prev = state.healthByScope.get(scopeId) ?? 'healthy'
+  let next = prev
+
+  if (SEVERITY[instant] > SEVERITY[prev]) {
+    // worsening — debounce onset
+    state.recoveryUntil.delete(scopeId)
+    const since = state.onsetPendingSince.get(scopeId)
+    if (since === undefined) {
+      state.onsetPendingSince.set(scopeId, simMs)
+    } else if (simMs - since >= hysteresis.onsetMs) {
+      next = instant
+      state.onsetPendingSince.delete(scopeId)
+    }
+  } else if (SEVERITY[instant] < SEVERITY[prev]) {
+    // improving — hold the recovery lock
+    state.onsetPendingSince.delete(scopeId)
+    const until = state.recoveryUntil.get(scopeId)
+    if (until === undefined) {
+      state.recoveryUntil.set(scopeId, simMs + hysteresis.recoveryMs)
+    } else if (simMs >= until) {
+      next = instant
+      state.recoveryUntil.delete(scopeId)
+    }
+  } else {
+    // stable at the current severity — cancel any pending transition
+    state.onsetPendingSince.delete(scopeId)
+    state.recoveryUntil.delete(scopeId)
+  }
+
+  state.healthByScope.set(scopeId, next)
+  return next
+}
+
+// Primary down -> promote the oldest same-blueprint, same-region replica (spec decision 7).
+// Visual/event semantics only in Phase 2: no data ownership is modeled. Emits once per
+// (blueprint, region) via the promotedAt guard.
+export function promoteReplicas(
+  state: FailoverState,
+  compiled: CompiledWorld,
+  doc: WorldDoc,
+  downInstanceIds: InstanceId[],
+  simMs: number,
+): EngineEvent[] {
+  const events: EngineEvent[] = []
+  const downSet = new Set(downInstanceIds)
+
+  for (const downId of downInstanceIds) {
+    const primary = compiled.instances[downId]
+    if (!primary || primary.role !== 'primary') continue
+
+    const siblingReplicas = Object.values(compiled.instances).filter(
+      i => i.role === 'replica' && i.blueprintId === primary.blueprintId && i.regionId === primary.regionId,
+    )
+    // already promoted a replica for this (blueprint, region)? emit-once guard.
+    if (siblingReplicas.some(i => state.promotedAt.has(i.placementId))) continue
+
+    const chosen = siblingReplicas
+      .filter(i => !downSet.has(i.id))
+      .sort((a, b) => a.id.localeCompare(b.id))[0]
+    if (!chosen) continue
+
+    state.promotedAt.set(chosen.placementId, simMs)
+    const bpName = doc.blueprints[primary.blueprintId]?.name ?? primary.blueprintId
+    events.push({
+      id: `promote-${chosen.id}-${simMs}`,
+      simMs,
+      kind: 'replica_promoted',
+      severity: 'warning',
+      message: `${bpName} replica ${chosen.id} promoted to primary after ${downId} failed`,
+      affected: [chosen.id, downId],
+    })
+  }
+
+  return events
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx vitest run src/lib/worldEngine/failover.test.ts`
+Expected: PASS (7 tests)
+
+- [ ] **Step 5: Run the whole engine suite (guards against cross-module drift)**
+
+Run: `npx vitest run src/lib/worldEngine/`
+Expected: PASS — rng 6, engineClock (per T1), demand (per T2), routingRuntime 13,
+hostScheduler 6, vpsModel 8, networkRuntime 13, breakers 8, flows 14, failover 7; zero failures.
+
+- [ ] **Step 6: tsc check**
+
+Run: `npm run build`
+Expected: succeeds
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/lib/worldEngine/failover.ts src/lib/worldEngine/failover.test.ts
+git commit -m "feat(engine): add failover machinery (outages, health hysteresis, drain, promotion)"
+```
+
+---
