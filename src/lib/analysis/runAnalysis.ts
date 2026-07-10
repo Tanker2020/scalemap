@@ -5,12 +5,12 @@ import type { MetricsBatch } from '../worldEngine/types'
 import type { AnalysisFinding, AnalysisRule, AnalysisInput } from './types'
 import { structuralRules } from './rules/structural'
 import { networkRules } from './rules/network'
-// T3: import { capacityRules } from './rules/capacity'
+import { capacityRules } from './rules/capacity'
 
 export const ANALYSIS_RULES: AnalysisRule[] = [
   ...structuralRules,
   ...networkRules,
-  // ...capacityRules,  // ← T3 uncomments/adds
+  ...capacityRules,
 ]
 
 const SEV_RANK: Record<AnalysisFinding['severity'], number> = { critical: 0, warning: 1, info: 2 }
