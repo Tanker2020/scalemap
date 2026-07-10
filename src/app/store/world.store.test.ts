@@ -37,6 +37,31 @@ describe('world.store', () => {
     expect(useSimulationStore.getState().running).toBe(false)
   })
 
+  it('newWorld clears batch, events, scrub state, and health overrides', () => {
+    useSimulationStore.setState({
+      running: true, latestBatch: { simMs: 1 } as never, events: [{ id: 'e' } as never],
+      scrubIndex: 3, scrubBatch: { simMs: 1 } as never, degraded: true, healthOverrides: { srv: true },
+    })
+    useWorldStore.getState().newWorld()
+    const s = useSimulationStore.getState()
+    expect(s.running).toBe(false)
+    expect(s.latestBatch).toBeNull()
+    expect(s.events).toEqual([])
+    expect(s.scrubIndex).toBeNull()
+    expect(s.scrubBatch).toBeNull()
+    expect(s.degraded).toBe(false)
+    expect(s.healthOverrides).toEqual({})
+  })
+
+  it('replaceWorld likewise clears the sim session', () => {
+    useSimulationStore.setState({ latestBatch: { simMs: 1 } as never, scrubIndex: 2, healthOverrides: { x: true } })
+    useWorldStore.getState().replaceWorld(useWorldStore.getState().doc)
+    const s = useSimulationStore.getState()
+    expect(s.latestBatch).toBeNull()
+    expect(s.scrubIndex).toBeNull()
+    expect(s.healthOverrides).toEqual({})
+  })
+
   it('builds a linked region→az→server→blueprint→placement chain', () => {
     const { regionId, azId, serverId, bpId, plId } = buildChain()
     const doc = useWorldStore.getState().doc

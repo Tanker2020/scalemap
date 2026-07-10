@@ -108,7 +108,10 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       // longer exists and every authoring control edit-locked behind `running` — the app
       // looks dead after New. Same centralize-the-reset stance as the Phase-1 autosave
       // fix: the doc-swap action owns stopping the sim (engine stop() is idle-safe).
-      useSimulationStore.getState().stop()
+      // resetSession (not stop()): the session state — latestBatch, events, scrub
+      // position, health overrides — references the discarded doc's ids, so the swap
+      // clears it wholesale instead of leaving stale frames scrubbable (see Task 7).
+      useSimulationStore.getState().resetSession()
       set({ doc: createWorld(), history: [], future: [] })
       // A fresh world is pristine: clear the dirty flag and created stamp so the
       // autosave gate and Save's meta.created both start clean.
@@ -117,7 +120,10 @@ export const useWorldStore = create<WorldStore>((set, get) => {
     },
     replaceWorld: (doc) => {
       // Open-while-running has the same stale-engine + edit-lock failure as newWorld.
-      useSimulationStore.getState().stop()
+      // resetSession (not stop()): the incoming doc's ids don't match the discarded
+      // world's session state, so the swap clears it wholesale instead of leaving stale
+      // frames scrubbable (see Task 7).
+      useSimulationStore.getState().resetSession()
       set({ doc, history: [], future: [] })
     },
 

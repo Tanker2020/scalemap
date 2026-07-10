@@ -24,6 +24,10 @@ interface SimulationStoreV2 {
 
   start: (doc: WorldDoc, compiled: CompiledWorld) => void
   stop: () => void
+  // Doc swaps (New/Open) call this instead of stop(): healthOverrides referenced the
+  // discarded world's ids, and a stale latestBatch/replay ring would let ScrubberV2 offer
+  // frames from a world that no longer exists (see ScrubberV2.tsx's latestBatch gate).
+  resetSession: () => void
   setTimeScale: (scale: number) => void
   setOutage: (scope: 'server' | 'az' | 'region', id: string, down: boolean) => void
   setScrubIndex: (i: number | null) => void
@@ -57,6 +61,13 @@ export const useSimulationStore = create<SimulationStoreV2>((set) => ({
   stop: () => {
     worldEngine.stop()
     set({ running: false })
+  },
+  resetSession: () => {
+    worldEngine.stop()
+    set({
+      running: false, latestBatch: null, events: [], scrubIndex: null, scrubBatch: null,
+      degraded: false, healthOverrides: {},
+    })
   },
   setTimeScale: (scale) => {
     worldEngine.setTimeScale(scale)

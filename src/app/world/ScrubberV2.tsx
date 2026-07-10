@@ -19,6 +19,7 @@ function worstAzHealthScore(frame: ReplayFrame): number {
 
 export function ScrubberV2() {
   const running = useSimulationStore(s => s.running)
+  const latestBatch = useSimulationStore(s => s.latestBatch)
   const scrubIndex = useSimulationStore(s => s.scrubIndex)
   const setScrubIndex = useSimulationStore(s => s.setScrubIndex)
   const [frames, setFrames] = useState<ReplayFrame[]>([])
@@ -29,7 +30,10 @@ export function ScrubberV2() {
     setFrames(useSimulationStore.getState().getReplayFrames())
   }, [running])
 
-  if (running || frames.length === 0) return null
+  // A fresh doc (post New/Open resetSession) has neither frames nor a batch — the engine's
+  // replay ring survives stop() and only clears on the next start(), so latestBatch is the
+  // signal that distinguishes "just stopped, scrub away" from "discarded world, stale ring".
+  if (running || frames.length === 0 || latestBatch === null) return null
 
   const pick = (clientX: number, target: HTMLDivElement) => {
     const rect = target.getBoundingClientRect()
