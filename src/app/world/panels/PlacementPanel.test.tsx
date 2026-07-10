@@ -48,5 +48,11 @@ describe('PlacementPanel', () => {
     const ms = Object.values(useWorldStore.getState().doc.managedServices)
     expect(ms).toHaveLength(1)
     expect(ms[0].provider).toBe('aws')
+
+    // Remove: the managed row's × is the last one in DOM order — the seeded placement's own
+    // remove button (from the blueprints/placements section) renders above ▸ MANAGED SERVICES.
+    const removeButtons = screen.getAllByText('×')
+    fireEvent.click(removeButtons[removeButtons.length - 1])
+    expect(Object.values(useWorldStore.getState().doc.managedServices)).toHaveLength(0)
   })
 })

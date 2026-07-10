@@ -139,6 +139,17 @@ describe('TrafficPanel — routing', () => {
     expect(screen.getByText(/nearest region by great-circle distance/)).toBeInTheDocument()
   })
 
+  it('latency and priority policy explainers render when selected', () => {
+    render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
+    fireEvent.click(screen.getByText('⚡ latency'))
+    expect(useWorldStore.getState().doc.routing.policy).toBe('latency')
+    expect(screen.getByText(/fastest healthy region; failover honors the DNS TTL/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('priority'))
+    expect(useWorldStore.getState().doc.routing.policy).toBe('priority')
+    expect(screen.getByText(/highest-priority healthy region in the order below/)).toBeInTheDocument()
+  })
+
   it('ttl hint appears when TTL outlives detection and clears otherwise', () => {
     useWorldStore.getState().updateRouting({ dnsTtlSec: 5, healthCheckIntervalMs: 12000, healthCheckFailureThreshold: 3 })
     render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)

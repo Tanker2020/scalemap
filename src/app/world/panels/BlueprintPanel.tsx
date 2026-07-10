@@ -6,7 +6,7 @@ import { useState } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { nextWorldId } from '../../../lib/world/factories'
-import type { ServiceBlueprint, BlueprintDependency } from '../../../lib/world/types'
+import type { ServiceBlueprint, BlueprintDependency, CompiledWorld } from '../../../lib/world/types'
 import { SectionHeader, ChipValue, DerivedField } from '../ui/kit'
 import { rpsPerCore, hostRpsCapacity, ramAtConnections, diskIoWord } from '../ui/derived'
 import { sectionLabel, field, smallBtn, dangerBtn, row } from './panelStyles'
@@ -14,6 +14,7 @@ import { sectionLabel, field, smallBtn, dangerBtn, row } from './panelStyles'
 export function BlueprintPanel() {
   const doc = useWorldStore(s => s.doc)
   const store = useWorldStore.getState()
+  const compiled = useCompiledWorld()
   const [name, setName] = useState('')
 
   return (
@@ -25,15 +26,14 @@ export function BlueprintPanel() {
         <button style={smallBtn} disabled={!name.trim()}
           onClick={() => { store.addBlueprint(name.trim()); setName('') }}>+ Blueprint</button>
       </div>
-      {Object.values(doc.blueprints).map(bp => <BlueprintCard key={bp.id} bp={bp} />)}
+      {Object.values(doc.blueprints).map(bp => <BlueprintCard key={bp.id} bp={bp} compiled={compiled} />)}
     </div>
   )
 }
 
-function BlueprintCard({ bp }: { bp: ServiceBlueprint }) {
+function BlueprintCard({ bp, compiled }: { bp: ServiceBlueprint; compiled: CompiledWorld }) {
   const doc = useWorldStore(s => s.doc)
   const store = useWorldStore.getState()
-  const compiled = useCompiledWorld()
   const [showDeps, setShowDeps] = useState(false)
   const upd = (patch: Partial<ServiceBlueprint>) => store.updateBlueprint(bp.id, patch)
 

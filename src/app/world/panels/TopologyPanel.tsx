@@ -180,7 +180,7 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
           <button style={{ ...smallBtn, border: 'none', padding: 0, background: 'transparent', textAlign: 'left' }} onClick={onToggle}>
             {expanded ? '▾' : '▸'} {server.label} <span style={{ color: 'var(--color-text-muted)' }}>({server.kind})</span>
           </button>
-          <span style={{ fontSize: 9.5, color: 'var(--color-text-muted)' }}>
+          <span style={{ fontSize: 9.5, color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
             {server.kind} · {server.specs.vcpu}c/{server.specs.ramMb / 1024}G · {azSuffix}
           </span>
         </div>

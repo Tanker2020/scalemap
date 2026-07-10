@@ -12,6 +12,10 @@ describe('SectionHeader', () => {
     expect(screen.getByText('▸ US-EAST-1 · N. VIRGINIA')).toBeInTheDocument()
     expect(screen.getByText('● healthy')).toBeInTheDocument()
   })
+  it('applies a custom accent hex to the label color, overriding the kit default', () => {
+    render(<SectionHeader label="▸ FIREWALL" accent="#F59E0B" />)
+    expect(screen.getByText('▸ FIREWALL').style.color).toBe('rgb(245, 158, 11)')
+  })
 })
 
 describe('EdgeRow', () => {
@@ -31,6 +35,12 @@ describe('EdgeRow', () => {
     expect(screen.queryByTestId('kit-dot')).not.toBeInTheDocument()
     fireEvent.click(screen.getByText('row content'))
     expect(onClick).toHaveBeenCalledTimes(1)
+  })
+  it('edgeColor renders the left edge and node-base background', () => {
+    render(<EdgeRow edgeColor="var(--color-danger)">edged row</EdgeRow>)
+    const rowEl = screen.getByText('edged row').closest('.kit-row') as HTMLElement
+    expect(rowEl.style.borderLeft).toBe('2px solid var(--color-danger)')
+    expect(rowEl.style.background).toBe('var(--color-node-base)')
   })
 })
 

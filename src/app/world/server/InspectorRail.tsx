@@ -80,7 +80,7 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
               background: selection.kind === 'rule' && selection.ruleId === r.id
                 ? 'color-mix(in srgb, var(--color-text-primary) 3%, transparent)' : undefined,
             }}>
-            <span style={{ color: 'var(--color-text-muted)', width: 12 }}>{i + 1}</span>
+            <span style={{ color: 'var(--color-text-muted)', width: 12, fontVariantNumeric: 'tabular-nums' }}>{i + 1}</span>
             <span style={{ color: r.action === 'allow' ? 'var(--color-success)' : 'var(--color-danger)' }}>{r.action.toUpperCase()}</span>
             <span>:{r.port} {r.protocol}</span>
             <span style={{ color: 'var(--color-text-muted)' }}>from {r.source}</span>
