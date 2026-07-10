@@ -9,6 +9,8 @@ import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
 import { GlobeScene } from './globe/GlobeScene'
 import { GlobeCards } from './GlobeCards'
+import { RegionPins } from './globe/RegionPins'
+import { PopulationMarkers } from './globe/PopulationMarkers'
 import { webglAvailable } from './globe/webgl'
 
 const visuallyHidden: CSSProperties = {
@@ -52,7 +54,9 @@ export function GlobeView() {
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div aria-hidden="true" style={{ width: '100%', height: '100%' }}>
         <GlobeScene placeMode={placeMode} onPlace={onPlace}>
-          {/* RegionPins + PopulationMarkers mount here (T4); ArcsLayer mounts here (T5) */}
+          <RegionPins />
+          <PopulationMarkers />
+          {/* ArcsLayer mounts here (T5) */}
         </GlobeScene>
       </div>
       <RegionA11yList />
