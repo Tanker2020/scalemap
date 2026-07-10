@@ -1,8 +1,21 @@
 // Capacity/geo analysis rules (Phase 6 D2). Pure. Distance via regionGeo.greatCircleKm (lib→lib;
 // the single cited distance source per design D2 — NOT a local haversine, NOT app-layer geo.ts).
 import type { AnalysisFinding, AnalysisRule } from '../types'
-import type { ServiceInstance } from '../../world/types'
+import type { CompiledWorld, ServiceInstance, WorldDoc } from '../../world/types'
 import { REGION_GEO, greatCircleKm } from '../../world/regionGeo'
+
+// Reserved RAM on a server: Σ (container memLimitMb ?? blueprint ramBaseMb) over resident
+// instances. Shared with the panel kit's derived hints (src/app/world/ui/derived.ts).
+export function reservedRamMb(serverId: string, doc: WorldDoc, compiled: CompiledWorld): number {
+  let sum = 0
+  for (const inst of Object.values(compiled.instances)) {
+    if (inst.serverId !== serverId) continue
+    const pl = doc.placements[inst.placementId]
+    const memLimit = pl?.runtime.type === 'container' ? pl.runtime.memLimitMb : null
+    sum += memLimit ?? doc.blueprints[inst.blueprintId]?.workload.ramBaseMb ?? 0
+  }
+  return sum
+}
 
 const ramOversubscribed: AnalysisRule = {
   id: 'ram-oversubscribed', family: 'capacity',
@@ -14,12 +27,7 @@ const ramOversubscribed: AnalysisRule = {
     const out: AnalysisFinding[] = []
     for (const [serverId, insts] of byServer) {
       const server = doc.servers[serverId]; if (!server) continue
-      let sum = 0
-      for (const inst of insts) {
-        const pl = doc.placements[inst.placementId]
-        const memLimit = pl?.runtime.type === 'container' ? pl.runtime.memLimitMb : null
-        sum += memLimit ?? doc.blueprints[inst.blueprintId]?.workload.ramBaseMb ?? 0
-      }
+      const sum = reservedRamMb(serverId, doc, compiled)
       if (sum <= server.specs.ramMb) continue
       out.push({
         id: `ram-oversubscribed:${serverId}`, ruleId: 'ram-oversubscribed', family: 'capacity', severity: 'warning',
