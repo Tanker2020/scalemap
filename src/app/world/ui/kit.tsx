@@ -2,11 +2,14 @@
 // panel migrates onto in T2–T4. Small, always-used-together components; kept as ONE file by
 // design (see task brief). Token-only styling — the only sanctioned raw hexes in the app are
 // the glow constants below, exposed to CSS as --kit-* vars so consumers stay theme-correct.
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 
 // ─── sanctioned hexes (ONLY here, no other file — consumers use the --kit-* CSS vars below,
 // never these constants directly) ────────────────────────────────────────────────
-const KIT_GLOW_TEXT = '#7CFFE9'
+// Exported (unlike its siblings below) as the one scene-surface accent for always-dark mounts
+// that can't ride the --kit-accent CSS var (e.g. server/InspectorRail.tsx, which keeps a
+// hardcoded dark background regardless of theme — see Item 3 of the final-review fix wave).
+export const KIT_GLOW_TEXT = '#7CFFE9'
 const KIT_GLOW_DIM = '#2DD4BF44'
 const KIT_TEAL = '#2DD4BF'
 const KIT_GLOW_TEXT_LIGHT = '#0F766E'
@@ -31,10 +34,17 @@ if (typeof document !== 'undefined' && !document.getElementById(KIT_STYLE_ID)) {
 }
 .kit-row { border: 1px solid transparent; }
 .kit-row:hover { background: var(--color-surface-hover); border-color: var(--color-node-border); }
-.kit-pcard:hover { border-color: var(--color-accent); }
+.kit-pcard:hover {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 27%, transparent), 0 6px 18px rgba(0,0,0,0.31);
+}
 .kit-t { transition: all 0.15s ease; }
 @media (prefers-reduced-motion: reduce) {
   .kit-t { transition: none; }
+}
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 `
   document.head.appendChild(style)
@@ -221,7 +231,13 @@ export function DerivedField({
 
   // ─ slider mode local state (live, uncommitted) ─
   const [local, setLocal] = useState(value)
-  useEffect(() => { setLocal(value) }, [value])
+  // Tracks whether the user has actually moved the slider since the last commit/resync — guards
+  // against a keyUp/blur firing commitSlider from mere focus traversal (tabbing in/through) when
+  // the stored `value` sits outside [min,max] (settable elsewhere without full clamping, e.g.
+  // inspectorForms' WorkloadForm) and `local`'s clamp would otherwise dispatch an unsolicited
+  // commit. Only mouse/touch drags and actual range keystrokes fire onChange.
+  const interacted = useRef(false)
+  useEffect(() => { setLocal(value); interacted.current = false }, [value])
 
   const commitInput = () => {
     const n = Number(text)
@@ -232,7 +248,9 @@ export function DerivedField({
   }
 
   const commitSlider = () => {
+    if (!interacted.current) return
     const c = clamp(local, lo, hi)
+    interacted.current = false
     if (c !== value) onCommit(c)
   }
 
@@ -264,7 +282,7 @@ export function DerivedField({
               max={max}
               value={local}
               disabled={disabled}
-              onChange={e => setLocal(Number(e.target.value))}
+              onChange={e => { interacted.current = true; setLocal(Number(e.target.value)) }}
               onMouseUp={commitSlider}
               onTouchEnd={commitSlider}
               onKeyUp={commitSlider}

@@ -201,7 +201,7 @@ function RoutingSection() {
           { value: 'latency', label: '⚡ latency' },
           { value: 'geo', label: '🌍 geo' },
           { value: 'weighted', label: '⚖ weighted' },
-          { value: 'priority', label: 'priority' },
+          { value: 'priority', label: '1-2-3 priority' },
         ]}
       />
       <Explainer>{POLICY_EXPLAINER[policy]}</Explainer>

@@ -68,8 +68,14 @@ const DIFFICULTY_STYLE: Record<VaultEntry['difficulty'], CSSProperties> = {
     color: 'var(--color-success-text)',
     borderColor: 'color-mix(in srgb, var(--color-success) 27%, transparent)',
   },
-  intermediate: { color: 'var(--color-warning)' },
-  teaching: { color: 'var(--color-danger)' },
+  intermediate: {
+    color: 'var(--color-warning)',
+    borderColor: 'color-mix(in srgb, var(--color-warning) 27%, transparent)',
+  },
+  teaching: {
+    color: 'var(--color-danger)',
+    borderColor: 'color-mix(in srgb, var(--color-danger) 27%, transparent)',
+  },
 }
 
 export interface VaultCardProps {

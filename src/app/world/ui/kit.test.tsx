@@ -111,6 +111,14 @@ describe('DerivedField', () => {
     render(<DerivedField label="x" value={5} disabled onCommit={onCommit} />)
     expect(screen.getByLabelText('x')).toBeDisabled()
   })
+  it('slider does not commit on focus traversal when the stored value is out of range', () => {
+    const onCommit = vi.fn()
+    render(<DerivedField label="x" mode="slider" min={1} max={60} value={100} onCommit={onCommit} />)
+    const slider = screen.getByLabelText('x')
+    fireEvent.keyUp(slider)
+    fireEvent.blur(slider)
+    expect(onCommit).not.toHaveBeenCalled()
+  })
 })
 
 describe('Segmented', () => {

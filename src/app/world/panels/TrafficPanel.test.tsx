@@ -145,7 +145,7 @@ describe('TrafficPanel — routing', () => {
     expect(useWorldStore.getState().doc.routing.policy).toBe('latency')
     expect(screen.getByText(/fastest healthy region; failover honors the DNS TTL/)).toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('priority'))
+    fireEvent.click(screen.getByText('1-2-3 priority'))
     expect(useWorldStore.getState().doc.routing.policy).toBe('priority')
     expect(screen.getByText(/highest-priority healthy region in the order below/)).toBeInTheDocument()
   })

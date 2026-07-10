@@ -10,7 +10,7 @@ import { useCompiledWorld } from '../useCompiledWorld'
 import { useServerDisplayMetrics } from './useServerDisplayMetrics'
 import type { BoardSelection } from './selection'
 import { WorkloadForm, RuntimeForm, FirewallEditor, VolumesEditor } from './inspectorForms'
-import { SectionHeader } from '../ui/kit'
+import { SectionHeader, KIT_GLOW_TEXT } from '../ui/kit'
 
 const railText = { font: '7.5px var(--font-mono)', color: 'var(--color-text-secondary)', lineHeight: 1.9 } as const
 
@@ -30,7 +30,11 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
   const display = useServerDisplayMetrics(serverId)
   const server = doc.servers[serverId]
 
-  const header = (title: string) => <SectionHeader label={`▸ INSPECTOR — ${title}`} />
+  // The rail keeps a hardcoded dark scene background regardless of app theme (below), so it
+  // can't ride SectionHeader's default --kit-accent, which flips to the light-theme teal under
+  // data-theme="light" and would read at ~3.4:1 on this always-dark surface. KIT_GLOW_TEXT is
+  // the one export from kit.tsx sanctioned for exactly this always-dark-mount case.
+  const header = (title: string) => <SectionHeader label={`▸ INSPECTOR — ${title}`} accent={KIT_GLOW_TEXT} />
 
   let body: ReactElement
   if (!selection) {
