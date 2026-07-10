@@ -1,6 +1,10 @@
+// Placement authoring — where each blueprint runs (server/count/role/runtime) plus managed
+// services. Hybrid instrument restyle (Polish 1 T3) — presentation only; every dispatch below
+// is byte-for-byte identical to the pre-restyle panel (see .superpowers/sdd/task-3-brief.md).
 import { useState } from 'react'
 import { useWorldStore } from '../../store/world.store'
-import type { ManagedService, Placement, PlacementRuntime } from '../../../lib/world/types'
+import type { ManagedService, Placement, PlacementRole, PlacementRuntime } from '../../../lib/world/types'
+import { SectionHeader, EdgeRow, Segmented } from '../ui/kit'
 import { sectionLabel, field, smallBtn, dangerBtn, row } from './panelStyles'
 
 // Author managed services with CLOUD_REGISTRY keys directly (D12) so Cost v2 prices them without
@@ -25,6 +29,12 @@ const PROVIDERS: { key: ManagedService['provider']; label: string }[] = [
   { key: 'generic', label: 'Generic' },
 ]
 
+const ROLE_OPTIONS: { value: PlacementRole; label: string }[] = [
+  { value: 'primary', label: 'primary' },
+  { value: 'replica', label: 'replica' },
+  { value: 'canary', label: 'canary' },
+]
+
 export function PlacementPanel() {
   const doc = useWorldStore(s => s.doc)
   const store = useWorldStore.getState()
@@ -44,20 +54,23 @@ export function PlacementPanel() {
       <div style={sectionLabel}>Placements</div>
       {blueprints.length === 0 && <div style={{ color: 'var(--color-text-muted)' }}>create a blueprint first</div>}
       {blueprints.map(bp => (
-        <div key={bp.id} style={{ border: '1px solid var(--color-node-border)', borderRadius: 6, padding: 8, marginTop: 8 }}>
+        <div key={bp.id} style={{
+          background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
+          borderRadius: 8, padding: 12, marginTop: 8,
+        }}>
           <div style={row}>
-            <span style={{ width: 10, height: 10, borderRadius: 3, background: bp.color }} />
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: bp.color, flexShrink: 0 }} />
             <strong style={{ flex: 1 }}>{bp.name}</strong>
             <button style={smallBtn} disabled={servers.length === 0}
               onClick={() => store.addPlacement(bp.id, servers[0].id)}>+ Place</button>
           </div>
           {Object.values(doc.placements).filter(p => p.blueprintId === bp.id).map(pl => (
-            <PlacementRow key={pl.id} pl={pl} />
+            <PlacementRow key={pl.id} pl={pl} edgeColor={bp.color} />
           ))}
         </div>
       ))}
 
-      <div style={sectionLabel}>Managed services</div>
+      <SectionHeader label="▸ MANAGED SERVICES" />
       <div style={row}>
         <select style={{ ...field, flex: 1, marginBottom: 0 }} value={msType} onChange={e => setMsType(e.target.value)}>
           {MANAGED_TYPES.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
@@ -77,16 +90,15 @@ export function PlacementPanel() {
         }}>+ Add</button>
       </div>
       {Object.values(doc.managedServices).map(ms => (
-        <div key={ms.id} style={row}>
-          <span style={{ flex: 1 }}>{ms.label} <span style={{ color: 'var(--color-text-muted)' }}>:{ms.port}</span></span>
-          <button style={dangerBtn} onClick={() => store.removeManagedService(ms.id)}>×</button>
-        </div>
+        <EdgeRow key={ms.id} trailing={<button style={dangerBtn} onClick={() => store.removeManagedService(ms.id)}>×</button>}>
+          {ms.label} <span style={{ color: 'var(--color-text-muted)' }}>:{ms.port}</span>
+        </EdgeRow>
       ))}
     </div>
   )
 }
 
-function PlacementRow({ pl }: { pl: Placement }) {
+function PlacementRow({ pl, edgeColor }: { pl: Placement; edgeColor: string }) {
   const doc = useWorldStore(s => s.doc)
   const store = useWorldStore.getState()
   const upd = (patch: Partial<Placement>) => store.updatePlacement(pl.id, patch)
@@ -101,7 +113,10 @@ function PlacementRow({ pl }: { pl: Placement }) {
   }
 
   return (
-    <div style={{ marginTop: 6, paddingLeft: 8, borderLeft: '2px solid var(--color-node-border)' }}>
+    <EdgeRow
+      edgeColor={edgeColor}
+      trailing={<button style={dangerBtn} onClick={() => store.removePlacement(pl.id)}>×</button>}
+    >
       <div style={row}>
         <select style={{ ...field, flex: 1, marginBottom: 0 }} value={pl.serverId}
           onChange={e => upd({ serverId: e.target.value })}>
@@ -109,11 +124,7 @@ function PlacementRow({ pl }: { pl: Placement }) {
         </select>
         <input style={{ ...field, width: 44, marginBottom: 0 }} type="number" min={1} value={pl.count} aria-label="pl-count"
           onChange={e => upd({ count: Math.max(1, Number(e.target.value)) })} />
-        <select style={{ ...field, width: 76, marginBottom: 0 }} value={pl.role}
-          onChange={e => upd({ role: e.target.value as Placement['role'] })}>
-          <option value="primary">primary</option><option value="replica">replica</option><option value="canary">canary</option>
-        </select>
-        <button style={dangerBtn} onClick={() => store.removePlacement(pl.id)}>×</button>
+        <Segmented ariaLabel={'role-' + pl.id} value={pl.role} onChange={v => upd({ role: v })} options={ROLE_OPTIONS} />
       </div>
       <div style={row}>
         <select style={{ ...field, width: 90, marginBottom: 0 }} value={pl.runtime.type}
@@ -141,6 +152,6 @@ function PlacementRow({ pl }: { pl: Placement }) {
             return { host: host || 0, container: container || 0 }
           }) } as PlacementRuntime })} />
       )}
-    </div>
+    </EdgeRow>
   )
 }
