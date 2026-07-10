@@ -112,6 +112,64 @@ function crossRegionFixture() {
   return { doc, compiled, r1, r2 }
 }
 
+// TWO distinct cross-region pairs with a large aggregate-rps gap, purpose-built to catch a
+// broken last-row-wins aggregator AND to exercise the Math.max(0.15, …) intensity floor:
+//   - DOMINANT pair r1 (us-east-1) -> r2 (eu-west-1): webA (public, r1, popA peakRps 100) has ONE
+//     dependency that mesh-resolves to apiX's TWO instances in r2 → TWO downstream rows, each
+//     ~admittedA/2, that MUST sum back to admittedA for r1->r2 to be the max pair.
+//   - FAINT pair r3 (ap-southeast-2/Sydney) -> r2: webB (public, r3, popB peakRps 10) has ONE
+//     dependency resolving to apiY's SINGLE instance in r2 → exactly ONE row of ~admittedB.
+// Because intensity is a ratio, the shared demand-curve factor cancels: ρ = admittedB/admittedA =
+// peakRpsB/peakRpsA = 10/100 = 0.1 (both servers are far below dedicated-8 capacity at 5ms/req, so
+// admittedScale = 1 for both). Correct summation → r1->r2 rps = admittedA (max) so faint =
+// 0.1 < 0.15 → FLOORED to 0.15. A last-row-wins bug would collapse the dominant pair to a single
+// admittedA/2 row (the faint pair is genuinely one row and is unaffected), doubling the faint ratio
+// to 0.2 ≠ 0.15 — so asserting the faint arc's intensity === 0.15 exactly discriminates the two.
+function twoPairFixture() {
+  const doc = createWorld()
+  doc.traffic.autoBaseline = false
+  doc.routing.policy = 'geo'
+
+  const r1 = createRegion('us-east-1')
+  const r2 = createRegion('eu-west-1')
+  const r3 = createRegion('ap-southeast-2')
+  const az1 = createAz(r1.id, 'us-east-1a')
+  const az2a = createAz(r2.id, 'eu-west-1a')
+  const az2b = createAz(r2.id, 'eu-west-1b')
+  const az3 = createAz(r3.id, 'ap-southeast-2a')
+  Object.assign(doc.regions, { [r1.id]: r1, [r2.id]: r2, [r3.id]: r3 })
+  Object.assign(doc.azs, { [az1.id]: az1, [az2a.id]: az2a, [az2b.id]: az2b, [az3.id]: az3 })
+
+  const s1 = createServer(az1.id, getPreset('dedicated-8')!)     // webA (r1)
+  const s2 = createServer(az2a.id, getPreset('dedicated-8')!)    // apiX instance #1 (r2)
+  const s3 = createServer(az2b.id, getPreset('dedicated-8')!)    // apiX instance #2 (r2)
+  const s4 = createServer(az2a.id, getPreset('dedicated-8')!)    // apiY single instance (r2)
+  const s5 = createServer(az3.id, getPreset('dedicated-8')!)     // webB (r3)
+  Object.assign(doc.servers, { [s1.id]: s1, [s2.id]: s2, [s3.id]: s3, [s4.id]: s4, [s5.id]: s5 })
+
+  const webA = publicBlueprint('webA', 0)
+  const webB = publicBlueprint('webB', 1)
+  const apiX = createBlueprint('apiX', 2)
+  const apiY = createBlueprint('apiY', 3)
+  webA.dependencies = [{ id: 'd-apiX', target: { kind: 'blueprint', blueprintId: apiX.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+  webB.dependencies = [{ id: 'd-apiY', target: { kind: 'blueprint', blueprintId: apiY.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+  Object.assign(doc.blueprints, { [webA.id]: webA, [webB.id]: webB, [apiX.id]: apiX, [apiY.id]: apiY })
+
+  const place = (bpId: string, serverId: string) => { const pl = createPlacement(bpId, serverId); doc.placements[pl.id] = pl; return pl }
+  place(webA.id, s1.id)
+  place(apiX.id, s2.id); place(apiX.id, s3.id)   // TWO apiX instances in r2 → dominant pair is 2 rows
+  place(apiY.id, s4.id)                           // ONE apiY instance in r2 → faint pair is 1 row
+  place(webB.id, s5.id)
+
+  const popA = createPopulation('nyc', 40.7, -74.0);      popA.peakRps = 100   // -> r1 (nearest)
+  const popB = createPopulation('sydney', -33.8, 151.2);  popB.peakRps = 10    // -> r3 (nearest)
+  doc.populations[popA.id] = popA
+  doc.populations[popB.id] = popB
+
+  const compiled = compileWorld(doc)
+  return { doc, compiled, r1, r2, r3 }
+}
+
 // Everything in ONE region — compileWorld's mesh can only ever produce same-region hops here
 // (localhost/same-az/cross-az), never cross-region. popCount lets the cap test crank population
 // count without touching the rest of the topology.
@@ -209,6 +267,30 @@ describe('buildArcs v2 (globe scope)', () => {
     const geoR1 = REGION_GEO['us-east-1']
     const geoR2 = REGION_GEO['eu-west-1']
     expect(interArcs[0]).toMatchObject({ fromLatLon: [geoR1.lat, geoR1.lon], toLatLon: [geoR2.lat, geoR2.lon], intensity: 1 })
+    sim.engine.stop()
+  })
+
+  it('aggregates multi-row rps per pair and floors a faint pair at 0.15', () => {
+    // Two cross-region pairs: dominant r1->r2 (fed by TWO summed rows) and faint r3->r2 (ONE row).
+    // Correct rps-summation makes the dominant pair the max, flooring the faint ratio (0.1) to 0.15;
+    // a last-row-wins aggregator would halve the dominant pair and yield 0.2 for the faint one.
+    const f = twoPairFixture()
+    const sim = drive(f.doc, f.compiled)
+    const frames: FramePayload[] = []
+    sim.engine.attachRenderer({ level: 'globe' }, p => frames.push(p))
+    sim.stepFor(3)
+    sim.engine.__test_render(1000)
+    const frame = frames[frames.length - 1]
+    const interArcs = frame.arcs.filter(a => a.kind === 'inter-region')
+    const geoR1 = REGION_GEO['us-east-1']
+    const geoR2 = REGION_GEO['eu-west-1']
+    const geoR3 = REGION_GEO['ap-southeast-2']
+
+    expect(interArcs).toHaveLength(2)
+    const dominant = interArcs.find(a => a.fromLatLon[0] === geoR1.lat && a.fromLatLon[1] === geoR1.lon)
+    const faint = interArcs.find(a => a.fromLatLon[0] === geoR3.lat && a.fromLatLon[1] === geoR3.lon)
+    expect(dominant).toMatchObject({ toLatLon: [geoR2.lat, geoR2.lon], intensity: 1 })      // 2 rows summed → max pair
+    expect(faint).toMatchObject({ toLatLon: [geoR2.lat, geoR2.lon], intensity: 0.15 })       // 0.1 ratio, floored
     sim.engine.stop()
   })
 
