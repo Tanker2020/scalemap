@@ -11,6 +11,9 @@ pub fn run() {
             commands::get_recent_files,
             commands::open_file_dialog,
             commands::save_file_dialog,
+            commands::save_llm_settings,
+            commands::load_llm_settings,
+            commands::llm_chat,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -45,3 +45,54 @@ afterEach(() => {
 afterEach(() => {
   cleanup()
 })
+
+// ─── jsdom `localStorage` polyfill (Node 22+ compatibility) ─────────────────────
+// Node 22+ ships a built-in global `localStorage` (the Web Storage API) that requires the
+// `--localstorage-file=<path>` CLI flag to actually persist entries; without that flag the
+// global still exists (so environment feature-detection sees it as "already implemented") but
+// every method silently no-ops — `setItem`/`getItem`/`clear` are all `undefined` on it. Vitest's
+// jsdom environment reuses whatever `globalThis.localStorage` it finds instead of installing its
+// own working `Storage` class in that case, so `window.localStorage` under `@vitest-environment
+// jsdom` inherits the same broken stub (verified: `Object.getPrototypeOf(localStorage).constructor
+// .name === 'Object'`, not `'Storage'`). First surfaced by src/lib/tauri.test.ts (Phase 6 Task
+// 5 — the first jsdom test in this repo to touch localStorage). Detect the broken stub and
+// replace it with a tiny in-memory Storage-compatible polyfill, scoped to jsdom test files only
+// (`typeof window !== 'undefined'`) and only when the existing global is actually non-functional,
+// so this is a complete no-op on any runtime where Node's flag/behavior differs (e.g. an older
+// Node, or one invoked with `--localstorage-file`).
+if (typeof window !== 'undefined' && typeof window.localStorage?.setItem !== 'function') {
+  class MemoryStorage {
+    private store = new Map<string, string>()
+    getItem(key: string): string | null {
+      return this.store.has(key) ? this.store.get(key)! : null
+    }
+    setItem(key: string, value: string): void {
+      this.store.set(key, String(value))
+    }
+    removeItem(key: string): void {
+      this.store.delete(key)
+    }
+    clear(): void {
+      this.store.clear()
+    }
+    key(index: number): string | null {
+      return Array.from(this.store.keys())[index] ?? null
+    }
+    get length(): number {
+      return this.store.size
+    }
+  }
+  const polyfill = new MemoryStorage()
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: polyfill,
+    configurable: true,
+    writable: true,
+    enumerable: true,
+  })
+  Object.defineProperty(window, 'localStorage', {
+    value: polyfill,
+    configurable: true,
+    writable: true,
+    enumerable: true,
+  })
+}

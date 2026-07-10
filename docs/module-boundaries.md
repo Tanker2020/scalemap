@@ -99,10 +99,12 @@ only callers.
 ### G. Rust / Tauri backend
 | File | Role |
 |---|---|
-| `src-tauri/src/commands.rs` (132 lines) | All Tauri commands: save/load diagram, file dialogs, recent files |
+| `src-tauri/src/commands.rs` (317 lines) | All Tauri commands: save/load diagram, file dialogs, recent files, **and (2026-07-10, Phase 6 Task 5) LLM settings persistence + chat transport** |
 | `src-tauri/src/lib.rs`, `main.rs` | Entrypoint wiring |
 
 Entirely separate language/toolchain from the TS frontend — zero merge-conflict overlap with anything above by construction. Good area for someone to own if they're doing file-persistence work (the legacy `ReportsPanel.tsx` disk-export roadmap item was deleted with the rest of the legacy tree 2026-07-08, §H — a Phase-2+ reports surface would need this backend work again from scratch).
+
+**2026-07-10 (Phase 6 Task 5 — LLM settings + chat, D5/D6):** added `LlmSettings { base_url, api_key, model }` persisted to a brand-new `llm_settings.json` in the app data dir — mirrors `recent_files.json`'s exact pattern (`app_data_dir()` + `fs::create_dir_all` + `serde_json`, default-on-any-error reads) but is a **completely separate file**, never touched by `save_diagram`/`load_diagram`/`serializer.ts` — the API key must never end up inside a `.scalemap` document (D6). Three new commands: `save_llm_settings`, `load_llm_settings` (both sync, same shape as `get_recent_files`), and `llm_chat(base_url, api_key, body) -> Result<String, String>` (`async`, `reqwest` POST to `{base_url}/chat/completions` with a Bearer header, 60s timeout, returns raw response text for any HTTP status — only transport failures are `Err`). `reqwest` (`default-features = false`, `["json", "rustls-tls"]`) is the **only new Cargo dependency this whole phase adds**; `tauri::async_runtime::block_on` in the Rust test suite needed no additional dev-dependency (tokio already arrives transitively via tauri/reqwest). **D6 key-security invariant:** every `llm_chat` error path is piped through a pure `redact(msg, key)` helper (plain `str::replace(key, "•••")`, no-op passthrough for an empty key to dodge `replace("", …)`'s insert-between-every-char footgun) before it's returned — verified by two asserting tests (`redact_masks_key_everywhere_and_short_keys_entirely`, `llm_chat_redacts_key_from_connection_refused_error`, the latter against a real closed-port TCP connection refusal). **TS wrapper casing (verified, easy to get backwards):** Tauri v2 camelCases command *scalar arg names* (`llmChat`'s wrapper sends `{ baseUrl, apiKey, body }`, mapped to the Rust fn's snake_case params) but does **not** touch struct *field* names — `LlmSettings`' fields stay snake_case end-to-end over serde, so `src/lib/tauri.ts`'s `saveLlmSettings`/`loadLlmSettings` are the only two places in the app that do explicit snake↔camel mapping (`{ base_url, api_key, model }` ↔ `{ baseUrl, apiKey, model }`); every other caller only ever sees the camelCase `LlmSettings` shape. `src/lib/tauriMock.ts` grew matching `save_llm_settings`/`load_llm_settings` (localStorage, key `scalemap:llm_settings`) and `llm_chat` (direct browser `fetch`, dev-only — real builds always go through the Rust command, which has no CORS restriction) entries.
 
 ### H. Utility dock (Reports) — deleted 2026-07-08 (Phase 2 Task 17)
 
@@ -193,6 +195,21 @@ gained `"vitest.setup.ts"` (was `["src"]` only) — `@testing-library/jest-dom/v
 `vitest.setup.ts` lives at the repo root, outside `src/`; without this, `npm run build`'s `tsc`
 step fails on every `toBeInTheDocument()` call even though `vitest` itself (esbuild-transpiled,
 not type-checked) runs the same tests fine.
+
+**Second test-infra fix (2026-07-10, Phase 6 Task 5 — `src/lib/tauri.test.ts`, the first jsdom
+test in this repo to touch `localStorage`):** Node 22+ ships a built-in global `localStorage`
+that requires the `--localstorage-file=<path>` CLI flag to actually persist data; run without
+that flag (as this repo's `npx vitest run` always is), the global still exists — so Vitest's
+jsdom environment treats it as "already implemented" and reuses it instead of installing its own
+working `Storage` class — but every method on it silently no-ops (`setItem`/`clear`/etc. are all
+`undefined`). Confirmed via `Object.getPrototypeOf(localStorage).constructor.name === 'Object'`
+under `@vitest-environment jsdom` (would read `'Storage'` if jsdom's own implementation were
+active). `vitest.setup.ts` now detects this (`typeof window !== 'undefined' && typeof
+window.localStorage?.setItem !== 'function'`) and swaps in a tiny in-memory `Storage`-compatible
+polyfill via `Object.defineProperty` on both `globalThis` and `window` — scoped to jsdom test
+files only, and a complete no-op wherever the native global already works (e.g. a differently
+configured Node/CI). Any future jsdom test that touches `localStorage`/`sessionStorage` benefits
+for free; no test file needs to work around this itself.
 
 **Blast radius:** `types.ts` is imported by everything above — additive changes are safe,
 renames fan out to the whole world module. `compileWorld` output shape is consumed by all

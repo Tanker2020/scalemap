@@ -130,3 +130,188 @@ pub async fn save_file_dialog(app: AppHandle) -> Option<String> {
         .and_then(|f| f.into_path().ok())
         .map(|p| p.to_string_lossy().into_owned())
 }
+
+// ─── LLM settings + chat transport (Phase 6, D5/D6) ─────────────────────────────────
+// Settings persist to `llm_settings.json` in the app data dir — the exact pattern
+// `recent_files.json` already uses above. This file is DELIBERATELY never touched by
+// save_diagram/load_diagram — the API key must never end up inside a `.scalemap` file
+// (D6). `llm_chat` exists because a webview `fetch()` to an arbitrary third-party origin
+// (OpenAI, OpenRouter, etc.) dies on CORS; this command is the only place the key ever
+// leaves the process, and every error path passes through `redact()` first.
+
+const LLM_SETTINGS_FILE: &str = "llm_settings.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LlmSettings {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+}
+
+/// Replace every occurrence of `key` in `msg` with "•••". A no-op for an empty key (nothing
+/// configured yet, nothing to redact — and this sidesteps `str::replace("", ...)`'s footgun of
+/// inserting the marker between every character). Pure, unit-tested above.
+fn redact(msg: &str, key: &str) -> String {
+    if key.is_empty() {
+        return msg.to_string();
+    }
+    msg.replace(key, "\u{2022}\u{2022}\u{2022}")
+}
+
+fn llm_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("could not resolve app data dir: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("could not create app data dir: {e}"))?;
+    Ok(dir.join(LLM_SETTINGS_FILE))
+}
+
+#[tauri::command]
+pub fn save_llm_settings(app: AppHandle, settings: LlmSettings) -> Result<(), String> {
+    let path = llm_settings_path(&app)?;
+    let raw = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    fs::write(&path, raw).map_err(|e| format!("could not write llm settings: {e}"))
+}
+
+/// Returns `LlmSettings::default()` (all empty strings) on ANY error — missing file, corrupt
+/// JSON, unresolvable app data dir — so the Settings modal always has something to render.
+#[tauri::command]
+pub fn load_llm_settings(app: AppHandle) -> LlmSettings {
+    let Ok(path) = llm_settings_path(&app) else {
+        return LlmSettings::default();
+    };
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return LlmSettings::default();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+/// POSTs `body` verbatim to `{base_url}/chat/completions` with a Bearer auth header, 60s
+/// timeout, and returns the raw response text for ANY HTTP status (the caller reads an
+/// OpenAI-style `{error:{...}}` envelope itself when the provider signals failure via 4xx/5xx
+/// with a JSON body — this command doesn't interpret status codes at all). Err is reserved for
+/// TRANSPORT failures (DNS, connection refused, timeout) and always passes through `redact()`.
+#[tauri::command]
+pub async fn llm_chat(base_url: String, api_key: String, body: String) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| redact(&e.to_string(), &api_key))?;
+
+    let url = format!("{base_url}/chat/completions");
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| redact(&e.to_string(), &api_key))?;
+
+    response
+        .text()
+        .await
+        .map_err(|e| redact(&e.to_string(), &api_key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redact_masks_key_everywhere_and_short_keys_entirely() {
+        let key = "sk-super-secret-key-123"; // 23 chars — normal-length key
+        let msg = format!("connect failed using key {key} and again {key} here");
+        let out = redact(&msg, key);
+        assert!(!out.contains(key), "raw key leaked: {out}");
+        assert_eq!(out.matches('\u{2022}').count(), 6, "expected two '•••' markers (3 bullets each)");
+
+        // Short key (< 8 chars) — still fully replaced wherever it appears, not left partially
+        // visible or missed due to a length-based bug.
+        let short = "abc123"; // 6 chars
+        let msg2 = format!("error near {short} boundary, retrying {short}");
+        let out2 = redact(&msg2, short);
+        assert!(!out2.contains(short), "short key leaked: {out2}");
+
+        // Empty key — no-op passthrough (nothing configured yet, nothing to redact) and,
+        // critically, must NOT call `str::replace("", ...)` which would insert the marker
+        // between every character of the message.
+        let unchanged = redact("some upstream error text", "");
+        assert_eq!(unchanged, "some upstream error text");
+    }
+
+    #[test]
+    fn settings_serde_round_trip() {
+        let s = LlmSettings {
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: "sk-abc-123".to_string(),
+            model: "gpt-4o-mini".to_string(),
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"base_url\""));
+        assert!(json.contains("\"api_key\""));
+        assert!(json.contains("\"model\""));
+        let back: LlmSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.base_url, s.base_url);
+        assert_eq!(back.api_key, s.api_key);
+        assert_eq!(back.model, s.model);
+    }
+
+    #[test]
+    fn llm_chat_returns_body_from_tcp_listener_stub() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = r#"{"choices":[{"message":{"content":"hi"}}]}"#;
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf); // drain the request; this stub doesn't parse it
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body,
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let base_url = format!("http://127.0.0.1:{port}");
+        // NOTE (per Global Constraints — VERIFY, don't hard-assume): tauri::async_runtime::block_on
+        // needs no new Cargo.toml dependency (tauri already depends on tokio transitively and
+        // every existing async #[tauri::command] in this file — open_file_dialog/save_file_dialog
+        // — already proves tauri's async infra works without one). If this genuinely fails to
+        // compile/run in a plain #[test] (e.g. "no reactor running" panic), the dependency-free
+        // constraint is violated either way by adding `tokio` as a dev-dependency for
+        // `#[tokio::test]` — do that ONLY as a fallback, and log the deviation in
+        // `.superpowers/sdd/contract-drift.md` `## PHASE 6` since Global Constraints says Cargo.toml
+        // adds ONLY reqwest.
+        let result = tauri::async_runtime::block_on(llm_chat(
+            base_url,
+            "sk-test-key-0123456789".to_string(),
+            "{}".to_string(),
+        ));
+        handle.join().unwrap();
+
+        assert_eq!(result.unwrap(), body);
+    }
+
+    #[test]
+    fn llm_chat_redacts_key_from_connection_refused_error() {
+        // Bind then immediately drop — frees the ephemeral port while guaranteeing nothing else
+        // grabbed it in the interim, so connecting to it is a real OS-level refusal.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let key = "sk-should-never-leak-0000";
+        let base_url = format!("http://127.0.0.1:{port}");
+        let result = tauri::async_runtime::block_on(llm_chat(base_url, key.to_string(), "{}".to_string()));
+
+        let err = result.expect_err("expected a transport error against a closed port");
+        assert!(!err.contains(key), "raw api key leaked into error string: {err}");
+    }
+}
