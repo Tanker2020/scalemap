@@ -348,6 +348,99 @@ memo the rest of the board already depends on, so no new recompute path was intr
 
 ---
 
+### M. Region flow page & rack chassis — Phase 4 Levels 2–3 (`src/app/world/region/`, `src/lib/world/layoutRacks.ts`, `src/app/world/RackNodes.tsx`, 2026-07-09)
+
+Replaces the Phase-1 placeholder `RegionView` (§1J) with the Level-2 flow story (global-edge
+inbound → animated split lines → AZ rows → cross-AZ column, one alert ribbon, a failover
+timeline, per-AZ outage switches) and replaces the Level-3 AZ canvas's flat server cards
+(`WorldServerNode.tsx`) with rack-frame groups of chassis. Built across Tasks 1–6 (commits
+`fbfc706`→`8ae5c0f`); Task 7 (`895b557`) closed out `world.store.ts`/`PlacementPanel.tsx`'s
+managed-service provider param plus three Phase-3 server-board hygiene carry-forwards; this task
+(8) is final integration — verifying the whole branch and writing this section. Spec:
+`docs/superpowers/specs/2026-07-09-phase4-region-rack-design.md`.
+
+| File | Role |
+|---|---|
+| `src/app/world/region/regionData.ts` (Task 1) | Pure selectors, no React/store reads: `azShares` (per-AZ fraction of region rps; a down AZ's own `rps`/`fraction` are pinned to 0 and excluded from the denominator, so the remaining AZs' shares still sum to ~1 — the "redistribution" `SplitLines`/`AzRow` depict), `ribbonAlert` (most-severe warning/critical event in the trailing 30 sim-seconds scoped to the region, formatted with a `— traffic redistributed to <labels>` suffix for outage/health events and a `· clients still arriving (DNS TTL)` suffix for an unresolved `failover_started`), `regionEvents` (events whose `affected` intersects the region id, its AZ ids, its server ids, its resident **instance** ids — read off `compiled.instances[...].regionId`, not re-derived from placement-id string prefixes — or populations currently routed here per `batch.world.populationRoutes`), `replicationPairs` (stateful blueprints with a primary in one AZ and a replica in a different AZ of the same region, deduped by `(blueprint, fromAz, toAz)`), `crossAzEntries` (one entry per unordered AZ pair sharing either a cross-AZ compiled path or a replication pair, carrying a **local mirrored constant** `CROSS_AZ_HOP_MS = 1.5` — see the Frozen-contract note below, this is NOT an import from `worldEngine/`), `sparklineSeries` (last-n `regions[id].rps` from `ReplayFrame[]`, zero-padded), `dominantBlueprintColor` (highest-instance-count blueprint's signature color on a server). Mirrors `server/boardLayout.ts`'s (§L) "pure hub" shape, but unlike `boardLayout.ts` — which fans out to every other file in `server/` as a single shared computation — **only two of its seven exports are consumed outside `RegionView.tsx`+one component each** (see Blast radius) |
+| `src/app/world/region/AlertRibbon.tsx`, `SplitLines.tsx` (Task 2) | The two genuinely presentational sections: both take only plain data + callbacks as props (`alert`/`onTimelineClick`; `shares`/`height`) and read no store — `RegionView.tsx` computes `alert`/`shares` itself (via `regionData.ts`) and passes the finished values down, the same "compute once, pass down" shape as `server/`'s `TraceLayer`/`ServiceChip` (§L) |
+| `src/app/world/region/AzRow.tsx`, `CrossAzColumn.tsx` (Task 2) | **Not presentational leaves** — despite living alongside `AlertRibbon`/`SplitLines` in the same task, both are self-sufficient scoped views: `RegionView.tsx` passes them only an id (`azId`+`regionId`, or just `regionId`) plus navigation callbacks, and each independently reads `useWorldStore`/`useSimulationStore`/`useCompiledWorld` and calls its own `regionData.ts` selector (`AzRow` → `dominantBlueprintColor` per server strip; `CrossAzColumn` → `crossAzEntries`). `AzRow` additionally imports `computeWorldCost` from `../../../lib/costModelV2` directly to render its own `$<n>/mo` figure — a new, second caller of that function alongside `CostTab.tsx` (§1J), and **uncached**: every `AzRow` in a region calls `computeWorldCost(doc, batch?.world ?? null)` (a whole-`WorldDoc` walk) independently every render, one call per AZ row rather than one call per region — candidate for hoisting into `RegionView.tsx` and threading down if AZ counts grow enough to matter, not fixed this task. `AzRow` also distinguishes a manual outage (`healthOverrides[azId]`, label "outage (manual)") from an organic one (sustained errors/capacity/failed health checks with no operator toggle, label "outage") — fixed one commit after Task 2 landed (`8ec4cc4`) after the first version labelled every down row "manual" regardless of cause |
+| `src/app/world/region/TimelineStrip.tsx` (Task 3) | Same "scoped mini-view" shape as `AzRow`/`CrossAzColumn`, not a passive leaf either: takes only `regionId`, reads `useWorldStore`/`useSimulationStore`/`useCompiledWorld` itself and calls `regionData.ts`'s `regionEvents`. Renders a 120s-window simMs axis of event glyphs (keyed by `EngineEventKind`); click-to-scrub (disabled while `running`) finds the nearest replay frame by `simMs` distance from `getReplayFrames()` and calls `setScrubIndex` — the same nearest-frame-by-distance approach `ScrubberV2` (§1J) uses, reimplemented locally rather than shared |
+| `src/app/world/RegionView.tsx` (Task 2, REWRITTEN) | Composition root, but a **mixed** one, not a uniform "compute everything, pass props down" root like `ServerBoard.tsx` (§L): it centrally computes `shares`/`alert`/`spark` (via `regionData.ts` + a 1s-polling `useEffect` for the sparkline) and feeds the finished values into `SplitLines`/`AlertRibbon`, but merely threads `azId`/`regionId` into `AzRow`/`CrossAzColumn`/`TimelineStrip`, which then independently re-derive their own data (see above — this halves the "single source of truth per render" property `boardLayout.ts` gives `server/`). Preserves the existing Phase-2 region-outage button verbatim (`healthOverrides`/`setOutage('region', …)`). Owns the alert ribbon's "timeline" click-through (`scrollIntoView` + a CSS-class flash on the `TimelineStrip` wrapper div, timed out at 1200ms) |
+| `src/lib/world/layoutRacks.ts` (Task 4) | Pure rack-frame layout, the Level-3 analog of `server/boardLayout.ts` (§L): groups `Server`s by `rack.rackId` into `RackFrame`s, re-stacks by `rack.unit` with a collision-safe pass (each server claims `max(its own authored unit, the next free slot)`, so overlapping authored units — e.g. every server defaulting to `unit:1` — never collide), computes blank-unit filler spans (capped `MAX_FILLERS=3` per frame) and a PDU strip position, plus a separate absolute-positioned managed-service column. Deterministic, no React. **Narrower fan-out than the skeleton implies:** only `AzCanvas.tsx` imports the `layoutRacks` function itself (consuming `RackLayout`'s shape structurally/by inference — it never names `RackLayout`/`RackFrame` in an explicit type import); `RackNodes.tsx` imports **only four pixel constants** from this file (`RACK_PAD`/`RAIL_W`/`CHASSIS_W`/`PDU_H`), not the function or either type — its own `RackFrameNodeData`/`RackChassisNodeData` shapes are separately declared and matched to what `AzCanvas.tsx` hand-assembles only by an `as` cast inside `RackNodes.tsx`, not a shared imported type (see Blast radius). Replaces `layoutAzGrid` for the AZ canvas |
+| `src/lib/world/layoutAz.ts`, `src/app/world/WorldServerNode.tsx` — **both DELETED in the same commit (Task 5, `d6eff49`)** | `layoutAzGrid`'s only caller and `WorldServerNode`'s only caller were the same file (`AzCanvas.tsx`), rewired to `layoutRacks`/`RackFrameNode`/`RackChassisNode` in this commit — grep-verified zero remaining importers of either before deletion. `layoutAzGrid`'s grid-position algorithm has no successor (rack framing replaces the whole positioning model); `WorldManagedNode` was moved (not duplicated) into `RackNodes.tsx` in the same commit before the source file was deleted |
+| `src/app/world/RackNodes.tsx` (Task 5) | `RackFrameNode` (non-interactive backdrop — `pointerEvents: 'none'`, mounting rails, `RACK <id> · <azLabel>` caption, blank-unit filler strips, a `PDU · <n>kW` strip) + `RackChassisNode` (LED trio — health/activity-blink/network — drive-bay grid sized `bays = min(8, 2×heightU+2)` with lit bays proportional to `diskIo`, a vent-grill strip, cpu/ram/io micro-bars, a "▲ noisy neighbor" tag, an "✕ N blocked internal path(s)" badge) + `WorldManagedNode` (moved verbatim, dashed-border, unchanged visuals). **`RackNodes.tsx` owns all chassis/frame chrome** — it renders no geometry math of its own, only the `data` object `AzCanvas.tsx` hands it. Notably, `RackFrameNodeData.pduKw` is **not** part of `layoutRacks.ts`'s pure geometry (that module only computes `pduY`, a position) — it's domain data (`Σ resident servers' vcpu × 0.05`) computed by `AzCanvas.tsx` and merged onto the frame node's `data` alongside the geometry, the same geometry/domain-data split `boardLayout.ts`/`ServerBoard.tsx` (§L) established |
+| `src/app/world/AzCanvas.tsx` (Task 5, rewired) | Same edge-aggregation logic as Phases 1–3, unchanged (`compiled.paths` → one aggregate edge per server pair via a `Map` keyed `${fromServerId}->${targetId}`, `internalBlockedByServer` for same-server blocked paths, cross-AZ paths skipped — "render at region level"). Node-building now goes through `layoutRacks`: frame nodes (`type: 'worldRackFrame'`, `selectable: false`, `zIndex: -1`, React Flow parents) each merge in a computed `pduKw`; chassis nodes (`type: 'worldChassis'`, `parentId` set to the string `frame:<rackId>`, `extent: 'parent'`, `draggable: false`) merge in live `health`/per-chassis `metrics` (cpu mean/ram fraction/disk io/nic fraction/rps, all derived from `batch.servers[id]` + resident instances) and a `noisy` flag (a `noisy_neighbor` event on this server within the trailing 30s); managed nodes stay absolute. `onNodeClick` still checks `node.type === 'worldChassis'` before calling `goServer` — the click-routing contract survived the rewire unchanged |
+| `src/app/world/AzSimOverlay.tsx` (Task 6, v2) | Switched from `getNode(id).position` + a reactive `useViewport()` selector to `getInternalNode(id).internals.positionAbsolute` (resolves correctly through the new parent/child rack nesting, where a plain `.position` would be frame-relative) + `node.measured?.width/height` (falls back to the old fixed `SERVER_W/H`/`MANAGED_W/H` constants only pre-paint, since chassis heights now vary by `heightU` rather than being uniform) + an imperative `getViewport()` read **inside** the frame callback instead of a subscribed hook value. **Correction to the skeleton's own acceptance line:** the effect's dependency array is **`[running, azId, reduced, getInternalNode, getViewport]`** — five entries, not the three (`[running, azId, reduced]`) the task brief asked this integration pass to confirm. The fix is real regardless: `getInternalNode`/`getViewport` are React-Flow-memoized, referentially-**stable** function references (per the file's own header comment, verified against `@xyflow/react`'s source) that never themselves change across a render, so their presence in the array is inert — it's `useViewport()`'s **value** (zoom/x/y, which changes every pan/zoom tick) that used to sit in this array and drove the re-subscribe bug, and that reactive read is genuinely gone, replaced by the imperative call inside the callback. The Phase-2/3 standing deferral is correctly resolved; the brief's specific dependency-array text just wasn't literally what got written |
+| `src/app/store/world.store.ts` (Task 7) | `addManagedService` gained a 5th, optional `provider?: ManagedService['provider']` parameter, defaulted `= 'generic'` inside the action body — additive; every pre-existing 4-arg call site (all in test fixtures — `world.store.test.ts`, `costModelV2.test.ts`) is unaffected. One production call site: `PlacementPanel.tsx` |
+| `src/app/world/panels/PlacementPanel.tsx` (Task 7) | Managed-service authoring gained a `<select aria-label="provider">` (`aws`/`gcp`/`azure`/`generic`, backed by local `msProvider` state defaulted `'aws'` — deliberately different from the store action's own `'generic'` default, so a freshly authored managed service prices non-zero without the user needing to know to change it) |
+| `src/app/world/server/{ServerBoard,inspectorForms,PacketLayer}.tsx` (Task 7, hygiene, Phase-3 backlog carry-forwards) | `ServerBoard.tsx`: five per-render derived values now memoized (`gateBlockedPerSecond`, `residentBlueprints`, `attribution`, the combined `{memLimits, instanceRamMb}`, `volumeConsumers`) instead of recomputed every render; the blocked/s counter's clock now reads `(scrubBatch ?? latestBatch)?.simMs ?? 0` instead of `latestBatch` unconditionally, so it freezes correctly on a scrubbed historical frame instead of continuing to advance off the live clock. `inspectorForms.tsx`: the firewall rule port field no longer coalesces a legitimately-typed `0` to `'any'` (previously `Number(e.target.value)` OR-defaulted to `'any'` on any falsy result — since `Number('0')` is the falsy value `0`, that OR-default fired even for a real, intentional port `0`; now an explicit check for `raw === 'any'` or an empty string comes first, followed by a separate `Number.isFinite(n) && n >= 0` test) — same class of fix applied to `cpuLimit`/`memLimitMb` (previously OR-defaulted to `null` on any falsy value, now `Number.isFinite(v) ? v : null`). `PacketLayer.tsx`: `getTotalLength()`/`getPointAtLength()` wrapped in try/catch with a linear-interpolation fallback between the trace's two `anchorFor` endpoints — mitigates, but per the phase ledger does not verify, the "unconfirmed in a native Tauri WebView" risk flagged since Phase 3, since no native `tauri build` smoke exists to actually exercise the throw path; correspondingly, no new test exercises the catch branch itself (`PacketLayer.test.tsx`'s existing 2 cases — attach-once, detach-on-unmount — are unchanged by this commit). `FirewallGate.tsx` needed no change (pure presentational, confirmed absent from this task's diff) |
+
+**Boundary rules:** `src/app/world/region/*` imports only `lib/` — world types, `worldEngine/types`
+for **type-only** imports (`MetricsBatch`/`EngineEvent`/`EngineEventKind`/`ReplayFrame`/
+`HealthState`, never a value/executable import), and `costModelV2.ts`'s `computeWorldCost`
+(`AzRow.tsx` only, a plain-function `lib/` import, not a store) — and app stores: `useWorldStore`
+(read `doc` only), `useSimulationStore` (`scrubBatch`/`latestBatch`/`running`/`events`/
+`healthOverrides`, call `setOutage`/`setScrubIndex`, imperative `getReplayFrames()`),
+`useNavStore` (`RegionView.tsx` **only** — `regionId`/`goAz`/`goServer`; `AzRow.tsx` receives
+navigation as plain callback props and never imports `useNavStore` itself, despite independently
+reading `useWorldStore`/`useSimulationStore`/`useCompiledWorld`), plus the ONE local constant
+`CROSS_AZ_HOP_MS` in `regionData.ts` — a documented, manually-synced mirror of
+`worldEngine/networkRuntime.ts`'s private `CROSS_AZ_MS`, **not** an import (see the Frozen-contract
+note below and `.superpowers/sdd/contract-drift.md` §PHASE 4 item 8). Grep-verified: nothing under
+`region/`, nor `RegionView.tsx`, `RackNodes.tsx`, `layoutRacks.ts`, or `AzCanvas.tsx`, imports
+`worldEngine/index.ts` (the executable facade) directly or transitively (`useCompiledWorld.ts`,
+the shared hook all of these read through for `compiled`, only reaches `world.store.ts` + the
+pure `compileWorld.ts` — no engine import either) — only `useSimulationStore` does that; the seam
+established in §K holds for a third feature module in a row (after `server/`, §L, itself the
+second). `RackNodes.tsx` owns all chassis/frame/managed-node chrome; `AzCanvas.tsx` and
+`layoutRacks.ts` only compute positions/domain-merge and aggregate edges, never render chassis
+internals. `layoutAz.ts` is gone — nothing outside git history depends on `layoutAzGrid` anymore.
+Unlike `server/`'s uniform "one shared `boardLayout.ts` computation, fed down as props to inert
+leaves" shape (§L), the region page mixes that pattern (`AlertRibbon`/`SplitLines`) with
+self-sufficient scoped views that read stores directly (`AzRow`/`CrossAzColumn`/`TimelineStrip`)
+— see the file table above; a future contributor extending this page should be deliberate about
+which shape a new section follows, since both currently coexist.
+
+**Frozen-contract note:** `regionData.ts`'s `CROSS_AZ_HOP_MS = 1.5` is a **local mirror**, not an
+import, of `worldEngine/networkRuntime.ts:10`'s private (non-exported) `CROSS_AZ_MS` (confirmed at
+that exact line in the committed source) — the design spec's D5 named `worldEngine/latency.ts` as
+the source, but that file exports only `sampleLatencyMs(p50, p99, rng)` — a function, not a
+constants module; exporting the real constant would be a code change under `worldEngine/`, which
+this phase's Global Constraints forbid. If the engine ever varies cross-AZ latency, this mirror
+must be updated by hand (or the engine can additively export the constant, at which point the
+mirror becomes a real import — additive, no reshape). Logged in
+`.superpowers/sdd/contract-drift.md` §PHASE 4 item 8 as a **RESOLVED, view-side deviation from the
+plan text** — no file under `src/lib/worldEngine/` was touched; this doc entry doesn't restate the
+reasoning, just cross-references it.
+
+**Blast radius:** `layoutRacks.ts` has a narrower fan-out than its skeleton draft assumed: its
+`RackLayout`/`RackFrame` **types** are never imported by name anywhere (`AzCanvas.tsx` consumes
+`layoutRacks()`'s return shape structurally, `RackNodes.tsx` doesn't import them at all) — the only
+two files that reference this module at all are `AzCanvas.tsx` (the function) and `RackNodes.tsx`
+(four pixel constants). This means a reshape of `RackLayout`/`RackFrame` is **not** caught by
+`RackNodes.tsx`'s own type-checking — the two files agree on the `data` shape only via
+`RackNodes.tsx`'s local `as RackFrameNodeData`/`as RackChassisNodeData` casts, so a change to what
+`AzCanvas.tsx` assembles into `node.data` must be manually kept in sync with those two interfaces;
+extend both additively and keep them in sync by hand. `regionData.ts`'s selector **functions**
+(all seven) fan out across `RegionView.tsx` + `AzRow.tsx` + `CrossAzColumn.tsx` +
+`TimelineStrip.tsx` — one more consumer than the "four region/ components" the draft assumed,
+since Task 3's `TimelineStrip.tsx` also calls in (`regionEvents`). Of its exported **types**
+specifically, only `AzShare` (→ `SplitLines.tsx`) and `RibbonAlert` (→ `AlertRibbon.tsx`) are
+imported by name; `ReplicationPair`/`CrossAzEntry` are consumed only structurally, through
+`crossAzEntries()`'s inferred return type (`CrossAzColumn.tsx`) — extend all four additively
+regardless of which are named today, since a named import could be added later without warning.
+`world.store.ts`'s `addManagedService` has exactly one production call site (`PlacementPanel.tsx`)
+plus direct calls from two test files (`world.store.test.ts`, `costModelV2.test.ts`) — the new
+param is optional/defaulted, so no existing caller needed to change. `costModelV2.ts`'s
+`computeWorldCost` (§1D/§1J) gained a **second caller** this phase, `AzRow.tsx` — §1J's existing
+"exactly 1 caller (`CostTab.tsx`)" blast-radius note predates this and is now stale; not corrected
+there as part of this task (out of this section's scope), flagged here so the next edit to
+§1D/§1J reconciles it. `AzRow.tsx`'s own call is uncached (one whole-`WorldDoc` `computeWorldCost`
+walk per AZ row per render, not per region) — worth hoisting into `RegionView.tsx` if AZ counts
+grow enough for it to show up in a profile, not fixed this task.
+
+---
+
 ## 2. Shared "hub" files (everyone touches these — high conflict risk)
 
 These aren't feature modules; they're registries other code plugs into. The fix
