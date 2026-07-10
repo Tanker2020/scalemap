@@ -1,5 +1,9 @@
+// src/app/world/AzCanvas.tsx
 // Read-only render of the focused AZ from the compiled world. Instance-level paths are
 // aggregated to server-pair edges; any blocked path turns the whole edge red/dashed.
+// Servers stack into per-rack frame nodes (React Flow parent/group nodes); chassis are
+// frame-relative child nodes positioned by layoutRacks. Managed services stay absolute,
+// in a column right of the frames.
 import { useMemo } from 'react'
 import { ReactFlow, ReactFlowProvider, Background, type Node, type Edge } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -7,17 +11,20 @@ import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useCompiledWorld } from './useCompiledWorld'
-import { layoutAzGrid } from '../../lib/world/layoutAz'
-import { WorldServerNode, WorldManagedNode } from './WorldServerNode'
+import { layoutRacks } from '../../lib/world/layoutRacks'
+import { RackFrameNode, RackChassisNode, WorldManagedNode } from './RackNodes'
 import { AzSimOverlay } from './AzSimOverlay'
 import { InspectorV2 } from './InspectorV2'
 
-const nodeTypes = { worldServer: WorldServerNode, worldManaged: WorldManagedNode }
+const nodeTypes = { worldRackFrame: RackFrameNode, worldChassis: RackChassisNode, worldManaged: WorldManagedNode }
+const NOISY_WINDOW_MS = 30_000
+const PDU_KW_PER_VCPU = 0.05
 
 export function AzCanvas() {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
+  const events = useSimulationStore(s => s.events)
   const { regionId, azId, goServer } = useNavStore()
 
   const { nodes, edges } = useMemo(() => {
@@ -26,7 +33,9 @@ export function AzCanvas() {
     const managed = Object.values(doc.managedServices).filter(m =>
       (m.scope.kind === 'az' && m.scope.azId === azId) ||
       (m.scope.kind === 'region' && m.scope.regionId === regionId))
-    const pos = layoutAzGrid(servers.map(s => s.id), managed.map(m => m.id))
+    const azLabel = doc.azs[azId]?.label ?? azId
+    const layout = layoutRacks(servers, managed.map(m => m.id))
+    const displaySimMs = batch?.simMs ?? 0
 
     // Aggregate instance-level compiled paths into one edge per (fromServer, target).
     // Same-server blocked paths never become edges — they surface as a badge on the server node.
@@ -63,33 +72,60 @@ export function AzCanvas() {
       agg.set(key, entry)
     }
 
-    const nodes: Node[] = [
-      ...servers.map(server => ({
-        id: server.id, type: 'worldServer' as const, position: pos[server.id],
+    const serverById = new Map(servers.map(s => [s.id, s]))
+
+    const frameNodes: Node[] = layout.frames.map(frame => {
+      const kw = frame.serverIds.reduce((sum, sid) => sum + (serverById.get(sid)?.specs.vcpu ?? 0), 0) * PDU_KW_PER_VCPU
+      return {
+        id: `frame:${frame.rackId}`, type: 'worldRackFrame' as const,
+        position: { x: frame.box.x, y: frame.box.y },
+        width: frame.box.w, height: frame.box.h,
+        selectable: false, zIndex: -1,
+        data: { rackId: frame.rackId, azLabel, blankUnits: frame.blankUnits, pduY: frame.pduY, pduKw: kw },
+      }
+    })
+
+    const chassisNodes: Node[] = servers.map(server => {
+      const box = layout.chassis[server.id]
+      const serverMetrics = batch?.servers[server.id]
+      const residentInstances = Object.values(compiled.instances).filter(i => i.serverId === server.id)
+      const metrics = serverMetrics ? {
+        cpuMean: serverMetrics.coreUtilization.length
+          ? serverMetrics.coreUtilization.reduce((a, b) => a + b, 0) / serverMetrics.coreUtilization.length
+          : 0,
+        ramFrac: serverMetrics.ramTotalMb > 0 ? serverMetrics.ramUsedMb / serverMetrics.ramTotalMb : 0,
+        diskIo: serverMetrics.diskIoFraction,
+        nicFrac: server.specs.nicMbps > 0 ? (serverMetrics.nicInMbps + serverMetrics.nicOutMbps) / server.specs.nicMbps : 0,
+        rps: residentInstances.reduce((sum, i) => sum + (batch?.instances[i.id]?.rps ?? 0), 0),
+      } : null
+      const noisy = events.some(e =>
+        e.kind === 'noisy_neighbor' && e.affected.includes(server.id) &&
+        e.simMs <= displaySimMs && displaySimMs - e.simMs <= NOISY_WINDOW_MS)
+      return {
+        id: server.id, type: 'worldChassis' as const,
+        parentId: `frame:${server.rack.rackId}`, extent: 'parent' as const, draggable: false,
+        position: { x: box.x, y: box.y }, width: box.w, height: box.h,
         data: {
           server,
-          chips: Object.values(compiled.instances)
-            .filter(i => i.serverId === server.id)
-            .map(i => {
-              const bp = doc.blueprints[i.blueprintId]
-              const pl = doc.placements[i.placementId]
-              return { color: bp?.color ?? '#888', name: bp?.name ?? '?', role: i.role, runtime: pl?.runtime.type ?? 'process' }
-            }),
+          chips: residentInstances.map(i => {
+            const bp = doc.blueprints[i.blueprintId]
+            return { color: bp?.color ?? '#888', name: bp?.name ?? '?' }
+          }),
           internalBlocked: internalBlockedByServer.get(server.id) ?? 0,
-          health: batch?.servers[server.id]?.health,
-          cpuPct: batch?.servers[server.id]
-            ? (batch.servers[server.id].coreUtilization.reduce((a, b) => a + b, 0) /
-               Math.max(1, batch.servers[server.id].coreUtilization.length)) * 100
-            : undefined,
-          ramUsedMb: batch?.servers[server.id]?.ramUsedMb,
-          ramTotalMb: batch?.servers[server.id]?.ramTotalMb,
+          health: serverMetrics?.health,
+          metrics,
+          noisy,
         },
-      })),
-      ...managed.map(m => ({
-        id: m.id, type: 'worldManaged' as const, position: pos[m.id],
-        data: { label: m.label, nodeType: m.nodeType, port: m.port },
-      })),
-    ]
+      }
+    })
+
+    const managedNodes: Node[] = managed.map(m => ({
+      id: m.id, type: 'worldManaged' as const, position: layout.managed[m.id],
+      data: { label: m.label, nodeType: m.nodeType, port: m.port },
+    }))
+
+    // Parents (frames) must precede their children (chassis) in React Flow's node array.
+    const nodes: Node[] = [...frameNodes, ...chassisNodes, ...managedNodes]
 
     const edges: Edge[] = [...agg.entries()].map(([key, e]) => ({
       id: key,
@@ -103,7 +139,7 @@ export function AzCanvas() {
     }))
 
     return { nodes, edges }
-  }, [doc, compiled, azId, regionId, batch])
+  }, [doc, compiled, azId, regionId, batch, events])
 
   if (!azId || !regionId) return null
 
@@ -122,7 +158,7 @@ export function AzCanvas() {
           nodesDraggable={false}
           nodesConnectable={false}
           onNodeClick={(_, node) => {
-            if (node.type === 'worldServer') goServer(regionId, azId, node.id)
+            if (node.type === 'worldChassis') goServer(regionId, azId, node.id)
           }}
           proOptions={{ hideAttribution: true }}
         >
