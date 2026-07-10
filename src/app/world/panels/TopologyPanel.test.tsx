@@ -3,6 +3,9 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { TopologyPanel } from './TopologyPanel'
 import { useWorldStore } from '../../store/world.store'
+import { useSimulationStore } from '../../store/simulation.store'
+import { getPreset } from '../../../lib/world/instanceCatalog'
+import type { MetricsBatch } from '../../../lib/worldEngine/types'
 
 beforeEach(() => useWorldStore.getState().newWorld())
 
@@ -57,5 +60,56 @@ describe('TopologyPanel', () => {
 
     const after = Object.values(useWorldStore.getState().doc.servers)[0]
     expect(after.firewall[0]).toEqual(newRule)
+  })
+})
+
+function serverBatch(serverId: string, regionId: string): MetricsBatch {
+  return {
+    simMs: 1000,
+    instances: {},
+    servers: {
+      [serverId]: {
+        serverId, coreUtilization: [0.62, 0.62], stealFraction: 0, burstCredits: null,
+        ramByInstance: [], ramUsedMb: 4096, ramTotalMb: 8192, nicInMbps: 0, nicOutMbps: 0,
+        diskIoFraction: 0.3, health: 'healthy',
+      },
+    },
+    azs: {},
+    regions: { [regionId]: { regionId, rps: 100, errorRate: 0, p50Ms: 5, healthScore: 100, health: 'healthy', inboundByPopulation: [] } },
+    world: { totalRps: 100, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
+  }
+}
+
+describe('TopologyPanel — instrument restyle', () => {
+  it('server row shows micro-bars and a utilization bar from a batch', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useSimulationStore.setState({ latestBatch: serverBatch(serverId, regionId) })
+    render(<TopologyPanel />)
+    expect(screen.getAllByTestId('kit-microbar').length).toBe(3)
+    expect(screen.getByTestId('topo-util-fill').style.width).toBe('62%')
+    useSimulationStore.setState({ latestBatch: null })
+  })
+
+  it('at rest renders without utilization or fake numbers', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<TopologyPanel />)
+    expect(screen.queryByTestId('kit-microbar')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('topo-util-fill')).not.toBeInTheDocument()
+  })
+
+  it('preset card select feeds addServer with the chosen preset', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    render(<TopologyPanel />)
+    fireEvent.click(screen.getByLabelText('choose server preset'))     // opens the grid
+    fireEvent.click(screen.getByText('dedicated-8'))                   // select card
+    fireEvent.click(screen.getByText('+ Server'))
+    const server = Object.values(useWorldStore.getState().doc.servers)[0]
+    expect(server.catalogId).toBe('dedicated-8')
+    expect(server.kind).toBe('dedicated')
   })
 })

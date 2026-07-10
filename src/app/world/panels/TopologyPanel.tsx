@@ -1,19 +1,54 @@
 // Region → AZ → server authoring, including per-server firewall + compose-stack editing.
+// Hybrid instrument restyle (Polish 1 T2) — presentation only; every dispatch below is
+// byte-for-byte identical to the pre-restyle panel (see docs/superpowers/sdd/task-2-brief.md).
 import { useState } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
 import { useFileStore } from '../../store/file.store'
+import { useSimulationStore } from '../../store/simulation.store'
 import { WORLD_REGIONS } from '../../../lib/regionConfig'
-import { INSTANCE_CATALOG, getPreset } from '../../../lib/world/instanceCatalog'
+import { INSTANCE_CATALOG, getPreset, type InstancePreset } from '../../../lib/world/instanceCatalog'
 import { nextWorldId } from '../../../lib/world/factories'
-import type { Server } from '../../../lib/world/types'
-import { sectionLabel, field, smallBtn, dangerBtn, row } from './panelStyles'
+import type { Region, Server } from '../../../lib/world/types'
+import { SectionHeader, EdgeRow, ChipValue, MicroBars, PresetCardGrid, type EdgeRowStatus } from '../ui/kit'
+import { field, smallBtn, dangerBtn, row } from './panelStyles'
+
+const HEALTH_COLOR: Record<'healthy' | 'degraded' | 'down', string> = {
+  healthy: 'var(--color-success)',
+  degraded: 'var(--color-warning)',
+  down: 'var(--color-danger)',
+}
+
+// '▸ US-EAST-1 · N. VIRGINIA' — catalogId uppercased + the parenthesized metro from the
+// WORLD_REGIONS label uppercased (fallback to the raw label, uppercased, when no parens).
+function regionSectLabel(region: Region): string {
+  const catalog = WORLD_REGIONS.find(w => w.id === region.catalogId)
+  const rawLabel = catalog?.label ?? region.catalogId
+  const metroMatch = rawLabel.match(/\(([^)]+)\)/)
+  const metro = metroMatch ? metroMatch[1].toUpperCase() : rawLabel.toUpperCase()
+  return `▸ ${region.catalogId.toUpperCase()} · ${metro}`
+}
+
+function presetDetail(p: InstancePreset): string {
+  return `${p.specs.vcpu} vCPU · ${p.specs.ramMb / 1024} GB · ${p.kind === 'vps' ? 'shared tenancy' : 'yours alone'}`
+}
+
+function mean(values: number[]): number {
+  if (values.length === 0) return 0
+  return values.reduce((a, b) => a + b, 0) / values.length
+}
+
+// Unstyled wrapper so a real <button> (aria-label, onClick) can carry a ChipValue's look
+// without doubling up borders/padding.
+const unstyledButton = { all: 'unset' as const, cursor: 'pointer' }
 
 export function TopologyPanel() {
   const doc = useWorldStore(s => s.doc)
   const store = useWorldStore.getState()
+  const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const [newRegion, setNewRegion] = useState(WORLD_REGIONS[0].id)
   const [presetByAz, setPresetByAz] = useState<Record<string, string>>({})
+  const [presetGridOpenAz, setPresetGridOpenAz] = useState<string | null>(null)
   const [expandedServer, setExpandedServer] = useState<string | null>(null)
 
   const available = WORLD_REGIONS.filter(w => !Object.values(doc.regions).some(r => r.catalogId === w.id))
@@ -25,7 +60,7 @@ export function TopologyPanel() {
 
   return (
     <div>
-      <div style={sectionLabel}>Regions</div>
+      <SectionHeader label="▸ REGIONS" />
       <div style={row}>
         <select aria-label="add-region-select" style={{ ...field, marginBottom: 0, flex: 1 }}
           value={newRegion} onChange={e => setNewRegion(e.target.value)}>
@@ -35,48 +70,73 @@ export function TopologyPanel() {
           onClick={() => store.addRegion(newRegion)}>+ Region</button>
       </div>
 
-      {Object.values(doc.regions).map(region => (
-        <div key={region.id} style={{ border: '1px solid var(--color-node-border)', borderRadius: 6, padding: 8, marginTop: 8 }}>
-          <div style={row}>
-            <strong style={{ flex: 1 }}>{region.catalogId}</strong>
-            {/* Role toggle writes via setState directly — deliberately no history push for a two-value toggle (see plan Task 11 note). History bypass is deliberate; dirty-marking is still required. */}
-            <select style={{ ...field, width: 76, marginBottom: 0 }} value={region.role}
-              onChange={e => {
-                useWorldStore.setState(s => ({ doc: { ...s.doc, regions: { ...s.doc.regions, [region.id]: { ...region, role: e.target.value as 'active' | 'passive' } } } }))
-                useFileStore.getState().setDirty(true)
-              }}>
-              <option value="active">active</option>
-              <option value="passive">passive</option>
-            </select>
-            <button style={dangerBtn} onClick={() => store.removeRegion(region.id)}>×</button>
+      {Object.values(doc.regions).map(region => {
+        const regionHealth = displayBatch?.regions[region.id]?.health ?? null
+        return (
+          <div key={region.id} style={{ border: '1px solid var(--color-node-border)', borderRadius: 6, padding: 8, marginTop: 8 }}>
+            <SectionHeader
+              label={regionSectLabel(region)}
+              trailing={
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{
+                    fontSize: 9, fontVariantNumeric: 'tabular-nums',
+                    color: regionHealth ? HEALTH_COLOR[regionHealth] : 'var(--color-text-muted)',
+                  }}>
+                    {regionHealth ? `● ${regionHealth}` : '● —'}
+                  </span>
+                  {/* Role toggle writes via setState directly — deliberately no history push for a two-value toggle (see plan Task 11 note). History bypass is deliberate; dirty-marking is still required. */}
+                  <select style={{ ...field, width: 76, marginBottom: 0 }} value={region.role}
+                    onChange={e => {
+                      useWorldStore.setState(s => ({ doc: { ...s.doc, regions: { ...s.doc.regions, [region.id]: { ...region, role: e.target.value as 'active' | 'passive' } } } }))
+                      useFileStore.getState().setDirty(true)
+                    }}>
+                    <option value="active">active</option>
+                    <option value="passive">passive</option>
+                  </select>
+                  <button style={dangerBtn} onClick={() => store.removeRegion(region.id)}>×</button>
+                </div>
+              }
+            />
+            <button style={smallBtn} onClick={() => store.addAz(region.id, nextAzLabel(region.catalogId, region.id))}>+ AZ</button>
+
+            {Object.values(doc.azs).filter(a => a.regionId === region.id).map(az => {
+              const selectedPreset = presetByAz[az.id] ?? 'vps-medium'
+              const gridOpen = presetGridOpenAz === az.id
+              return (
+                <div key={az.id} style={{ marginTop: 6, paddingLeft: 8, borderLeft: '2px solid var(--color-node-border)' }}>
+                  <div style={row}>
+                    <span style={{ flex: 1 }}>{az.label}</span>
+                    <button style={dangerBtn} onClick={() => store.removeAz(az.id)}>×</button>
+                  </div>
+                  <div style={row}>
+                    <button type="button" aria-label="choose server preset" style={unstyledButton}
+                      onClick={() => setPresetGridOpenAz(cur => cur === az.id ? null : az.id)}>
+                      <ChipValue title="server preset">{selectedPreset}</ChipValue>
+                    </button>
+                    <button style={smallBtn}
+                      onClick={() => store.addServer(az.id, getPreset(selectedPreset)!)}>+ Server</button>
+                  </div>
+                  {gridOpen && (
+                    <div style={{ marginBottom: 6 }}>
+                      <PresetCardGrid
+                        value={selectedPreset}
+                        onChange={v => setPresetByAz(p => ({ ...p, [az.id]: v }))}
+                        options={INSTANCE_CATALOG.map(p => ({ value: p.id, name: p.id, detail: presetDetail(p), price: '$' + p.hourlyUsd + '/hr' }))}
+                      />
+                    </div>
+                  )}
+
+                  {Object.values(doc.servers).filter(sv => sv.azId === az.id).map(server => (
+                    <ServerRow key={server.id} server={server}
+                      expanded={expandedServer === server.id}
+                      onToggle={() => setExpandedServer(e => e === server.id ? null : server.id)} />
+                  ))}
+                </div>
+              )
+            })}
           </div>
-          <button style={smallBtn} onClick={() => store.addAz(region.id, nextAzLabel(region.catalogId, region.id))}>+ AZ</button>
-
-          {Object.values(doc.azs).filter(a => a.regionId === region.id).map(az => (
-            <div key={az.id} style={{ marginTop: 6, paddingLeft: 8, borderLeft: '2px solid var(--color-node-border)' }}>
-              <div style={row}>
-                <span style={{ flex: 1 }}>{az.label}</span>
-                <button style={dangerBtn} onClick={() => store.removeAz(az.id)}>×</button>
-              </div>
-              <div style={row}>
-                <select style={{ ...field, marginBottom: 0, flex: 1 }}
-                  value={presetByAz[az.id] ?? 'vps-medium'}
-                  onChange={e => setPresetByAz(p => ({ ...p, [az.id]: e.target.value }))}>
-                  {INSTANCE_CATALOG.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
-                </select>
-                <button style={smallBtn}
-                  onClick={() => store.addServer(az.id, getPreset(presetByAz[az.id] ?? 'vps-medium')!)}>+ Server</button>
-              </div>
-
-              {Object.values(doc.servers).filter(sv => sv.azId === az.id).map(server => (
-                <ServerRow key={server.id} server={server}
-                  expanded={expandedServer === server.id}
-                  onToggle={() => setExpandedServer(e => e === server.id ? null : server.id)} />
-              ))}
-            </div>
-          ))}
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -86,26 +146,60 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
   const nav = useNavStore.getState()
   const doc = useWorldStore(s => s.doc)
   const az = doc.azs[server.azId]
+  const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
+  const metrics = displayBatch?.servers[server.id]
 
   const upd = (patch: Partial<Server>) => store.updateServer(server.id, patch)
 
+  const health: EdgeRowStatus = metrics?.health ?? null
+  const edgeColor = health === 'degraded' ? 'var(--color-warning)'
+    : health === 'down' ? 'var(--color-danger)'
+    : 'var(--color-accent)'
+  const azSuffix = az ? az.label.slice(-1) : ''
+  const cpuMean = metrics ? mean(metrics.coreUtilization) : 0
+  const ramFrac = metrics && metrics.ramTotalMb ? metrics.ramUsedMb / metrics.ramTotalMb : 0
+
   return (
-    <div style={{ marginTop: 4, background: 'var(--color-node-base)', borderRadius: 4, padding: 6 }}>
-      <div style={row}>
-        <button style={{ ...smallBtn, border: 'none', padding: 0, flex: 1, textAlign: 'left' }} onClick={onToggle}>
-          {expanded ? '▾' : '▸'} {server.label} <span style={{ color: 'var(--color-text-muted)' }}>({server.kind})</span>
-        </button>
-        {az && <button style={smallBtn} title="Open server view"
-          onClick={() => nav.goServer(az.regionId, az.id, server.id)}>→</button>}
-        <button style={dangerBtn} onClick={() => store.removeServer(server.id)}>×</button>
-      </div>
+    <div style={{ marginTop: 4 }}>
+      <EdgeRow
+        status={health}
+        edgeColor={edgeColor}
+        trailing={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {metrics && <MicroBars cpu={cpuMean} ram={ramFrac} io={metrics.diskIoFraction} />}
+            <span style={{ fontSize: 10, color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+              ${server.hourlyUsd}/hr
+            </span>
+            {az && <button style={smallBtn} title="Open server view"
+              onClick={() => nav.goServer(az.regionId, az.id, server.id)}>→</button>}
+            <button style={dangerBtn} onClick={() => store.removeServer(server.id)}>×</button>
+          </div>
+        }
+      >
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+          <button style={{ ...smallBtn, border: 'none', padding: 0, background: 'transparent', textAlign: 'left' }} onClick={onToggle}>
+            {expanded ? '▾' : '▸'} {server.label} <span style={{ color: 'var(--color-text-muted)' }}>({server.kind})</span>
+          </button>
+          <span style={{ fontSize: 9.5, color: 'var(--color-text-muted)' }}>
+            {server.kind} · {server.specs.vcpu}c/{server.specs.ramMb / 1024}G · {azSuffix}
+          </span>
+        </div>
+        {metrics && (
+          <div style={{ marginTop: 4, height: 4, background: 'var(--color-canvas)', borderRadius: 2, overflow: 'hidden' }}>
+            <div data-testid="topo-util-fill" style={{
+              height: '100%', width: `${Math.round(cpuMean * 100)}%`,
+              background: cpuMean > 0.75 ? 'var(--color-warning)' : 'var(--color-accent)',
+            }} />
+          </div>
+        )}
+      </EdgeRow>
 
       {expanded && (
-        <div style={{ marginTop: 6 }}>
+        <div style={{ marginLeft: 10, marginTop: 2, background: 'var(--color-node-base)', borderRadius: 4, padding: 6 }}>
           <input style={field} value={server.label} aria-label="server-label"
             onChange={e => upd({ label: e.target.value })} />
 
-          <div style={sectionLabel}>Firewall (top-down, default deny)</div>
+          <SectionHeader label="▸ FIREWALL — TOP-DOWN, DEFAULT DENY" />
           {server.firewall.map((r, i) => (
             <div key={r.id} style={row}>
               <select style={{ ...field, width: 60, marginBottom: 0 }} value={r.action}
@@ -145,7 +239,7 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
             + Rule
           </button>
 
-          <div style={sectionLabel}>Compose stacks</div>
+          <SectionHeader label="▸ COMPOSE STACKS" />
           {server.stacks.map((st, i) => (
             <div key={st.name + i} style={{ marginBottom: 6 }}>
               <div style={row}>
