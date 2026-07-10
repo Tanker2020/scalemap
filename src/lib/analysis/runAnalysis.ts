@@ -4,12 +4,12 @@ import type { WorldDoc, CompiledWorld } from '../world/types'
 import type { MetricsBatch } from '../worldEngine/types'
 import type { AnalysisFinding, AnalysisRule, AnalysisInput } from './types'
 import { structuralRules } from './rules/structural'
-// T2: import { networkRules } from './rules/network'
+import { networkRules } from './rules/network'
 // T3: import { capacityRules } from './rules/capacity'
 
 export const ANALYSIS_RULES: AnalysisRule[] = [
   ...structuralRules,
-  // ...networkRules,   // ← T2 uncomments/adds
+  ...networkRules,
   // ...capacityRules,  // ← T3 uncomments/adds
 ]
 
