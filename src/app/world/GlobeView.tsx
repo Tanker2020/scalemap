@@ -11,6 +11,7 @@ import { GlobeScene } from './globe/GlobeScene'
 import { GlobeCards } from './GlobeCards'
 import { RegionPins } from './globe/RegionPins'
 import { PopulationMarkers } from './globe/PopulationMarkers'
+import { ArcsLayer } from './globe/ArcsLayer'
 import { webglAvailable } from './globe/webgl'
 
 const visuallyHidden: CSSProperties = {
@@ -56,7 +57,7 @@ export function GlobeView() {
         <GlobeScene placeMode={placeMode} onPlace={onPlace}>
           <RegionPins />
           <PopulationMarkers />
-          {/* ArcsLayer mounts here (T5) */}
+          <ArcsLayer />
         </GlobeScene>
       </div>
       <RegionA11yList />
