@@ -29,6 +29,7 @@ if (typeof document !== 'undefined' && !document.getElementById(KIT_STYLE_ID)) {
   --kit-accent-dim: ${KIT_GLOW_DIM_LIGHT};
   --kit-teal: ${KIT_TEAL_LIGHT};
 }
+.kit-row { border: 1px solid transparent; }
 .kit-row:hover { background: var(--color-surface-hover); border-color: var(--color-node-border); }
 .kit-pcard:hover { border-color: var(--color-accent); }
 .kit-t { transition: all 0.15s ease; }
@@ -86,7 +87,7 @@ const STATUS_COLOR: Record<'healthy' | 'degraded' | 'down', string> = {
 export function EdgeRow({ children, status, edgeColor, trailing, onClick }: EdgeRowProps) {
   const style: CSSProperties = {
     display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 5,
-    marginBottom: 3, border: '1px solid transparent',
+    marginBottom: 3,
   }
   if (edgeColor) {
     style.borderLeft = `2px solid ${edgeColor}`
