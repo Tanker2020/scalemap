@@ -171,7 +171,21 @@ fn llm_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
 pub fn save_llm_settings(app: AppHandle, settings: LlmSettings) -> Result<(), String> {
     let path = llm_settings_path(&app)?;
     let raw = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    fs::write(&path, raw).map_err(|e| format!("could not write llm settings: {e}"))
+    write_private(&path, &raw)
+}
+
+/// Write `contents` readable by the owning OS user only (0600 on unix). The settings file
+/// holds an API key at rest (spec D6), so it must not inherit group/other-readable defaults.
+/// Windows has no mode bits; there the app-data dir's per-user ACL is the boundary.
+fn write_private(path: &Path, contents: &str) -> Result<(), String> {
+    fs::write(path, contents).map_err(|e| format!("could not write llm settings: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("could not restrict llm settings permissions: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Returns `LlmSettings::default()` (all empty strings) on ANY error — missing file, corrupt
@@ -239,6 +253,20 @@ mod tests {
         // between every character of the message.
         let unchanged = redact("some upstream error text", "");
         assert_eq!(unchanged, "some upstream error text");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_private_sets_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!(
+            "scalemap-llm-settings-test-{}.json",
+            std::process::id()
+        ));
+        write_private(&path, "{\"api_key\":\"sk-test\"}").unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let _ = fs::remove_file(&path);
+        assert_eq!(mode, 0o600, "llm settings file must be owner-only, got {mode:o}");
     }
 
     #[test]

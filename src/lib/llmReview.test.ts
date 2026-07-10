@@ -134,4 +134,19 @@ describe('pingLlm', () => {
     expect(body.max_tokens).toBe(1)
     expect(body.messages).toEqual([{ role: 'user', content: 'ping' }])
   })
+
+  it('rejects an error envelope (e.g. bad api key) instead of reporting ok', async () => {
+    const chat = vi.fn().mockResolvedValue(JSON.stringify({ error: { message: 'Incorrect API key provided' } }))
+    await expect(pingLlm(SETTINGS, chat)).rejects.toThrow('Incorrect API key provided')
+  })
+
+  it('rejects a non-JSON response', async () => {
+    const chat = vi.fn().mockResolvedValue('<html>502 Bad Gateway</html>')
+    await expect(pingLlm(SETTINGS, chat)).rejects.toThrow('non-JSON response')
+  })
+
+  it('rejects a JSON response that is not a completion envelope', async () => {
+    const chat = vi.fn().mockResolvedValue(JSON.stringify({ status: 'ok' }))
+    await expect(pingLlm(SETTINGS, chat)).rejects.toThrow('without a completion')
+  })
 })

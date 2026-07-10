@@ -137,5 +137,17 @@ export async function requestReview(
 
 export async function pingLlm(settings: LlmSettings, chat: typeof llmChat = llmChat): Promise<void> {
   const body = { model: settings.model, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }
-  await chat(settings.baseUrl, settings.apiKey, JSON.stringify(body))
+  const raw = await chat(settings.baseUrl, settings.apiKey, JSON.stringify(body))
+  // llm_chat returns the body for ANY HTTP status, so "the request went through" is not
+  // "the credentials work" — a 401's error envelope must fail the connection test.
+  let parsed: { error?: { message?: string }; choices?: unknown[] }
+  try {
+    parsed = JSON.parse(raw) as typeof parsed
+  } catch {
+    throw new Error('endpoint returned a non-JSON response — check the base URL')
+  }
+  if (parsed.error) throw new Error(parsed.error.message ?? 'LLM error')
+  if (!Array.isArray(parsed.choices) || parsed.choices.length === 0) {
+    throw new Error('endpoint responded without a completion — check the base URL and model')
+  }
 }
