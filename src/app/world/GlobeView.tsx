@@ -1,64 +1,61 @@
-// Phase-1 placeholder for the Level-1 globe (real three.js globe lands in Phase 5).
-import type { CSSProperties } from 'react'
+// src/app/world/GlobeView.tsx
+// Level-1 globe (Phase 5 D2/D7): the real r3f night-earth scene when WebGL is available,
+// GlobeCards (the pre-Phase-5 card grid) otherwise. A visually-hidden a11y region list with the
+// same goRegion navigation renders in BOTH branches — the canvas container is aria-hidden
+// (decorative to a screen reader; the hidden list is the real navigation surface there, and it
+// also covers any environment that passes the WebGL probe but still renders nothing).
+import { useState, type CSSProperties } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
-import { useSimulationStore } from '../store/simulation.store'
-import { useCompiledWorld } from './useCompiledWorld'
-import { WORLD_REGIONS } from '../../lib/regionConfig'
+import { GlobeScene } from './globe/GlobeScene'
+import { GlobeCards } from './GlobeCards'
+import { webglAvailable } from './globe/webgl'
 
-const card: CSSProperties = {
-  background: 'var(--color-surface)', border: '1px solid var(--color-node-border)',
-  borderRadius: 10, padding: 14, cursor: 'pointer', textAlign: 'left',
-  font: '12px var(--font-mono)', color: 'var(--color-text-primary)',
+const visuallyHidden: CSSProperties = {
+  position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden',
+  clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', border: 0,
 }
 
-const HEALTH_COLOR = { healthy: 'var(--color-success)', degraded: 'var(--color-warning)', down: 'var(--color-danger)' } as const
+function RegionA11yList() {
+  const doc = useWorldStore(s => s.doc)
+  const goRegion = useNavStore(s => s.goRegion)
+  const regions = Object.values(doc.regions)
+  return (
+    <nav aria-label="Regions" style={visuallyHidden}>
+      <ul>
+        {regions.map(r => (
+          <li key={r.id}>
+            <button onClick={() => goRegion(r.id)}>{r.catalogId}</button>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  )
+}
 
 export function GlobeView() {
-  const doc = useWorldStore(s => s.doc)
-  const compiled = useCompiledWorld()
-  const goRegion = useNavStore(s => s.goRegion)
-  const latestBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
-  const regions = Object.values(doc.regions)
+  // Place-mode is T6's concern; T3 wires the prop through inert (always false, no-op onPlace) so
+  // GlobeScene's click-to-place raycast exists but nothing arms it until T6 lifts real state in.
+  const [placeMode] = useState(false)
+  const onPlace = () => {}
+
+  if (!webglAvailable()) {
+    return (
+      <>
+        <GlobeCards />
+        <RegionA11yList />
+      </>
+    )
+  }
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ font: '600 14px var(--font-mono)', color: 'var(--color-text-primary)', marginBottom: 4 }}>
-        World — {regions.length} region{regions.length === 1 ? '' : 's'} · {Object.keys(compiled.instances).length} service instances
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <div aria-hidden="true" style={{ width: '100%', height: '100%' }}>
+        <GlobeScene placeMode={placeMode} onPlace={onPlace}>
+          {/* RegionPins + PopulationMarkers mount here (T4); ArcsLayer mounts here (T5) */}
+        </GlobeScene>
       </div>
-      <div style={{ font: '11px var(--font-mono)', color: 'var(--color-text-muted)', marginBottom: 16 }}>
-        {compiled.findings.length > 0
-          ? `${compiled.findings.length} finding(s) — see the World panel`
-          : 'no findings'}
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
-        {regions.map(r => {
-          const azs = Object.values(doc.azs).filter(a => a.regionId === r.id)
-          const serverCount = Object.values(doc.servers).filter(s => azs.some(a => a.id === s.azId)).length
-          const label = WORLD_REGIONS.find(w => w.id === r.catalogId)?.label ?? r.catalogId
-          return (
-            <button key={r.id} style={card} onClick={() => goRegion(r.id)}>
-              <div style={{ fontWeight: 600 }}>{r.catalogId}</div>
-              <div style={{ color: 'var(--color-text-secondary)', marginTop: 2 }}>{label}</div>
-              <div style={{ color: 'var(--color-text-muted)', marginTop: 8 }}>
-                {azs.length} AZ · {serverCount} server{serverCount === 1 ? '' : 's'} · {r.role}
-              </div>
-              {latestBatch?.regions[r.id] && (
-                <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
-                  <span style={{ color: HEALTH_COLOR[latestBatch.regions[r.id].health] }}>● {latestBatch.regions[r.id].health}</span>
-                  <span style={{ color: 'var(--color-text-secondary)' }}>{latestBatch.regions[r.id].rps.toFixed(0)} rps</span>
-                  <span style={{ color: 'var(--color-text-secondary)' }}>{(latestBatch.regions[r.id].errorRate * 100).toFixed(1)}% err</span>
-                </div>
-              )}
-            </button>
-          )
-        })}
-        {regions.length === 0 && (
-          <div style={{ color: 'var(--color-text-muted)', font: '12px var(--font-mono)' }}>
-            No regions yet — add one in the World panel →
-          </div>
-        )}
-      </div>
+      <RegionA11yList />
     </div>
   )
 }
