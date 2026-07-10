@@ -5,7 +5,6 @@ import type { CSSProperties, ReactElement } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { useCompiledWorld } from '../useCompiledWorld'
-import { computeWorldCost } from '../../../lib/costModelV2'
 import { dominantBlueprintColor } from './regionData'
 import type { AzId, RegionId, ServerId } from '../../../lib/world/types'
 import type { HealthState } from '../../../lib/worldEngine/types'
@@ -28,11 +27,12 @@ const PROMOTE_WINDOW_MS = 30_000
 export interface AzRowProps {
   azId: AzId
   regionId: RegionId
+  monthlyUsd: number
   onNavigateAz: () => void
   onNavigateServer: (serverId: ServerId) => void
 }
 
-export function AzRow({ azId, regionId, onNavigateAz, onNavigateServer }: AzRowProps): ReactElement {
+export function AzRow({ azId, regionId, monthlyUsd, onNavigateAz, onNavigateServer }: AzRowProps): ReactElement {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
@@ -46,7 +46,7 @@ export function AzRow({ azId, regionId, onNavigateAz, onNavigateServer }: AzRowP
   const instanceCount = Object.values(compiled.instances).filter(i => i.azId === azId).length
   const metrics = batch?.azs[azId] ?? null
   const isDown = metrics?.health === 'down'
-  const usd = computeWorldCost(doc, batch?.world ?? null).byAz.find(e => e.azId === azId)?.monthlyUsd ?? 0
+  const usd = monthlyUsd
 
   const residentInstanceIds = Object.values(compiled.instances).filter(i => i.azId === azId).map(i => i.id)
   const promoting = batch != null && events.some(e =>

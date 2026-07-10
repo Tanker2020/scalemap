@@ -7,7 +7,6 @@ import type { ReactElement } from 'react'
 import type { AzShare } from './regionData'
 
 const TEAL = '#2DD4BF'
-const DOWN_RED = '#EF4444'
 const LABEL_COLOR = '#94A3B8'
 const SVG_W = 90
 const ORIGIN_X = 5
@@ -28,7 +27,7 @@ export function SplitLines({ shares, height }: SplitLinesProps): ReactElement {
         const d = `M${ORIGIN_X},${originY} C${midX - 5},${originY} ${midX},${y} ${TARGET_X},${y}`
         const pct = Math.round(s.fraction * 100)
         const strokeWidth = s.down ? 1 : 1 + 2 * s.fraction
-        const stroke = s.down ? DOWN_RED : TEAL
+        const stroke = s.down ? 'var(--color-danger)' : TEAL
         const dash = s.down ? '2 7' : '6 5'
         return (
           <g key={s.azId}>
@@ -37,7 +36,7 @@ export function SplitLines({ shares, height }: SplitLinesProps): ReactElement {
                 <animate attributeName="stroke-dashoffset" values="22;0" dur="1s" repeatCount="indefinite" />
               )}
             </path>
-            <text x={midX} y={y - 6} fill={s.down ? DOWN_RED : LABEL_COLOR} fontSize={9}>
+            <text x={midX} y={y - 6} fill={s.down ? 'var(--color-danger)' : LABEL_COLOR} fontSize={9}>
               {pct}%
             </text>
           </g>

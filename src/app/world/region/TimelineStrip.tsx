@@ -66,8 +66,8 @@ export function TimelineStrip({ regionId }: TimelineStripProps): ReactElement | 
       </div>
       <div style={{ position: 'relative', height: 28, background: TRACK_BG, border: `1px solid ${TRACK_BORDER}`, borderRadius: 4 }}>
         {scoped.map(e => {
-          const clamped = Math.min(endMs, Math.max(startMs, e.simMs))
-          const pct = ((clamped - startMs) / WINDOW_MS) * 100
+          if (e.simMs < startMs) return null
+          const pct = ((e.simMs - startMs) / WINDOW_MS) * 100
           return (
             <button
               key={e.id}

@@ -437,7 +437,72 @@ param is optional/defaulted, so no existing caller needed to change. `costModelV
 there as part of this task (out of this section's scope), flagged here so the next edit to
 §1D/§1J reconciles it. `AzRow.tsx`'s own call is uncached (one whole-`WorldDoc` `computeWorldCost`
 walk per AZ row per render, not per region) — worth hoisting into `RegionView.tsx` if AZ counts
-grow enough for it to show up in a profile, not fixed this task.
+grow enough for it to show up in a profile, not fixed this task. ➜ RESOLVED Phase 5 Task 7 —
+hoisted to RegionView.tsx, see §N.
+
+---
+
+### N. R3F globe + traffic authoring — Phase 5 Level-1 view (`src/app/world/globe/`, `src/app/world/panels/TrafficPanel.tsx`, 2026-07-09)
+
+Replaces the Phase-1 placeholder `GlobeView` card grid (§1J) with a real three.js globe
+(react-three-fiber): NASA night-lights earth + atmosphere shader, health-colored region pins,
+teal population markers, and engine-driven great-circle traffic arcs (client/inter-region/
+drain). Ships the traffic-authoring UI the world.store actions had no reader for since Phase 1
+(`addPopulation`/`updatePopulation`/`removePopulation`/`updateRouting`/`updateTraffic`) via a new
+`TrafficPanel.tsx` tab plus click-the-globe population placement. Built across Tasks 1–7 (spec:
+`docs/superpowers/specs/2026-07-09-phase5-globe-design.md`); this task (7) is final integration —
+fps probe, this section, and closing out the Phase-4 backlog (see the four carry-forward rows
+below).
+
+| File | Role |
+|---|---|
+| `src/app/world/globe/geo.ts` (Task 1) | Pure spherical math, no React/store reads: `latLonToVec3(lat,lon,r)`/`vec3ToLatLon(v)` (inverse, used for click-to-place) under the app's fixed convention (lat 90→+Y pole, lon 0→+Z meridian, lon 90E→+X), `greatCirclePoints(from,to,r,n)` (slerped great-circle points with an altitude bump peaking at the midpoint). Everything under `globe/` that needs spherical geometry goes through this module; nothing else in the app does its own trig |
+| `src/app/world/globe/webgl.ts` (Task 3) | `webglAvailable()` — one-shot cached WebGL context-creation feature-detect. Sole gate deciding `GlobeView`'s scene-vs-`GlobeCards` branch |
+| `src/app/world/globe/GlobeScene.tsx` (Task 3) | `<Canvas>` (dpr [1,2]) + night-earth sphere (T1 texture) + fresnel atmosphere shell + `OrbitControls` (no pan, clamped zoom) + idle rotation (paused on pointer-down and under reduced motion) + place-mode raycast-to-click (`vec3ToLatLon` on the hit point → `onPlace(lat,lon)`). `GlobeSceneProps { placeMode; onPlace; children }` is the seam T4/T5's layers and T6's placement wiring all mount through |
+| `src/app/world/globe/RegionPins.tsx`, `PopulationMarkers.tsx` (Task 4) | Health-colored region pins (pulse on a recent failover/outage event, drei `Html` label, click→`goRegion`) and teal population markers (hover label `label · peakRps rps`, no click behavior — editing lives in `TrafficPanel`). Both read stores directly, no props |
+| `src/app/world/globe/ArcsLayer.tsx` (Task 5) | `attachRenderer({level:'globe'}, onFrame)` once per `running` (T14-lesson renderer-attach discipline); rebuilds a pooled set of `THREE.Line` great-circle geometries only when the arc set's signature changes (`arcsSignature`, kind+endpoints), advances dash offset in refs every frame (never `setState`). Colors: client teal `#2DD4BF`, inter-region blue `#4A9EFF`, drain red `#EF4444` — local consts, not tokens, matching spec D6/R2's scene-chrome carve-out (arc colors have no `ColorTokens` equivalent) |
+| `src/app/world/GlobeCards.tsx` (Task 3) | The pre-Phase-5 card grid, extracted verbatim from the old `GlobeView.tsx` — the WebGL-unavailable fallback AND the permanent a11y/screen-reader path (the canvas is `aria-hidden`, so a visually-hidden region-nav list is duplicated into both branches of `GlobeView.tsx`, not just this one) |
+| `src/app/world/GlobeView.tsx` (Task 3, extended Task 6) | Composition root: `webglAvailable() ? <GlobeScene>{RegionPins,PopulationMarkers,ArcsLayer}</GlobeScene> : <GlobeCards/>`, plus the a11y list in both branches. **Task 6** gave it a `GlobeViewProps { placeMode; onExitPlaceMode; onPopulationPlaced }` — it does NOT own `placeMode` itself (see the Boundary rules note below on why) — and a `handlePlace(lat,lon)` that calls `addPopulation` + disarms + reports the new id up, passed as `GlobeScene`'s `onPlace` |
+| `src/lib/worldEngine/index.ts` (Task 2, `buildArcs` only) | Extended (additive, no type change) to also emit `kind:'inter-region'` arcs (aggregated cross-region dependency flows, region→region, intensity by rps share) and `kind:'drain'` arcs (population's failover pending, or still routed to a `down` region during the TTL-lag window) — the pre-Phase-5 `kind:'client'` arcs stay byte-identical and first in the returned array; total capped at the existing `MAX_GLOBE_ARCS=200`, order client→inter-region→drain. One new engine-internal `Map<PopulationId, RegionId>` (prev-region-during-drain memory) — logged as the phase's one informational drift item, see the Frozen-contract note |
+| `src/app/world/panels/TrafficPanel.tsx` (Task 6) | Three sections (POPULATIONS/TRAFFIC/ROUTING) writing through the pre-existing `world.store.ts` actions only (Phase 5 adds none) — see the Boundary rules note. `placeMode`/`selectedPopulationId` arrive as props, NOT read from a store — the panel is a pure controlled component over state `WorldShell.tsx` owns (see next row) |
+| `src/app/world/panels/WorldPanel.tsx` (Task 6) | Gained a `'traffic'` tab entry and three new required props (`placeMode`/`onTogglePlaceMode`/`selectedPopulationId`), threaded straight through to `TrafficPanel` inside the existing `<fieldset disabled={running}>` — no new gating logic |
+| `src/app/world/WorldShell.tsx` (Task 6) | Owns `placeMode`/`selectedPopulationId` `useState`s and threads them to both `GlobeView` and `WorldPanel` — the ONLY place they can live, since those two are siblings in `WorldShell`'s `flex` row (not parent/child), and `TrafficPanel` (a `WorldPanel` descendant) needs to toggle the same boolean `GlobeView`'s `GlobeScene` reads to arm its raycast handler. No new store — this is Zustand-free, plain lifted `useState`, per the Phase 5 constraint that no store action was added |
+
+**Boundary rules:** `src/app/world/globe/*` imports `three`/`@react-three/fiber`/`@react-three/drei`
+(Task 1 deps, no other new dependency anywhere per Global Constraints), `lib/world/types` +
+`lib/world/regionGeo` + `lib/worldEngine/types` (type-only, `VisualArc`), and app stores
+(`useWorldStore` read-only `doc`, `useSimulationStore` `attachRenderer`/`scrubBatch`/
+`latestBatch`/`events`, `useNavStore` `goRegion`) — nothing under `globe/` imports
+`worldEngine/index.ts` (the executable engine facade) directly; only `useSimulationStore` does,
+continuing the seam §K/§L/§M each independently established. `TrafficPanel.tsx` writes through
+`useWorldStore`'s five pre-existing population/traffic/routing actions ONLY — grep-verified no
+new action was added to `world.store.ts` this phase. `GlobeView.tsx`/`WorldPanel.tsx`/
+`WorldShell.tsx` together are the ONE place in the app where `placeMode` is threaded as plain
+props across a sibling boundary rather than through a store — a deliberate, narrow exception
+(two `useState`s, no persistence, no other reader) rather than a precedent for avoiding stores
+generally elsewhere in `world/`.
+
+**Frozen-contract note:** `VisualArc { fromLatLon; toLatLon; intensity; kind:
+'client'|'inter-region'|'drain' }` (`worldEngine/types.ts`) was already frozen with all three
+`kind` members before Phase 5 — `buildArcs` v2 only starts POPULATING the two kinds it previously
+never emitted; no type under `worldEngine/` changed. The one informational drift item (a new
+engine-internal `Map<PopulationId, RegionId>` added to `EngineState` in `worldEngine/index.ts` to
+remember each population's previous region during a drain window) is logged in
+`.superpowers/sdd/contract-drift.md` `## PHASE 5` as engine-internal state, not a contract change
+— mirrors how Phase 4's item 8 (`CROSS_AZ_HOP_MS` local mirror) was logged as a transparency
+record rather than a violation.
+
+**Blast radius / Phase-4 backlog closed this task:** the four Phase-4-final-review backlog items
+this task fixes (full text in `.superpowers/sdd/progress.md`'s `## PHASE 4 COMPLETE` "OPEN ITEMS
+for Phase 5" list) — `CrossAzColumn.tsx`'s replication-list key now includes `fromAzId`/`toAzId`;
+`TimelineStrip.tsx` now excludes (not clamps) events older than its 120s window;
+`SplitLines.tsx`'s `DOWN_RED` and `RackNodes.tsx`'s `CHASSIS_BORDER.degraded` now route through
+`var(--color-danger)`/`color-mix(in srgb, var(--color-warning) 33%, transparent)` instead of raw
+hex; and **§M's own Blast-radius paragraph is hereby corrected** — its "AzRow.tsx's own call is
+uncached ... not fixed this task" note is now stale, since `computeWorldCost` is hoisted to
+`RegionView.tsx` (one call per region render, `monthlyUsd` passed down) as of this task. The
+other three backlog categories from that same list (test-coverage gaps, cosmetic geometry nits,
+the two PARKED items needing engine work) are out of Phase-5 scope and remain open.
 
 ---
 

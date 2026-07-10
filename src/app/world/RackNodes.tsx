@@ -83,7 +83,9 @@ const HEALTH_COLOR: Record<HealthState, string> = {
   healthy: 'var(--color-success)', degraded: 'var(--color-warning)', down: 'var(--color-danger)',
 }
 const CHASSIS_BORDER: Record<HealthState, string> = {
-  healthy: '1px solid #2A303C', degraded: '1px solid #F59E0B55', down: '1px solid var(--color-danger)',
+  healthy: '1px solid #2A303C',
+  degraded: '1px solid color-mix(in srgb, var(--color-warning) 33%, transparent)',
+  down: '1px solid var(--color-danger)',
 }
 const BAY_BG = '#0D1017', BAY_BORDER = '#2A303C'
 const VENT_BG = 'repeating-linear-gradient(90deg,#1E2430 0 2px,#0D1017 2px 4px)'

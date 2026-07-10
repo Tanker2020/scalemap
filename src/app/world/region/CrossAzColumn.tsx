@@ -39,7 +39,9 @@ export function CrossAzColumn({ regionId }: CrossAzColumnProps): ReactElement {
                 ? <span style={{ color: DOWN_COLOR }}>✕ link down</span>
                 : <span style={{ color: LATENCY_COLOR }}>{entry.latencyMs}ms</span>}
             </div>
-            {entry.replication.map(r => <div key={r.blueprintId}>{r.blueprintName} repl</div>)}
+            {entry.replication.map(r => (
+              <div key={`${r.blueprintId}:${r.fromAzId}:${r.toAzId}`}>{r.blueprintName} repl</div>
+            ))}
           </div>
         )
       })}

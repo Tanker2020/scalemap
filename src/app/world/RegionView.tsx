@@ -10,6 +10,7 @@ import { useNavStore } from '../store/nav.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useCompiledWorld } from './useCompiledWorld'
 import { WORLD_REGIONS } from '../../lib/regionConfig'
+import { computeWorldCost } from '../../lib/costModelV2'
 import type { RoutingPolicyKind } from '../../lib/world/types'
 import { azShares, ribbonAlert, sparklineSeries } from './region/regionData'
 import { AlertRibbon } from './region/AlertRibbon'
@@ -64,6 +65,7 @@ export function RegionView() {
 
   const shares = azShares(regionId, doc, batch)
   const alert = ribbonAlert(regionId, doc, events, batch?.simMs ?? 0)
+  const costs = computeWorldCost(doc, batch?.world ?? null)
   const regionRps = batch?.regions[regionId]?.rps ?? 0
   const rowsHeight = Math.max(140, azs.length * ROW_HEIGHT_ESTIMATE)
   const maxSpark = Math.max(1, ...spark)
@@ -135,6 +137,7 @@ export function RegionView() {
             {azs.map(az => (
               <AzRow
                 key={az.id} azId={az.id} regionId={regionId}
+                monthlyUsd={costs.byAz.find(e => e.azId === az.id)?.monthlyUsd ?? 0}
                 onNavigateAz={() => goAz(regionId, az.id)}
                 onNavigateServer={serverId => goServer(regionId, az.id, serverId)}
               />
