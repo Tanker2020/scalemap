@@ -208,6 +208,56 @@ function singleRegionFixture(popCount: number) {
   return { doc, compiled, r1 }
 }
 
+// Reproduces the exact carry-forward scenario Phase 5's final review flagged as untested:
+// buildDrainArcs' `?? [pop.lat,pop.lon]` fallback (index.ts ~line 556) only triggers when the
+// POPULATION'S PREVIOUS region (captured in the engine's internal popPrevRegion map at the
+// moment failover starts) has a catalogId missing from REGION_GEO — geoOfRegion(prevRegionId)
+// returns null, and the drain arc's fromLatLon falls back to the population's own lat/lon
+// instead of the (unresolvable) previous region's geo. Getting the geo-less region resolved
+// FIRST can't be done via 'priority'/'geo'/'latency': src/lib/world/routing.ts's distanceScore
+// falls back to Number.MAX_SAFE_INTEGER for a region missing a REGION_GEO entry, and that huge
+// fallback dominates every one of those scoring formulas (a priority index of 0 or 1 can't
+// offset a ~9e15 km term) — so the geo-less region always sorts LAST under them, empirically
+// confirmed against this repo's actual routing.ts. 'weighted' is the one policy that CAN force
+// it: pickWeighted (routingRuntime.ts) draws only from candidates with nonzero weight, so
+// pinning the real region's weight to 0 makes the geo-less region (default weight 1) the only
+// one ever chosen while both are healthy — regardless of the underlying score order. The
+// subsequent outage on the geo-less region then makes it the population's "previous" region
+// once traffic fails over to the region that DOES have a REGION_GEO entry.
+function missingGeoFailoverFixture() {
+  const doc = createWorld()
+  doc.traffic.autoBaseline = false
+  doc.routing.policy = 'weighted'
+  doc.routing.dnsTtlSec = 5
+
+  const r1 = createRegion('not-a-real-region')   // catalogId deliberately absent from REGION_GEO
+  const r2 = createRegion('us-east-1')
+  doc.routing.weights[r2.id] = 0                 // r1 keeps the default weight (1) -> always wins while both regions are healthy
+  Object.assign(doc.regions, { [r1.id]: r1, [r2.id]: r2 })
+
+  const az1 = createAz(r1.id, 'not-a-real-region-a')
+  const az2 = createAz(r2.id, 'us-east-1a')
+  Object.assign(doc.azs, { [az1.id]: az1, [az2.id]: az2 })
+
+  const s1 = createServer(az1.id, getPreset('dedicated-8')!)
+  const s2 = createServer(az2.id, getPreset('dedicated-8')!)
+  Object.assign(doc.servers, { [s1.id]: s1, [s2.id]: s2 })
+
+  const web = publicBlueprint('web', 0)
+  Object.assign(doc.blueprints, { [web.id]: web })
+
+  const place = (bpId: string, serverId: string) => { const pl = createPlacement(bpId, serverId); doc.placements[pl.id] = pl; return pl }
+  place(web.id, s1.id)
+  place(web.id, s2.id)
+
+  const pop = createPopulation('nyc', 40.7, -74.0)
+  pop.peakRps = 50
+  doc.populations[pop.id] = pop
+
+  const compiled = compileWorld(doc)
+  return { doc, compiled, r1, r2, pop }
+}
+
 function drive(doc: WorldDoc, compiled: ReturnType<typeof compileWorld>) {
   const engine = createWorldEngine(1)
   const batches: MetricsBatch[] = []
@@ -357,6 +407,35 @@ describe('buildArcs v2 (globe scope)', () => {
     }
     expect(completedFrame).not.toBeNull()
     expect(completedFrame!.arcs.some(a => a.kind === 'drain')).toBe(false)
+    sim.engine.stop()
+  })
+
+  it("drain arc falls back to the population's own lat/lon when the previous region has no REGION_GEO entry", () => {
+    // Phase-5 final-review MINOR, closed as a Phase-6 T9 carry-forward: the buildDrainArcs
+    // `?? [pop.lat,pop.lon]` fallback branch had no test — it's reachable only when the
+    // FAILED-OVER-FROM region's catalogId is missing from REGION_GEO (geoOfRegion returns null).
+    const f = missingGeoFailoverFixture()
+    const sim = drive(f.doc, f.compiled)
+    const frames: FramePayload[] = []
+    sim.engine.attachRenderer({ level: 'globe' }, p => frames.push(p))
+    sim.stepFor(3)                                    // warm DNS cache -> r1 (weighted, r2 pinned to 0 -> r1 always wins)
+    sim.engine.setOutage('region', f.r1.id, true)
+
+    // Same step-until-event-fires pattern as the "drain arc from old to new region" case above.
+    let startedFrame: FramePayload | null = null
+    for (let i = 0; i < 100 && !startedFrame; i++) {
+      sim.engine.__test_step(1)
+      sim.engine.__test_render(1000)
+      if (sim.events.some(e => e.kind === 'failover_started')) startedFrame = frames[frames.length - 1]
+    }
+    expect(startedFrame).not.toBeNull()
+    const drainArcs = startedFrame!.arcs.filter(a => a.kind === 'drain')
+    expect(drainArcs).toHaveLength(1)
+    // r1's catalogId ('not-a-real-region') has no REGION_GEO entry, so geoOfRegion(r1.id) is
+    // null and fromLatLon falls back to the population's own [lat, lon] instead of r1's geo.
+    expect(drainArcs[0].fromLatLon).toEqual([f.pop.lat, f.pop.lon])
+    const geoR2 = REGION_GEO['us-east-1']
+    expect(drainArcs[0].toLatLon).toEqual([geoR2.lat, geoR2.lon])
     sim.engine.stop()
   })
 

@@ -13,6 +13,7 @@ import { RegionPins } from './globe/RegionPins'
 import { PopulationMarkers } from './globe/PopulationMarkers'
 import { ArcsLayer } from './globe/ArcsLayer'
 import { webglAvailable } from './globe/webgl'
+import { nextPopulationLabel } from '../../lib/world/populationLabel'
 
 const visuallyHidden: CSSProperties = {
   position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden',
@@ -44,13 +45,17 @@ export interface GlobeViewProps {
 
 export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: GlobeViewProps) {
   const addPopulation = useWorldStore(s => s.addPopulation)
-  const populationCount = useWorldStore(s => Object.keys(s.doc.populations).length)
+  const populations = useWorldStore(s => s.doc.populations)
 
   // Place-mode is armed/disarmed by WorldShell (the common ancestor of this component and
   // TrafficPanel) via the placeMode prop; a click on the globe here places a population, then
   // hands control back up so WorldShell can disarm and TrafficPanel can select+focus the new row.
   const onPlace = (lat: number, lon: number) => {
-    const label = `pop-${populationCount + 1}`
+    // Phase 6 T9 carry-forward: same shared max-suffix helper TrafficPanel.tsx's "+ add" uses —
+    // this file's previous `pop-${populationCount + 1}` and TrafficPanel's independent
+    // `pop-${populations.length + 1}` counter could reissue the same label after a
+    // remove+re-add from either surface (Phase-5 backlog item).
+    const label = nextPopulationLabel(populations)
     const id = addPopulation(label, lat, lon)
     onExitPlaceMode()
     onPopulationPlaced(id)

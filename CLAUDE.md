@@ -4,21 +4,70 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Scalemap is a desktop application (Tauri 2 + React 19 + TypeScript) for visualizing and simulating infrastructure systems. Users drag infrastructure nodes onto a canvas, wire them together, and run a client-side traffic simulation that animates request/event/stream particles across the graph, computes per-node metrics (throughput, latency, error rate, queue depth), estimates cloud cost, and flags structural design issues (SPOFs, exposed databases, unbalanced load balancers, etc.).
+Scalemap is a desktop application (Tauri 2 + React 19 + TypeScript) for authoring and simulating
+multi-region infrastructure "worlds." Users build a world at four zoom levels — globe → region →
+availability zone → server — out of regions, AZs, servers, service blueprints, placements, and
+managed services; `compileWorld()` resolves that document into concrete service instances and
+permitted/blocked network paths; a from-scratch client-side simulation engine
+(`src/lib/worldEngine/`) ticks the compiled world at a fixed step rate and publishes live
+per-instance/server/AZ/region metrics, engine events, and replay frames that drive every view. A
+deterministic analysis-rule engine and an on-demand LLM architecture reviewer surface design
+issues (structural SPOFs, exposed databases, capacity/geo problems, plus free-form AI-found
+issues) alongside a cost model and traffic-authoring tools.
 
-The app is well past scaffold stage. Core systems that exist today:
+This is the app's SECOND full architecture: the original React-Flow "canvas" prototype —
+hand-wired nodes/edges, a particle-based `requestAnimationFrame` simulation, a 9-rule structural
+linter, a ScaleScript DSL, one-way Terraform export, and vault templates — was deleted wholesale
+in Phase 2 of a ground-up rebuild (2026-07-08) and replaced by everything described below. None
+of the legacy systems exist in the codebase today; do not assume any of them do (see
+`docs/module-boundaries.md`'s §1A–§1I for exactly what was removed and why, if that history is
+ever needed).
 
-- **Canvas** (`@xyflow/react`) with 18 custom compute/network/storage/messaging/caching node types and 8 group/container node types (VPC, subnet, AZ, region, k8s cluster, ECS cluster, Docker Compose, namespace), all with fully custom node/edge rendering.
-- **Simulation engine** — a `requestAnimationFrame` particle engine driving live per-node metrics, replay/scrubbing, and a request inspector.
-- **Packet system** — a Flyweight-style registry of packet templates (generic or user-defined protocols: http, event, stream, db) shared across edges.
-- **Structural linter** — 9 rules that flag design smells in the graph (see below).
-- **Cost model** — per-provider (AWS/GCP/Azure) pricing keyed off simulated traffic volume, with tiered egress billing.
-- **ScaleScript** — a declarative JSON DSL for parameterizing a simulation run (node/edge overrides, timed scenarios, global SLOs).
-- **Terraform export** (one-way: diagram → HCL). There is no Terraform *import*/parsing — see Roadmap.
-- **Vault templates** — prebuilt starter diagrams (web, serverless, event-driven, k8s, data, network patterns).
-- **.scalemap file persistence** via Tauri commands, with a `localStorage`-backed mock for browser-only dev.
+Core systems that exist today:
 
-There is no `prd.txt` in the repo (it has been removed); this file is the source of truth for scope and architecture.
+- **World document model** (`src/lib/world/`) — a normalized `WorldDoc` (regions, AZs, servers,
+  service blueprints, placements, managed services, client populations, routing/traffic config)
+  plus `compileWorld(doc)`, the pure gate every other system reads through: it resolves
+  placements into concrete `ServiceInstance`s, evaluates firewall/port/network-isolation rules
+  into permitted/blocked `CompiledPath`s, builds routing tables, and emits structural
+  `CompileFinding`s. Nothing downstream — views, the engine, analysis rules — reads the raw
+  `WorldDoc` for anything derived; always `compiled`.
+- **World engine** (`src/lib/worldEngine/`) — a from-scratch, deliberately-ported (not reused)
+  discrete fixed-step simulation: demand generation, DNS-TTL-cached region routing with health
+  checks and failover, per-host CPU/RAM scheduling, VPS burstable-credit/noisy-neighbor modeling,
+  NIC byte-rate caps, per-dependency circuit breakers, a BFS flow solver, replica promotion, a 1
+  Hz metrics pyramid (instance→server→AZ→region→world), an event ring, and a replay buffer.
+  Exposed as one facade — `createWorldEngine()` / the shared `worldEngine` singleton — driven
+  ONLY by `simulation.store.ts`; every view reads that store, never the engine directly.
+- **Four-level navigation shell** (`src/app/world/`, `nav.store.ts`'s `WorldLevel`) — a
+  react-three-fiber globe (night-earth, health-colored region pins, population markers,
+  engine-driven great-circle traffic arcs) → a region flow page (cross-AZ traffic columns, rack
+  chassis) → a live React Flow AZ canvas → a per-server "circuit board" view (NIC/firewall gate,
+  service chips, a unified hardware platform). All four are live-metrics-aware and
+  replay-scrubbable.
+- **Traffic authoring** — client populations (placed by hand or by clicking the globe),
+  auto-baseline synthetic per-region demand, and routing policy (latency/geo/weighted/priority)
+  with DNS TTL + health-check tuning.
+- **Analysis engine** (`src/lib/analysis/`) — three rule families (structural/network-security/
+  capacity, 13 rules) run over the compiled world plus the latest metrics batch, rendered in an
+  `Analysis` tab merged with compile findings, with clickable affected-entity chips that jump to
+  the region/AZ/server in question.
+- **LLM architecture reviewer** (`src/lib/llmReview.ts`) — on-demand, schema-validated review
+  against any OpenAI-compatible endpoint, rendered as AI-tagged cards beside the deterministic
+  findings. The actual HTTP call is Rust-side (`llm_chat` Tauri command — a webview `fetch` to
+  arbitrary hosts dies on CORS); settings persist to the app data dir and are never serialized
+  into `.scalemap`, logged, or echoed unmasked (see Key Architecture Decisions).
+- **Cost model** (`src/lib/costModelV2.ts`) — per-server hourly cost + managed-service pricing
+  (`cloudRegistry.ts`) rolled up by region/AZ, plus tiered cross-AZ/cross-region/internet egress
+  costed off live simulated byte rates.
+- **Global Settings** (⚙ button, `SettingsModal.tsx`) — the app's dark/light theme toggle (now
+  actually reachable from the UI) and the LLM endpoint configuration above.
+- **`.scalemap` v2 file persistence** via Tauri commands, with a `localStorage`-backed mock for
+  browser-only dev, plus a 30-second dirty-triggered autosave snapshot.
+
+There is no `prd.txt` in the repo; this file is the source of truth for scope and architecture.
+`docs/module-boundaries.md` is the detailed, file-by-file companion — more current than the prose
+above for any specific file's history.
 
 ---
 
@@ -37,7 +86,8 @@ npm run build
 # Build native app (release)
 npm run tauri build
 
-# Run frontend tests (vitest is configured; no test files exist yet — see Roadmap)
+# Run frontend tests (extensive vitest coverage — jsdom for components, node env for pure
+# rule/engine logic)
 npx vitest
 
 # Rust-only (from src-tauri/)
@@ -53,89 +103,139 @@ Vite dev server runs on port 1420 (strict — fails if occupied).
 
 ```
 src/
-  App.tsx
+  App.tsx                        # useThemeBootstrap + ⌘N/⌘Z/⇧⌘Z global handlers + 30s
+                                  # dirty-triggered autosave + HomeScreen/WorldShell gate
   main.tsx
   app/
-    store/                       # Zustand, one store per domain
-      canvas.store.ts            # Nodes, edges, viewport, undo/redo history, packet registry
-      simulation.store.ts        # Reactive NodeMetrics, events, bottlenecks, SLO status, inspected requests
-      diagnostics.store.ts       # Lint results + O(1) nodeId → issues index
-      file.store.ts              # File path, dirty flag, recent files
-      replay.store.ts            # 1Hz health snapshots (300-frame ring buffer), scrub cursor
-      metricsHistory.store.ts    # Per-node metric timeseries (300 samples @ 1Hz)
-      ui.store.ts                # Active tool, selection, panel/sidebar visibility
-    canvas/
-      Canvas.tsx                 # React Flow wrapper, registers all node/group types
-      nodes/BaseNode.tsx         # Shared custom node component (icon, metrics, replay-aware)
-      nodes/GroupNode.tsx        # Resizable/collapsible container node (VPC, subnet, cluster, ...)
-      edges/BaseEdge.tsx         # Custom SVG edges, bowed paths for parallel edges, protocol styling
-      simulation/
-        particleEngine.ts        # rAF loop; particle state lives here, NOT in Zustand
-        SimulationOverlay.tsx    # Canvas overlay, batches metrics up to simulation.store
-        PlaybackScrubber.tsx     # Scrub UI over replay.store frameTimes
-        RequestInspector.tsx     # Inspect a single picked particle
-        useDisplayMetrics.ts     # Live vs replay metrics resolution for a node
-    simulation/
-      SimConfigPanel.tsx         # Per-node capacity/latency/retry/SLO configuration
-      PacketEditor.tsx           # Interactive "packet anatomy" card editor (redesigned 2026-07-02) — click-to-flip protocol fields, draggable payload-size bar
-      CostTracker.tsx            # Renders costModel.ts output
-      EventLogPanel.tsx          # Severity-colored event timeline
-      defaults.ts                # NODE_SIM_DEFAULTS for all node types
-    diagnostics/
-      DiagnosticsPanel.tsx       # Renders lint issues
-    analytics/
-      MetricsDrawer.tsx, MetricGraphOverlay.tsx
-    reports/
-      ReportsPanel.tsx           # Export summaries (disk persistence not yet wired — see Roadmap)
-    sidebar/
-      NodePalette.tsx, PropertiesPanel.tsx, EdgeConfigForm.tsx, ContextMenu.tsx, Sparkline.tsx
-    toolbar/Toolbar.tsx
-    home/HomeScreen.tsx
-    hooks/useSaveDiagram.ts
+    store/                       # Zustand, one store per domain — no monolithic store
+      nav.store.ts                # WorldLevel ('globe'|'region'|'az'|'server') + regionId/azId/
+                                   # serverId focus; deliberately has no dependency on world.store
+      world.store.ts              # WorldDoc CRUD + undo/redo (history/future snapshots) +
+                                   # dirty-marking on every mutation
+      simulation.store.ts         # running/timeScale/latestBatch/events/healthOverrides/
+                                   # scrubIndex/scrubBatch/degraded — the ONLY caller of
+                                   # worldEngine directly; every view reads this store instead
+      file.store.ts               # File path, dirty flag, recent files
+      ui.store.ts                 # themeMode ('dark'|'light') + setThemeMode — persisted,
+                                   # now user-facing via the Settings modal
+    world/
+      WorldShell.tsx               # Header (breadcrumb, SimControls, ⚙ Settings gear, file
+                                    # actions) + active-level view + WorldPanel dock +
+                                    # ScrubberV2 bottom bar
+      GlobeView.tsx, globe/         # Level 1: react-three-fiber night-earth globe (GlobeScene,
+                                    # RegionPins, PopulationMarkers, ArcsLayer engine-driven
+                                    # traffic arcs) or GlobeCards fallback when WebGL is
+                                    # unavailable
+      RegionView.tsx, region/       # Level 2: cross-AZ traffic columns, timeline strip, rack
+                                    # chassis (SplitLines, AzRow, CrossAzColumn)
+      AzCanvas.tsx, AzSimOverlay.tsx # Level 3: live React Flow render of the focused AZ (the
+                                    # app's one remaining @xyflow/react surface) + particle
+                                    # overlay canvas
+      ServerView.tsx, server/       # Level 4: the "circuit board" — NIC/firewall gate, service
+                                    # chips, HardwarePlatform, PacketLayer, InspectorRail
+      SettingsModal.tsx             # ⚙ modal — Appearance (theme toggle) + AI Review (LLM
+                                    # endpoint config)
+      panels/                       # WorldPanel dock tabs: Topology, Blueprints, Placements,
+                                    # Traffic, Analysis (+ AiReviewSection), Events, Cost
+      fileOps.ts, Breadcrumb.tsx, SimControls.tsx, EventsTab.tsx, useCompiledWorld.ts
   lib/
-    nodeConfig.ts                # NODE_CONFIG / NODE_ICON_MAP — central icon + category registry
-    theme.ts                     # COLORS, CATEGORY_COLORS, FONT
-    costModel.ts                 # Simulation → monthly cost projection
-    cloudRegistry.ts             # Per-provider service/pricing catalog + egress tiers
-    regionConfig.ts
-    scalescript.ts               # ScaleScript DSL types + applyScaleScript() resolver
-    serializer.ts                # .scalemap JSON read/write
-    tauri.ts / tauriMock.ts      # Tauri command wrappers + browser-dev localStorage fallback
-    lint/
-      rules.ts                   # 9 structural lint rules
-      lintGraph.ts                # Builds adjacency once, runs rules, returns LintIssue[]
-      classify.ts, types.ts
-    terraform/exportTerraform.ts # Diagram → HCL (export only, no import)
-    vault/templates.ts           # Prebuilt starter diagrams
+    world/                        # Pure document model + compiler — the schema of .scalemap v2
+      types.ts                     # WorldDoc entities + CompiledWorld output types
+      factories.ts, instanceCatalog.ts, regionGeo.ts, layoutRacks.ts, populationLabel.ts
+      compileWorld.ts (+ network.ts, routing.ts)  # doc -> instances, permitted/blocked paths,
+                                    # routing tables, compile findings — the gate every
+                                    # consumer reads through instead of the raw doc
+    worldEngine/                  # The simulation engine — a from-scratch port (not a reuse)
+                                   # of the deleted canvas app's particleEngine mechanisms
+      index.ts                     # createWorldEngine() facade — sequences every subsystem
+                                    # below into one fixed-step run; exports MAX_GLOBE_ARCS
+      rng.ts, engineClock.ts, demand.ts, routingRuntime.ts, hostScheduler.ts, vpsModel.ts,
+      networkRuntime.ts, breakers.ts, flows.ts, failover.ts, metrics.ts, events.ts, replay.ts
+      types.ts                     # Frozen WorldEngineApi/MetricsBatch/EngineEvent/render-
+                                    # payload contract — additive-only, see contract-drift.md
+    analysis/                     # Deterministic rule engine over the compiled world
+      types.ts, runAnalysis.ts, rules/{structural,network,capacity}.ts
+    llmReview.ts                  # LLM review context builder + schema-validated, retrying
+                                   # request client
+    costModelV2.ts, cloudRegistry.ts, regionConfig.ts
+    serializer.ts                 # .scalemap v2 (de)serialization
+    nodeConfig.ts                 # NODE_CONFIG icon/category registry (no live consumer in the
+                                   # world-model UI today) + surviving packet-template types
+                                   # (PacketTemplate/PacketMode/PacketRegistry)
+    theme.ts                      # DARK_COLORS/LIGHT_COLORS/CATEGORY_COLORS/FONT — the
+                                   # --color-* token source for both themes
+    tauri.ts / tauriMock.ts       # Tauri command wrappers + browser-dev localStorage/fetch
+                                   # fallback (file I/O + LLM settings/chat)
 
 src-tauri/src/
   main.rs, lib.rs
-  commands.rs                    # All Tauri commands live here (single file, not modularized)
-                                  # save_diagram, load_diagram, get_recent_files,
-                                  # open_file_dialog, save_file_dialog
+  commands.rs                    # All Tauri commands: save/load diagram, file dialogs, recent
+                                  # files, save/load_llm_settings, llm_chat
 ```
 
 ---
 
 ## Key Architecture Decisions
 
-**Canvas engine:** `@xyflow/react` (React Flow) with fully custom node/edge components — never the library's default visual style.
+**Four-level nav + compiled-world gate:** the app has exactly one document model, `WorldDoc`
+(`src/lib/world/types.ts`), navigated at four zoom levels — globe → region → AZ → server
+(`nav.store.ts`'s `WorldLevel`). Every view, the engine, and the analysis rules read
+`compileWorld(doc)`'s output (`CompiledWorld`: instances, permitted/blocked paths, routing
+tables, compile findings) for anything derived — never the raw doc. Extend `CompiledWorld`
+additively; never reshape it (it fans out to every view, the engine's `start()`, and every
+analysis rule).
 
-**State management:** Zustand, one store per domain (listed above). No monolithic store.
+**Engine facade + store seam:** `src/lib/worldEngine/index.ts`'s `createWorldEngine()` is the
+ONLY simulation engine; `simulation.store.ts` is the ONLY file in the app allowed to call it
+directly (`start`/`stop`/`attachRenderer`/`getReplayFrames`/`getTracedRequests`/`setOutage`).
+Every view reads the store, never the engine facade. `worldEngine/types.ts` is a frozen contract
+— additive-only changes, logged in `.superpowers/sdd/contract-drift.md` when they happen.
 
-**Simulation particles:** Particle state lives inside `particleEngine.ts`'s internal `EngineState`, mutated directly inside the `requestAnimationFrame` loop — never in Zustand. Only derived, lower-frequency data (`NodeMetrics`, events, bottleneck/SLO status) is published to `simulation.store.ts`, batched via the `onNodeMetrics` callback in `SimulationOverlay.tsx`. Do not add raw particle arrays to any reactive store.
+**AZ canvas:** `@xyflow/react` (React Flow) still renders one thing — the live AZ-level canvas
+(`AzCanvas.tsx`), read-only (servers + managed services as nodes, aggregated compiled paths as
+edges). It is not a general node/edge authoring surface the way the deleted canvas app was;
+don't assume React Flow appears anywhere else.
 
-**Packet registry (Flyweight):** Edges reference a shared `PacketTemplate` by id (`canvas.store.ts`) rather than embedding protocol config per-edge. `packetMode` toggles between `generic` (built-in defaults per protocol) and `custom` (user-authored templates).
+**State management:** Zustand, one store per domain (`nav`, `world`, `simulation`, `file`, `ui` —
+no monolithic store). `nav.store.ts` deliberately has no dependency on `world.store.ts`:
+navigating never pushes undo/redo history.
 
-**Node icons:** Route all icons through `NODE_CONFIG` in `src/lib/nodeConfig.ts`. Never hard-code icon elements in node JSX.
+**Undo/redo:** immutable history stack in `world.store.ts` (`history`/`future` snapshot arrays of
+`{ doc }`), routed through one internal `mutate()` helper that also marks the file dirty — new
+CRUD actions get both for free by going through it.
 
-**Lint rules:** Structural checks run on-demand over the graph (`lintGraph.ts` builds in/out-edge adjacency once, then runs each rule from `rules.ts`). Current rules: `isolatedNode`, `exposedDatabase`, `noQueueConsumer`, `noQueueProducer`, `lambdaDirectDb`, `circularDependency`, `singleEntryPointSpof`, `unbalancedLoadBalancer`, `deepSyncChain`. Add new rules to `rules.ts` and register them in the same array — don't special-case rule execution elsewhere.
+**Analysis rules:** one registry, `ANALYSIS_RULES` (`src/lib/analysis/runAnalysis.ts`) —
+`structural`/`network`/`capacity` rule files each export their rule objects, spread into the same
+array. Add new rules there; don't special-case execution elsewhere. Rules never duplicate
+`compiled.findings` — the Analysis tab merges both lists and suppresses the compile-side
+duplicate of any rule that re-surfaces a compile finding (e.g. `blocked-dependency-path`).
 
-**Terraform:** Export-only (`exportTerraform.ts`, diagram → HCL string). There is currently no HCL parsing, no `hcl-rs` dependency, and no import path. Do not assume an import feature exists — treat any reference to Terraform *import* as future work, not current behavior.
+**Packet system's current role:** the Flyweight packet-template *types*
+(`PacketTemplate`/`PacketMode`/`PacketRegistry`, `src/lib/nodeConfig.ts`) survive from the
+deleted canvas app and are read by `BlueprintDependency.packetTemplateId` and
+`ScalemapFileV2.packets` — but there is no authoring UI for them in the world model today. Don't
+assume a packet editor exists; adding one would be new work, not a restoration.
 
-**Undo/redo:** Immutable history stack in `canvas.store.ts` (`history`/`future` snapshot arrays of `{ nodes, edges }`).
+**LLM reviewer + key security (non-negotiable):** `src/lib/llmReview.ts` builds a review context
+from the compiled world + deterministic findings + aggregated metrics (never raw instance maps),
+sends it to any OpenAI-compatible endpoint via the Rust-side `llm_chat` Tauri command (a webview
+`fetch` to arbitrary hosts dies on CORS), and validates/retries against a hand-rolled JSON schema
+check. Settings (`baseUrl`/`apiKey`/`model`) persist to `llm_settings.json` in the app data dir.
+The API key is NEVER serialized into `.scalemap` (settings never touch `world.store`/
+`serializer`), NEVER logged or `console.*`'d, NEVER included in the review-context payload,
+REDACTED from every error string on both the Rust and TS sides, and rendered only masked
+(`•••• <last4>`) after save — the Settings modal's password input never echoes a saved key back
+into its value.
 
-**Cross-platform:** All Tauri API calls (file dialogs, path resolution) must use Tauri's cross-platform abstractions — no OS-specific system calls. Rust code is currently a single `commands.rs`; keep new commands there unless the file grows large enough to warrant splitting (not yet planned/required).
+**Theme:** `--color-*` CSS custom properties (`theme.ts`'s `DARK_COLORS`/`LIGHT_COLORS`,
+bootstrapped by `App.tsx`'s `useThemeBootstrap`) are the only sanctioned color source for new UI
+— no hardcoded hexes. The dark/light toggle is live and user-facing via the ⚙ Settings modal
+(`ui.store.ts`'s `themeMode`); design new UI to look correct in both.
+
+**Cross-platform:** all Tauri API calls (file dialogs, path resolution, the LLM HTTP transport)
+must use Tauri's cross-platform abstractions — no OS-specific system calls. Rust code is
+currently a single `commands.rs`; keep new commands there unless the file grows large enough to
+warrant splitting (not yet planned/required).
 
 ---
 
@@ -147,36 +247,67 @@ Node base:         #161920   /  border: #2A2E38
 Surface:           #0F1117   /  surface hover: #13161E
 Toolbar:           #111318   /  toolbar border: #1E2128
 
-Compute/Orchestration: #4A9EFF (blue)
-Storage/Caching:       #F5A623 (amber)
-Network:               #2DD4BF (teal)
-Messaging:              #A78BFA (purple)
-Grouping:               #475569 (slate, transparent bg)
+Compute/Orchestration: #5B9CF6 (blue)
+Storage/Caching:       #E0A552 (amber)
+Network:               #3FC7B8 (teal)
+Messaging:              #9C8CE0 (violet)
+Grouping:               #8391A5 (slate-blue accent, transparent bg)
 
 Text primary: #F1F5F9 / secondary: #94A3B8 / muted: #64748B
 Status: danger #EF4444 / success #22C55E / warning #F59E0B
 ```
 
-Source of truth: `src/lib/theme.ts` (`COLORS`, `CATEGORY_COLORS`). Font: `JetBrains Mono` throughout. All animations must respect `prefers-reduced-motion`.
+Source of truth: `src/lib/theme.ts` (`DARK_COLORS`, `CATEGORY_COLORS`). Font: `JetBrains Mono`
+throughout. All animations must respect `prefers-reduced-motion`.
+
+**Light mode:** `theme.ts` also exports a full `LIGHT_COLORS` sibling (WCAG-AA-checked
+replacements — e.g. `danger` #DC2626, `success` #16A34A/`successText` #11823B, `warning` #B45309,
+`accent` #3F6DAC) and every `CATEGORY_COLORS` entry carries a `foreground.light` variant for
+icon/text use on a light card. The dark/light toggle (`ui.store.ts`'s `themeMode`, live via the
+⚙ Settings modal) swaps the whole set at runtime through `App.tsx`'s `useThemeBootstrap`, which
+writes every token as a `--color-*` CSS custom property — new UI must use `var(--color-*)`
+exclusively, never a hardcoded hex, since both modes are now genuinely reachable in the running
+app.
 
 ---
 
 ## Diagram File Format
 
-`.scalemap` files are JSON (`src/lib/serializer.ts`):
+`.scalemap` files are JSON, version `"2"` (`src/lib/serializer.ts` — the v1 canvas-era format
+was removed with the legacy app in Phase 2 and is explicitly rejected on load with a dedicated
+error message):
 
 ```json
 {
-  "version": "1",
+  "version": "2",
   "meta": { "name": "", "created": "", "modified": "" },
-  "viewport": { "x": 0, "y": 0, "zoom": 1 },
-  "nodes": [{ "id": "", "type": "", "position": {}, "data": {} }],
-  "edges": [{ "id": "", "source": "", "target": "", "type": "", "data": {} }],
-  "packets": { "mode": "generic", "templates": {}, "nextId": 1 }
+  "world": {
+    "routing": { "policy": "latency", "weights": {}, "priorityOrder": [], "healthCheckIntervalMs": 10000, "healthCheckFailureThreshold": 3, "dnsTtlSec": 30 },
+    "traffic": { "autoBaseline": true, "baselineTotalRps": 1000 },
+    "populations": {},
+    "regions": {},
+    "azs": {},
+    "servers": {},
+    "blueprints": {},
+    "placements": {},
+    "managedServices": {}
+  },
+  "packets": {},
+  "viewState": { "level": "globe" }
 }
 ```
 
-`packets` is optional (only present when the diagram uses custom packet templates).
+`world` is the full `WorldDoc` (`src/lib/world/types.ts`) — every entity collection
+(`regions`/`azs`/`servers`/`blueprints`/`placements`/`managedServices`/`populations`) plus
+`routing`/`traffic` config, keyed by id. `deserializeWorld` validates that `meta` and all 9
+top-level `WorldDoc` collections are present and non-null objects before accepting a file,
+throwing a single "missing or malformed world document" error otherwise. `packets` is optional —
+present only when the world uses custom (non-generic) packet templates (`PacketRegistry`,
+`src/lib/nodeConfig.ts`; see Key Architecture Decisions for the packet system's current, reduced
+role). `viewState` is optional — `{ level, regionId?, azId?, serverId? }`, the nav focus at save
+time, restored on reopen so a saved file reopens where you left it. There is no analysis-finding
+or LLM-review persistence in this format — both are derived/ephemeral (see Key Architecture
+Decisions).
 
 ---
 
@@ -184,23 +315,51 @@ Source of truth: `src/lib/theme.ts` (`COLORS`, `CATEGORY_COLORS`). Font: `JetBra
 
 | Package | Purpose |
 |---|---|
-| `@xyflow/react` | Canvas — node/edge rendering, pan/zoom |
-| `zustand` | State management |
-| `dagre` | Graph layout (installed; verify usage before relying on it) |
-| `framer-motion` | Panel/node animations |
-| `lucide-react` | Node icons |
-| `vitest` / `@testing-library/react` | Test harness (configured, unused — see Roadmap) |
+| `@react-three/fiber` | React renderer for three.js — the globe scene (`Canvas`, `useFrame`, hooks) |
+| `@react-three/drei` | `OrbitControls`, `useTexture`, and other r3f scene helpers used by the globe |
+| `three` | The WebGL scene graph underlying the globe (night-earth sphere, atmosphere shader, arc geometry) |
+| `@xyflow/react` | The AZ-level canvas (`AzCanvas.tsx`) — node/edge rendering, pan/zoom. The only remaining React Flow surface; the original node-authoring canvas app that used it more broadly was deleted in Phase 2 |
+| `zustand` | State management — one store per domain (`nav`/`world`/`simulation`/`file`/`ui`) |
+| `framer-motion` | Panel/globe/board animations; every animated component also checks `useReducedMotion()` |
+| `lucide-react` | Icons — today's only live consumer is `HomeScreen.tsx`; `nodeConfig.ts`'s `NODE_CONFIG` icon registry has no consumer in the world-model UI (see Key Architecture Decisions) |
+| `vitest` / `@testing-library/react` | Test harness — extensively used (see Known Issues / Roadmap) |
 
-Rust (`src-tauri/Cargo.toml`): `tauri`, `tauri-plugin-opener`, `tauri-plugin-dialog`, `serde`/`serde_json`, `chrono`. No `hcl-rs`.
+Rust (`src-tauri/Cargo.toml`): `tauri`, `tauri-plugin-opener`, `tauri-plugin-dialog`,
+`serde`/`serde_json`, `chrono`, `reqwest` (`default-features = false`, features `["json",
+"rustls-tls"]` — added in Phase 6 for the `llm_chat` command; no OpenSSL dependency).
 
 ---
 
 ## Known Issues / Roadmap
 
-- **No test coverage.** `vitest` and Testing Library are installed but there isn't a single `*.test.ts(x)` file yet. New non-trivial logic (lint rules, cost model, ScaleScript resolver) is a good place to start.
-- **Terraform import doesn't exist.** If this is picked back up, decide whether to keep parsing client-side or reintroduce a Rust-side `hcl-rs` sidecar before writing code.
-- **`ReportsPanel.tsx` exports aren't persisted to disk** — wire up a Tauri command instead of leaving it browser-only.
-- **Rust commands are a single flat file.** Fine at the current size; revisit modularization only if `commands.rs` becomes hard to navigate.
+Test coverage is now extensive (`lib/analysis`'s rule files, `lib/worldEngine`'s subsystems,
+`lib/world`, and most of `app/world`'s panels/board/rack/globe components all have
+`*.test.ts(x)` coverage — jsdom for anything rendering React, plain node env for pure logic).
+`src-tauri/src/commands.rs` remains a single flat file — still fine at its current size (file
+I/O commands + the LLM settings/chat commands); revisit modularization only if it becomes hard
+to navigate.
+
+This file, `docs/module-boundaries.md`, and the six phase-completion summaries in
+`.superpowers/sdd/progress.md` are the current architectural record. The rebuild's scope is
+complete as of Phase 6; the following is intentionally parked, not partially built or in
+progress — do not assume any of it exists:
+
+- k8s/ECS schedulers (blueprint/placement scheduling semantics beyond the current explicit
+  server-by-server placement model)
+- ScaleScript v2 (a declarative scenario/override DSL — the original ScaleScript was deleted
+  with the legacy canvas app and never ported)
+- Terraform v2 (diagram/world → HCL export, or any HCL import/parsing — the original
+  export-only Terraform support was deleted with the legacy canvas app and never ported; there
+  has never been an import path in any version of this app)
+- AI watch-mode (continuous/background LLM review, vs. today's on-demand `Review architecture`
+  button)
+- Spot-instance cost/interruption modeling
+- Managed-service pseudo-internals (today's `ManagedService` is a black-box cost/routing
+  target, not a simulated internal engine)
+- LLM review persistence/history (today's AI cards are ephemeral — never persisted, never
+  serialized into `.scalemap`)
+- Streaming LLM responses / request cancellation (today's review request is a single blocking
+  round trip with one retry; no cancel button, no token streaming)
 
 
 When making changes to the codebase refer to the [module boundaries](docs/module-boundaries.md) document to understand which files are low-risk to modify in parallel and which are high-conflict "hub" files that require careful coordination, and try to utilize codegraph mcp server if possible to understand the fan-in and fan-out of the files you are modifying. And after every new feature/change update the docs/module-boundaries.md file to reflect the new architecture and module boundaries.

@@ -4,7 +4,7 @@
 // interaction / disabled under reduced motion), and place-mode click-to-latlon. T4/T5 layers
 // (RegionPins, PopulationMarkers, ArcsLayer) mount as `children` INSIDE the rotating group so
 // they track the globe's orientation for free — no extra wiring needed here or in those files.
-import { Suspense, useCallback, useMemo, useRef, type ReactElement, type ReactNode } from 'react'
+import { Suspense, useCallback, useLayoutEffect, useMemo, useRef, type ReactElement, type ReactNode } from 'react'
 import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber'
 import { OrbitControls, useTexture } from '@react-three/drei'
 import { useReducedMotion } from 'framer-motion'
@@ -60,7 +60,15 @@ interface EarthProps { placeMode: boolean; onPlace: (lat: number, lon: number) =
 
 function Earth({ placeMode, onPlace }: EarthProps): ReactElement {
   const texture = useTexture(earthTextureUrl)
-  useMemo(() => {
+  // Phase 6 T9 carry-forward: this texture wrap/offset mutation is a SIDE EFFECT (mutating a
+  // shared THREE.Texture instance + flagging it for a GPU re-upload), not a memoized pure
+  // derivation — useLayoutEffect is the conventional home for a synchronous, pre-paint
+  // side effect. useMemo happened to work because its body also runs synchronously during
+  // render, but React does not guarantee a useMemo body runs exactly once per input or is
+  // never re-invoked/discarded (e.g. under future concurrent-rendering behavior) the way an
+  // effect's cleanup/rerun contract is guaranteed. Same dependency array, same body, same
+  // texture.needsUpdate=true flag — behavior-preserving.
+  useLayoutEffect(() => {
     texture.wrapS = THREE.RepeatWrapping
     texture.offset.x = TEXTURE_LON_OFFSET
     texture.colorSpace = THREE.SRGBColorSpace

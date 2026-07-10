@@ -15,6 +15,7 @@ export interface ColorTokens {
   successText: string   // text-safe variant — success's own value only passes the 3:1 icon/large-text threshold
   warning: string
   accent: string
+  onAccent: string   // text/icon color for content rendered ON a saturated accent/danger/warning chip
 }
 
 export const DARK_COLORS: ColorTokens = {
@@ -34,6 +35,7 @@ export const DARK_COLORS: ColorTokens = {
   successText: '#22C55E', // already passes 4.5:1 on dark surfaces, no separate variant needed
   warning: '#F59E0B',
   accent: '#4A9EFF',
+  onAccent: '#FFFFFF',   // white always reads on these saturated chip backgrounds in both themes
 }
 
 export const LIGHT_COLORS: ColorTokens = {
@@ -55,6 +57,7 @@ export const LIGHT_COLORS: ColorTokens = {
   successText: '#11823B', // 4.91:1 — use this instead of `success` when rendering as small text
   warning: '#B45309',     // darkened from dark-mode's #F59E0B — 5.02:1 on white, passes normal-text AA
   accent: '#3F6DAC',      // matches compute category's light-mode foreground (see CATEGORY_COLORS)
+  onAccent: '#FFFFFF',    // white always reads on these saturated chip backgrounds in both themes
 }
 
 export const CATEGORY_COLORS = {

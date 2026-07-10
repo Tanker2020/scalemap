@@ -15,11 +15,9 @@ import { useReducedMotion } from 'framer-motion'
 import * as THREE from 'three'
 import { useSimulationStore } from '../../store/simulation.store'
 import { greatCirclePoints } from './geo'
+import { MAX_GLOBE_ARCS } from '../../../lib/worldEngine'
 import type { VisualArc, FramePayload } from '../../../lib/worldEngine/types'
 
-// Mirrors worldEngine's own (unexported) MAX_GLOBE_ARCS — the pool only ever needs to match the
-// engine's own render cap (D6); not importable, so kept in sync manually here.
-const MAX_GLOBE_ARCS = 200
 const ARC_SEGMENTS = 48
 const ARC_RADIUS = 1.001
 const DASH_SIZE = 0.045

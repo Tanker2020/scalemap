@@ -44,7 +44,7 @@ function segBtnStyle(active: boolean): CSSProperties {
     flex: 1, padding: '5px 0', textAlign: 'center', cursor: 'pointer',
     background: active ? 'var(--color-accent)' : 'var(--color-node-base)',
     border: '1px solid var(--color-node-border)',
-    color: active ? '#fff' : 'var(--color-text-secondary)',
+    color: active ? 'var(--color-on-accent)' : 'var(--color-text-secondary)',
   }
 }
 

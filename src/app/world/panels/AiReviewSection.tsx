@@ -23,7 +23,7 @@ type ReviewState = 'idle' | 'in-flight' | 'done' | 'error'
 
 const chipStyle: CSSProperties = {
   display: 'inline-block', padding: '1px 6px', borderRadius: 3,
-  font: '10px var(--font-mono)', color: '#fff', background: CATEGORY_COLORS.messaging.accent,
+  font: '10px var(--font-mono)', color: 'var(--color-on-accent)', background: CATEGORY_COLORS.messaging.accent,
 }
 const smallBtnStyle: CSSProperties = {
   background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',

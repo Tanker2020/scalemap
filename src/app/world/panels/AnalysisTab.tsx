@@ -51,7 +51,7 @@ const chipBtn: CSSProperties = {
   font: '10px var(--font-mono)', color: 'var(--color-text-secondary)',
 }
 const sevChip = (sev: AnalysisSeverity | 'error' | 'warning'): CSSProperties => ({
-  padding: '1px 6px', borderRadius: 3, font: '10px var(--font-mono)', color: '#fff',
+  padding: '1px 6px', borderRadius: 3, font: '10px var(--font-mono)', color: 'var(--color-on-accent)',
   background: sev === 'critical' || sev === 'error' ? 'var(--color-danger)'
     : sev === 'warning' ? 'var(--color-warning)' : 'var(--color-text-muted)',
 })

@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import type { DiurnalPattern, RegionId, RoutingPolicyKind } from '../../../lib/world/types'
+import { nextPopulationLabel } from '../../../lib/world/populationLabel'
 import { sectionLabel, field, smallBtn, dangerBtn, row } from './panelStyles'
 
 export interface TrafficPanelProps {
@@ -77,7 +78,11 @@ function PopulationsSection({ selectedPopulationId, placeMode, onTogglePlaceMode
   }, [selectedPopulationId])
 
   const addDraft = () => {
-    const label = draftLabel.trim() || `pop-${populations.length + 1}`
+    // Phase 6 T9 carry-forward: shared max-suffix scan (src/lib/world/populationLabel.ts)
+    // instead of `pop-${populations.length + 1}` — a length-based counter reissues a stale
+    // label after a remove+re-add (Phase-5 backlog item); GlobeView.tsx's place-on-globe
+    // handler uses the same helper so neither authoring surface can collide with the other.
+    const label = draftLabel.trim() || nextPopulationLabel(doc.populations)
     // addPopulation's factory hardcodes peakRps:500/diurnal:'flat' (src/lib/world/factories.ts)
     // — it has no param for either, so the draft rps/diurnal only reach the store via this
     // follow-up patch.

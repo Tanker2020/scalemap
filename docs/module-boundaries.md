@@ -104,7 +104,7 @@ only callers.
 
 Entirely separate language/toolchain from the TS frontend — zero merge-conflict overlap with anything above by construction. Good area for someone to own if they're doing file-persistence work (the legacy `ReportsPanel.tsx` disk-export roadmap item was deleted with the rest of the legacy tree 2026-07-08, §H — a Phase-2+ reports surface would need this backend work again from scratch).
 
-**2026-07-10 (Phase 6 Task 5 — LLM settings + chat, D5/D6):** added `LlmSettings { base_url, api_key, model }` persisted to a brand-new `llm_settings.json` in the app data dir — mirrors `recent_files.json`'s exact pattern (`app_data_dir()` + `fs::create_dir_all` + `serde_json`, default-on-any-error reads) but is a **completely separate file**, never touched by `save_diagram`/`load_diagram`/`serializer.ts` — the API key must never end up inside a `.scalemap` document (D6). Three new commands: `save_llm_settings`, `load_llm_settings` (both sync, same shape as `get_recent_files`), and `llm_chat(base_url, api_key, body) -> Result<String, String>` (`async`, `reqwest` POST to `{base_url}/chat/completions` with a Bearer header, 60s timeout, returns raw response text for any HTTP status — only transport failures are `Err`). `reqwest` (`default-features = false`, `["json", "rustls-tls"]`) is the **only new Cargo dependency this whole phase adds**; `tauri::async_runtime::block_on` in the Rust test suite needed no additional dev-dependency (tokio already arrives transitively via tauri/reqwest). **D6 key-security invariant:** every `llm_chat` error path is piped through a pure `redact(msg, key)` helper (plain `str::replace(key, "•••")`, no-op passthrough for an empty key to dodge `replace("", …)`'s insert-between-every-char footgun) before it's returned — verified by two asserting tests (`redact_masks_key_everywhere_and_short_keys_entirely`, `llm_chat_redacts_key_from_connection_refused_error`, the latter against a real closed-port TCP connection refusal). **TS wrapper casing (verified, easy to get backwards):** Tauri v2 camelCases command *scalar arg names* (`llmChat`'s wrapper sends `{ baseUrl, apiKey, body }`, mapped to the Rust fn's snake_case params) but does **not** touch struct *field* names — `LlmSettings`' fields stay snake_case end-to-end over serde, so `src/lib/tauri.ts`'s `saveLlmSettings`/`loadLlmSettings` are the only two places in the app that do explicit snake↔camel mapping (`{ base_url, api_key, model }` ↔ `{ baseUrl, apiKey, model }`); every other caller only ever sees the camelCase `LlmSettings` shape. `src/lib/tauriMock.ts` grew matching `save_llm_settings`/`load_llm_settings` (localStorage, key `scalemap:llm_settings`) and `llm_chat` (direct browser `fetch`, dev-only — real builds always go through the Rust command, which has no CORS restriction) entries.
+**2026-07-10 (Phase 6 Task 5 — LLM settings + chat, D5/D6):** added `LlmSettings { base_url, api_key, model }` persisted to a brand-new `llm_settings.json` in the app data dir — mirrors `recent_files.json`'s exact pattern (`app_data_dir()` + `fs::create_dir_all` + `serde_json`, default-on-any-error reads) but is a **completely separate file**, never touched by `save_diagram`/`load_diagram`/`serializer.ts` — the API key must never end up inside a `.scalemap` document (D6). Three new commands: `save_llm_settings`, `load_llm_settings` (both sync, same shape as `get_recent_files`), and `llm_chat(base_url, api_key, body) -> Result<String, String>` (`async`, `reqwest` POST to `{base_url}/chat/completions` with a Bearer header, 60s timeout, returns raw response text for any HTTP status — only transport failures are `Err`). `reqwest` (`default-features = false`, `["json", "rustls-tls"]`) is the **only new Cargo dependency this whole phase adds**; `tauri::async_runtime::block_on` in the Rust test suite needed no additional dev-dependency (tokio already arrives transitively via tauri/reqwest). **D6 key-security invariant:** every `llm_chat` error path is piped through a pure `redact(msg, key)` helper (plain `str::replace(key, "•••")`, no-op passthrough for an empty key to dodge `replace("", …)`'s insert-between-every-char footgun) before it's returned — verified by two asserting tests (`redact_masks_key_everywhere_and_short_keys_entirely`, `llm_chat_redacts_key_from_connection_refused_error`, the latter against a real closed-port TCP connection refusal). This paragraph is the Rust-side inventory only; the `src/lib/tauri.ts`/`tauriMock.ts` TS-wrapper module boundary (snake↔camel field mapping, the mock's localStorage/fetch fallback) is documented once, in §O, not duplicated here.
 
 ### H. Utility dock (Reports) — deleted 2026-07-08 (Phase 2 Task 17)
 
@@ -519,6 +519,107 @@ uncached ... not fixed this task" note is now stale, since `computeWorldCost` is
 `RegionView.tsx` (one call per region render, `monthlyUsd` passed down) as of this task. The
 other three backlog categories from that same list (test-coverage gaps, cosmetic geometry nits,
 the two PARKED items needing engine work) are out of Phase-5 scope and remain open.
+
+---
+
+### O. Analysis engine + LLM reviewer + Settings — Phase 6 final layer (`src/lib/analysis/`, `src/lib/llmReview.ts`, `src/app/world/SettingsModal.tsx`, `src/app/world/panels/AnalysisTab.tsx`/`AiReviewSection.tsx`, 2026-07-10)
+
+The rebuild's final phase. Layer 1 is a deterministic analysis-rule engine — three families
+(`structural`/`network`/`capacity`, 13 rules total across Tasks 1–3) run over `compileWorld`'s
+output (+ the latest `MetricsBatch`, optional), replacing the plain `Findings` tab with a
+family-grouped `Analysis` tab that merges unsuppressed compile findings and gives every affected
+entity id a clickable navigation chip (Task 4). Layer 2 is an on-demand LLM architecture review
+against any OpenAI-compatible endpoint, schema-validated and retried once on a malformed reply
+(Task 6), transported through a new Rust command since a webview `fetch` to arbitrary hosts dies
+on CORS (Task 5), rendered as AI-tagged cards beside the deterministic findings (Task 8). A new
+global Settings modal (⚙, Task 7) is the first UI ever to expose the app's already-wired
+dark/light theme toggle, plus the LLM endpoint configuration. Spec:
+`docs/superpowers/specs/2026-07-10-phase6-analysis-llm-design.md`.
+
+| File | Role |
+|---|---|
+| `src/lib/analysis/types.ts` (Task 1) | `AnalysisFinding`/`AnalysisRule`/`AnalysisInput`/`AnalysisFamily`/`AnalysisSeverity` — the shape every rule file and `runAnalysis.ts` share. `id` is `` `${ruleId}:${primaryAffectedId}` `` (or `` `${ruleId}:world` `` when `affected` is empty), stable across runs — never derived from array position |
+| `src/lib/analysis/runAnalysis.ts` (Task 1, appended Tasks 2–3) | `ANALYSIS_RULES: AnalysisRule[]` — ONE registry; `structural.ts`/`network.ts`/`capacity.ts` each export their rule objects and are spread into this same array, never executed through a separate path (same "one array, no special-casing" convention the deleted §1C structural linter established and this phase inherits). `runAnalysis(doc, compiled, lastBatch)` builds one `AnalysisInput`, concatenates every rule's findings, and sorts by severity (critical→warning→info) then family (structural→network→capacity) then `ruleId` — a stable composite-key sort |
+| `src/lib/analysis/rules/structural.ts` (Task 1, 6 rules) | `single-az-region`, `no-failover-region`, `replicas-colocated`, `dependency-cycle`, `deep-sync-chain`, `unused-managed-service` — read `compiled.instances`/`compiled.routing.populationRegionOrder`/`doc.blueprints` only |
+| `src/lib/analysis/rules/network.ts` (Task 2, 3 rules) | `blocked-dependency-path` (id embeds the compiled path id so the Analysis tab can suppress the raw compile-side duplicate, D4), `db-port-exposed`, `entry-unreachable` — replicate a source-aware firewall first-match-wins loop rather than importing `src/lib/world/network.ts`'s `evaluateFirewall` (that helper ignores `source` by design, Phase-1 scope; documented in-file, `network.ts` itself is untouched) |
+| `src/lib/analysis/rules/capacity.ts` (Task 3, 4 rules) | `ram-oversubscribed`, `burstable-sustained-load` (silent without `lastBatch`), `ocean-crossing-population` (imports `REGION_GEO`/`greatCircleKm` from `src/lib/world/regionGeo.ts` — the SAME distance source `routing.ts` already uses; no second haversine implementation), `ttl-outlives-detection` (`affected: []`, world-scoped id) |
+| `src/lib/analysis/__fixtures__/worlds.ts` (Task 1, extended Tasks 2–3) | Shared doc-builder fixtures for rule tests, in the same "small local factory functions, no cross-file test imports" style every `worldEngine/*.test.ts` file already uses (§K) |
+| `src/lib/llmReview.ts` (Task 6) | Pure, mock-`chat`-testable: `buildReviewContext(doc, compiled, findings, lastBatch)` (JSON string — world doc + deterministic/compile finding summaries + aggregated region/AZ metrics; NEVER instance-level maps, NEVER any settings value), `validateReviewResponse(raw)` (hand-rolled schema check + clamping, no new deps), `requestReview(settings, context, chat?)` (builds the chat request, retries ONCE on a malformed reply), `pingLlm(settings, chat?)`. `chat` defaults to `src/lib/tauri.ts`'s `llmChat` wrapper, injectable for tests |
+| `src/app/world/panels/AnalysisTab.tsx` (Task 4, mounts `AiReviewSection` Task 8) | Replaces the old inline `Findings` tab body. `useMemo(runAnalysis(doc, compiled, displayBatch), [compiled, displayBatch?.simMs])` where `displayBatch = scrubBatch ?? latestBatch`; renders `structural`/`network`/`capacity` sections (non-empty only) then an unsuppressed-compile section. Exports `navigateToEntity(id, doc, compiled, nav)` (regionId→`goRegion`, azId→`goAz`, serverId→`goServer`, instanceId→its server's interior, else no-op) and `unsuppressedCompileFindings(analysis, compile)` (strips the `` `finding-` `` prefix off a compile id and checks it against the analysis id set) — both are the ONE place either kind of suppression/navigation logic lives; `WorldPanel.tsx`'s tab-count label calls the same `unsuppressedCompileFindings`, not a second computation |
+| `src/app/world/panels/WorldPanel.tsx` (Task 4 tab rename, Task 8 threads `openSettings`) | `Tab` union's `'findings'` → `'analysis'`; label `` `Analysis (${n})` `` where `n` = analysis findings + unsuppressed compile findings (via the same helper above). Gained an `openSettings: () => void` prop in Task 8, threaded straight to `AnalysisTab` → `AiReviewSection` — a plain prop chain, not a store (see Boundary rules) |
+| `src/app/world/panels/AiReviewSection.tsx` (Task 8) | `unconfigured`/`idle`/`in-flight`/`done`/`error` states. Violet AI chip uses `CATEGORY_COLORS.messaging.accent` (`theme.ts`) — a local hex const for this color is forbidden (Global Constraints; `theme.ts` already carries the exact violet, no new token needed); its text is `var(--color-on-accent)` (T9), not a hardcoded `#fff`. Review click calls `buildReviewContext` + `requestReview`; cards reuse `AnalysisTab`'s `navigateToEntity` for affected chips. Mounted at the top of `AnalysisTab` |
+| `src/app/world/SettingsModal.tsx` (Task 7) | Portal overlay (`createPortal`, `position:fixed` backdrop, token-styled). Two sections: **Appearance** (`dark`\|`light` segmented control over `useUiStore(s=>s.themeMode)`/`setThemeMode` — no new plumbing, `App.tsx`'s `useThemeBootstrap` already applies the effect live) and **AI Review** (`baseUrl`/`apiKey type=password`/`model`, `Save`→`saveLlmSettings`, `Test connection`→`pingLlm`). The active segment's text is `var(--color-on-accent)` (T9), not a hardcoded `#fff`. Registers its OWN capture-phase `window` `keydown` listener for Escape (`stopPropagation`+`preventDefault`+`onClose`) so `WorldShell.tsx`'s bubble-phase nav-Escape handler bails — same mechanism Phase 3's inspector (§L) established for exactly this kind of overlay-vs-nav-shell conflict |
+| `src/app/world/WorldShell.tsx` (Task 7) | Gained a ⚙ ghost button (first child of the header's right-side button cluster) + local `settingsOpen` state + `<SettingsModal open onClose>`; the `openSettings` prop threaded to `WorldPanel` in Task 8 is `() => setSettingsOpen(true)` — the SAME state the gear opens |
+| `src/lib/tauri.ts` / `src/lib/tauriMock.ts` (Task 5) | `LlmSettings { baseUrl; apiKey; model }` + `saveLlmSettings`/`loadLlmSettings`/`llmChat` wrappers (explicit snake↔camel field mapping to/from the Rust struct — Tauri v2 camelCases command ARG names but not struct fields, verified against the existing `commands.rs` conventions). The mock mirrors settings to `localStorage` and does a direct `fetch()` for `llm_chat` (fine for local stubs/Ollama/LM Studio, where the user controls CORS). This is the ONE seam §G's own note on these two files already flagged for a future LLM-transport write-up — §O is that write-up; §G's paragraph stays as the Rust-file inventory (`save_llm_settings`/`load_llm_settings`/`llm_chat` in `commands.rs`, next row), this table owns the TS-wrapper boundary, and neither duplicates the other |
+| `src-tauri/src/commands.rs` (Task 5) | `save_llm_settings`/`load_llm_settings` (mirrors the existing `recent_files.json` app-data-dir pattern exactly) + `llm_chat` (async, `reqwest` POST, 60s timeout, returns the raw response body text for ANY HTTP status so the frontend can read an OpenAI-style error envelope itself) + `redact(msg, key)` (pure, unit-tested — masks every occurrence of the key, short keys masked entirely) |
+| `scripts/llm-stub.mjs` (Task 8) | ~40-line stdlib-`http` OpenAI-compatible stub for the live smoke: CORS-enabled `POST /v1/chat/completions`, first hit returns malformed content (proves the retry live), every later hit returns a canned valid review |
+
+**Boundary rules:** `src/lib/analysis/*` imports ONLY `src/lib/world/types` and
+`src/lib/worldEngine/types` (types-only — never the executable `worldEngine/index.ts` facade,
+never any `app/` store, never React) — every rule file is plain, node-env-testable logic, exactly
+like the deleted §1C linter and the live `worldEngine/` subsystems (§K) before it. `llmReview.ts`
+imports only `src/lib/tauri.ts`'s wrappers (`llmChat`, `LlmSettings`) — never calls Tauri's
+`invoke` itself, never imports `tauriMock.ts` directly (that split is `tauri.ts`'s own concern, an
+existing pattern this phase didn't change). `AnalysisTab.tsx`/`AiReviewSection.tsx` are the ONE
+place either the analysis findings or the AI review reach the DOM — both compose `runAnalysis`,
+`navigateToEntity`, and (for AI) `buildReviewContext`/`requestReview`, rather than any other file
+duplicating that wiring. `SettingsModal.tsx` NEVER imports `world.store.ts` or `serializer.ts` —
+by construction, not convention: LLM settings are not world-document state and must never become
+reachable from a save/serialize path.
+
+**D6 key-security invariants (restated, non-negotiable — every one of these has a dedicated
+test):** the API key is never serialized into `.scalemap` (enforced by `SettingsModal.tsx` never
+importing `world.store`/`serializer.ts` at all — there is no code path for it to reach either);
+never logged or `console.*`'d on either side; never included in `buildReviewContext`'s payload
+(canary-string-tested); redacted (`commands.rs`'s `redact()`) from every error string the Rust
+transport can produce; rendered only masked (`•••• <last4>`) in the Settings modal after a key has
+been saved, and the masked placeholder is never echoed back into the input's live `value` (typing
+a NEW value is the only way to overwrite a saved key — leaving the field empty on Save keeps the
+existing one); the API key input is `type="password"`. Any task whose test suite can assert one of
+these, does.
+
+**The `openSettings` prop chain** (`WorldShell` → `WorldPanel` → `AnalysisTab` →
+`AiReviewSection`) is this phase's one plain-prop thread across what would otherwise be a store
+boundary — the same narrow, deliberate exception class §N's `placeMode` thread already
+established (two components down a fixed hierarchy needing to share one boolean/callback that a
+common ancestor owns), not a precedent for skipping stores generally elsewhere in `world/`.
+
+**Carry-forwards closed this task (closing out Phase 5's backlog, `.superpowers/sdd/progress.md`
+`## PHASE 5 COMPLETE`'s "OPEN ITEMS for Phase 6" list — see §N's own note above for the Phase-4
+backlog, closed by Phase 5):** `worldEngine/index.ts:43`'s `MAX_GLOBE_ARCS` is now `export const`
+(the ONE sanctioned `worldEngine/` edit this phase) and `ArcsLayer.tsx` imports it from the
+engine facade instead of hand-duplicating the literal; a new `src/lib/world/populationLabel.ts`
+(pure, `nextPopulationLabel(populations)` — scans existing `pop-N` labels for the max suffix) is
+shared by `TrafficPanel.tsx`'s "+ add" and `GlobeView.tsx`'s place-on-globe handler, so the two
+authoring surfaces can no longer reissue the same default label after a remove+re-add;
+`GlobeScene.tsx`'s texture wrap/offset mutation moved from a `useMemo` (a memoized-derivation
+hook being used for a side effect) to `useLayoutEffect` (the conventional home for a synchronous
+pre-paint side effect), same body, same `texture.needsUpdate=true` flag; `globeArcs.test.ts`
+gained a test for `buildDrainArcs`'s `?? [pop.lat,pop.lon]` fallback (a previous-region catalogId
+missing from `REGION_GEO`), the one named gap Phase 5's final review left explicitly untested —
+reaching it required routing the fixture's population onto the geo-less region via a `'weighted'`
+policy pinning the OTHER region's weight to 0 rather than `'priority'`/`'geo'`/`'latency'`, since
+`routing.ts`'s `distanceScore` falls back to `Number.MAX_SAFE_INTEGER` for a region missing a
+`REGION_GEO` entry and that dominates every scoring formula except `weighted`'s (empirically
+confirmed against this repo's current `routing.ts`, not merely assumed). The other three Phase-5
+backlog items (`NumberField` no external re-sync on undo/redo, `PopulationMarkers`' aspirational
+"matches theme teal" comment, `health_check_failed`'s no-pulse tradeoff) are cosmetic/documented-
+tradeoff and remain open — not part of this phase's scope.
+
+**On-accent theme token (folded in from Task 7's review):** `theme.ts`'s `ColorTokens` gained
+`onAccent` (`#FFFFFF` in both `DARK_COLORS` and `LIGHT_COLORS` — white always reads on a
+saturated accent/danger/warning chip background in either theme), auto-emitted as
+`--color-on-accent` by `App.tsx`'s `useThemeBootstrap` the same way every other token is, and
+mirrored in `index.css`'s static `:root` fallback block. `SettingsModal.tsx`'s active segment,
+`AnalysisTab.tsx`'s `sevChip`, and `AiReviewSection.tsx`'s AI chip — the three places a hardcoded
+`color: '#fff'` had drifted from the token system before the theme was live — now read
+`var(--color-on-accent)` instead; no other hardcoded hex remained in those three files.
+
+**This is the rebuild's final phase.** With Task 9's docs landing, all six phases (world model +
+navigation shell, substrate simulation engine, server interior board, region flow page + rack
+chassis, R3F globe + traffic authoring, analysis engine + LLM reviewer + settings) are complete;
+see `.superpowers/sdd/progress.md`'s `## PHASE 6 COMPLETE` entry for the closing summary and the
+umbrella-spec §9 parked list of intentionally-unscoped future work.
 
 ---
 
