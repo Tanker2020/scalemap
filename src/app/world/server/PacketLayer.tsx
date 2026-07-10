@@ -33,7 +33,12 @@ export function PacketLayer({ serverId, layout }: PacketLayerProps): ReactElemen
     // a persistent cache across layout changes would keep drawing at stale (pre-reflow) geometry.
     const pathCache = new Map<string, SVGPathElement>()
     const svgNS = 'http://www.w3.org/2000/svg'
-    const pointAt = (fromId: string, toId: string, progress: number) => {
+    // D10e (Phase-3 carry-forward): getPointAtLength (and, defensively, getTotalLength) can throw
+    // in some native WebView SVG implementations — never verified against an actual native Tauri
+    // build (documented Phase-3 open item). A thrown geometry call must never crash the frame
+    // loop; fall back to a straight-line lerp between the trace's two cached anchors — visually
+    // close enough for a single degraded frame, and cheap (anchorFor is a plain lookup).
+    const pointAt = (fromId: string, toId: string, progress: number): { x: number; y: number } | null => {
       const key = `${fromId}→${toId}`
       let path = pathCache.get(key)
       if (!path) {
@@ -43,9 +48,16 @@ export function PacketLayer({ serverId, layout }: PacketLayerProps): ReactElemen
         path.setAttribute('d', d)
         pathCache.set(key, path)
       }
-      const len = path.getTotalLength?.() ?? 0
-      if (!len) return null
-      return path.getPointAtLength(len * progress)
+      try {
+        const len = path.getTotalLength?.() ?? 0
+        if (!len) return null
+        return path.getPointAtLength(len * progress)
+      } catch {
+        const a = layout.anchorFor(fromId)
+        const b = layout.anchorFor(toId)
+        if (!a || !b) return null
+        return { x: a.x + (b.x - a.x) * progress, y: a.y + (b.y - a.y) * progress }
+      }
     }
     const detach = useSimulationStore.getState().attachRenderer({ level: 'server', serverId }, payload => {
       const now = performance.now()

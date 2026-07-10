@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { computeWorldCost } from './costModelV2'
 import { createWorld, createRegion, createAz, createServer } from './world/factories'
 import { getPreset } from './world/instanceCatalog'
+import { useWorldStore } from '../app/store/world.store'
 import type { WorldDoc } from './world/types'
 
 function twoServerWorld(): { doc: WorldDoc; regionId: string; azId: string } {
@@ -62,6 +63,18 @@ describe('computeWorldCost', () => {
     const withoutMs = computeWorldCost({ ...doc, managedServices: {} }, null)
     // dbSql (aws) contributes a nonzero instanceHourly cost.
     expect(withMs.monthlyUsd).toBeGreaterThan(withoutMs.monthlyUsd)
+  })
+
+  it('authored aws managed service prices non-zero', () => {
+    // R6 (grounding §0): unlike the hand-built-fixture case above, this drives the STORE-authored
+    // path — proving addManagedService's new provider param actually reaches a priced document,
+    // not just that computeWorldCost can price a manually-constructed ManagedService literal.
+    useWorldStore.getState().newWorld()
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'az', azId }, 5432, 'aws')
+    const doc = useWorldStore.getState().doc
+    expect(computeWorldCost(doc, null).monthlyUsd).toBeGreaterThan(0)
   })
 
   it('still prices legacy managed services with old nodeType aliases (rds)', () => {

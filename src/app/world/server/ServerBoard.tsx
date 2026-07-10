@@ -4,7 +4,7 @@
 // T4 wires live metrics (useServerDisplayMetrics, D5) into ServiceChip/NicBlock and mounts the
 // unified HardwarePlatform (D4) at layout.hardware.box. T5 also feeds gateStats.blockedPerSecond
 // into FirewallGate's "✕ N/s blocked" line from the store's events + latestBatch.simMs.
-import { useEffect, useRef, useState, type ReactElement } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import { attributeCores, type BoardLayout, type CoreAttribution, type StaticTrace } from './boardLayout'
 import type { BlueprintId, InstanceId, ServerId } from '../../../lib/world/types'
 import type { BoardSelection } from './selection'
@@ -41,7 +41,15 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
   const display = useServerDisplayMetrics(serverId)
   const events = useSimulationStore(s => s.events)
   const latestBatch = useSimulationStore(s => s.latestBatch)
-  const gateBlockedPerSecond = blockedPerSecond(events, serverId, layout.residentInstanceIds, latestBatch?.simMs ?? 0)
+  const scrubBatch = useSimulationStore(s => s.scrubBatch)
+  // D10d/R7: the blocked/s counter must be scrub-correct — read the DISPLAY batch's simMs
+  // (scrubBatch ?? latestBatch), not latestBatch unconditionally. Previously the counter kept
+  // advancing off the live clock even while the board displayed a scrubbed historical frame.
+  const displaySimMs = (scrubBatch ?? latestBatch)?.simMs ?? 0
+  const gateBlockedPerSecond = useMemo(
+    () => blockedPerSecond(events, serverId, layout.residentInstanceIds, displaySimMs),
+    [events, serverId, layout.residentInstanceIds, displaySimMs],
+  )
 
   useEffect(() => {
     const el = containerRef.current
@@ -63,45 +71,54 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
   }
 
   // Resident blueprints for the hardware platform (D4): signature color/name + at-rest ramBaseMb
-  // (D5, used when metrics is null).
-  const residentBlueprints = layout.chips.map(chip => {
+  // (D5, used when metrics is null). Memoized (T7 hygiene, Phase-3 carry-forward) — recomputed
+  // only when the chip list or blueprint table changes, not on every render/1Hz metrics tick.
+  const residentBlueprints = useMemo(() => layout.chips.map(chip => {
     const bp = doc.blueprints[chip.blueprintId]
     return {
       instanceId: chip.instanceId, blueprintId: chip.blueprintId,
       color: bp?.color ?? '#888', name: bp?.name ?? '?', ramBaseMb: bp?.workload.ramBaseMb ?? 0,
     }
-  })
+  }), [layout.chips, doc.blueprints])
 
   // Live per-core attribution (D8): dominant blueprint per vCPU from live cpuCoresUsed.
-  const attribution: CoreAttribution[] = attributeCores(
+  const attribution: CoreAttribution[] = useMemo(() => attributeCores(
     server?.specs.vcpu ?? 0,
     layout.chips.map(chip => ({
       instanceId: chip.instanceId, blueprintId: chip.blueprintId,
       cpuCoresUsed: display.instances[chip.instanceId]?.cpuCoresUsed ?? 0,
     })),
-  )
+  ), [server?.specs.vcpu, layout.chips, display.instances])
 
-  // Container memLimitMb by instance (oom check) + live per-instance ramMb.
-  const memLimits: Record<InstanceId, number> = {}
-  for (const chip of layout.chips) {
-    const rt = doc.placements[chip.placementId]?.runtime
-    if (rt?.type === 'container' && rt.memLimitMb != null) memLimits[chip.instanceId] = rt.memLimitMb
-  }
-  const instanceRamMb: Record<InstanceId, number> = {}
-  for (const chip of layout.chips) {
-    const m = display.instances[chip.instanceId]
-    if (m) instanceRamMb[chip.instanceId] = m.ramMb
-  }
+  // Container memLimitMb by instance (oom check) + live per-instance ramMb. Grouped into one
+  // memo — both loops walk the same layout.chips list and feed the same HardwarePlatform props,
+  // so memoizing them separately would be an arbitrary split of one logical derivation.
+  const { memLimits, instanceRamMb } = useMemo(() => {
+    const memLimits: Record<InstanceId, number> = {}
+    for (const chip of layout.chips) {
+      const rt = doc.placements[chip.placementId]?.runtime
+      if (rt?.type === 'container' && rt.memLimitMb != null) memLimits[chip.instanceId] = rt.memLimitMb
+    }
+    const instanceRamMb: Record<InstanceId, number> = {}
+    for (const chip of layout.chips) {
+      const m = display.instances[chip.instanceId]
+      if (m) instanceRamMb[chip.instanceId] = m.ramMb
+    }
+    return { memLimits, instanceRamMb }
+  }, [layout.chips, doc.placements, display.instances])
 
   // Volume -> consumer blueprint id (D8 disk-slice cross-highlight): attribute each volume to
   // the resident blueprint whose volumeName matches it.
-  const volumeConsumers: Record<string, string> = {}
-  for (const st of server?.stacks ?? []) {
-    for (const v of st.volumes) {
-      const bp = Object.values(doc.blueprints).find(b => b.volumeName === v.name)
-      if (bp) volumeConsumers[v.name] = bp.id
+  const volumeConsumers: Record<string, string> = useMemo(() => {
+    const consumers: Record<string, string> = {}
+    for (const st of server?.stacks ?? []) {
+      for (const v of st.volumes) {
+        const bp = Object.values(doc.blueprints).find(b => b.volumeName === v.name)
+        if (bp) consumers[v.name] = bp.id
+      }
     }
-  }
+    return consumers
+  }, [server, doc.blueprints])
 
   return (
     <div ref={containerRef} style={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', background: 'radial-gradient(ellipse at 40% 35%, #0C1018 0%, #07090D 70%)' }}>

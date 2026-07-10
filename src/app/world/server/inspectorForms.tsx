@@ -62,8 +62,8 @@ export function RuntimeForm({ placementId }: { placementId: string }): ReactElem
   return (
     <fieldset disabled={running} style={fs(running)}>
       <div style={{ font: '6.5px var(--font-mono)', color: '#475569', marginTop: 7, letterSpacing: '0.08em' }}>LIMITS</div>
-      <NumberField label="cpuLimit" value={rt.cpuLimit ?? 0} onCommit={v => setRt({ cpuLimit: v || null })} />
-      <NumberField label="memLimitMb" value={rt.memLimitMb ?? 0} onCommit={v => setRt({ memLimitMb: v || null })} />
+      <NumberField label="cpuLimit" value={rt.cpuLimit ?? 0} onCommit={v => setRt({ cpuLimit: Number.isFinite(v) ? v : null })} />
+      <NumberField label="memLimitMb" value={rt.memLimitMb ?? 0} onCommit={v => setRt({ memLimitMb: Number.isFinite(v) ? v : null })} />
       <div style={{ marginTop: 4 }}>networks: {networks.map(n => (
         <label key={n.name} style={{ marginRight: 6 }}>
           <input type="checkbox" checked={rt.networkNames.includes(n.name)}
@@ -94,7 +94,12 @@ export function FirewallEditor({ serverId }: { serverId: string }): ReactElement
       {rules.map((r, i) => (
         <div key={r.id} style={{ display: 'flex', gap: 3, alignItems: 'center', marginTop: 3 }}>
           <select aria-label="action" value={r.action} onChange={e => patch(i, { action: e.target.value as FirewallRule['action'] })}><option value="allow">allow</option><option value="deny">deny</option></select>
-          <input aria-label="port" style={{ ...inp, width: 40 }} value={String(r.port)} onChange={e => patch(i, { port: e.target.value === 'any' ? 'any' : (Number(e.target.value) || 'any') })} />
+          <input aria-label="port" style={{ ...inp, width: 40 }} value={String(r.port)} onChange={e => {
+            const raw = e.target.value
+            if (raw === 'any' || raw === '') { patch(i, { port: 'any' }); return }
+            const n = Number(raw)
+            patch(i, { port: Number.isFinite(n) && n >= 0 ? n : 'any' })
+          }} />
           <select aria-label="protocol" value={r.protocol} onChange={e => patch(i, { protocol: e.target.value as FirewallRule['protocol'] })}><option value="tcp">tcp</option><option value="udp">udp</option><option value="any">any</option></select>
           <button aria-label="move rule up" onClick={() => move(i, -1)}>↑</button>
           <button aria-label="move rule down" onClick={() => move(i, 1)}>↓</button>

@@ -3,7 +3,7 @@
 // and replaces `doc` wholesale so useCompiledWorld()'s useMemo invalidates.
 import { create } from 'zustand'
 import type {
-  WorldDoc, Server, ServiceBlueprint, Placement, ManagedScope, ClientPopulation,
+  WorldDoc, Server, ServiceBlueprint, Placement, ManagedScope, ManagedService, ClientPopulation,
   RoutingConfig, TrafficConfig,
 } from '../../lib/world/types'
 import {
@@ -77,7 +77,7 @@ interface WorldStore {
   addPlacement: (blueprintId: string, serverId: string) => string
   updatePlacement: (id: string, patch: Partial<Placement>) => void
   removePlacement: (id: string) => void
-  addManagedService: (nodeType: string, label: string, scope: ManagedScope, port: number) => string
+  addManagedService: (nodeType: string, label: string, scope: ManagedScope, port: number, provider?: ManagedService['provider']) => string
   removeManagedService: (id: string) => void
   addPopulation: (label: string, lat: number, lon: number) => string
   updatePopulation: (id: string, patch: Partial<ClientPopulation>) => void
@@ -173,9 +173,9 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       return { ...d, placements }
     }),
 
-    addManagedService: (nodeType, label, scope, port) => {
+    addManagedService: (nodeType, label, scope, port, provider = 'generic') => {
       const id = nextWorldId('ms')
-      mutate(d => ({ ...d, managedServices: { ...d.managedServices, [id]: { id, label, nodeType, scope, provider: 'generic', port } } }))
+      mutate(d => ({ ...d, managedServices: { ...d.managedServices, [id]: { id, label, nodeType, scope, provider, port } } }))
       return id
     },
     removeManagedService: (id) => mutate(d => {

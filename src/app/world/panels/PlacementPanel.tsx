@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useWorldStore } from '../../store/world.store'
-import type { Placement, PlacementRuntime } from '../../../lib/world/types'
+import type { ManagedService, Placement, PlacementRuntime } from '../../../lib/world/types'
 import { sectionLabel, field, smallBtn, dangerBtn, row } from './panelStyles'
 
 // Author managed services with CLOUD_REGISTRY keys directly (D12) so Cost v2 prices them without
@@ -15,6 +15,16 @@ const MANAGED_TYPES: { key: string; label: string }[] = [
   { key: 'lambda', label: 'Lambda' },
 ]
 
+// Phase 4 D10a: the authoring UI defaults to 'aws' (not the store's 'generic' default) so a
+// freshly added managed service prices non-zero immediately — see world.store.ts's
+// addManagedService, whose own default stays 'generic' for callers that omit the param.
+const PROVIDERS: { key: ManagedService['provider']; label: string }[] = [
+  { key: 'aws', label: 'AWS' },
+  { key: 'gcp', label: 'GCP' },
+  { key: 'azure', label: 'Azure' },
+  { key: 'generic', label: 'Generic' },
+]
+
 export function PlacementPanel() {
   const doc = useWorldStore(s => s.doc)
   const store = useWorldStore.getState()
@@ -22,6 +32,7 @@ export function PlacementPanel() {
   const servers = Object.values(doc.servers)
   const [msType, setMsType] = useState(MANAGED_TYPES[0].key)
   const [msScope, setMsScope] = useState('')
+  const [msProvider, setMsProvider] = useState<ManagedService['provider']>('aws')
 
   const scopeOptions = [
     ...Object.values(doc.regions).map(r => ({ key: `region:${r.id}`, label: `region ${r.catalogId}` })),
@@ -55,10 +66,14 @@ export function PlacementPanel() {
           <option value="">scope…</option>
           {scopeOptions.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
         </select>
+        <select style={{ ...field, width: 74, marginBottom: 0 }} aria-label="provider" value={msProvider}
+          onChange={e => setMsProvider(e.target.value as ManagedService['provider'])}>
+          {PROVIDERS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+        </select>
         <button style={smallBtn} disabled={!msScope} onClick={() => {
           const [kind, id] = msScope.split(':')
           store.addManagedService(msType, MANAGED_TYPES.find(t => t.key === msType)?.label ?? msType,
-            kind === 'region' ? { kind: 'region', regionId: id } : { kind: 'az', azId: id }, 5432)
+            kind === 'region' ? { kind: 'region', regionId: id } : { kind: 'az', azId: id }, 5432, msProvider)
         }}>+ Add</button>
       </div>
       {Object.values(doc.managedServices).map(ms => (

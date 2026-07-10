@@ -126,4 +126,11 @@ describe('world.store', () => {
     expect(doc.managedServices[msId]).toBeUndefined()
     expect(doc.blueprints[bpId].dependencies).toHaveLength(0)
   })
+
+  it('addManagedService stores the given provider', () => {
+    const { azId } = buildChain()
+    const msId = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'az', azId }, 5432, 'aws')
+    const doc = useWorldStore.getState().doc
+    expect(doc.managedServices[msId].provider).toBe('aws')
+  })
 })
