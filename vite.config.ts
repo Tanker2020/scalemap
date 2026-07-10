@@ -15,6 +15,16 @@ export default defineConfig(async () => ({
     setupFiles: ["./vitest.setup.ts"],
   },
 
+  // Phase 5 (D1): the globe view's three.js dependency (~600KB) gets its own chunk so it
+  // doesn't inflate the initial bundle for users who never open the globe.
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: { three: ["three"] },
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors
