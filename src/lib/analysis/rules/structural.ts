@@ -114,7 +114,7 @@ const dependencyCycle: AnalysisRule = {
       seen.add(key)
       const names = rot.map(id => doc.blueprints[id]?.name ?? id)
       out.push({
-        id: `dependency-cycle:${rot[0]}`, ruleId: 'dependency-cycle', family: 'structural', severity: 'critical',
+        id: `dependency-cycle:${key}`, ruleId: 'dependency-cycle', family: 'structural', severity: 'critical',
         title: 'Dependency cycle',
         why: `Blueprints form a dependency cycle: ${names.join(' → ')} → ${names[0]}. Requests can loop and failures cascade.`,
         fix: `Break the cycle by removing or inverting one dependency (Blueprints panel).`,

@@ -86,6 +86,16 @@ describe('structural: dependency-cycle', () => {
     a.dependencies = [dep('d1', b.id, 'http')]
     expect(ids(run(s), 'dependency-cycle')).toHaveLength(0)
   })
+  it('gives disjoint cycles sharing a node distinct ids', () => {
+    const s = scenario()
+    const a = s.blueprint('a'); const b = s.blueprint('b'); const c = s.blueprint('c')
+    a.dependencies = [dep('d1', b.id, 'http'), dep('d2', c.id, 'http')]
+    b.dependencies = [dep('d3', a.id, 'http')]  // cycle a↔b
+    c.dependencies = [dep('d4', a.id, 'http')]  // cycle a↔c
+    const f = ids(run(s), 'dependency-cycle')
+    expect(f).toHaveLength(2)
+    expect(new Set(f.map(x => x.id)).size).toBe(2) // distinct ids, no collision
+  })
 })
 
 describe('structural: deep-sync-chain', () => {
