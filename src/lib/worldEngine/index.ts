@@ -95,6 +95,11 @@ interface EngineState {
   lastRoutingSnapshot: RoutingSnapshot
   popRegion: Map<PopulationId, RegionId>
   pendingFailover: Map<PopulationId, RegionId>
+  // Phase 5 (D4): remembers each population's previous region for the pending-failover window,
+  // so buildDrainArcs can render the globe's drain arc FROM the old region instead of falling
+  // back to the population's own lat/lon. Engine-internal — not a contract type (see
+  // contract-drift.md ## PHASE 5, entry logged in Step 7 below).
+  popPrevRegion: Map<PopulationId, RegionId>
   checkFailedPrev: Map<string, boolean>
   instanceHealth: Map<InstanceId, HealthState>
   oomRestartAt: Map<InstanceId, number>
@@ -234,9 +239,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         emit('ttl_lag_expired', 'info', `${pop.label} DNS re-resolved ${prevRegion} → ${region}`, [pop.id, prevRegion, region], simMs)
         emit('failover_started', 'warning', `${pop.label} failing over ${prevRegion} → ${region}`, [pop.id, prevRegion, region], simMs)
         s.pendingFailover.set(pop.id, region)
+        s.popPrevRegion.set(pop.id, prevRegion)   // Phase 5: from-side for the globe drain arc
       } else if (s.pendingFailover.get(pop.id) === region) {
         emit('failover_completed', 'info', `${pop.label} now served by ${region}`, [pop.id, region], simMs)
         s.pendingFailover.delete(pop.id)
+        s.popPrevRegion.delete(pop.id)
       }
       s.popRegion.set(pop.id, region)
       populationRoutes.push({ populationId: pop.id, regionId: region, rps: demandByPop[pop.id] })
@@ -459,7 +466,19 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     return { simMs, particles: [], arcs: [] }
   }
 
+  // Phase 5 (D4): client arcs first, byte-identical to Phase-2's original buildArcs, then
+  // inter-region (cross-region dependency flows aggregated by region pair), then drain
+  // (pending-failover / stuck-on-a-down-region populations). Total capped at MAX_GLOBE_ARCS,
+  // truncating in that order — client arcs are never displaced.
   function buildArcs(): VisualArc[] {
+    const arcs = buildClientArcs()
+    if (arcs.length < MAX_GLOBE_ARCS) arcs.push(...buildInterRegionArcs(MAX_GLOBE_ARCS - arcs.length))
+    if (arcs.length < MAX_GLOBE_ARCS) arcs.push(...buildDrainArcs(MAX_GLOBE_ARCS - arcs.length))
+    return arcs
+  }
+
+  // Unchanged from Phase 2 (renamed from buildArcs) — body byte-identical.
+  function buildClientArcs(): VisualArc[] {
     const s = state!
     const routes = s.lastRoutingSnapshot.populationRoutes
     const maxRps = Math.max(1, ...routes.map(r => r.rps))
@@ -473,6 +492,82 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       arcs.push({ fromLatLon: [pop.lat, pop.lon], toLatLon: [geo.lat, geo.lon], intensity: Math.min(1, r.rps / maxRps), kind: 'client' })
       if (arcs.length >= MAX_GLOBE_ARCS) break
     }
+    return arcs
+  }
+
+  // One arc per (fromRegionId, toRegionId) pair, aggregated over this step's downstream flow
+  // rows whose caller and target instances sit in different regions. Managed-service targets
+  // (toManagedServiceId) have no instance region and are skipped — they aren't cross-region
+  // client-visible flows. intensity = pairRps / maxPairRps, floored at 0.15 so a faint
+  // cross-region link stays visible against a dominant one.
+  function buildInterRegionArcs(budget: number): VisualArc[] {
+    if (budget <= 0) return []
+    const s = state!
+    const pairs = new Map<string, { fromRegionId: RegionId; toRegionId: RegionId; rps: number }>()
+    for (const flow of Object.values(s.prevFlows)) {
+      const from = s.compiled.instances[flow.instanceId]
+      if (!from) continue
+      for (const row of flow.downstream) {
+        if (!row.toInstanceId || row.rps <= 0) continue
+        const to = s.compiled.instances[row.toInstanceId]
+        if (!to || to.regionId === from.regionId) continue
+        const key = `${from.regionId}->${to.regionId}`
+        const entry = pairs.get(key)
+        if (entry) entry.rps += row.rps
+        else pairs.set(key, { fromRegionId: from.regionId, toRegionId: to.regionId, rps: row.rps })
+      }
+    }
+    if (pairs.size === 0) return []
+    const maxPairRps = Math.max(...[...pairs.values()].map(p => p.rps))
+    const arcs: VisualArc[] = []
+    for (const { fromRegionId, toRegionId, rps } of pairs.values()) {
+      const fromGeo = REGION_GEO_LOCAL[s.doc.regions[fromRegionId]?.catalogId ?? '']
+      const toGeo = REGION_GEO_LOCAL[s.doc.regions[toRegionId]?.catalogId ?? '']
+      if (!fromGeo || !toGeo) continue
+      const intensity = Math.max(0.15, Math.min(1, rps / maxPairRps))
+      arcs.push({ fromLatLon: [fromGeo.lat, fromGeo.lon], toLatLon: [toGeo.lat, toGeo.lon], intensity, kind: 'inter-region' })
+      if (arcs.length >= budget) break
+    }
+    return arcs
+  }
+
+  // (a) one arc per population in s.pendingFailover: from the PREVIOUS region (captured in
+  // s.popPrevRegion when the switch happened — see the routing block in runStep) to the newly
+  // resolved one; falls back to the population's own lat/lon when the previous region isn't
+  // resolvable (defensive; popPrevRegion is set in the same step pendingFailover is). (b) one
+  // arc per population still routed (this step's populationRoutes) to a region whose health is
+  // 'down' — the DNS-TTL lag window where clients keep arriving at a dead region. Both kinds
+  // render intensity 1 (a drain arc is binary — happening or not).
+  function buildDrainArcs(budget: number): VisualArc[] {
+    if (budget <= 0) return []
+    const s = state!
+    const arcs: VisualArc[] = []
+    const geoOfRegion = (regionId: RegionId): [number, number] | null => {
+      const region = s.doc.regions[regionId]
+      const geo = region ? REGION_GEO_LOCAL[region.catalogId] : undefined
+      return geo ? [geo.lat, geo.lon] : null
+    }
+
+    for (const [popId, newRegionId] of s.pendingFailover) {
+      const pop = s.doc.populations[popId]
+      const toGeo = geoOfRegion(newRegionId)
+      if (!pop || !toGeo) continue
+      const prevRegionId = s.popPrevRegion.get(popId)
+      const fromGeo: [number, number] = (prevRegionId ? geoOfRegion(prevRegionId) : null) ?? [pop.lat, pop.lon]
+      arcs.push({ fromLatLon: fromGeo, toLatLon: toGeo, intensity: 1, kind: 'drain' })
+      if (arcs.length >= budget) return arcs
+    }
+
+    for (const r of s.lastRoutingSnapshot.populationRoutes) {
+      if (r.populationId.startsWith('baseline:')) continue
+      if (healthOfScope(r.regionId) !== 'down') continue
+      const pop = s.doc.populations[r.populationId]
+      const toGeo = geoOfRegion(r.regionId)
+      if (!pop || !toGeo) continue
+      arcs.push({ fromLatLon: [pop.lat, pop.lon], toLatLon: toGeo, intensity: 1, kind: 'drain' })
+      if (arcs.length >= budget) return arcs
+    }
+
     return arcs
   }
 
@@ -569,6 +664,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         events: createEventRing(500), replay: createReplayBuffer(300), tracer: createTracer(createRng(seed ^ 0x1234)),
         prevFlows: {}, windowTotals: { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0 },
         lastRoutingSnapshot: { populationRoutes: [] }, popRegion: new Map(), pendingFailover: new Map(),
+        popPrevRegion: new Map(),
         checkFailedPrev: new Map(), instanceHealth: new Map(), oomRestartAt: new Map(), refusedRateLimit: new Map(),
         idSeq: 0, lastBatchMs: -1000, stepCosts: [], degraded: false, rafId: null, lastFrameMs: null,
         renderers: new Map(), rendererSeq: 0,
