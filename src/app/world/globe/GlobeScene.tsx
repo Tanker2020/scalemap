@@ -64,6 +64,11 @@ function Earth({ placeMode, onPlace }: EarthProps): ReactElement {
     texture.wrapS = THREE.RepeatWrapping
     texture.offset.x = TEXTURE_LON_OFFSET
     texture.colorSpace = THREE.SRGBColorSpace
+    // useTexture returns an already-uploaded texture; changing wrap mode after upload needs
+    // needsUpdate so the GPU sampler is re-configured — otherwise some three.js versions keep
+    // ClampToEdge and smear a seam at the offset's wrap boundary. (wrapT/repeat unchanged: the
+    // offset only shifts horizontally and the image already spans the full 0..1 V range.)
+    texture.needsUpdate = true
   }, [texture])
 
   // Raycasts the earth mesh only (r3f's onClick gives the world-space intersection point,
