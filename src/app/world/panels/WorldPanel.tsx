@@ -19,9 +19,10 @@ export interface WorldPanelProps {
   placeMode: boolean
   onTogglePlaceMode: () => void
   selectedPopulationId: string | null
+  openSettings: () => void
 }
 
-export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopulationId }: WorldPanelProps) {
+export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopulationId, openSettings }: WorldPanelProps) {
   const [tab, setTab] = useState<Tab>('topology')
   const compiled = useCompiledWorld()
   const doc = useWorldStore(s => s.doc)
@@ -58,7 +59,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
         {tab === 'traffic' && (
           <TrafficPanel placeMode={placeMode} onTogglePlaceMode={onTogglePlaceMode} selectedPopulationId={selectedPopulationId} />
         )}
-        {tab === 'analysis' && <AnalysisTab />}
+        {tab === 'analysis' && <AnalysisTab openSettings={openSettings} />}
         {tab === 'events' && <EventsTab />}
         {tab === 'cost' && <CostTab />}
       </fieldset>

@@ -139,6 +139,7 @@ export function WorldShell() {
           placeMode={placeMode}
           onTogglePlaceMode={() => setPlaceMode(p => !p)}
           selectedPopulationId={selectedPopulationId}
+          openSettings={() => setSettingsOpen(true)}
         />
       </div>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

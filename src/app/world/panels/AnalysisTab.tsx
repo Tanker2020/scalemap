@@ -9,6 +9,7 @@ import { runAnalysis } from '../../../lib/analysis/runAnalysis'
 import type { AnalysisFinding, AnalysisFamily, AnalysisSeverity } from '../../../lib/analysis/types'
 import type { WorldDoc, CompiledWorld, CompileFinding } from '../../../lib/world/types'
 import { sectionLabel } from './panelStyles'
+import { AiReviewSection } from './AiReviewSection'
 
 export interface NavApi {
   goRegion: (regionId: string) => void
@@ -97,7 +98,11 @@ function FindingRow({ f, doc, compiled }: { f: AnalysisFinding; doc: WorldDoc; c
   )
 }
 
-export function AnalysisTab(): ReactElement {
+export interface AnalysisTabProps {
+  openSettings: () => void
+}
+
+export function AnalysisTab({ openSettings }: AnalysisTabProps): ReactElement {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
@@ -110,6 +115,7 @@ export function AnalysisTab(): ReactElement {
 
   return (
     <div>
+      <AiReviewSection openSettings={openSettings} />
       {empty && <div style={{ color: 'var(--color-text-muted)' }}>No findings — the compiled world is clean.</div>}
       {groups.map(g => (
         <div key={g.fam}>

@@ -31,7 +31,7 @@ beforeEach(() => {
 describe('AnalysisTab', () => {
   it('groups findings by family and lists a structural warning', () => {
     seedSingleAzRegion()
-    render(<AnalysisTab />)
+    render(<AnalysisTab openSettings={() => {}} />)
     expect(screen.getByText('Structural')).toBeInTheDocument()
     expect(screen.getByText('Single-AZ region')).toBeInTheDocument()
   })
@@ -42,7 +42,7 @@ describe('AnalysisTab', () => {
     const w = useWorldStore.getState()
     // Force server RAM tiny so ram-oversubscribed fires and yields a serverId chip.
     w.updateServer(srvId, { specs: { ...w.doc.servers[srvId].specs, ramMb: 1 } })
-    render(<AnalysisTab />)
+    render(<AnalysisTab openSettings={() => {}} />)
     const chip = screen.getAllByText(w.doc.servers[srvId].label)[0]
     fireEvent.click(chip)
     expect(useNavStore.getState().level).toBe('server')
