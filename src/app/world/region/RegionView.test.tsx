@@ -88,6 +88,22 @@ describe('RegionView (Phase 4 flow page)', () => {
     expect(screen.getByText(/draining/)).toBeInTheDocument()
     expect(screen.getByTitle('web-01')).toBeInTheDocument()          // healthy row still shows its strip
     expect(screen.queryByTitle('web-02')).not.toBeInTheDocument()    // down row swapped strip for drain line
+    // organic engine-reported health, no manual override — must NOT read as operator-triggered
+    expect(screen.getByText('outage')).toBeInTheDocument()
+    expect(screen.queryByText('outage (manual)')).not.toBeInTheDocument()
+  })
+
+  it('manually downed az row labels the outage as manual', () => {
+    const { azA, azB } = seedRegion()
+    useSimulationStore.setState({
+      latestBatch: fakeBatch(1000, {
+        [azA.id]: az({ azId: azA.id, healthScore: 91, health: 'healthy' }),
+        [azB.id]: az({ azId: azB.id, healthScore: 9, health: 'down' }),
+      }),
+      healthOverrides: { [azB.id]: true },
+    })
+    render(<RegionView />)
+    expect(screen.getByText('outage (manual)')).toBeInTheDocument()
   })
 
   it("az outage switch dispatches setOutage('az')", () => {

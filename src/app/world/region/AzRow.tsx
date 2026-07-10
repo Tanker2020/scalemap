@@ -88,7 +88,7 @@ export function AzRow({ azId, regionId, onNavigateAz, onNavigateServer }: AzRowP
       <div style={{ width: 110, flexShrink: 0 }}>
         <div style={{ color: isDown ? DOWN_TINT : 'var(--color-text-primary)' }}>{az?.label ?? azId}</div>
         <div style={{ color: isDown ? 'var(--color-danger)' : 'var(--color-text-muted)' }}>
-          {isDown ? 'outage (manual)' : `${servers.length} srv · ${instanceCount} svc`}
+          {isDown ? (isManuallyDown ? 'outage (manual)' : 'outage') : `${servers.length} srv · ${instanceCount} svc`}
         </div>
       </div>
 
