@@ -1,17 +1,29 @@
 // src/app/world/AzSimOverlay.tsx
 // Canvas overlay for the focused AZ: draws live particles from the engine's per-frame
-// attachRenderer payload along the same server-pair positions AzCanvas lays its nodes out at.
+// attachRenderer payload along the same chassis/managed-node positions AzCanvas lays out.
 // Read-only, pointer-events: none — all real interaction stays on the ReactFlow pane underneath.
+//
+// v2 (Phase 4 D9): chassis are React Flow CHILD nodes (parentId + extent:'parent'), so a
+// plain node.position is parent-relative, not absolute — getInternalNode(id)
+// .internals.positionAbsolute resolves the real canvas position for both parented and
+// top-level nodes. Node footprint comes from React Flow's own measured DOM size
+// (node.measured) once painted; the old fixed constants are kept ONLY as a pre-paint
+// fallback (chassis heights vary 1U/2U, unlike the old flat cards — this fallback is a
+// coarse, brief-window guess, not a second source of truth). getViewport() is read
+// imperatively inside the frame callback instead of subscribing to useViewport(), so
+// panning/zooming the canvas no longer re-runs this effect (no re-attach churn) —
+// getInternalNode/getViewport are both referentially stable across re-renders (verified
+// against @xyflow/react's source: each is produced inside a `useMemo(..., [])`-style
+// memo), so including them in the deps array below is correct and never itself
+// retriggers the effect.
 import { useEffect, useRef } from 'react'
-import { useReactFlow, useViewport } from '@xyflow/react'
+import { useReactFlow } from '@xyflow/react'
 import { useReducedMotion } from 'framer-motion'
 import { useSimulationStore } from '../store/simulation.store'
 import type { VisualParticle } from '../../lib/worldEngine/types'
 
-// Approximate on-screen footprint of WorldServerNode/WorldManagedNode. React Flow only reports
-// *measured* dimensions once a node has actually painted; this overlay must be able to draw on
-// frame 1, so a fixed approximation is used instead of waiting on measurement. Good enough for a
-// Phase-2 "minimal, contracts-shaped" overlay — Phase 4/5 can read real measured dimensions.
+// Pre-paint fallback footprint only — real dimensions come from node.measured once React
+// Flow has laid the DOM out. Deliberately NOT U-height-aware (see file header).
 const SERVER_W = 220, SERVER_H = 96
 const MANAGED_W = 170, MANAGED_H = 60
 
@@ -23,8 +35,7 @@ interface Props { azId: string }
 
 export function AzSimOverlay({ azId }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const { getNode } = useReactFlow()
-  const viewport = useViewport()
+  const { getInternalNode, getViewport } = useReactFlow()
   const running = useSimulationStore(s => s.running)
   const reduced = useReducedMotion()
   const lastDrawRef = useRef(0)
@@ -62,15 +73,21 @@ export function AzSimOverlay({ azId }: Props) {
       if (!canvas || !ctx) return
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
+      // Read the viewport imperatively, once per frame — NOT via the useViewport() hook,
+      // which would re-run this whole effect (and re-attach the renderer) on every
+      // pan/zoom tick (D9).
+      const viewport = getViewport()
+
       const toScreen = (id: string, fallback: { x: number; y: number }) => {
         if (id.startsWith('edge:')) return { x: -40 * viewport.zoom + viewport.x, y: fallback.y }
-        const node = getNode(id)
+        const node = getInternalNode(id)
         if (!node) return fallback
-        const w = node.type === 'worldManaged' ? MANAGED_W : SERVER_W
-        const h = node.type === 'worldManaged' ? MANAGED_H : SERVER_H
+        const w = node.measured?.width ?? (node.type === 'worldManaged' ? MANAGED_W : SERVER_W)
+        const hgt = node.measured?.height ?? (node.type === 'worldManaged' ? MANAGED_H : SERVER_H)
+        const abs = node.internals.positionAbsolute
         return {
-          x: (node.position.x + w / 2) * viewport.zoom + viewport.x,
-          y: (node.position.y + h / 2) * viewport.zoom + viewport.y,
+          x: (abs.x + w / 2) * viewport.zoom + viewport.x,
+          y: (abs.y + hgt / 2) * viewport.zoom + viewport.y,
         }
       }
 
@@ -98,7 +115,7 @@ export function AzSimOverlay({ azId }: Props) {
     })
 
     return detach
-  }, [running, azId, getNode, viewport, reduced])
+  }, [running, azId, reduced, getInternalNode, getViewport])
 
   return (
     <canvas
