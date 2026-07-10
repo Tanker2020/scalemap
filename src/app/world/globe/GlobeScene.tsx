@@ -15,7 +15,7 @@ import { vec3ToLatLon } from './geo'
 import earthTextureUrl from '../../../assets/globe/black-marble-2k.jpg'
 
 const EARTH_RADIUS = 1
-const ATMOSPHERE_SCALE = 1.03
+const ATMOSPHERE_SCALE = 1.05
 const IDLE_ROTATION_RAD_PER_S = 0.02
 
 // J1 (fragment header): three.js's default SphereGeometry (phiStart=0, phiLength=2π) places
@@ -49,10 +49,17 @@ const ATMOSPHERE_FRAGMENT_SHADER = `
   varying vec3 vNormal;
   varying vec3 vViewDir;
   uniform vec3 glowColor;
+  uniform float limbDot;
   void main() {
-    float rim = 1.0 - max(dot(normalize(vNormal), normalize(vViewDir)), 0.0);
-    float intensity = pow(rim, 2.2);
-    gl_FragColor = vec4(glowColor, intensity * 0.9);
+    // On this BACKSIDE shell the outward normal points away from the camera everywhere it
+    // is visible, so dot(normal, view) runs from ~0 at the shell's outer silhouette down to
+    // -limbDot where the view ray grazes the planet's limb. Remap that range so the glow
+    // peaks at the limb and falls smoothly to nothing at the shell edge. (The previous
+    // max(dot, 0) clamp saturated every visible fragment to full intensity, rendering a
+    // hard uniform ring instead of an atmosphere.)
+    float toward = clamp(-dot(normalize(vNormal), normalize(vViewDir)) / limbDot, 0.0, 1.0);
+    float intensity = pow(toward, 1.8);
+    gl_FragColor = vec4(glowColor, intensity * 0.55);
   }
 `
 
@@ -99,7 +106,12 @@ function Earth({ placeMode, onPlace }: EarthProps): ReactElement {
 
 function Atmosphere(): ReactElement {
   // useMemo so the THREE.Color instance (and its allocation) isn't recreated every render.
-  const uniforms = useMemo(() => ({ glowColor: { value: new THREE.Color('#4A9EFF') } }), [])
+  // limbDot = |dot(normal, view)| where a view ray tangent to the planet (radius 1) crosses
+  // this shell (radius ATMOSPHERE_SCALE): sqrt(1 - 1/scale²) — the shader's remap anchor.
+  const uniforms = useMemo(() => ({
+    glowColor: { value: new THREE.Color('#4A9EFF') },
+    limbDot: { value: Math.sqrt(1 - 1 / (ATMOSPHERE_SCALE * ATMOSPHERE_SCALE)) },
+  }), [])
   return (
     <mesh scale={ATMOSPHERE_SCALE}>
       <sphereGeometry args={[EARTH_RADIUS, 64, 64]} />

@@ -11,6 +11,7 @@ import {
   createPopulation, nextWorldId, type InstancePresetLike,
 } from '../../lib/world/factories'
 import { useFileStore } from './file.store'
+import { useSimulationStore } from './simulation.store'
 
 const deepCopy = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T
 
@@ -103,13 +104,22 @@ export const useWorldStore = create<WorldStore>((set, get) => {
     future: [],
 
     newWorld: () => {
+      // Swapping the doc under a RUNNING engine leaves the sim ticking a world that no
+      // longer exists and every authoring control edit-locked behind `running` — the app
+      // looks dead after New. Same centralize-the-reset stance as the Phase-1 autosave
+      // fix: the doc-swap action owns stopping the sim (engine stop() is idle-safe).
+      useSimulationStore.getState().stop()
       set({ doc: createWorld(), history: [], future: [] })
       // A fresh world is pristine: clear the dirty flag and created stamp so the
       // autosave gate and Save's meta.created both start clean.
       useFileStore.getState().setDirty(false)
       useFileStore.getState().setCreatedIso(null)
     },
-    replaceWorld: (doc) => set({ doc, history: [], future: [] }),
+    replaceWorld: (doc) => {
+      // Open-while-running has the same stale-engine + edit-lock failure as newWorld.
+      useSimulationStore.getState().stop()
+      set({ doc, history: [], future: [] })
+    },
 
     addRegion: (catalogId) => {
       const region = createRegion(catalogId)

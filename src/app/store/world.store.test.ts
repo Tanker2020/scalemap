@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useWorldStore } from './world.store'
 import { useFileStore } from './file.store'
+import { useSimulationStore } from './simulation.store'
 import { getPreset } from '../../lib/world/instanceCatalog'
 
 beforeEach(() => useWorldStore.getState().newWorld())
@@ -22,6 +23,18 @@ describe('world.store', () => {
     useWorldStore.getState().newWorld()
     expect(useFileStore.getState().dirty).toBe(false)
     expect(useFileStore.getState().createdIso).toBeNull()
+  })
+
+  it('newWorld stops a running simulation (doc swap under a live engine edit-locks the app)', () => {
+    useSimulationStore.setState({ running: true })
+    useWorldStore.getState().newWorld()
+    expect(useSimulationStore.getState().running).toBe(false)
+  })
+
+  it('replaceWorld stops a running simulation (open-while-running)', () => {
+    useSimulationStore.setState({ running: true })
+    useWorldStore.getState().replaceWorld(useWorldStore.getState().doc)
+    expect(useSimulationStore.getState().running).toBe(false)
   })
 
   it('builds a linked region→az→server→blueprint→placement chain', () => {
