@@ -10,7 +10,7 @@ import { useMemo, useRef, useState, type ReactElement } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { Html } from '@react-three/drei'
 import { useReducedMotion } from 'framer-motion'
-import type { Mesh } from 'three'
+import { AdditiveBlending, type Mesh } from 'three'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore } from '../../store/simulation.store'
@@ -93,7 +93,7 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
       </mesh>
       <mesh>
         <sphereGeometry args={[GLOW_RADIUS, 12, 12]} />
-        <meshBasicMaterial color={color} transparent opacity={0.28} depthWrite={false} />
+        <meshBasicMaterial color={color} transparent opacity={0.28} depthWrite={false} blending={AdditiveBlending} />
       </mesh>
       <Html occlude distanceFactor={8} style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}>
         <span style={{ font: '9px var(--font-mono)', color: down ? DOWN_LABEL_COLOR : HEALTHY_LABEL_COLOR }}>
