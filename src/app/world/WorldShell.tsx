@@ -15,6 +15,7 @@ import { ServerView } from './ServerView'
 import { WorldPanel } from './panels/WorldPanel'
 import { AzCanvas } from './AzCanvas'
 import { openWorldViaDialog, saveWorld } from './fileOps'
+import { SettingsModal } from './SettingsModal'
 
 const hdrBtn: CSSProperties = {
   background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
@@ -28,6 +29,7 @@ export function WorldShell() {
   const dirty = useFileStore(s => s.dirty)
   const [fileError, setFileError] = useState<string | null>(null)
   const running = useSimulationStore(s => s.running)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   // Lifted here (not into GlobeView) because GlobeView and WorldPanel are SIBLINGS in the flex
   // row below, not parent/child — TrafficPanel (mounted inside WorldPanel) needs to flip the
   // same placeMode boolean GlobeView's GlobeScene reads, so only their common ancestor can own
@@ -103,6 +105,7 @@ export function WorldShell() {
         <Breadcrumb />
         <SimControls />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button style={hdrBtn} aria-label="settings" onClick={() => setSettingsOpen(true)}>⚙</button>
           <span style={{ font: '10px var(--font-mono)', color: 'var(--color-text-muted)' }}>esc = up one level</span>
           {dirty && <span style={{ color: 'var(--color-warning)', font: '10px var(--font-mono)' }}>● unsaved</span>}
           <button style={hdrBtn} onClick={() => { useWorldStore.getState().newWorld(); useFileStore.getState().setFilePath(null); useNavStore.getState().goGlobe() }}>New</button>
@@ -138,6 +141,7 @@ export function WorldShell() {
           selectedPopulationId={selectedPopulationId}
         />
       </div>
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <ScrubberV2 />
     </div>
   )
