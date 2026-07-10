@@ -43,6 +43,13 @@ describe('BlueprintPanel', () => {
     expect(screen.getByText(/one core sustains ~125 rps/)).toBeInTheDocument()
   })
 
+  it('signature color input dispatches updateBlueprint with the new color', () => {
+    const bpId = useWorldStore.getState().addBlueprint('api')
+    render(<BlueprintPanel />)
+    fireEvent.change(screen.getByLabelText('signature color'), { target: { value: '#123456' } })
+    expect(useWorldStore.getState().doc.blueprints[bpId].color).toBe('#123456')
+  })
+
   it('host capacity line appears only when the blueprint has a placement', () => {
     const bpId = useWorldStore.getState().addBlueprint('api')
     render(<BlueprintPanel />)
