@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { TopologyPanel } from './TopologyPanel'
 import { BlueprintPanel } from './BlueprintPanel'
 import { PlacementPanel } from './PlacementPanel'
@@ -7,13 +7,12 @@ import { AnalysisTab, unsuppressedCompileFindings } from './AnalysisTab'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
+import { useUiStore, type PanelTab } from '../../store/ui.store'
 import { runAnalysis } from '../../../lib/analysis/runAnalysis'
 import { EventsTab } from '../EventsTab'
 import { CostTab } from '../CostTab'
 import { panel } from './panelStyles'
 import { ChipValue } from '../ui/kit'
-
-type Tab = 'topology' | 'blueprints' | 'placements' | 'traffic' | 'analysis' | 'events' | 'cost'
 
 export interface WorldPanelProps {
   running: boolean
@@ -24,13 +23,20 @@ export interface WorldPanelProps {
 }
 
 export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopulationId, openSettings }: WorldPanelProps) {
-  const [tab, setTab] = useState<Tab>('topology')
+  const [tab, setTab] = useState<PanelTab>(() => useUiStore.getState().pendingPanelTab ?? 'topology')
+  useEffect(() => {
+    // One-shot consume: the vault's teaching card (or any future caller) queues a tab to open
+    // to, WorldPanel reads it once in the initializer above and clears it here so a later
+    // remount doesn't re-apply a stale request. Read+clear via getState() (not the reactive
+    // hook) — this effect must not re-run when the store updates, only once on mount.
+    if (useUiStore.getState().pendingPanelTab) useUiStore.getState().setPendingPanelTab(null)
+  }, [])
   const compiled = useCompiledWorld()
   const doc = useWorldStore(s => s.doc)
   const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const analysis = useMemo(() => runAnalysis(doc, compiled, displayBatch), [compiled, displayBatch?.simMs])
   const analysisCount = analysis.length + unsuppressedCompileFindings(analysis, compiled.findings).length
-  const tabs: { id: Tab; label: string }[] = [
+  const tabs: { id: PanelTab; label: string }[] = [
     { id: 'topology', label: 'Topology' },
     { id: 'blueprints', label: 'Blueprints' },
     { id: 'placements', label: 'Placements' },

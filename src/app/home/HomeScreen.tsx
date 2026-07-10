@@ -3,8 +3,11 @@ import { FilePlus, Clock, Import } from 'lucide-react'
 import { useFileStore } from '../store/file.store'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
+import { useUiStore } from '../store/ui.store'
 import { getRecentFiles, type RecentFile } from '../../lib/tauri'
 import { openWorldFromPath } from '../world/fileOps'
+import { VaultCard } from './VaultCard'
+import { VAULT, type VaultEntry } from '../../lib/vault/exampleWorlds'
 import styles from './HomeScreen.module.css'
 
 export function HomeScreen() {
@@ -36,6 +39,21 @@ export function HomeScreen() {
     }
   }
 
+  const openExample = (entry: VaultEntry) => {
+    // Mirrors openNew's stance exactly: replaceWorld doesn't touch the file store the way
+    // newWorld does, so the resets below are explicit here — pristine, no path, no created
+    // stamp (Save will ask for a location, same as a brand-new world).
+    useWorldStore.getState().replaceWorld(entry.build())
+    useFileStore.getState().setFilePath(null)
+    useFileStore.getState().setDirty(false)
+    useFileStore.getState().setCreatedIso(null)
+    // Teaching-only: queue the Analysis tab so the broken world opens straight onto its
+    // findings instead of Topology — every other card leaves this null.
+    if (entry.id === 'broken-teaching') useUiStore.getState().setPendingPanelTab('analysis')
+    useNavStore.getState().goGlobe()
+    setShowHome(false)
+  }
+
   return (
     <div className={styles.screen}>
       <div className={styles.inner}>
@@ -55,6 +73,13 @@ export function HomeScreen() {
             <span className={styles.actionLabel}>Import Terraform</span>
             <span className={styles.actionSub}>Coming soon</span>
           </button>
+        </div>
+
+        <div className={styles.vaultSection}>
+          <div className={styles.vaultHeader}>Start from an example</div>
+          <div className={styles.vaultGrid}>
+            {VAULT.map(e => <VaultCard key={e.id} entry={e} onOpen={openExample} />)}
+          </div>
         </div>
 
         {recents.length > 0 && (

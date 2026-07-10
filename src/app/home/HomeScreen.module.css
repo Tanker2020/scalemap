@@ -135,14 +135,11 @@
 
 /* ── Vault ──────────────────────────────────────────── */
 
-.vault {
+.vaultSection {
   width: 100%;
 }
 
 .vaultHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.07em;
@@ -151,70 +148,76 @@
   margin-bottom: 14px;
 }
 
-.vaultCount {
-  font-size: 10px;
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
-  color: var(--color-text-muted);
-}
-
 .vaultGrid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
 }
 
-.templateCard {
+.vcard {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 14px;
-  background: var(--color-surface);
+  width: 100%;
+  background: linear-gradient(165deg, var(--color-node-base), var(--color-canvas));
   border: 1px solid var(--color-node-border);
   border-radius: 10px;
+  padding: 14px;
   cursor: pointer;
-  font-family: var(--font-mono);
+  position: relative;
+  overflow: hidden;
   text-align: left;
-  transition: background 0.15s, border-color 0.15s;
+  font-family: var(--font-mono);
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
 }
 
-.templateCard:hover {
-  background: var(--color-surface-hover);
-  border-color: color-mix(in srgb, var(--cat-color, var(--color-accent)) 40%, transparent);
+.vcard:hover {
+  border-color: color-mix(in srgb, var(--color-text-muted) 35%, transparent);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.38);
 }
 
-.templateTop {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.vcard[data-teaching] {
+  border-color: color-mix(in srgb, var(--color-danger) 20%, transparent);
 }
 
-.templateCategory {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--cat-color, var(--color-accent));
+.vg {
+  height: 64px;
+  margin-bottom: 10px;
 }
 
-.templateNodes {
-  font-size: 9px;
-  color: var(--color-text-muted);
-}
-
-.templateName {
-  font-size: 12px;
+.vn {
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--color-text-primary);
-  line-height: 1.3;
 }
 
-.templateDesc {
-  font-size: 10px;
+.vd {
   color: var(--color-text-muted);
+  font-size: 10px;
   line-height: 1.5;
+  margin: 3px 0 8px;
+}
+
+.vm {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-size: 9px;
+}
+
+.vpill {
+  padding: 1px 7px;
+  border-radius: 8px;
+  border: 1px solid var(--color-node-border);
+  color: var(--color-text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vcard {
+    transition: none;
+  }
+  .vcard:hover {
+    transform: none;
+  }
 }
