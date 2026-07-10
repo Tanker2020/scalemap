@@ -1,14 +1,18 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { TopologyPanel } from './TopologyPanel'
 import { BlueprintPanel } from './BlueprintPanel'
 import { PlacementPanel } from './PlacementPanel'
 import { TrafficPanel } from './TrafficPanel'
+import { AnalysisTab, unsuppressedCompileFindings } from './AnalysisTab'
 import { useCompiledWorld } from '../useCompiledWorld'
+import { useWorldStore } from '../../store/world.store'
+import { useSimulationStore } from '../../store/simulation.store'
+import { runAnalysis } from '../../../lib/analysis/runAnalysis'
 import { EventsTab } from '../EventsTab'
 import { CostTab } from '../CostTab'
-import { panel, smallBtn, sectionLabel } from './panelStyles'
+import { panel, smallBtn } from './panelStyles'
 
-type Tab = 'topology' | 'blueprints' | 'placements' | 'traffic' | 'findings' | 'events' | 'cost'
+type Tab = 'topology' | 'blueprints' | 'placements' | 'traffic' | 'analysis' | 'events' | 'cost'
 
 export interface WorldPanelProps {
   running: boolean
@@ -19,13 +23,17 @@ export interface WorldPanelProps {
 
 export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopulationId }: WorldPanelProps) {
   const [tab, setTab] = useState<Tab>('topology')
-  const { findings } = useCompiledWorld()
+  const compiled = useCompiledWorld()
+  const doc = useWorldStore(s => s.doc)
+  const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
+  const analysis = useMemo(() => runAnalysis(doc, compiled, displayBatch), [compiled, displayBatch?.simMs])
+  const analysisCount = analysis.length + unsuppressedCompileFindings(analysis, compiled.findings).length
   const tabs: { id: Tab; label: string }[] = [
     { id: 'topology', label: 'Topology' },
     { id: 'blueprints', label: 'Blueprints' },
     { id: 'placements', label: 'Placements' },
     { id: 'traffic', label: 'Traffic' },
-    { id: 'findings', label: `Findings (${findings.length})` },
+    { id: 'analysis', label: `Analysis (${analysisCount})` },
     { id: 'events', label: 'Events' },
     { id: 'cost', label: 'Cost' },
   ]
@@ -50,27 +58,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
         {tab === 'traffic' && (
           <TrafficPanel placeMode={placeMode} onTogglePlaceMode={onTogglePlaceMode} selectedPopulationId={selectedPopulationId} />
         )}
-        {tab === 'findings' && (
-          <div>
-            <div style={sectionLabel}>Findings</div>
-            {findings.length === 0 && (
-              <div style={{ color: 'var(--color-text-muted)' }}>No findings — the compiled world is clean.</div>
-            )}
-            {findings.map(f => (
-              <div key={f.id} style={{ marginBottom: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{
-                    padding: '1px 6px', borderRadius: 3, font: '10px var(--font-mono)',
-                    color: '#fff',
-                    background: f.severity === 'error' ? 'var(--color-danger)' : 'var(--color-warning)',
-                  }}>{f.severity}</span>
-                  <span style={{ color: 'var(--color-text-secondary)' }}>{f.kind}</span>
-                </div>
-                <div style={{ marginTop: 2 }}>{f.message}</div>
-              </div>
-            ))}
-          </div>
-        )}
+        {tab === 'analysis' && <AnalysisTab />}
         {tab === 'events' && <EventsTab />}
         {tab === 'cost' && <CostTab />}
       </fieldset>
