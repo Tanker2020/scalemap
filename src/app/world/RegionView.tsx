@@ -4,7 +4,7 @@
 // cross-AZ column, with one alert ribbon above and (T3) a failover timeline below. Fully
 // scrub-aware: every metric reads `scrubBatch ?? latestBatch` (D1) and renders a meaningful
 // static state ("—", doc-derived counts) before the sim has ever produced a batch.
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
 import { useSimulationStore } from '../store/simulation.store'
@@ -16,6 +16,7 @@ import { AlertRibbon } from './region/AlertRibbon'
 import { SplitLines } from './region/SplitLines'
 import { AzRow } from './region/AzRow'
 import { CrossAzColumn } from './region/CrossAzColumn'
+import { TimelineStrip } from './region/TimelineStrip'
 
 const POLICY_LABEL: Record<RoutingPolicyKind, string> = {
   latency: 'latency-based routing', geo: 'geo-based routing',
@@ -42,6 +43,7 @@ export function RegionView() {
   const isDown = useSimulationStore(s => s.healthOverrides[regionId ?? ''] ?? false)
   const setOutage = useSimulationStore(s => s.setOutage)
   const [spark, setSpark] = useState<number[]>([])
+  const timelineRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!regionId) return
@@ -98,7 +100,16 @@ export function RegionView() {
         </div>
       </div>
 
-      <AlertRibbon alert={alert} onTimelineClick={() => {}} />
+      <AlertRibbon
+        alert={alert}
+        onTimelineClick={() => {
+          const el = timelineRef.current
+          if (!el) return
+          el.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
+          el.classList.add('region-timeline-flash')
+          setTimeout(() => el.classList.remove('region-timeline-flash'), 1200)
+        }}
+      />
 
       {azs.length === 0 ? (
         <div style={{ color: 'var(--color-text-muted)', font: '12px var(--font-mono)' }}>
@@ -134,7 +145,9 @@ export function RegionView() {
         </div>
       )}
 
-      {/* TimelineStrip mounts here (T3) */}
+      <div ref={timelineRef}>
+        <TimelineStrip regionId={regionId} />
+      </div>
     </div>
   )
 }

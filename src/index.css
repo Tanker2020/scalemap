@@ -112,3 +112,15 @@ input, textarea, select {
   0%, 100% { opacity: 0.25; }
   50% { opacity: 0.85; }
 }
+
+/* One-shot highlight when AlertRibbon's "timeline" link scrolls the failover timeline into
+   view (RegionView / TimelineStrip, Phase 4 T3). The blanket prefers-reduced-motion override
+   above (animation-duration: 0.01ms) already collapses this to a near-instant flash under
+   reduced motion — no separate media query needed here. */
+.region-timeline-flash {
+  animation: region-timeline-flash-kf 1.1s ease-out;
+}
+@keyframes region-timeline-flash-kf {
+  0% { box-shadow: 0 0 0 2px var(--color-danger); }
+  100% { box-shadow: 0 0 0 2px transparent; }
+}
