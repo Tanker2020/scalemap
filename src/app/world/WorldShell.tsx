@@ -28,6 +28,19 @@ export function WorldShell() {
   const dirty = useFileStore(s => s.dirty)
   const [fileError, setFileError] = useState<string | null>(null)
   const running = useSimulationStore(s => s.running)
+  // Lifted here (not into GlobeView) because GlobeView and WorldPanel are SIBLINGS in the flex
+  // row below, not parent/child — TrafficPanel (mounted inside WorldPanel) needs to flip the
+  // same placeMode boolean GlobeView's GlobeScene reads, so only their common ancestor can own
+  // it. No new store — per the skeleton's own constraint, this stays local component state.
+  const [placeMode, setPlaceMode] = useState(false)
+  const [selectedPopulationId, setSelectedPopulationId] = useState<string | null>(null)
+
+  // Defensive UX, not a named requirement: disarm place-mode if the user navigates away from
+  // the globe level while it's armed, so it can't silently stay "armed" somewhere it has no
+  // effect (GlobeScene's raycast-click handler only exists at nav.level === 'globe').
+  useEffect(() => {
+    if (nav.level !== 'globe' && placeMode) setPlaceMode(false)
+  }, [nav.level, placeMode])
 
   useEffect(() => {
     if (!import.meta.env.DEV) return
@@ -66,7 +79,13 @@ export function WorldShell() {
   }, [])
 
   const view =
-    nav.level === 'globe' ? <GlobeView /> :
+    nav.level === 'globe' ? (
+      <GlobeView
+        placeMode={placeMode}
+        onExitPlaceMode={() => setPlaceMode(false)}
+        onPopulationPlaced={setSelectedPopulationId}
+      />
+    ) :
     nav.level === 'region' ? <RegionView /> :
     nav.level === 'az' ? <AzCanvas /> :
     <ServerView />
@@ -112,7 +131,12 @@ export function WorldShell() {
             </motion.div>
           </AnimatePresence>
         </main>
-        <WorldPanel running={running} />
+        <WorldPanel
+          running={running}
+          placeMode={placeMode}
+          onTogglePlaceMode={() => setPlaceMode(p => !p)}
+          selectedPopulationId={selectedPopulationId}
+        />
       </div>
       <ScrubberV2 />
     </div>

@@ -2,20 +2,29 @@ import { useState } from 'react'
 import { TopologyPanel } from './TopologyPanel'
 import { BlueprintPanel } from './BlueprintPanel'
 import { PlacementPanel } from './PlacementPanel'
+import { TrafficPanel } from './TrafficPanel'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { EventsTab } from '../EventsTab'
 import { CostTab } from '../CostTab'
 import { panel, smallBtn, sectionLabel } from './panelStyles'
 
-type Tab = 'topology' | 'blueprints' | 'placements' | 'findings' | 'events' | 'cost'
+type Tab = 'topology' | 'blueprints' | 'placements' | 'traffic' | 'findings' | 'events' | 'cost'
 
-export function WorldPanel({ running }: { running: boolean }) {
+export interface WorldPanelProps {
+  running: boolean
+  placeMode: boolean
+  onTogglePlaceMode: () => void
+  selectedPopulationId: string | null
+}
+
+export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopulationId }: WorldPanelProps) {
   const [tab, setTab] = useState<Tab>('topology')
   const { findings } = useCompiledWorld()
   const tabs: { id: Tab; label: string }[] = [
     { id: 'topology', label: 'Topology' },
     { id: 'blueprints', label: 'Blueprints' },
     { id: 'placements', label: 'Placements' },
+    { id: 'traffic', label: 'Traffic' },
     { id: 'findings', label: `Findings (${findings.length})` },
     { id: 'events', label: 'Events' },
     { id: 'cost', label: 'Cost' },
@@ -38,6 +47,9 @@ export function WorldPanel({ running }: { running: boolean }) {
         {tab === 'topology' && <TopologyPanel />}
         {tab === 'blueprints' && <BlueprintPanel />}
         {tab === 'placements' && <PlacementPanel />}
+        {tab === 'traffic' && (
+          <TrafficPanel placeMode={placeMode} onTogglePlaceMode={onTogglePlaceMode} selectedPopulationId={selectedPopulationId} />
+        )}
         {tab === 'findings' && (
           <div>
             <div style={sectionLabel}>Findings</div>

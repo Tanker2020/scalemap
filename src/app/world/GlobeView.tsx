@@ -4,7 +4,7 @@
 // same goRegion navigation renders in BOTH branches — the canvas container is aria-hidden
 // (decorative to a screen reader; the hidden list is the real navigation surface there, and it
 // also covers any environment that passes the WebGL probe but still renders nothing).
-import { useState, type CSSProperties } from 'react'
+import type { CSSProperties } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
 import { GlobeScene } from './globe/GlobeScene'
@@ -36,11 +36,25 @@ function RegionA11yList() {
   )
 }
 
-export function GlobeView() {
-  // Place-mode is T6's concern; T3 wires the prop through inert (always false, no-op onPlace) so
-  // GlobeScene's click-to-place raycast exists but nothing arms it until T6 lifts real state in.
-  const [placeMode] = useState(false)
-  const onPlace = () => {}
+export interface GlobeViewProps {
+  placeMode: boolean
+  onExitPlaceMode: () => void
+  onPopulationPlaced: (id: string) => void
+}
+
+export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: GlobeViewProps) {
+  const addPopulation = useWorldStore(s => s.addPopulation)
+  const populationCount = useWorldStore(s => Object.keys(s.doc.populations).length)
+
+  // Place-mode is armed/disarmed by WorldShell (the common ancestor of this component and
+  // TrafficPanel) via the placeMode prop; a click on the globe here places a population, then
+  // hands control back up so WorldShell can disarm and TrafficPanel can select+focus the new row.
+  const onPlace = (lat: number, lon: number) => {
+    const label = `pop-${populationCount + 1}`
+    const id = addPopulation(label, lat, lon)
+    onExitPlaceMode()
+    onPopulationPlaced(id)
+  }
 
   if (!webglAvailable()) {
     return (

@@ -39,14 +39,14 @@ describe('GlobeView (fallback branch — WebGL unavailable)', () => {
 
   it('renders GlobeCards when webgl unavailable', () => {
     seedOneRegion()
-    render(<GlobeView />)
+    render(<GlobeView placeMode={false} onExitPlaceMode={() => {}} onPopulationPlaced={() => {}} />)
     // GlobeCards' card grid renders the region's catalogId as a clickable card heading.
     expect(screen.getAllByText('us-east-1').length).toBeGreaterThan(0)
   })
 
   it('hidden a11y region list navigates', () => {
     const { region } = seedOneRegion()
-    render(<GlobeView />)
+    render(<GlobeView placeMode={false} onExitPlaceMode={() => {}} onPopulationPlaced={() => {}} />)
     const nav = screen.getByRole('navigation', { name: 'Regions' })
     fireEvent.click(within(nav).getByRole('button', { name: 'us-east-1' }))
     expect(useNavStore.getState()).toMatchObject({ level: 'region', regionId: region.id })
