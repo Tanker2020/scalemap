@@ -1,0 +1,301 @@
+<title>Scalemap — Panel Redesign Directions</title>
+<style>
+  /* Deliberately single-theme: this page mocks up the chrome of a dark instrument app;
+     the mockups ARE the dark world. */
+  :root {
+    --canvas: #0D0F12; --surface: #0F1117; --node: #161920; --border: #2A2E38;
+    --toolbar: #111318; --t1: #F1F5F9; --t2: #94A3B8; --t3: #64748B;
+    --blue: #4A9EFF; --teal: #2DD4BF; --amber: #F5A623; --purple: #A78BFA;
+    --ok: #22C55E; --warn: #F59E0B; --bad: #EF4444;
+    --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  }
+  html { background: #0A0C10; }
+  body { background: #0A0C10; color: var(--t1); font: 14px/1.6 var(--mono); margin: 0; }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 48px 24px 96px; }
+  h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 6px; text-wrap: balance; }
+  h2 { font-size: 15px; font-weight: 600; margin: 0; }
+  .sub { color: var(--t2); font-size: 12.5px; max-width: 68ch; }
+  .eyebrow { font-size: 10px; letter-spacing: 0.16em; color: var(--t3); text-transform: uppercase; }
+
+  .dirhead { display: flex; align-items: baseline; gap: 14px; margin: 64px 0 6px; }
+  .dirhead .tag { font-size: 11px; padding: 2px 10px; border-radius: 3px; font-weight: 600; }
+  .taga { background: #2DD4BF1A; color: var(--teal); border: 1px solid #2DD4BF55; }
+  .tagb { background: #4A9EFF1A; color: var(--blue); border: 1px solid #4A9EFF55; }
+  .dirsub { color: var(--t2); font-size: 12px; margin: 0 0 20px; max-width: 74ch; }
+
+  .stage { background: var(--canvas); border: 1px solid #1E2128; border-radius: 10px; padding: 18px; display: grid; gap: 18px; grid-template-columns: 1fr 1fr; overflow-x: auto; }
+  .stage.single { grid-template-columns: 1fr; }
+  @media (max-width: 900px) { .stage { grid-template-columns: 1fr; } }
+
+  .panelbox { min-width: 0; }
+  .cap { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--t3); margin: 0 0 8px; }
+
+  /* ── shared bits ─────────────────────────── */
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .sig { width: 8px; height: 8px; border-radius: 2px; display: inline-block; flex-shrink: 0; }
+  .chipval { border: 1px solid var(--border); border-radius: 3px; padding: 0 7px; color: var(--t1); font-size: 11px; background: #0C0E13; }
+  button, input, select { font-family: var(--mono); }
+  :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+  /* ══ BEFORE ══ */
+  .before { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px; font-size: 12px; color: var(--t2); max-width: 380px; }
+  .before .row { margin-bottom: 6px; }
+  .before input { background: var(--node); border: 1px solid var(--border); color: var(--t1); border-radius: 4px; padding: 2px 6px; width: 64px; font-size: 11px; }
+
+  /* ══ DIRECTION A — INSTRUMENT RAIL ══ */
+  .a-panel { background: linear-gradient(180deg, #0E1117, #0B0D12); border: 1px solid #1E2430; border-radius: 8px; padding: 12px; font-size: 11px; box-shadow: inset 0 1px 0 #ffffff08; }
+  .a-sect { display: flex; align-items: center; gap: 8px; margin: 14px 0 8px; }
+  .a-sect:first-child { margin-top: 0; }
+  .a-sect .lbl { font-size: 9.5px; letter-spacing: 0.15em; color: #7CFFE9; text-shadow: 0 0 8px #2DD4BF44; white-space: nowrap; }
+  .a-sect .rule { height: 1px; flex: 1; background: linear-gradient(90deg, #2DD4BF44, transparent); }
+  .a-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; border: 1px solid transparent; margin-bottom: 3px; cursor: pointer; }
+  .a-row:hover { background: #13161E; border: 1px solid #2A2E38; }
+  .a-row .grow { flex: 1; min-width: 0; }
+  .a-row .meta { color: var(--t3); font-size: 10px; }
+  .a-mini { display: flex; gap: 2px; align-items: flex-end; height: 14px; }
+  .a-mini i { width: 3px; border-radius: 1px; display: block; }
+  .a-server { border-left: 2px solid var(--blue); background: #10141C; }
+  .a-server:hover { background: #141926; border-color: #2A2E38; border-left: 2px solid var(--blue); }
+  .a-kv { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px dashed #1B202B; }
+  .a-kv:last-child { border-bottom: none; }
+  .a-kv .k { color: var(--t2); font-size: 10.5px; }
+  .a-kv .hint { color: var(--t3); font-size: 9.5px; }
+  .a-bar { position: relative; height: 4px; background: #10141C; border-radius: 2px; overflow: hidden; margin-top: 3px; }
+  .a-bar i { position: absolute; inset: 0 auto 0 0; border-radius: 2px; display: block; }
+  .a-fw { border: 1px solid #F5962344; border-radius: 6px; padding: 8px; background: #F596230A; }
+  .a-fwrow { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; font-size: 10.5px; margin-bottom: 2px; }
+  .a-fwrow:hover { background: #ffffff08; }
+  .a-fwrow .ord { color: var(--t3); width: 12px; }
+  .a-fwrow .grip { color: #3A4150; cursor: grab; }
+  .a-flow { text-align: center; color: var(--t3); font-size: 9px; letter-spacing: 0.1em; margin: 4px 0; }
+
+  /* ══ DIRECTION B — CONSOLE CARDS ══ */
+  .b-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; font-size: 12px; }
+  .b-card { background: linear-gradient(160deg, #161A22, #11141B); border: 1px solid #2A2E38; border-radius: 8px; padding: 12px; margin-bottom: 10px; box-shadow: 0 4px 16px #00000040; }
+  .b-card:hover { border-color: #3A4150; }
+  .b-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .b-head .name { font-weight: 600; font-size: 12.5px; }
+  .b-head .badge { margin-left: auto; font-size: 9.5px; padding: 1px 8px; border-radius: 10px; }
+  .b-explain { color: var(--t3); font-size: 10.5px; line-height: 1.5; margin-top: 4px; }
+  .b-field { margin-bottom: 12px; }
+  .b-field label { display: block; color: var(--t2); font-size: 10.5px; margin-bottom: 5px; }
+  .b-derive { color: var(--teal); font-size: 10.5px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .b-slider { display: flex; align-items: center; gap: 10px; }
+  .b-slider input[type=range] { flex: 1; accent-color: var(--blue); background: transparent; }
+  .b-slider .val { width: 64px; text-align: right; font-variant-numeric: tabular-nums; color: var(--t1); font-size: 11.5px; }
+  .b-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .b-seg button { background: transparent; color: var(--t2); border: none; padding: 5px 12px; font-size: 11px; cursor: pointer; }
+  .b-seg button.on { background: #4A9EFF22; color: var(--blue); }
+  .b-seg button:not(:last-child) { border-right: 1px solid var(--border); }
+  .b-specbar { display: grid; grid-template-columns: 42px 1fr 58px; gap: 8px; align-items: center; font-size: 10px; color: var(--t3); margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+  .b-specbar .tr { height: 5px; background: #0C0E13; border-radius: 3px; overflow: hidden; }
+  .b-specbar .tr i { display: block; height: 100%; border-radius: 3px; }
+  .b-preset { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .b-pcard { border: 1px solid var(--border); border-radius: 8px; padding: 10px; cursor: pointer; background: #11141B; }
+  .b-pcard:hover { border-color: var(--blue); box-shadow: 0 0 0 1px #4A9EFF44, 0 6px 18px #00000050; }
+  .b-pcard.sel { border-color: var(--blue); background: #4A9EFF0D; }
+  .b-pcard .pn { font-size: 11.5px; font-weight: 600; }
+  .b-pcard .pd { color: var(--t3); font-size: 9.5px; margin: 2px 0 6px; }
+  .b-pcard .pp { color: var(--amber); font-size: 10.5px; }
+
+  /* ══ VAULT ══ */
+  .vault { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .vcard { background: linear-gradient(165deg, #12151D, #0D1015); border: 1px solid #232833; border-radius: 10px; padding: 14px; cursor: pointer; position: relative; overflow: hidden; }
+  .vcard:hover { border-color: #3A4150; transform: translateY(-2px); box-shadow: 0 10px 26px #00000060; }
+  @media (prefers-reduced-motion: reduce) { .vcard:hover { transform: none; } .vcard, .b-pcard, .a-row { transition: none !important; } }
+  .vcard, .b-pcard, .a-row { transition: all 0.15s ease; }
+  .vcard .vg { height: 64px; margin-bottom: 10px; }
+  .vcard .vn { font-size: 12.5px; font-weight: 600; }
+  .vcard .vd { color: var(--t3); font-size: 10px; line-height: 1.5; margin: 3px 0 8px; }
+  .vcard .vm { display: flex; gap: 6px; align-items: center; font-size: 9px; }
+  .vpill { padding: 1px 7px; border-radius: 8px; border: 1px solid var(--border); color: var(--t2); }
+
+  /* options footer */
+  .opts { margin-top: 72px; display: grid; gap: 10px; }
+  .opt { display: flex; gap: 14px; align-items: baseline; border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; background: var(--surface); }
+  .opt .l { font-weight: 700; color: var(--teal); }
+  .opt p { margin: 2px 0 0; color: var(--t2); font-size: 12px; }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Scalemap · design round · authoring surfaces</p>
+  <h1>Making the panels feel like part of the instrument</h1>
+  <p class="sub">The scenes (globe, circuit board, racks) got the design treatment; the panels never did. Two directions below, each showing the <em>same three surfaces</em>: the Topology tab, a workload config, and a firewall editor — plus the new examples vault for the home screen. Both keep JetBrains Mono and the existing token palette; they differ in how much they borrow from the scene language versus modern dev-tool ergonomics.</p>
+
+  <div class="dirhead"><span class="eyebrow" style="color:var(--t3)">Today, for reference</span></div>
+  <div class="before">
+    <div class="row">SERVERS (2)</div>
+    <div class="row">server-1 · vps · 4 vCPU · 8 GB · 3 fw rules</div>
+    <div class="row">cpuMsPerRequest <input value="8"> ramBaseMb <input value="220"></div>
+    <div class="row">ramPerConnMb <input value="0.5"> diskIoPerRequest <input value="0.2"></div>
+    <div class="row" style="color:var(--t3);font-size:10.5px">— grey rows, bare numbers, nothing explains what any value does</div>
+  </div>
+
+  <!-- ══════════ DIRECTION A ══════════ -->
+  <div class="dirhead"><span class="tag taga">A</span><h2>Instrument Rail</h2></div>
+  <p class="dirsub">The server-view HUD language extended to every panel: luminous section rules, edge-lit rows, values in chips, live micro-bars everywhere. Dense, glanceable, feels like operating a console. Config stays numeric but every number gets a derived consequence beside it.</p>
+
+  <div class="stage">
+    <div class="panelbox">
+      <p class="cap">Topology tab</p>
+      <div class="a-panel">
+        <div class="a-sect"><span class="lbl">▸ US-EAST-1 · N. VIRGINIA</span><span class="rule"></span><span style="color:var(--ok);font-size:9px">● healthy</span></div>
+        <div class="a-row a-server">
+          <span class="dot" style="background:var(--ok);box-shadow:0 0 5px var(--ok)"></span>
+          <div class="grow">
+            <div>web-01 <span class="meta">vps · 4c/8G · 1a</span></div>
+            <div class="a-bar"><i style="width:62%;background:var(--blue)"></i></div>
+          </div>
+          <div class="a-mini"><i style="height:100%;background:var(--blue)"></i><i style="height:70%;background:var(--amber)"></i><i style="height:40%;background:var(--teal)"></i></div>
+          <span class="meta">$0.08/hr</span>
+        </div>
+        <div class="a-row a-server" style="border-left-color:var(--amber)">
+          <span class="dot" style="background:var(--warn);box-shadow:0 0 5px var(--warn)"></span>
+          <div class="grow">
+            <div>db-primary <span class="meta">dedicated · 16c/64G · 1b</span></div>
+            <div class="a-bar"><i style="width:84%;background:var(--amber)"></i></div>
+          </div>
+          <div class="a-mini"><i style="height:60%;background:var(--blue)"></i><i style="height:95%;background:var(--amber)"></i><i style="height:30%;background:var(--teal)"></i></div>
+          <span class="meta">$0.74/hr</span>
+        </div>
+        <div class="a-sect"><span class="lbl">▸ BLUEPRINTS</span><span class="rule"></span></div>
+        <div class="a-row">
+          <span class="sig" style="background:var(--teal)"></span>
+          <div class="grow">nginx <span class="meta">:443 :80 · 2 deps</span></div>
+          <span class="chipval">×4</span>
+        </div>
+        <div class="a-row">
+          <span class="sig" style="background:var(--purple)"></span>
+          <div class="grow">postgres <span class="meta">:5432 · stateful → pgdata</span></div>
+          <span class="chipval">×2</span>
+        </div>
+      </div>
+    </div>
+    <div class="panelbox">
+      <p class="cap">Workload config + firewall (inspector rail)</p>
+      <div class="a-panel">
+        <div class="a-sect"><span class="lbl">▸ WORKLOAD — nginx</span><span class="rule"></span></div>
+        <div class="a-kv"><span class="k">cpu / request</span><span><span class="chipval">8 ms</span> <span class="hint">≈125 rps per core</span></span></div>
+        <div class="a-kv"><span class="k">ram base</span><span><span class="chipval">220 MB</span></span></div>
+        <div class="a-kv"><span class="k">ram / conn</span><span><span class="chipval">0.5 MB</span> <span class="hint">≈1.2 GB @ 2k conns</span></span></div>
+        <div class="a-kv"><span class="k">disk io / req</span><span><span class="chipval">0.2</span> <span class="hint">light</span></span></div>
+        <div class="a-sect"><span class="lbl" style="color:#FBBF24;text-shadow:0 0 8px #F5962344">🛡 FIREWALL — web-01</span><span class="rule" style="background:linear-gradient(90deg,#F5962344,transparent)"></span></div>
+        <div class="a-fw">
+          <div class="a-flow">▼ evaluated top-down · first match wins ▼</div>
+          <div class="a-fwrow"><span class="grip">⠿</span><span class="ord">1</span><span style="color:var(--ok)">ALLOW</span><span>:443 tcp</span><span style="color:var(--t3)">from any</span></div>
+          <div class="a-fwrow"><span class="grip">⠿</span><span class="ord">2</span><span style="color:var(--ok)">ALLOW</span><span>:80 tcp</span><span style="color:var(--t3)">from any</span></div>
+          <div class="a-fwrow"><span class="grip">⠿</span><span class="ord">3</span><span style="color:var(--bad)">DENY</span><span>:5432 tcp</span><span style="color:var(--t3)">from any</span></div>
+          <div class="a-flow" style="color:var(--bad)">▼ everything else: DENIED ▼</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ DIRECTION B ══════════ -->
+  <div class="dirhead"><span class="tag tagb">B</span><h2>Console Cards</h2></div>
+  <p class="dirsub">A modern dev-tool feel: roomier entity cards with soft depth, and config through <em>widgets</em> — sliders with live derived hints, segmented controls, preset pickers — so a value's meaning is visible before you commit it. Calmer than A; explains more, glows less. (The cpu-per-request slider below is live — drag it.)</p>
+
+  <div class="stage">
+    <div class="panelbox">
+      <p class="cap">Topology tab</p>
+      <div class="b-panel">
+        <div class="b-card">
+          <div class="b-head"><span class="dot" style="background:var(--ok)"></span><span class="name">web-01</span><span class="badge" style="background:#4A9EFF1A;color:var(--blue);border:1px solid #4A9EFF44">vps · shared</span></div>
+          <div class="b-specbar"><span>cpu</span><span class="tr"><i style="width:62%;background:var(--blue)"></i></span><span>2.5 / 4 c</span></div>
+          <div class="b-specbar"><span>ram</span><span class="tr"><i style="width:48%;background:var(--amber)"></i></span><span>3.8 / 8 G</span></div>
+          <div class="b-specbar"><span>nic</span><span class="tr"><i style="width:33%;background:var(--teal)"></i></span><span>0.3 / 1 Gb</span></div>
+          <div class="b-explain">us-east-1a · rack A1 · 3 services · $58/mo</div>
+        </div>
+        <div class="b-card" style="border-color:#F59E0B44">
+          <div class="b-head"><span class="dot" style="background:var(--warn)"></span><span class="name">db-primary</span><span class="badge" style="background:#F59E0B1A;color:var(--warn);border:1px solid #F59E0B44">dedicated</span></div>
+          <div class="b-specbar"><span>cpu</span><span class="tr"><i style="width:84%;background:var(--amber)"></i></span><span>13.4 / 16 c</span></div>
+          <div class="b-specbar"><span>ram</span><span class="tr"><i style="width:52%;background:var(--amber)"></i></span><span>33 / 64 G</span></div>
+          <div class="b-explain">running hot — cpu queueing inflates p99 · <span style="color:var(--blue);cursor:pointer">see analysis →</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="panelbox">
+      <p class="cap">Workload config + server preset picker</p>
+      <div class="b-panel">
+        <div class="b-field">
+          <label>CPU time per request</label>
+          <div class="b-slider">
+            <input type="range" id="cpums" min="1" max="60" value="8" aria-label="cpu ms per request">
+            <span class="val" id="cpumsv">8 ms</span>
+          </div>
+          <div class="b-derive" id="cpumsd">→ one core sustains ~125 rps; this 4-core host ~500 rps</div>
+        </div>
+        <div class="b-field">
+          <label>Memory · 220 MB base + 0.5 MB per connection</label>
+          <div class="b-derive" style="color:var(--amber)">→ ~1.2 GB at 2,000 active connections</div>
+        </div>
+        <div class="b-field">
+          <label>Routing policy</label>
+          <div class="b-seg" role="group" aria-label="routing policy">
+            <button class="on">⚡ latency</button><button>🌍 geo</button><button>⚖ weighted</button><button>1-2-3 priority</button>
+          </div>
+          <div class="b-explain">each population is served by its fastest healthy region; failover honors the 30s DNS TTL</div>
+        </div>
+        <div class="b-field">
+          <label>Host preset</label>
+          <div class="b-preset">
+            <div class="b-pcard sel"><div class="pn">vps-medium</div><div class="pd">4 vCPU · 8 GB · shared tenancy</div><div class="pp">$0.08/hr</div></div>
+            <div class="b-pcard"><div class="pn">dedicated-8</div><div class="pd">8 cores · 32 GB · yours alone</div><div class="pp">$0.37/hr</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ VAULT ══════════ -->
+  <div class="dirhead"><span class="eyebrow" style="color:var(--t2)">Both directions ship with</span><h2>The examples vault (home screen)</h2></div>
+  <p class="dirsub">Four prebuilt worlds on the home screen next to "New World" — each opens ready to simulate, with a one-line mission so it doubles as a tutorial.</p>
+
+  <div class="vault">
+    <div class="vcard">
+      <svg class="vg" viewBox="0 0 200 64" aria-hidden="true"><g fill="none" stroke-width="1.5"><circle cx="20" cy="32" r="6" stroke="#2DD4BF"/><rect x="58" y="10" width="30" height="16" rx="3" stroke="#4A9EFF"/><rect x="58" y="38" width="30" height="16" rx="3" stroke="#4A9EFF"/><rect x="130" y="24" width="34" height="16" rx="3" stroke="#A78BFA"/><path d="M26,32 L58,18 M26,32 L58,46 M88,18 L130,32 M88,46 L130,32" stroke="#2A2E38"/></g></svg>
+      <div class="vn">Classic three-tier</div>
+      <div class="vd">LB-fronted web + api + replicated db across two AZs. The on-ramp.</div>
+      <div class="vm"><span class="vpill">1 region</span><span class="vpill">6 servers</span><span class="vpill" style="color:var(--ok);border-color:#22C55E44">beginner</span></div>
+    </div>
+    <div class="vcard">
+      <svg class="vg" viewBox="0 0 200 64" aria-hidden="true"><g fill="none" stroke-width="1.5"><circle cx="50" cy="22" r="9" stroke="#4A9EFF"/><circle cx="150" cy="22" r="9" stroke="#4A9EFF"/><circle cx="100" cy="52" r="5" stroke="#2DD4BF"/><path d="M100,48 Q75,30 58,26" stroke="#2DD4BF" stroke-dasharray="4 3"/><path d="M100,48 Q125,30 142,26" stroke="#EF4444" stroke-dasharray="3 4"/></g></svg>
+      <div class="vn">Multi-region failover</div>
+      <div class="vd">Active/passive across three continents, TTL tuned so killing a region tells the whole DNS-lag story.</div>
+      <div class="vm"><span class="vpill">3 regions</span><span class="vpill">populations</span><span class="vpill" style="color:var(--warn);border-color:#F59E0B44">intermediate</span></div>
+    </div>
+    <div class="vcard">
+      <svg class="vg" viewBox="0 0 200 64" aria-hidden="true"><g fill="none" stroke-width="1.5"><rect x="20" y="24" width="28" height="16" rx="3" stroke="#4A9EFF"/><rect x="84" y="24" width="32" height="16" rx="8" stroke="#A78BFA" stroke-dasharray="4 3"/><rect x="152" y="10" width="28" height="14" rx="3" stroke="#2DD4BF"/><rect x="152" y="40" width="28" height="14" rx="3" stroke="#2DD4BF"/><path d="M48,32 L84,32 M116,32 L152,17 M116,32 L152,47" stroke="#2A2E38"/></g></svg>
+      <div class="vn">Event-driven microservices</div>
+      <div class="vd">Services publishing through a managed queue to worker pools in compose stacks — networks, volumes, the works.</div>
+      <div class="vm"><span class="vpill">1 region</span><span class="vpill">queue + workers</span><span class="vpill" style="color:var(--warn);border-color:#F59E0B44">intermediate</span></div>
+    </div>
+    <div class="vcard" style="border-color:#EF444433">
+      <svg class="vg" viewBox="0 0 200 64" aria-hidden="true"><g fill="none" stroke-width="1.5"><rect x="30" y="24" width="30" height="16" rx="3" stroke="#EF4444"/><rect x="120" y="24" width="34" height="16" rx="3" stroke="#EF4444" stroke-dasharray="4 3"/><path d="M60,32 L120,32" stroke="#EF4444" stroke-dasharray="3 4"/><text x="88" y="24" fill="#EF4444" font-size="11">✕</text><text x="163" y="56" fill="#F59E0B" font-size="9">⚠ ⚠ ⚠</text></g></svg>
+      <div class="vn">Everything wrong at once</div>
+      <div class="vd">Exposed database, single-AZ SPOF, oversubscribed RAM, TTL slower than detection. Run the analysis, then fix it.</div>
+      <div class="vm"><span class="vpill">teaching world</span><span class="vpill" style="color:var(--bad);border-color:#EF444444">14 findings</span></div>
+    </div>
+  </div>
+
+  <!-- ══════════ OPTIONS ══════════ -->
+  <div class="opts">
+    <p class="eyebrow">Pick a direction (reply in chat)</p>
+    <div class="opt"><span class="l">A</span><div><strong>Instrument Rail</strong><p>Full HUD treatment — the whole app feels like the server view. Densest, most atmospheric, most "Scalemap".</p></div></div>
+    <div class="opt"><span class="l">B</span><div><strong>Console Cards</strong><p>Widget-first config with derived hints and preset pickers — the most approachable, best for the "numbers thrown at you" complaint.</p></div></div>
+    <div class="opt"><span class="l">A+B</span><div><strong>Hybrid (my recommendation)</strong><p>A's skin — luminous section rules, edge-lit rows, chips — carrying B's widgets: sliders with derived hints, preset cards, the segmented routing picker. Atmosphere where you look, ergonomics where you type.</p></div></div>
+    <div class="opt"><span class="l">✎</span><div><strong>Iterate</strong><p>Tell me what's off — density, glow level, specific widgets — and I'll revise this page.</p></div></div>
+  </div>
+</div>
+
+<script>
+  const cpums = document.getElementById('cpums');
+  const label = document.getElementById('cpumsv');
+  const derive = document.getElementById('cpumsd');
+  cpums.addEventListener('input', () => {
+    const ms = Number(cpums.value);
+    const perCore = Math.round(1000 / ms);
+    label.textContent = ms + ' ms';
+    derive.textContent = `→ one core sustains ~${perCore} rps; this 4-core host ~${perCore * 4} rps`;
+  });
+</script>
