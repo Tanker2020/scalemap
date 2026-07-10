@@ -32,7 +32,7 @@ describe('AnalysisTab', () => {
   it('groups findings by family and lists a structural warning', () => {
     seedSingleAzRegion()
     render(<AnalysisTab openSettings={() => {}} />)
-    expect(screen.getByText('Structural')).toBeInTheDocument()
+    expect(screen.getByText('▸ STRUCTURAL')).toBeInTheDocument()
     expect(screen.getByText('Single-AZ region')).toBeInTheDocument()
   })
 

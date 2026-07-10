@@ -9,6 +9,7 @@ import { createPortal } from 'react-dom'
 import { useUiStore } from '../store/ui.store'
 import { loadLlmSettings, saveLlmSettings, type LlmSettings } from '../../lib/tauri'
 import { pingLlm } from '../../lib/llmReview'
+import { SectionHeader, Segmented } from './ui/kit'
 
 export interface SettingsModalProps {
   open: boolean
@@ -24,28 +25,16 @@ const surfaceStyle: CSSProperties = {
   border: '1px solid var(--color-node-border)', borderRadius: 8, padding: 16,
   font: '11px var(--font-mono)', color: 'var(--color-text-primary)',
 }
-const sectionLabelStyle: CSSProperties = {
-  font: '600 10px var(--font-mono)', color: 'var(--color-text-muted)',
-  textTransform: 'uppercase', letterSpacing: '0.06em', margin: '14px 0 6px',
-}
 const fieldLabelStyle: CSSProperties = { display: 'block', marginBottom: 2, color: 'var(--color-text-secondary)' }
 const fieldInputStyle: CSSProperties = {
   width: '100%', boxSizing: 'border-box', background: 'var(--color-node-base)',
-  border: '1px solid var(--color-node-border)', borderRadius: 4, padding: '5px 7px',
-  font: '11px var(--font-mono)', color: 'var(--color-text-primary)', marginBottom: 6,
+  border: '1px solid var(--color-node-border)', borderRadius: 4, padding: '4px 6px',
+  fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--color-text-primary)', marginBottom: 6,
 }
 const smallBtnStyle: CSSProperties = {
   background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
   borderRadius: 4, padding: '4px 10px', cursor: 'pointer',
   font: '11px var(--font-mono)', color: 'var(--color-text-secondary)',
-}
-function segBtnStyle(active: boolean): CSSProperties {
-  return {
-    flex: 1, padding: '5px 0', textAlign: 'center', cursor: 'pointer',
-    background: active ? 'var(--color-accent)' : 'var(--color-node-base)',
-    border: '1px solid var(--color-node-border)',
-    color: active ? 'var(--color-on-accent)' : 'var(--color-text-secondary)',
-  }
 }
 
 function maskedPlaceholder(apiKey: string): string {
@@ -129,13 +118,15 @@ export function SettingsModal({ open, onClose }: SettingsModalProps): ReactEleme
           <button style={smallBtnStyle} onClick={onClose}>close</button>
         </div>
 
-        <div style={sectionLabelStyle}>Appearance</div>
-        <div style={{ display: 'flex', border: '1px solid var(--color-node-border)', borderRadius: 4, overflow: 'hidden' }}>
-          <button type="button" aria-pressed={themeMode === 'dark'} style={segBtnStyle(themeMode === 'dark')} onClick={() => setThemeMode('dark')}>dark</button>
-          <button type="button" aria-pressed={themeMode === 'light'} style={segBtnStyle(themeMode === 'light')} onClick={() => setThemeMode('light')}>light</button>
-        </div>
+        <SectionHeader label="▸ APPEARANCE" />
+        <Segmented
+          ariaLabel="theme"
+          value={themeMode}
+          onChange={setThemeMode}
+          options={[{ value: 'dark', label: 'dark' }, { value: 'light', label: 'light' }]}
+        />
 
-        <div style={sectionLabelStyle}>AI Review</div>
+        <SectionHeader label="▸ AI REVIEW" />
         <label style={fieldLabelStyle}>base URL</label>
         <input style={fieldInputStyle} aria-label="baseUrl" placeholder="https://api.openai.com/v1"
           value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />

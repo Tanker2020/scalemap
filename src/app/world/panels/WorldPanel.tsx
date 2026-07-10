@@ -10,7 +10,8 @@ import { useSimulationStore } from '../../store/simulation.store'
 import { runAnalysis } from '../../../lib/analysis/runAnalysis'
 import { EventsTab } from '../EventsTab'
 import { CostTab } from '../CostTab'
-import { panel, smallBtn } from './panelStyles'
+import { panel } from './panelStyles'
+import { ChipValue } from '../ui/kit'
 
 type Tab = 'topology' | 'blueprints' | 'placements' | 'traffic' | 'analysis' | 'events' | 'cost'
 
@@ -34,7 +35,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
     { id: 'blueprints', label: 'Blueprints' },
     { id: 'placements', label: 'Placements' },
     { id: 'traffic', label: 'Traffic' },
-    { id: 'analysis', label: `Analysis (${analysisCount})` },
+    { id: 'analysis', label: 'Analysis' },
     { id: 'events', label: 'Events' },
     { id: 'cost', label: 'Cost' },
   ]
@@ -43,9 +44,18 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
       <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
         {tabs.map(t => (
           <button key={t.id}
-            style={{ ...smallBtn, ...(tab === t.id ? { color: 'var(--color-text-primary)', border: '1px solid var(--color-text-muted)' } : {}) }}
+            type="button"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              padding: '5px 10px', background: 'transparent',
+              border: '1px solid transparent',
+              borderBottom: tab === t.id ? '2px solid var(--color-accent)' : '2px solid transparent',
+              color: tab === t.id ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+              cursor: 'pointer', font: '11px var(--font-mono)',
+            }}
             onClick={() => setTab(t.id)}>
             {t.label}
+            {t.id === 'analysis' && <ChipValue>{analysisCount}</ChipValue>}
           </button>
         ))}
       </div>

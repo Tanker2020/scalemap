@@ -4,14 +4,19 @@
 // `./inspectorForms.tsx` (WorkloadForm/RuntimeForm/FirewallEditor/VolumesEditor) — those forms own
 // all world-store writes and self-lock via <fieldset disabled={running}> (D9). Rule rows drill
 // into `{kind:'rule'}`.
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { useServerDisplayMetrics } from './useServerDisplayMetrics'
 import type { BoardSelection } from './selection'
 import { WorkloadForm, RuntimeForm, FirewallEditor, VolumesEditor } from './inspectorForms'
+import { SectionHeader } from '../ui/kit'
 
 const railText = { font: '7.5px var(--font-mono)', color: 'var(--color-text-secondary)', lineHeight: 1.9 } as const
+
+const flowCaption: CSSProperties = {
+  textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 9, letterSpacing: '0.1em', margin: '4px 0',
+}
 
 export interface InspectorRailProps {
   serverId: string
@@ -25,9 +30,7 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
   const display = useServerDisplayMetrics(serverId)
   const server = doc.servers[serverId]
 
-  const header = (title: string) => (
-    <div style={{ font: '8px var(--font-mono)', color: '#7CFFE9', letterSpacing: '0.1em', borderBottom: '1px solid #14332E', paddingBottom: 5 }}>▸ INSPECTOR — {title}</div>
-  )
+  const header = (title: string) => <SectionHeader label={`▸ INSPECTOR — ${title}`} />
 
   let body: ReactElement
   if (!selection) {
@@ -41,7 +44,7 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
     const memLimit = rt?.type === 'container' ? rt.memLimitMb : null
     const oom = memLimit && m ? m.ramMb >= memLimit * 0.9 : false
     body = (
-      <div style={{ ...railText, marginTop: 6 }}>
+      <div style={{ ...railText, marginTop: 8 }}>
         <div style={{ color: '#DBEAFE' }}>{bp?.name}</div>
         <div>runtime <span style={{ color: '#C4B5FD' }}>{rt?.type}{rt?.type === 'container' ? ` · stack: ${rt.stackName}` : ''}</span></div>
         {rt?.type === 'container' && <div>binds <span style={{ color: '#9CC8FF' }}>{rt.portMappings.map(p => `:${p.host}→${p.container}`).join(' ') || '—'}</span></div>}
@@ -55,20 +58,37 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
     )
   } else if (selection.kind === 'nic') {
     const sm = display.server
-    body = <div style={{ ...railText, marginTop: 6 }}>
+    body = <div style={{ ...railText, marginTop: 8 }}>
       <div>speed {server?.specs.nicMbps} Mbps</div>
       <div>in {sm ? Math.round(sm.nicInMbps) : '—'} · out {sm ? Math.round(sm.nicOutMbps) : '—'} Mb/s</div>
     </div>
   } else if (selection.kind === 'firewall' || selection.kind === 'rule') {
-    body = <div style={{ ...railText, marginTop: 6 }}>
-      <div style={{ color: '#475569' }}>first match wins · default deny</div>
-      {(server?.firewall ?? []).map(r => (
-        <div key={r.id} data-testid="fw-rule-row" onClick={() => onSelect({ kind: 'rule', ruleId: r.id })}
-          style={{ cursor: 'pointer', color: r.action === 'allow' ? 'var(--color-success)' : 'var(--color-danger)', background: selection.kind === 'rule' && selection.ruleId === r.id ? '#ffffff08' : undefined }}>
-          {r.action.toUpperCase()} :{r.port} {r.protocol} from {r.source}
-        </div>
-      ))}
-      <FirewallEditor key={serverId} serverId={serverId} />
+    const rules = server?.firewall ?? []
+    body = <div style={{ ...railText, marginTop: 8 }}>
+      <div style={{
+        border: '1px solid color-mix(in srgb, var(--color-warning) 27%, transparent)',
+        borderRadius: 6, padding: 8,
+        background: 'color-mix(in srgb, var(--color-warning) 4%, transparent)',
+        marginTop: 6,
+      }}>
+        <div style={flowCaption}>▼ evaluated top-down · first match wins ▼</div>
+        {rules.map((r, i) => (
+          <div key={r.id} data-testid="fw-rule-row" onClick={() => onSelect({ kind: 'rule', ruleId: r.id })}
+            style={{
+              display: 'flex', gap: 8, fontSize: 10.5, padding: '4px 6px', borderRadius: 4,
+              cursor: 'pointer',
+              background: selection.kind === 'rule' && selection.ruleId === r.id
+                ? 'color-mix(in srgb, var(--color-text-primary) 3%, transparent)' : undefined,
+            }}>
+            <span style={{ color: 'var(--color-text-muted)', width: 12 }}>{i + 1}</span>
+            <span style={{ color: r.action === 'allow' ? 'var(--color-success)' : 'var(--color-danger)' }}>{r.action.toUpperCase()}</span>
+            <span>:{r.port} {r.protocol}</span>
+            <span style={{ color: 'var(--color-text-muted)' }}>from {r.source}</span>
+          </div>
+        ))}
+        <FirewallEditor key={serverId} serverId={serverId} />
+        <div style={{ ...flowCaption, color: 'var(--color-danger)' }}>▼ everything else: DENIED ▼</div>
+      </div>
     </div>
   } else if (selection.kind === 'stack') {
     const st = server?.stacks.find(s => s.name === selection.stackName)
@@ -76,7 +96,7 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
       const pl = doc.placements[i.placementId]
       return i.serverId === serverId && pl?.runtime.type === 'container' && pl.runtime.stackName === selection.stackName
     })
-    body = <div style={{ ...railText, marginTop: 6 }}>
+    body = <div style={{ ...railText, marginTop: 8 }}>
       <div>networks {st?.networks.map(n => n.cidr).join(', ') || '—'}</div>
       <div>volumes {st?.volumes.map(v => `${v.name} ${v.sizeGb}G`).join(', ') || '—'}</div>
       <div>members {members.map(i => doc.blueprints[i.blueprintId]?.name).join(', ') || '—'}</div>
@@ -85,20 +105,20 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
   } else if (selection.kind === 'volume') {
     const consumers = Object.values(doc.blueprints).filter(b => b.volumeName === selection.volumeName)
     const vol = server?.stacks.find(s => s.name === selection.stackName)?.volumes.find(v => v.name === selection.volumeName)
-    body = <div style={{ ...railText, marginTop: 6 }}>
+    body = <div style={{ ...railText, marginTop: 8 }}>
       <div>size {vol?.sizeGb ?? '—'}G</div>
       <div>consumers {consumers.map(b => b.name).join(', ') || '—'}</div>
     </div>
   } else if (selection.kind === 'hardware') {
     const sm = display.server
-    body = <div style={{ ...railText, marginTop: 6 }}>
+    body = <div style={{ ...railText, marginTop: 8 }}>
       {selection.part === 'cpu' && <div>cores {sm?.coreUtilization.length ?? server?.specs.vcpu} · steal {sm ? Math.round(sm.stealFraction * 100) : 0}%</div>}
       {selection.part === 'ram' && <div>ram {sm ? (sm.ramUsedMb / 1024).toFixed(1) : '—'}/{sm ? (sm.ramTotalMb / 1024).toFixed(0) : Math.round((server?.specs.ramMb ?? 0) / 1024)}G</div>}
       {selection.part === 'disk' && <div>io {sm ? Math.round(sm.diskIoFraction * 100) : 0}% · {server?.specs.diskGb}G</div>}
     </div>
   } else { // core
     const sm = display.server
-    body = <div style={{ ...railText, marginTop: 6 }}>core {selection.coreIndex} · {sm ? Math.round((sm.coreUtilization[selection.coreIndex] ?? 0) * 100) : 0}%</div>
+    body = <div style={{ ...railText, marginTop: 8 }}>core {selection.coreIndex} · {sm ? Math.round((sm.coreUtilization[selection.coreIndex] ?? 0) * 100) : 0}%</div>
   }
 
   const title = selection?.kind === 'instance'

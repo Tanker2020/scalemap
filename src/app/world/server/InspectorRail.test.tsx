@@ -81,6 +81,24 @@ describe('InspectorRail (read panels)', () => {
     render(<InspectorRail serverId={serverId} selection={null} onSelect={() => {}} />)
     expect(screen.getByText(/click any element/i)).toBeInTheDocument()
   })
+
+  it('firewall stack renders order numbers and flow captions', () => {
+    const { serverId } = seed((d, sid) => {
+      d.servers[sid].firewall = [
+        { id: 'r1', action: 'allow', port: 443, protocol: 'tcp', source: 'any' },
+        { id: 'r2', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' },
+      ]
+    })
+    render(<InspectorRail serverId={serverId} selection={{ kind: 'firewall' }} onSelect={() => {}} />)
+    expect(screen.getByText(/evaluated top-down · first match wins/)).toBeInTheDocument()
+    expect(screen.getByText(/everything else: DENIED/)).toBeInTheDocument()
+    const rows = screen.getAllByTestId('fw-rule-row')
+    expect(rows[0]).toHaveTextContent('1')
+    expect(rows[0]).toHaveTextContent('ALLOW')
+    expect(rows[1]).toHaveTextContent('2')
+    expect(rows[1]).toHaveTextContent('DENY')
+    expect(rows[1]).toHaveTextContent('from any')
+  })
 })
 
 describe('inspector editing forms', () => {

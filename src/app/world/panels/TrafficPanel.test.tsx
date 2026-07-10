@@ -100,14 +100,14 @@ describe('TrafficPanel — routing', () => {
     render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
     expect(screen.queryByLabelText(`weight-${regionId}`)).not.toBeInTheDocument()
 
-    fireEvent.change(screen.getByLabelText('routing-policy'), { target: { value: 'weighted' } })
+    fireEvent.click(screen.getByText('⚖ weighted'))
     const w = screen.getByLabelText(`weight-${regionId}`)
     expect(w).toBeInTheDocument()
     fireEvent.change(w, { target: { value: '3' } })
     fireEvent.blur(w)
     expect(useWorldStore.getState().doc.routing.weights[regionId]).toBe(3)
 
-    fireEvent.change(screen.getByLabelText('routing-policy'), { target: { value: 'geo' } })
+    fireEvent.click(screen.getByText('🌍 geo'))
     expect(screen.queryByLabelText(`weight-${regionId}`)).not.toBeInTheDocument()
   })
 
@@ -130,5 +130,23 @@ describe('TrafficPanel — routing', () => {
     fireEvent.change(ttl, { target: { value: '0' } })
     fireEvent.blur(ttl)
     expect(useWorldStore.getState().doc.routing.dnsTtlSec).toBe(1)
+  })
+
+  it('policy segmented dispatches updateRouting and shows the policy explainer', () => {
+    render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
+    fireEvent.click(screen.getByText('🌍 geo'))
+    expect(useWorldStore.getState().doc.routing.policy).toBe('geo')
+    expect(screen.getByText(/nearest region by great-circle distance/)).toBeInTheDocument()
+  })
+
+  it('ttl hint appears when TTL outlives detection and clears otherwise', () => {
+    useWorldStore.getState().updateRouting({ dnsTtlSec: 5, healthCheckIntervalMs: 12000, healthCheckFailureThreshold: 3 })
+    render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
+    expect(screen.getByText(/ttl 5s < detection 36s/)).toBeInTheDocument()
+    const ttl = screen.getByLabelText('dnsTtlSec')
+    fireEvent.change(ttl, { target: { value: '60' } })
+    fireEvent.blur(ttl)
+    expect(useWorldStore.getState().doc.routing.dnsTtlSec).toBe(60)
+    expect(screen.queryByText(/< detection/)).not.toBeInTheDocument()
   })
 })

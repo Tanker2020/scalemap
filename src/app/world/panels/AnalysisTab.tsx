@@ -8,7 +8,7 @@ import { useCompiledWorld } from '../useCompiledWorld'
 import { runAnalysis } from '../../../lib/analysis/runAnalysis'
 import type { AnalysisFinding, AnalysisFamily, AnalysisSeverity } from '../../../lib/analysis/types'
 import type { WorldDoc, CompiledWorld, CompileFinding } from '../../../lib/world/types'
-import { sectionLabel } from './panelStyles'
+import { SectionHeader } from '../ui/kit'
 import { AiReviewSection } from './AiReviewSection'
 
 export interface NavApi {
@@ -44,7 +44,7 @@ export function unsuppressedCompileFindings(analysis: AnalysisFinding[], compile
   })
 }
 
-const FAMILY_LABEL: Record<AnalysisFamily, string> = { structural: 'Structural', network: 'Network', capacity: 'Capacity' }
+const FAMILY_HEADER: Record<AnalysisFamily, string> = { structural: '▸ STRUCTURAL', network: '▸ NETWORK', capacity: '▸ CAPACITY' }
 const chipBtn: CSSProperties = {
   background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)', borderRadius: 3,
   padding: '1px 6px', margin: '0 4px 4px 0', cursor: 'pointer',
@@ -119,13 +119,13 @@ export function AnalysisTab({ openSettings }: AnalysisTabProps): ReactElement {
       {empty && <div style={{ color: 'var(--color-text-muted)' }}>No findings — the compiled world is clean.</div>}
       {groups.map(g => (
         <div key={g.fam}>
-          <div style={sectionLabel}>{FAMILY_LABEL[g.fam]}</div>
+          <SectionHeader label={FAMILY_HEADER[g.fam]} />
           {g.items.map(f => <FindingRow key={f.id} f={f} doc={doc} compiled={compiled} />)}
         </div>
       ))}
       {compileExtra.length > 0 && (
         <div>
-          <div style={sectionLabel}>Compile</div>
+          <SectionHeader label="▸ COMPILE" />
           {compileExtra.map(cf => (
             <div key={cf.id} style={{ marginBottom: 10 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

@@ -8,14 +8,21 @@ import { useWorldStore } from '../../store/world.store'
 import { nextWorldId } from '../../../lib/world/factories'
 import type { WorkloadProfile, FirewallRule, ComposeVolume } from '../../../lib/world/types'
 
-const lockNote = { font: '6.5px var(--font-mono)', color: 'var(--color-text-muted)', marginTop: 4 } as const
+const lockNote = { font: '10px var(--font-mono)', color: 'var(--color-text-muted)', marginTop: 4 } as const
 const fs = (running: boolean): React.CSSProperties => ({ border: 'none', margin: 0, padding: 0, opacity: running ? 0.55 : 1 })
-const inp: React.CSSProperties = { width: 52, background: 'var(--color-node-base)', border: '1px solid #2A3648', borderRadius: 3, color: '#E2E8F0', font: '7px var(--font-mono)', padding: '1px 4px' }
+const inp: React.CSSProperties = {
+  width: 52, background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
+  borderRadius: 4, color: 'var(--color-text-primary)', font: '10px var(--font-mono)', padding: '2px 5px',
+}
+const sel: React.CSSProperties = {
+  background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
+  borderRadius: 4, color: 'var(--color-text-primary)', font: '10.5px var(--font-mono)', padding: '2px 4px',
+}
 
 function NumberField({ label, value, onCommit }: { label: string; value: number; onCommit: (n: number) => void }) {
   const [text, setText] = useState(String(value))
   return (
-    <label style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+    <label style={{ display: 'flex', justifyContent: 'space-between', gap: 6, fontSize: 10 }}>
       <span>{label}</span>
       <input aria-label={label} style={inp} value={text}
         onChange={e => setText(e.target.value)}
@@ -33,7 +40,7 @@ export function WorkloadForm({ blueprintId }: { blueprintId: string }): ReactEle
   const set = (patch: Partial<WorkloadProfile>) => update(blueprintId, { workload: { ...bp.workload, ...patch } })
   return (
     <fieldset disabled={running} style={fs(running)}>
-      <div style={{ font: '6.5px var(--font-mono)', color: '#475569', marginTop: 7, letterSpacing: '0.08em' }}>WORKLOAD</div>
+      <div style={{ font: '10px var(--font-mono)', color: 'var(--color-text-muted)', marginTop: 8, letterSpacing: '0.08em' }}>WORKLOAD</div>
       <NumberField label="cpuMsPerRequest" value={bp.workload.cpuMsPerRequest} onCommit={v => set({ cpuMsPerRequest: v })} />
       <NumberField label="ramBaseMb" value={bp.workload.ramBaseMb} onCommit={v => set({ ramBaseMb: v })} />
       <NumberField label="ramPerConnMb" value={bp.workload.ramPerConnMb} onCommit={v => set({ ramPerConnMb: v })} />
@@ -61,7 +68,7 @@ export function RuntimeForm({ placementId }: { placementId: string }): ReactElem
   const networks = server?.stacks.find(s => s.name === rt.stackName)?.networks ?? []
   return (
     <fieldset disabled={running} style={fs(running)}>
-      <div style={{ font: '6.5px var(--font-mono)', color: '#475569', marginTop: 7, letterSpacing: '0.08em' }}>LIMITS</div>
+      <div style={{ font: '10px var(--font-mono)', color: 'var(--color-text-muted)', marginTop: 8, letterSpacing: '0.08em' }}>LIMITS</div>
       <NumberField label="cpuLimit" value={rt.cpuLimit ?? 0} onCommit={v => setRt({ cpuLimit: Number.isFinite(v) ? v : null })} />
       <NumberField label="memLimitMb" value={rt.memLimitMb ?? 0} onCommit={v => setRt({ memLimitMb: Number.isFinite(v) ? v : null })} />
       <div style={{ marginTop: 4 }}>networks: {networks.map(n => (
@@ -92,21 +99,21 @@ export function FirewallEditor({ serverId }: { serverId: string }): ReactElement
   return (
     <fieldset disabled={running} style={fs(running)}>
       {rules.map((r, i) => (
-        <div key={r.id} style={{ display: 'flex', gap: 3, alignItems: 'center', marginTop: 3 }}>
-          <select aria-label="action" value={r.action} onChange={e => patch(i, { action: e.target.value as FirewallRule['action'] })}><option value="allow">allow</option><option value="deny">deny</option></select>
+        <div key={r.id} style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 4, fontSize: 10.5 }}>
+          <select aria-label="action" style={sel} value={r.action} onChange={e => patch(i, { action: e.target.value as FirewallRule['action'] })}><option value="allow">allow</option><option value="deny">deny</option></select>
           <input aria-label="port" style={{ ...inp, width: 40 }} value={String(r.port)} onChange={e => {
             const raw = e.target.value
             if (raw === 'any' || raw === '') { patch(i, { port: 'any' }); return }
             const n = Number(raw)
             patch(i, { port: Number.isFinite(n) && n >= 0 ? n : 'any' })
           }} />
-          <select aria-label="protocol" value={r.protocol} onChange={e => patch(i, { protocol: e.target.value as FirewallRule['protocol'] })}><option value="tcp">tcp</option><option value="udp">udp</option><option value="any">any</option></select>
+          <select aria-label="protocol" style={sel} value={r.protocol} onChange={e => patch(i, { protocol: e.target.value as FirewallRule['protocol'] })}><option value="tcp">tcp</option><option value="udp">udp</option><option value="any">any</option></select>
           <button aria-label="move rule up" onClick={() => move(i, -1)}>↑</button>
           <button aria-label="move rule down" onClick={() => move(i, 1)}>↓</button>
           <button aria-label="remove rule" onClick={() => commit(rules.filter((_, k) => k !== i))}>✕</button>
         </div>
       ))}
-      <button aria-label="add rule" style={{ marginTop: 4 }} onClick={() => commit([...rules, { id: nextWorldId('fw'), action: 'allow', port: 'any', protocol: 'tcp', source: 'any' }])}>+ add rule</button>
+      <button aria-label="add rule" style={{ marginTop: 4, fontSize: 10.5 }} onClick={() => commit([...rules, { id: nextWorldId('fw'), action: 'allow', port: 'any', protocol: 'tcp', source: 'any' }])}>+ add rule</button>
       {running && <div style={lockNote}>stop simulation to edit</div>}
     </fieldset>
   )
@@ -129,7 +136,7 @@ export function VolumesEditor({ serverId, stackName }: { serverId: string; stack
   return (
     <fieldset disabled={running} style={fs(running)}>
       {stack.volumes.map((v, i) => (
-        <div key={v.name} style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 3 }}>
+        <div key={v.name} style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 4, fontSize: 10 }}>
           <span>{v.name}</span>
           <NumberField label={`size-${v.name}`} value={v.sizeGb} onCommit={n => commitVols(stack.volumes.map((x, k) => (k === i ? { ...x, sizeGb: n } : x)))} />
           <button aria-label={`remove volume ${v.name}`} onClick={() => commitVols(stack.volumes.filter((_, k) => k !== i))}>✕</button>

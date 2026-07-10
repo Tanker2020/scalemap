@@ -8,7 +8,9 @@ import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import type { DiurnalPattern, RegionId, RoutingPolicyKind } from '../../../lib/world/types'
 import { nextPopulationLabel } from '../../../lib/world/populationLabel'
-import { sectionLabel, field, smallBtn, dangerBtn, row } from './panelStyles'
+import { field, smallBtn, dangerBtn, row } from './panelStyles'
+import { SectionHeader, EdgeRow, DerivedField, Segmented, Explainer } from '../ui/kit'
+import { ttlLagHint } from '../ui/derived'
 
 export interface TrafficPanelProps {
   placeMode: boolean
@@ -93,28 +95,31 @@ function PopulationsSection({ selectedPopulationId, placeMode, onTogglePlaceMode
 
   return (
     <div>
-      <div style={sectionLabel}>Populations</div>
+      <SectionHeader label="▸ POPULATIONS" />
       {populations.length === 0 && <div style={{ color: 'var(--color-text-muted)' }}>no populations yet</div>}
       {populations.map(pop => (
-        <div key={pop.id} style={row}>
-          <input
-            ref={el => { labelRefs.current[pop.id] = el }}
-            style={{ ...field, width: 64, marginBottom: 0 }} aria-label={`label-${pop.id}`}
-            value={pop.label} onChange={e => updatePopulation(pop.id, { label: e.target.value })}
-          />
-          <NumberField label={`lat-${pop.id}`} value={pop.lat} min={-90} max={90}
-            onCommit={n => updatePopulation(pop.id, { lat: n })} />
-          <NumberField label={`lon-${pop.id}`} value={pop.lon} min={-180} max={180}
-            onCommit={n => updatePopulation(pop.id, { lon: n })} />
-          <NumberField label={`rps-${pop.id}`} value={pop.peakRps} min={0} max={Infinity}
-            onCommit={n => updatePopulation(pop.id, { peakRps: n })} />
-          <select aria-label={`diurnal-${pop.id}`} style={{ ...field, width: 68, marginBottom: 0 }}
-            value={pop.diurnal} onChange={e => updatePopulation(pop.id, { diurnal: e.target.value as DiurnalPattern })}>
-            <option value="flat">flat</option>
-            <option value="day-night">day-night</option>
-          </select>
-          <button style={dangerBtn} aria-label={`remove-${pop.id}`} onClick={() => removePopulation(pop.id)}>✕</button>
-        </div>
+        <EdgeRow key={pop.id}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: 'var(--kit-teal)', flexShrink: 0 }} />
+            <input
+              ref={el => { labelRefs.current[pop.id] = el }}
+              style={{ ...field, width: 64, marginBottom: 0 }} aria-label={`label-${pop.id}`}
+              value={pop.label} onChange={e => updatePopulation(pop.id, { label: e.target.value })}
+            />
+            <NumberField label={`lat-${pop.id}`} value={pop.lat} min={-90} max={90}
+              onCommit={n => updatePopulation(pop.id, { lat: n })} />
+            <NumberField label={`lon-${pop.id}`} value={pop.lon} min={-180} max={180}
+              onCommit={n => updatePopulation(pop.id, { lon: n })} />
+            <NumberField label={`rps-${pop.id}`} value={pop.peakRps} min={0} max={Infinity}
+              onCommit={n => updatePopulation(pop.id, { peakRps: n })} />
+            <select aria-label={`diurnal-${pop.id}`} style={{ ...field, width: 68, marginBottom: 0 }}
+              value={pop.diurnal} onChange={e => updatePopulation(pop.id, { diurnal: e.target.value as DiurnalPattern })}>
+              <option value="flat">flat</option>
+              <option value="day-night">day-night</option>
+            </select>
+            <button style={dangerBtn} aria-label={`remove-${pop.id}`} onClick={() => removePopulation(pop.id)}>✕</button>
+          </div>
+        </EdgeRow>
       ))}
 
       <div style={row}>
@@ -148,7 +153,7 @@ function TrafficSection() {
   const updateTraffic = useWorldStore(s => s.updateTraffic)
   return (
     <div>
-      <div style={sectionLabel}>Traffic</div>
+      <SectionHeader label="▸ TRAFFIC" />
       <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
         <input type="checkbox" aria-label="autoBaseline" checked={doc.traffic.autoBaseline}
           onChange={e => updateTraffic({ autoBaseline: e.target.checked })} />
@@ -161,6 +166,13 @@ function TrafficSection() {
       </label>
     </div>
   )
+}
+
+const POLICY_EXPLAINER: Record<RoutingPolicyKind, string> = {
+  latency: 'each population is served by its fastest healthy region; failover honors the DNS TTL',
+  geo: 'each population is pinned to its nearest region by great-circle distance',
+  weighted: 'traffic splits by the region weights below — heavier weight, more traffic',
+  priority: 'all traffic goes to the highest-priority healthy region in the order below',
 }
 
 function RoutingSection() {
@@ -180,14 +192,19 @@ function RoutingSection() {
 
   return (
     <div>
-      <div style={sectionLabel}>Routing</div>
-      <select aria-label="routing-policy" style={{ ...field, marginBottom: 6 }} value={policy}
-        onChange={e => updateRouting({ policy: e.target.value as RoutingPolicyKind })}>
-        <option value="latency">latency</option>
-        <option value="geo">geo</option>
-        <option value="weighted">weighted</option>
-        <option value="priority">priority</option>
-      </select>
+      <SectionHeader label="▸ ROUTING" />
+      <Segmented<RoutingPolicyKind>
+        ariaLabel="routing-policy"
+        value={policy}
+        onChange={v => updateRouting({ policy: v })}
+        options={[
+          { value: 'latency', label: '⚡ latency' },
+          { value: 'geo', label: '🌍 geo' },
+          { value: 'weighted', label: '⚖ weighted' },
+          { value: 'priority', label: 'priority' },
+        ]}
+      />
+      <Explainer>{POLICY_EXPLAINER[policy]}</Explainer>
 
       {policy === 'weighted' && regions.map(region => (
         <div key={region.id} style={row}>
@@ -208,12 +225,17 @@ function RoutingSection() {
         )
       })}
 
+      <div style={{ marginTop: 6 }}>
+        <DerivedField
+          label="dnsTtlSec"
+          value={dnsTtlSec}
+          min={1}
+          deriveTone="warning"
+          derive={v => ttlLagHint({ ...doc.routing, dnsTtlSec: v }) ?? ''}
+          onCommit={n => updateRouting({ dnsTtlSec: n })}
+        />
+      </div>
       <label style={{ display: 'flex', justifyContent: 'space-between', gap: 6, marginTop: 6 }}>
-        <span>dnsTtlSec</span>
-        <NumberField label="dnsTtlSec" value={dnsTtlSec} min={1} max={Infinity}
-          onCommit={n => updateRouting({ dnsTtlSec: n })} />
-      </label>
-      <label style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
         <span>healthCheckIntervalMs</span>
         <NumberField label="healthCheckIntervalMs" value={healthCheckIntervalMs} min={1} max={Infinity}
           onCommit={n => updateRouting({ healthCheckIntervalMs: n })} />
