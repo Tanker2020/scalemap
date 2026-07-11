@@ -110,7 +110,7 @@ export function RegionView() {
               }}
               onClick={() => setOutage('region', regionId, !isDown)}
             >
-              {isDown ? '✓ Clear region outage' : '⚡ Simulate region outage'}
+              {isDown ? '✓ Clear region outage' : 'Simulate region outage'}
             </button>
           )}
         </div>

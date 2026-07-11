@@ -93,6 +93,8 @@ export function InspectorV2({ azId, selectedServerId = null, onClearSelection }:
             rack
             <select
               aria-label="rack"
+              disabled={running}
+              title={running ? 'stop the simulation to edit' : undefined}
               value={server.rack?.rackId ?? FREE_POOL_VALUE}
               onChange={e => {
                 const v = e.target.value
@@ -134,7 +136,7 @@ export function InspectorV2({ azId, selectedServerId = null, onClearSelection }:
               title={running ? undefined : 'start the simulation to break things'}
               onClick={() => setOutage('server', server.id, !isManuallyDown)}
             >
-              {isManuallyDown ? '↺ restore' : '⚡ kill'}
+              {isManuallyDown ? '↺ restore' : 'kill'}
             </button>
           </div>
         </div>

@@ -92,13 +92,15 @@ export function AzRow({
     <div className="r3-azcard" data-az-row={azId} style={cardStyle}>
       <div className="r3-cfgbar" style={{ position: 'absolute', top: 8, right: 10, display: 'flex', gap: 5, zIndex: 3 }}>
         <button className="r3-cfgbtn" style={CFG_BTN_STYLE} onClick={onNavigateAz}>⏎ enter</button>
-        <button className="r3-cfgbtn" style={CFG_BTN_STYLE} onClick={() => addServer(azId, getPreset('vps-medium')!)}>+ server</button>
+        {/* Authoring is edit-locked while the sim runs (user request 2026-07-11); kill is the
+            inverse — it only makes sense DURING a run. */}
+        <button className="r3-cfgbtn" style={CFG_BTN_STYLE} disabled={running} title={running ? 'stop the simulation to edit' : undefined} onClick={() => addServer(azId, getPreset('vps-medium')!)}>+ server</button>
         <button
           className="r3-cfgbtn x" style={CFG_BTN_STYLE} disabled={!running}
           aria-label={`${isManuallyDown ? 'Clear' : 'Simulate'} outage for ${az?.label ?? azId}`}
           onClick={() => setOutage('az', azId, !isManuallyDown)}
         >
-          {isManuallyDown ? '✓ restore' : '⚡ kill'}
+          {isManuallyDown ? '✓ restore' : 'kill'}
         </button>
       </div>
 

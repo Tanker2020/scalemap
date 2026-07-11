@@ -10,7 +10,7 @@ import { useContext, useMemo, useRef, useState, type ReactElement } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { Html } from '@react-three/drei'
 import { useReducedMotion } from 'framer-motion'
-import { AdditiveBlending, Vector3, type Group, type Mesh } from 'three'
+import { AdditiveBlending, Vector3, type Group, type Mesh, type MeshBasicMaterial } from 'three'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore } from '../../store/simulation.store'
@@ -74,7 +74,18 @@ interface PinProps { regionId: RegionId; catalogId: string; lat: number; lon: nu
 
 function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
   const goRegion = useNavStore(s => s.goRegion)
-  const health = useSimulationStore(s => (s.scrubBatch ?? s.latestBatch)?.regions[regionId]?.health ?? 'healthy')
+  const health = useSimulationStore(s => {
+    const batch = s.scrubBatch ?? s.latestBatch
+    const h = batch?.regions[regionId]?.health ?? 'healthy'
+    if (!batch || h === 'down') return h
+    // View-side aggregation (the engine's contracts are frozen): a region whose EVERY AZ is
+    // down IS down to the viewer — the engine's own region health can miss the
+    // all-AZs-manually-killed case (user report 2026-07-11: killing every AZ left the globe
+    // pin green). Selector returns a primitive, so the getState() read here is safe.
+    const azs = Object.values(useWorldStore.getState().doc.azs).filter(a => a.regionId === regionId)
+    const allDown = azs.length > 0 && azs.every(a => batch.azs[a.id]?.health === 'down')
+    return allDown ? 'down' : h
+  })
   const events = useSimulationStore(s => s.events)
   const simMs = useSimulationStore(s => (s.scrubBatch ?? s.latestBatch)?.simMs ?? 0)
   const reduced = useReducedMotion() ?? false
@@ -88,6 +99,7 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
   const overlayPortal = useContext(OverlayPortalContext)
 
   const pinRef = useRef<Mesh>(null)
+  const glowRef = useRef<Mesh>(null)
   const groupRef = useRef<Group>(null)
   const [hovered, setHovered] = useState(false)
   const [labelVisible, setLabelVisible] = useState(true)
@@ -135,6 +147,27 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
       // Swallow the synthetic click that follows pointerup — generous window, self-expiring.
       swallowClickUntilRef.current = performance.now() + SWALLOW_WINDOW_MS
       goRegion(regionId)
+    }
+
+    // Down-region alarm glow (user request 2026-07-11: "when all AZs get killed the region
+    // should glow red on the globe"): the halo breathes larger and brighter while the region
+    // is down — functional state feedback, so under reduced motion it renders as a STATIC
+    // enlarged halo instead of disappearing.
+    if (glowRef.current) {
+      const mat = glowRef.current.material as MeshBasicMaterial
+      if (down) {
+        if (reduced) {
+          mat.opacity = 0.5
+          glowRef.current.scale.setScalar(1.6)
+        } else {
+          const breathe = 0.5 + 0.5 * Math.sin(state.clock.elapsedTime * 3)   // 0..1
+          mat.opacity = 0.34 + 0.24 * breathe
+          glowRef.current.scale.setScalar(1.3 + 0.5 * breathe)
+        }
+      } else {
+        mat.opacity = 0.28
+        glowRef.current.scale.setScalar(1)
+      }
     }
 
     if (!pinRef.current) return
@@ -197,7 +230,7 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
             pulse scale above which is driven every frame via a ref). */}
         <meshStandardMaterial color="black" emissive={color} emissiveIntensity={hovered ? 1.6 : 1.1} />
       </mesh>
-      <mesh>
+      <mesh ref={glowRef}>
         <sphereGeometry args={[GLOW_RADIUS, 12, 12]} />
         <meshBasicMaterial color={color} transparent opacity={0.28} depthWrite={false} blending={AdditiveBlending} />
       </mesh>

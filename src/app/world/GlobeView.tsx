@@ -129,7 +129,7 @@ export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: Gl
           font: '10px var(--font-mono)', color: 'var(--color-text-secondary)',
         }}
       >
-        {rotationLocked ? '🔒 rotation locked' : '🌐 rotating'}
+        {rotationLocked ? 'rotation: locked' : 'rotation: auto'}
       </button>
       <RegionA11yList />
       </OverlayPortalContext.Provider>

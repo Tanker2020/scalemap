@@ -105,14 +105,14 @@ describe('TrafficPanel — routing', () => {
     render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
     expect(screen.queryByLabelText(`weight-${regionId}`)).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('⚖ weighted'))
+    fireEvent.click(screen.getByText('weighted'))
     const w = screen.getByLabelText(`weight-${regionId}`)
     expect(w).toBeInTheDocument()
     fireEvent.change(w, { target: { value: '3' } })
     fireEvent.blur(w)
     expect(useWorldStore.getState().doc.routing.weights[regionId]).toBe(3)
 
-    fireEvent.click(screen.getByText('🌍 geo'))
+    fireEvent.click(screen.getByText('geo'))
     expect(screen.queryByLabelText(`weight-${regionId}`)).not.toBeInTheDocument()
   })
 
@@ -139,18 +139,18 @@ describe('TrafficPanel — routing', () => {
 
   it('policy segmented dispatches updateRouting and shows the policy explainer', () => {
     render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
-    fireEvent.click(screen.getByText('🌍 geo'))
+    fireEvent.click(screen.getByText('geo'))
     expect(useWorldStore.getState().doc.routing.policy).toBe('geo')
     expect(screen.getByText(/nearest region by great-circle distance/)).toBeInTheDocument()
   })
 
   it('latency and priority policy explainers render when selected', () => {
     render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
-    fireEvent.click(screen.getByText('⚡ latency'))
+    fireEvent.click(screen.getByText('latency'))
     expect(useWorldStore.getState().doc.routing.policy).toBe('latency')
     expect(screen.getByText(/fastest healthy region; failover honors the DNS TTL/)).toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('1-2-3 priority'))
+    fireEvent.click(screen.getByText('priority'))
     expect(useWorldStore.getState().doc.routing.policy).toBe('priority')
     expect(screen.getByText(/highest-priority healthy region in the order below/)).toBeInTheDocument()
   })

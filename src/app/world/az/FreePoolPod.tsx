@@ -26,11 +26,20 @@ const LED_COLOR: Record<'success' | 'warning' | 'danger', string> = {
   success: 'var(--color-success)', warning: 'var(--color-warning)', danger: 'var(--color-danger)',
 }
 
+// Kind identity (user request 2026-07-11 — "each server should have its own visual"): a small
+// stripe along the pod roof's front edge, teal for vps, compute-blue for dedicated. Hexes match
+// the design system's network/compute accents (SVG polygons; same local-hex carve-out the LED
+// colors above use).
+const KIND_STRIPE: Record<Server['kind'], string> = { vps: '#3FC7B8', dedicated: '#5B9CF6' }
+
 export interface FreePoolPodProps {
   server: Server
   cell: { x: number; y: number }
   cols: number
   batch: MetricsBatch | null
+  /** Resident blueprints' signature colors (≤3) — rendered as ticks on the pod face so two
+   *  pods hosting different services stop being identical anonymous boxes. */
+  accents: readonly string[]
   selectedServerId: ServerId | null
   isNew: boolean
   animatedLed: boolean
@@ -40,7 +49,7 @@ export interface FreePoolPodProps {
 }
 
 export function FreePoolPod({
-  server, cell, cols, batch, selectedServerId, isNew, animatedLed, reducedMotion, onSelect, onEnter,
+  server, cell, cols, batch, accents, selectedServerId, isNew, animatedLed, reducedMotion, onSelect, onEnter,
 }: FreePoolPodProps): ReactElement {
   const { handlers, progressRef } = useHoldTap(() => onSelect(server.id), () => onEnter(server.id))
   const box = isoBox(cell.x, cell.y, cols, POD_HEIGHT_PX, POD_SCALE)
@@ -51,6 +60,11 @@ export function FreePoolPod({
   const ledColor = health === 'down' ? 'var(--color-danger)' : LED_COLOR[color]
   const selected = selectedServerId === server.id
   const blinking = lit > 0 && animatedLed && !reducedMotion
+
+  // IsoBox doesn't expose floorSW; it is roofSW dropped straight down by the box height.
+  const floorSW = { x: box.roofSW.x, y: box.roofSW.y + POD_HEIGHT_PX }
+  const frontMidX = (floorSW.x + box.floorSE.x) / 2
+  const frontBottomY = Math.max(floorSW.y, box.floorSE.y)
 
   return (
     <g
@@ -63,22 +77,46 @@ export function FreePoolPod({
       onPointerUp={handlers.onPointerUp}
       onPointerLeave={handlers.onPointerLeave}
     >
-      <title>{server.label} · free pool · {health} · {Math.round(cpuMean * 100)}% cpu</title>
-      <polygon points={box.side} fill="url(#az-rackside)" stroke="#232b38" />
-      <polygon
-        className="az-podbody"
-        points={box.front}
-        fill="url(#az-rackfront)"
-        stroke={selected ? 'var(--color-accent)' : HEALTH_STROKE[health]}
-        strokeWidth={selected || health !== 'healthy' ? 1.6 : 1}
-      />
-      <polygon points={box.top} fill="url(#az-racktop)" stroke="#333d4d" />
-      <circle
-        className={blinking ? 'az-led az-led-blink' : 'az-led'}
-        cx={led.x} cy={led.y} r={2}
-        fill={ledColor}
-        style={blinking ? { animationDuration: '2.9s' } : undefined}
-      />
+      <title>{server.label} · {server.kind} · free pool · {health} · {Math.round(cpuMean * 100)}% cpu</title>
+      {/* az-lift: hover raises each pod independently (same treatment cabinets already have). */}
+      <g className="az-lift">
+        <polygon points={box.side} fill="url(#az-rackside)" stroke="#232b38" />
+        <polygon
+          className="az-podbody"
+          points={box.front}
+          fill="url(#az-rackfront)"
+          stroke={selected ? 'var(--color-accent)' : HEALTH_STROKE[health]}
+          strokeWidth={selected || health !== 'healthy' ? 1.6 : 1}
+        />
+        <polygon points={box.top} fill="url(#az-racktop)" stroke="#333d4d" />
+        {/* kind stripe along the roof's front edge */}
+        <line
+          data-testid="pod-kind-stripe"
+          x1={box.roofSW.x} y1={box.roofSW.y} x2={box.roofSE.x} y2={box.roofSE.y}
+          stroke={KIND_STRIPE[server.kind]} strokeWidth={1.8} opacity={0.85}
+        />
+        {/* resident-blueprint ticks on the pod face */}
+        {accents.slice(0, 3).map((c, i) => (
+          <rect
+            key={i} data-testid="pod-accent-tick"
+            x={frontMidX - 12 + i * 9} y={frontBottomY - 12} width={6} height={3} rx={1}
+            fill={c} opacity={0.9}
+          />
+        ))}
+        <circle
+          className={blinking ? 'az-led az-led-blink' : 'az-led'}
+          cx={led.x} cy={led.y} r={2}
+          fill={ledColor}
+          style={blinking ? { animationDuration: '2.9s' } : undefined}
+        />
+      </g>
+      <text
+        data-testid="pod-label"
+        x={frontMidX} y={frontBottomY + 12} textAnchor="middle"
+        fontSize={8} fill="var(--color-text-secondary)" style={{ font: '8px var(--font-mono)', pointerEvents: 'none' }}
+      >
+        {server.label}
+      </text>
       <g transform={`translate(${led.x - 12},${led.y - 12})`}>
         <HoldRing progressRef={progressRef} size={24} />
       </g>

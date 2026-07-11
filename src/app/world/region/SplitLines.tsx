@@ -23,7 +23,11 @@ const PILL_STROKE = '#2a2e38'
 const SVG_W = 90
 const ORIGIN_X = 5
 const TARGET_X = 85
-const MAX_ANIMATED_BEAMS = 1
+// User override 2026-07-11 (previously 1, from the T8 motion-budget sweep): with two AZs both
+// receiving live traffic, animating only one beam read as a BUG ("only one of the data flows is
+// animated"). Every beam carrying rps now marches — still bounded: the rps>0 filter keeps the
+// idle page static and a region has 2–4 AZs in practice; the cap is a safety rail, not the norm.
+const MAX_ANIMATED_BEAMS = 4
 
 export interface SplitLinesProps { shares: AzShare[]; height: number }
 

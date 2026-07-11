@@ -48,6 +48,7 @@ const btnStyle: CSSProperties = {
   font: '10px var(--font-mono)', background: '#10141bee', border: '1px solid var(--az-hud-dim)',
   color: 'var(--az-hud)', borderRadius: 5, padding: '4px 12px', cursor: 'pointer',
 }
+const lockedBtnStyle: CSSProperties = { ...btnStyle, opacity: 0.35, cursor: 'default' }
 const lblStyle: CSSProperties = {
   position: 'absolute', font: '9px var(--font-mono)', color: 'var(--color-text-secondary)',
   background: '#0d1014e0', border: '1px solid #232a36', borderRadius: 4, padding: '1px 7px',
@@ -58,6 +59,7 @@ export function DatacenterFloor() {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
+  const running = useSimulationStore(s => s.running)
   const { regionId, azId, goServer } = useNavStore()
   const reducedMotion = useReducedMotion() ?? false
 
@@ -164,6 +166,21 @@ export function DatacenterFloor() {
     return new Set(ranked.map(r => r.id))
   }, [azServers, batch])
 
+  // Per-server identity (user request 2026-07-11): each server's resident blueprints' signature
+  // colors, rendered as faceplate ticks by RackSlot/FreePoolPod so no two servers hosting
+  // different services look alike.
+  const accentsByServer = useMemo(() => {
+    const m = new Map<ServerId, string[]>()
+    for (const inst of Object.values(compiled.instances)) {
+      const color = doc.blueprints[inst.blueprintId]?.color
+      if (!color) continue
+      const list = m.get(inst.serverId) ?? []
+      if (!list.includes(color)) list.push(color)
+      m.set(inst.serverId, list)
+    }
+    return m
+  }, [compiled.instances, doc.blueprints])
+
   // Camera: fit-to-view on mount/plan growth, wheel zoom at the cursor, background drag-pan
   // (post-Polish-3 fix wave — the floor previously rendered fixed-size with no navigation).
   const camera = useFloorCamera(VIEW_W, VIEW_H, `${plan.cols}x${plan.rows}`)
@@ -240,7 +257,7 @@ export function DatacenterFloor() {
               <ellipse cx={VIEW_W / 2} cy={VIEW_H * 0.63} rx={300} ry={120} fill="url(#az-floorglow)" />
             </g>
 
-            {ghostCell && (
+            {ghostCell && !running && (
               <g
                 className="az-ghost" data-testid="floor-ghost-slot"
                 onClick={() => azId && useWorldStore.getState().addRack(azId)}
@@ -288,6 +305,7 @@ export function DatacenterFloor() {
                   residents={rackedByRack[rack.id] ?? []}
                   usedU={rackUsedU(doc, rack.id)}
                   batch={batch}
+                  accentsByServer={accentsByServer}
                   selectedServerId={selectedServerId}
                   newServerIds={reducedMotion ? EMPTY_SERVER_ID_SET : newIds}
                   animatedLedIds={animatedLedIds}
@@ -305,6 +323,7 @@ export function DatacenterFloor() {
                 <FreePoolPod
                   key={server.id} server={server} cell={cell} cols={plan.cols}
                   batch={batch}
+                  accents={accentsByServer.get(server.id) ?? []}
                   selectedServerId={selectedServerId}
                   isNew={newIds.has(server.id) && !reducedMotion}
                   animatedLed={animatedLedIds.has(server.id)}
@@ -361,7 +380,7 @@ export function DatacenterFloor() {
               </div>
             )
           })()}
-          {ghostCell && (
+          {ghostCell && !running && (
             <div
               data-no-pan
               style={{ ...lblStyle, left: tileCenter(ghostCell.x, ghostCell.y, plan.cols).x - 20, top: tileCenter(ghostCell.x, ghostCell.y, plan.cols).y + 8, cursor: 'pointer', pointerEvents: 'auto' }}
@@ -392,11 +411,14 @@ export function DatacenterFloor() {
           })}
       </div>
 
+      {/* Authoring is edit-locked while the simulation runs (user request 2026-07-11: nothing
+          added/deleted/moved mid-run) — same rule the dock's topology fieldset already follows.
+          Observation controls (fit) stay live. */}
       <div data-no-pan style={{ position: 'absolute', right: 16, bottom: 16, display: 'flex', gap: 8, zIndex: 6 }}>
-        <button style={btnStyle} onClick={() => azId && useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)}>+ server</button>
-        <button style={btnStyle} onClick={() => azId && useWorldStore.getState().addRack(azId)}>+ rack</button>
-        <button style={btnStyle} onClick={() => azId && useWorldStore.getState().autoArrangeAz(azId)}>auto-arrange</button>
-        <button style={btnStyle} aria-label="fit floor to view" onClick={camera.fit}>⌖ fit</button>
+        <button style={running ? lockedBtnStyle : btnStyle} disabled={running} title={running ? 'stop the simulation to edit' : undefined} onClick={() => azId && useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)}>+ server</button>
+        <button style={running ? lockedBtnStyle : btnStyle} disabled={running} title={running ? 'stop the simulation to edit' : undefined} onClick={() => azId && useWorldStore.getState().addRack(azId)}>+ rack</button>
+        <button style={running ? lockedBtnStyle : btnStyle} disabled={running} title={running ? 'stop the simulation to edit' : undefined} onClick={() => azId && useWorldStore.getState().autoArrangeAz(azId)}>auto-arrange</button>
+        <button style={btnStyle} aria-label="fit floor to view" onClick={camera.fit}>fit</button>
       </div>
 
       <InspectorV2

@@ -43,6 +43,7 @@ interface RackSlotProps {
   yBottom: number
   cpuMean: number
   health: HealthState
+  accents: readonly string[]   // resident blueprints' signature colors (≤3) — per-slat identity
   selected: boolean
   isNew: boolean
   animatedLed: boolean
@@ -52,17 +53,18 @@ interface RackSlotProps {
 }
 
 function RackSlot({
-  server, box, yTop, yBottom, cpuMean, health, selected, isNew, animatedLed, reducedMotion, onSelect, onEnter,
+  server, box, yTop, yBottom, cpuMean, health, accents, selected, isNew, animatedLed, reducedMotion, onSelect, onEnter,
 }: RackSlotProps): ReactElement {
   const { handlers, progressRef } = useHoldTap(() => onSelect(server.id), () => onEnter(server.id))
   const { poly: slatPoly, led } = isoSlat(box, yTop, yBottom)
   const { lit, color } = ledParams(cpuMean)
   const ledColor = health === 'down' ? 'var(--color-danger)' : LED_COLOR[color]
   const blinking = lit > 0 && animatedLed && !reducedMotion
+  const labelY = box.roofSW.y + (yTop + yBottom) / 2 + ((yBottom - yTop) * 0.24) / 2
 
   return (
     <g
-      className={isNew ? 'az-newslot go' : undefined}
+      className={`az-slat${isNew ? ' az-newslot go' : ''}`}
       data-testid={`rack-slot-${server.id}`}
       data-selected={selected ? 'true' : undefined}
       style={{ cursor: 'pointer' }}
@@ -71,13 +73,29 @@ function RackSlot({
       onPointerUp={handlers.onPointerUp}
       onPointerLeave={handlers.onPointerLeave}
     >
-      <title>{server.label} · {health} · {Math.round(cpuMean * 100)}% cpu</title>
+      <title>{server.label} · {server.kind} · {health} · {Math.round(cpuMean * 100)}% cpu</title>
       <polygon
         points={slatPoly}
         fill={selected ? 'color-mix(in srgb, var(--color-accent) 22%, #0e1116)' : '#0e1116'}
         stroke={selected ? 'var(--color-accent)' : '#232a36'}
         strokeWidth={selected ? 1.5 : 1}
       />
+      {/* per-server identity on the faceplate: label + resident-blueprint ticks (user request
+          2026-07-11 — slats were anonymous identical strips) */}
+      <text
+        data-testid="slat-label"
+        x={box.roofSW.x + 7} y={labelY} fontSize={6.5}
+        fill="var(--color-text-secondary)" style={{ font: '6.5px var(--font-mono)', pointerEvents: 'none' }}
+      >
+        {server.label.length > 10 ? `${server.label.slice(0, 9)}…` : server.label}
+      </text>
+      {accents.slice(0, 3).map((c, i) => (
+        <rect
+          key={i} data-testid="slat-accent-tick"
+          x={box.roofSW.x + 7 + i * 8} y={labelY + 3} width={5} height={2.5} rx={1}
+          fill={c} opacity={0.9}
+        />
+      ))}
       <circle
         className={blinking ? 'az-led az-led-blink' : 'az-led'}
         cx={led.x} cy={led.y} r={2}
@@ -98,6 +116,7 @@ export interface RackCabinetProps {
   residents: Server[]     // already sorted (label/id) by the caller
   usedU: number
   batch: MetricsBatch | null
+  accentsByServer: ReadonlyMap<ServerId, readonly string[]>   // resident-blueprint colors per server
   selectedServerId: ServerId | null
   newServerIds: ReadonlySet<ServerId>
   animatedLedIds: ReadonlySet<ServerId>
@@ -107,7 +126,7 @@ export interface RackCabinetProps {
 }
 
 export function RackCabinet({
-  rack, cell, cols, residents, usedU, batch, selectedServerId, newServerIds, animatedLedIds, reducedMotion, onSelect, onEnter,
+  rack, cell, cols, residents, usedU, batch, accentsByServer, selectedServerId, newServerIds, animatedLedIds, reducedMotion, onSelect, onEnter,
 }: RackCabinetProps): ReactElement {
   const heightPx = cabinetHeightPx(usedU)
   const box = isoBox(cell.x, cell.y, cols, heightPx)
@@ -143,6 +162,7 @@ export function RackCabinet({
             server={server} box={box} yTop={yTop} yBottom={yBottom}
             cpuMean={meanUtilization(batch?.servers[server.id]?.coreUtilization)}
             health={batch?.servers[server.id]?.health ?? 'healthy'}
+            accents={accentsByServer.get(server.id) ?? []}
             selected={selectedServerId === server.id}
             isNew={newServerIds.has(server.id)}
             animatedLed={animatedLedIds.has(server.id)}

@@ -108,10 +108,10 @@ function TrafficHero() {
         value={doc.routing.policy}
         onChange={v => updateRouting({ policy: v })}
         options={[
-          { value: 'latency', label: '⚡ latency' },
-          { value: 'geo', label: '🌍 geo' },
-          { value: 'weighted', label: '⚖ weighted' },
-          { value: 'priority', label: '1-2-3 priority' },
+          { value: 'latency', label: 'latency' },
+          { value: 'geo', label: 'geo' },
+          { value: 'weighted', label: 'weighted' },
+          { value: 'priority', label: 'priority' },
         ]}
       />
       <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', marginLeft: 6 }}>region.</span>

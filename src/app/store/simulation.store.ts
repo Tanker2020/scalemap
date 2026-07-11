@@ -64,7 +64,11 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
   },
   stop: () => {
     worldEngine.stop()
-    set({ running: false })
+    // Manual outages don't outlive a run (user request 2026-07-11): stopping restores
+    // everything you killed. The engine rebuilds its failover state on the next start()
+    // anyway — this clears the UI side (kill/restore buttons, health tinting keyed off
+    // healthOverrides) so a fresh Simulate starts from a healthy world.
+    set({ running: false, healthOverrides: {} })
   },
   resetSession: () => {
     worldEngine.stop()

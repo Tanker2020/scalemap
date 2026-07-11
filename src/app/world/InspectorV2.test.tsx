@@ -99,12 +99,12 @@ describe('InspectorV2 — selected-server card actions (post-Polish-3 fix wave)'
     const selected = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
     render(<InspectorV2 azId={azId} selectedServerId={selected} onClearSelection={() => {}} />)
 
-    const kill = screen.getByText('⚡ kill') as HTMLButtonElement
+    const kill = screen.getByText('kill') as HTMLButtonElement
     expect(kill.disabled).toBe(true)
     expect(kill.title).toBe('start the simulation to break things')
 
     act(() => { useSimulationStore.setState({ running: true }) })
-    fireEvent.click(screen.getByText('⚡ kill'))
+    fireEvent.click(screen.getByText('kill'))
     expect(useSimulationStore.getState().healthOverrides[selected]).toBe(true)
     // Now shows restore, which clears the override.
     fireEvent.click(screen.getByText('↺ restore'))

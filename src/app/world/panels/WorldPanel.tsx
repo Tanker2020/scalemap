@@ -121,7 +121,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
     }
     case 'blueprints': {
       const nBlueprints = Object.keys(doc.blueprints).length
-      header = { glyph: '⚙', accent: 'var(--kit-cat-storage)', summary: `${nBlueprints} blueprint${nBlueprints === 1 ? '' : 's'}` }
+      header = { glyph: '⌬', accent: 'var(--kit-cat-storage)', summary: `${nBlueprints} blueprint${nBlueprints === 1 ? '' : 's'}` }
       break
     }
     case 'placements': {

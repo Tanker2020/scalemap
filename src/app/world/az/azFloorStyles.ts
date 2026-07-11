@@ -51,6 +51,12 @@ g.az-newslot.go circle.az-led { animation: az-bootled 2.2s steps(1) forwards; }
 
 .az-pod3 { cursor: pointer; }
 .az-pod3:hover .az-podbody { stroke: var(--az-teal); }
+/* Per-server hover identity (user request 2026-07-11): each pod lifts independently, each rack
+   slat brightens independently — the same az-lift grammar cabinets already use, scoped smaller. */
+.az-pod3 .az-lift { transition: transform 0.18s cubic-bezier(0.3, 0.9, 0.3, 1.2); }
+.az-pod3:hover .az-lift { transform: translateY(-4px); }
+.az-slat { transition: filter 0.15s; }
+.az-slat:hover { filter: brightness(1.6) drop-shadow(0 0 4px #7cffe955); }
 
 .az-ghost { cursor: pointer; opacity: 0.45; transition: opacity 0.15s; }
 .az-ghost:hover { opacity: 0.85; }
@@ -60,9 +66,10 @@ g.az-newslot.go circle.az-led { animation: az-bootled 2.2s steps(1) forwards; }
 
 @media (prefers-reduced-motion: reduce) {
   g.az-newslot.go, g.az-newslot.go circle.az-led, .az-trace-animated, .az-led-blink,
-  g.az-rack3 .az-lift, g.az-rack3 .az-halo {
+  g.az-rack3 .az-lift, g.az-rack3 .az-halo, .az-pod3 .az-lift, .az-slat {
     animation: none !important; transition: none !important;
   }
+  .az-pod3:hover .az-lift { transform: none; }
   g.az-newslot, g.az-newslot.go { opacity: 1 !important; }
 }
 `

@@ -106,7 +106,7 @@ export function WorldShell() {
         <Breadcrumb />
         <SimControls />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button className="kit-press" style={hdrBtn} aria-label="settings" onClick={() => setSettingsOpen(true)}>⚙</button>
+          <button className="kit-press" style={hdrBtn} aria-label="settings" onClick={() => setSettingsOpen(true)}>settings</button>
           <span style={{ font: '10px var(--font-mono)', color: 'var(--color-text-muted)' }}>esc = up one level</span>
           {dirty && <span style={{ color: 'var(--color-warning)', font: '10px var(--font-mono)' }}>● unsaved</span>}
           {/* New returns to the home screen (user request 2026-07-10) — the fresh doc is ready

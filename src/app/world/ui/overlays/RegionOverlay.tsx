@@ -63,7 +63,7 @@ export function RegionOverlay({ regionId, onClose }: { regionId: RegionId; onClo
             disabled={!running}
             title={running ? 'Chaos: simulate a full region outage' : 'start the simulation to break things'}
             onClick={() => setOutage('region', regionId, !isDown)}>
-            {isDown ? 'restore' : '⚡ kill'}
+            {isDown ? 'restore' : 'kill'}
           </button>
         </>
       }

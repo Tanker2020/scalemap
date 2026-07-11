@@ -16,12 +16,12 @@ const TRACK_BG = '#1E2430'
 const TRACK_BORDER = '#232833'
 
 const GLYPH: Record<EngineEventKind, string> = {
-  outage_triggered: '⚡', outage_cleared: '⚡',
+  outage_triggered: '✕', outage_cleared: '✓',
   health_check_failed: '♺',
   failover_started: '⇄', failover_completed: '⇄',
   ttl_lag_expired: '◷',
   replica_promoted: '⬆',
-  oom_kill: '☠',
+  oom_kill: '⊘',
   noisy_neighbor: '▲',
   connection_refused: '●', instance_restarted: '●', burst_credits_exhausted: '●',
   breaker_open: '●', breaker_half_open: '●', breaker_closed: '●', engine_degraded: '●',
