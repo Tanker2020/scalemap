@@ -707,7 +707,14 @@ prefers-reduced-motion (it's functional progress feedback, not decoration); only
 `RegionPin` — `onPointerDown` starts `holdStartRef`, a `useFrame` callback advances
 `holdProgressRef` and calls `goRegion(regionId)` (existing nav dispatch) at completion,
 `onPointerUp`/`onPointerOut` cancel or mark-aborted via a self-expiring `swallowClickUntilRef`
-window so a stale swallow can never eat a later genuine tap. Reusable beyond the globe (region →
+window so a stale swallow can never eat a later genuine tap. Final-review fix wave (401073c):
+because r3f pointer capture keeps the pin in every hit list, `onPointerOut` never fires
+mid-hold — D1's "leaving cancels" is enforced by `HOLD_SLOP_PX` (12) / `exceedsHoldSlop`
+pointer-movement slop in `onPointerMove` (rotation drift moves the pin, not the pointer, and
+correctly does not cancel); the same wave added GlobeView's stale-`sceneOverlay` clear when the
+open entity is deleted from the dock, the empty-firewall `FirewallEditor` mount in
+InspectorRail (`rules.length === 0`), and `useRollingNumber`'s `durationMs <= 0` snap guard.
+Reusable beyond the globe (region →
 AZ → server hold-drills are a parked follow-up, not built).
 
 **Scene overlays (Tasks 3-4):** `src/app/world/ui/SceneOverlay.tsx` is the shared card shell

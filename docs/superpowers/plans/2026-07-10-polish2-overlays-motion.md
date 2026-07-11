@@ -120,9 +120,13 @@ interim so the app never loses drill-down between tasks; T3 flips tap to overlay
 >    `occlude` on its hover label. The ban is on REINTRODUCING it for new work — the overlay
 >    `<Html>` mounts never use it; the existing label line is left exactly as is.
 > 8. **Rotation during a hold:** the globe may idle-rotate while a hold is charging (rotation
->    pauses on overlay-open, not on pointer-down); the pin drifting off the pointer fires
->    `onPointerOut` → cancel, which is the designed early-release path. Not a defect; the
->    live smoke only asserts the ring completes when the pointer stays on the pin.
+>    pauses on overlay-open, not on pointer-down). ~~The pin drifting off the pointer fires
+>    `onPointerOut` → cancel~~ **[CORRECTED post final review, commit 401073c]**: pointer
+>    capture keeps the pin in every hit list, so `onPointerOut` never fires mid-hold — D1's
+>    "leaving before completion cancels" is enforced instead by a POINTER-movement slop
+>    (`HOLD_SLOP_PX` = 12, `exceedsHoldSlop`) measured from the press point. Rotation drift
+>    moves the PIN, not the pointer, so it correctly does NOT cancel; a deliberate >12px
+>    drag-off cancels the hold and swallows the eventual synthetic click.
 
 ---
 
