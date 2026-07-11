@@ -63,6 +63,7 @@ g.az-newslot.go circle.az-led { animation: az-bootled 2.2s steps(1) forwards; }
   g.az-rack3 .az-lift, g.az-rack3 .az-halo {
     animation: none !important; transition: none !important;
   }
+  g.az-newslot, g.az-newslot.go { opacity: 1 !important; }
 }
 `
   document.head.appendChild(style)

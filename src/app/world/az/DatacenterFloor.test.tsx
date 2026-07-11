@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { DatacenterFloor } from './DatacenterFloor'
 import { useWorldStore } from '../../store/world.store'
@@ -8,10 +8,22 @@ import { useSimulationStore } from '../../store/simulation.store'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import type { MetricsBatch, InstanceMetrics, ServerMetrics } from '../../../lib/worldEngine/types'
 
+// `useReducedMotion` reads a module-level singleton inside framer-motion/motion-dom that only
+// ever initializes once per test-module lifetime (a `hasReducedMotionListener` guard), so
+// stubbing `window.matchMedia` per-test is unreliable once any earlier test in this file has
+// already rendered the hook. Mock the hook directly instead — the only framer-motion export this
+// subtree (DatacenterFloor + its RackCabinet/FreePoolPod children) uses.
+const { mockUseReducedMotion } = vi.hoisted(() => ({ mockUseReducedMotion: vi.fn(() => false) }))
+vi.mock('framer-motion', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('framer-motion')>()
+  return { ...actual, useReducedMotion: mockUseReducedMotion }
+})
+
 beforeEach(() => {
   useWorldStore.getState().newWorld()
   useSimulationStore.getState().resetSession()
   useNavStore.setState({ level: 'az', regionId: null, azId: null, serverId: null })
+  mockUseReducedMotion.mockReturnValue(false)
 })
 
 function seedAz() {
@@ -105,6 +117,38 @@ describe('DatacenterFloor', () => {
     const pod = screen.getByTestId(`free-pod-${sid}`)
     expect(pod.getAttribute('class')).toContain('az-newslot')
     expect(pod.getAttribute('class')).toContain('go')
+  })
+
+  it('under reduced motion, a newly-racked server does NOT get the animating boot class', () => {
+    mockUseReducedMotion.mockReturnValue(true)
+
+    const { azId } = seedAz()
+    useWorldStore.getState().addRack(azId)
+    const rack = Object.values(useWorldStore.getState().doc.racks)[0]
+    const { rerender } = render(<DatacenterFloor />)
+
+    const sid = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useWorldStore.getState().assignServerToRack(sid, rack.id)
+    rerender(<DatacenterFloor />)
+
+    const slot = screen.getByTestId(`rack-slot-${sid}`)
+    // Under reduced motion the slot must render instantly, not via the `az-newslot go` cascade
+    // that (absent the fix) leaves it at `opacity: 0` for up to NEW_ANIMATION_MS.
+    expect(slot.getAttribute('class') ?? '').not.toContain('az-newslot')
+    expect(slot.getAttribute('class') ?? '').not.toContain('go')
+  })
+
+  it('under reduced motion, a newly-added free-pool server does NOT get the animating boot class', () => {
+    mockUseReducedMotion.mockReturnValue(true)
+
+    const { azId } = seedAz()
+    const { rerender } = render(<DatacenterFloor />)
+
+    const sid = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    rerender(<DatacenterFloor />)
+
+    const pod = screen.getByTestId(`free-pod-${sid}`)
+    expect(pod.getAttribute('class')).not.toContain('az-newslot')
   })
 
   it('a blocked flow is always static even if its source has the highest rps', () => {

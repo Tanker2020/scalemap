@@ -26,6 +26,7 @@ import './azFloorStyles'
 const TOP_ANIMATED = 8
 const NEW_ANIMATION_MS = 2400
 const APPLIANCE_HEIGHT_PX = 30
+const EMPTY_SERVER_ID_SET: ReadonlySet<ServerId> = new Set()
 
 function byLabelThenId(a: { label: string; id: string }, b: { label: string; id: string }): number {
   return a.label.localeCompare(b.label) || a.id.localeCompare(b.id)
@@ -247,7 +248,7 @@ export function DatacenterFloor() {
                   usedU={rackUsedU(doc, rack.id)}
                   batch={batch}
                   selectedServerId={selectedServerId}
-                  newServerIds={newIds}
+                  newServerIds={reducedMotion ? EMPTY_SERVER_ID_SET : newIds}
                   reducedMotion={reducedMotion}
                   onSelect={setSelectedServerId}
                   onEnter={id => regionId && azId && goServer(regionId, azId, id)}
