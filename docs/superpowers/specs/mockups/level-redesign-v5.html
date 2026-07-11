@@ -1,0 +1,541 @@
+<title>Scalemap — Polish 3 v5: Locked (RJ45 + Price Color)</title>
+<style>
+  :root {
+    --canvas: #0D0F12; --surface: #0F1117; --hover: #13161E; --node: #161920;
+    --border: #2A2E38; --tb: #1E2128;
+    --t1: #F1F5F9; --t2: #94A3B8; --t3: #64748B;
+    --blue: #5B9CF6; --amber: #E0A552; --teal: #3FC7B8; --violet: #9C8CE0;
+    --danger: #EF4444; --success: #22C55E; --warning: #F59E0B;
+    --hud: #7CFFE9; --hud-dim: #2DD4BF44;
+    --price: #6EE7B7; /* dedicated money color — every $-value in the app renders in this, both themes */
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { background: var(--canvas); }
+  body { font: 13px/1.6 'JetBrains Mono', ui-monospace, Menlo, monospace; color: var(--t1); padding: 40px 20px 90px; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  h1 { font-size: 21px; }
+  .k { color: var(--hud); text-shadow: 0 0 9px var(--hud-dim); }
+  .sub { color: var(--t2); margin-top: 8px; max-width: 76ch; }
+  .sub b { color: var(--t1); }
+  .lvhead { margin: 64px 0 6px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .lvhead .tag { font-size: 10px; letter-spacing: 0.14em; padding: 3px 9px; border-radius: 4px; border: 1px solid; }
+  .lvhead h2 { font-size: 16px; }
+  .thesis { color: var(--t2); max-width: 80ch; margin: 6px 0 16px; }
+  .thesis b { color: var(--t1); }
+  .stage { background: var(--surface); border: 1px solid var(--tb); border-radius: 10px; padding: 16px; overflow-x: auto; }
+  .caption { font-size: 11px; color: var(--t3); margin-top: 10px; max-width: 86ch; }
+  .caption b { color: var(--t2); }
+  code { background: var(--node); border: 1px solid var(--tb); border-radius: 3px; padding: 0 5px; font-size: 11px; }
+
+  @keyframes dashflow { to { stroke-dashoffset: -30; } }
+  @keyframes marchr { to { background-position: 22px 0; } }
+  @keyframes blink { 0%, 72% { opacity: 1; } 73%, 84% { opacity: 0.25; } 85%, 100% { opacity: 1; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes coreflicker { 0%, 100% { opacity: 0.85; } 40% { opacity: 1; } 60% { opacity: 0.7; } }
+  @keyframes glitch { 0%, 92%, 100% { opacity: 0; } 93%, 97% { opacity: 0.9; } }
+  @keyframes packet { from { offset-distance: 0%; opacity: 0; } 8% { opacity: 1; } 92% { opacity: 1; } to { offset-distance: 100%; opacity: 0; } }
+  @keyframes scanline { from { top: -20%; } to { top: 120%; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+  /* ═══ REGION v3 ═══ */
+  .r3 { min-width: 950px; position: relative; }
+  .r3 svg.flows { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .r3 svg.flows path.beam { fill: none; stroke-dasharray: 8 9; animation: dashflow 0.9s linear infinite; }
+  .r3 svg.flows text { font: 9.5px 'JetBrains Mono', monospace; fill: var(--t3); }
+  .r3 svg.flows .sharepill { fill: #10141b; stroke: #2a2e38; }
+  .r3-grid { display: grid; grid-template-columns: 208px 1fr 30px; gap: 0; position: relative; }
+  .r3-grid .beamgap { width: 90px; }
+  .src { border: 1px solid #24303f; border-radius: 10px; background: linear-gradient(180deg, #101720, #0d1014); padding: 11px 12px; align-self: start; }
+  .src h4 { font-size: 9.5px; letter-spacing: 0.13em; color: var(--hud); text-shadow: 0 0 8px var(--hud-dim); margin-bottom: 8px; }
+  .srcrow { margin-bottom: 9px; }
+  .srcrow .l1 { display: flex; justify-content: space-between; font-size: 10px; color: var(--t2); }
+  .srcrow .l1 .v { color: var(--teal); font-variant-numeric: tabular-nums; }
+  /* v4: dots on a thin track instead of full-width stripes — same data (speed/count = rate),
+     a fraction of the visual noise and of the compositor load */
+  .srcrow .stream { height: 8px; margin-top: 3px; position: relative; }
+  .srcrow .stream::before { content: ''; position: absolute; left: 0; right: 0; top: 3.5px; height: 1px; background: #1c2430; }
+  .srcrow .stream i { position: absolute; top: 2px; width: 4px; height: 4px; border-radius: 50%; background: var(--teal); filter: drop-shadow(0 0 3px var(--teal)); animation: dotrun linear infinite; }
+  @keyframes dotrun { from { left: -4px; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } to { left: 100%; opacity: 0; } }
+  .srcrow .l2 { font-size: 8.5px; color: var(--t3); margin-top: 1px; }
+  .trunk { margin-top: 10px; border-top: 1px dashed #1c2430; padding-top: 8px; }
+  .trunk .sum { display: flex; align-items: center; gap: 8px; }
+  .trunk .sum .agg { position: relative; flex: 1; height: 10px; border-radius: 5px; background: #131a24; overflow: hidden; }
+  .trunk .sum .agg i { position: absolute; inset: 0; background: repeating-linear-gradient(90deg, var(--hud) 0 9px, transparent 9px 16px); animation: marchr 0.5s linear infinite; opacity: 0.9; }
+  .trunk .sum .n { font-size: 14px; color: var(--hud); font-variant-numeric: tabular-nums; }
+  .trunk .cap { font-size: 8.5px; color: var(--t3); margin-top: 3px; }
+  .azcard { border: 1px solid var(--tb); border-radius: 10px; background: var(--node); padding: 11px 13px; position: relative; transition: border-color 0.16s, box-shadow 0.16s; margin-bottom: 42px; }
+  .azcard:last-child { margin-bottom: 0; }
+  .azcard:hover { border-color: #3fc7b866; box-shadow: 0 0 0 1px #3fc7b822, 0 10px 26px #00000088; }
+  .azcard .cfgbar { position: absolute; top: 8px; right: 10px; display: flex; gap: 5px; opacity: 0; transform: translateY(-4px); transition: opacity 0.16s, transform 0.16s; z-index: 3; }
+  .azcard:hover .cfgbar { opacity: 1; transform: translateY(0); }
+  .cfgbtn { font: 10px 'JetBrains Mono', monospace; border: 1px solid var(--border); border-radius: 4px; background: #10141bee; color: var(--t2); padding: 2px 8px; cursor: pointer; }
+  .cfgbtn:hover { color: var(--hud); border-color: var(--hud-dim); }
+  .cfgbtn.x:hover { color: var(--danger); border-color: var(--danger); }
+  .azcard .hd { display: flex; align-items: baseline; gap: 10px; font-size: 11.5px; }
+  .azcard .hd .nm { font-weight: 600; }
+  .azcard .hd .in { color: var(--hud); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+  .azcard .hd .meta { color: var(--t3); font-size: 9.5px; }
+  .azrows { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .azrow { display: grid; grid-template-columns: 120px 1fr 58px; gap: 10px; align-items: center; font-size: 10px; color: var(--t2); padding: 3px 6px; border-radius: 4px; border: 1px solid transparent; transition: background 0.12s, border-color 0.12s; cursor: pointer; position: relative; }
+  .azrow:hover { background: var(--hover); border-color: var(--border); }
+  .azrow .bar { height: 5px; border-radius: 3px; background: #1a202b; overflow: hidden; position: relative; }
+  /* v4: static fill + glowing endpoint — the marching overlay on every bar was pure noise */
+  .azrow .bar i { position: absolute; inset: 0 auto 0 0; width: var(--w); background: var(--blue); }
+  .azrow .bar i::after { content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 4px; border-radius: 2px; background: #ffffffcc; filter: blur(1px); opacity: 0.7; }
+  .azrow .rv { text-align: right; font-variant-numeric: tabular-nums; }
+  .azrow.db { border-left: 2px solid var(--amber); background: #e0a5520a; }
+  .azrow.db .tagchip { position: absolute; right: -4px; top: 50%; transform: translate(100%, -50%); font-size: 8px; letter-spacing: 0.08em; white-space: nowrap; }
+  /* v4: the rail retreats — 40% presence hugging the gutter, full brightness + label only when
+     you hover either db row (or the rail itself). Direction glyph stays always-on. */
+  .replrail { position: absolute; pointer-events: auto; opacity: 0.38; transition: opacity 0.16s; }
+  .replrail:hover, .r3:has(.azrow.db:hover) .replrail { opacity: 1; }
+  .replrail path { fill: none; stroke: var(--amber); stroke-width: 1.5; stroke-dasharray: 2 8; stroke-linecap: round; animation: dashflow 2s linear infinite; }
+  .replrail .rlbl { font: 8.5px 'JetBrains Mono', monospace; fill: var(--amber); opacity: 0; transition: opacity 0.16s; }
+  .replrail:hover .rlbl, .r3:has(.azrow.db:hover) .replrail .rlbl { opacity: 1; }
+  .r3-band { margin-top: 14px; border: 1px solid var(--tb); border-radius: 9px; padding: 9px 14px; display: flex; align-items: center; gap: 20px; background: var(--surface); min-width: 950px; }
+  .r3-band .cell .l { font-size: 8.5px; letter-spacing: 0.1em; color: var(--t3); display: block; }
+  .r3-band .cell .v { font-size: 13px; color: var(--t1); font-variant-numeric: tabular-nums; }
+  .r3-band .tick { flex: 1; overflow: hidden; position: relative; height: 16px; border-left: 1px solid var(--tb); padding-left: 16px; }
+  .r3-band .tick span { position: absolute; white-space: nowrap; font-size: 9.5px; color: var(--t3); animation: tickmove 14s linear infinite; }
+  @keyframes tickmove { from { transform: translateX(15%); } to { transform: translateX(-100%); } }
+
+  /* ═══ ISO DATACENTER v3 ═══ */
+  .iso3 { position: relative; min-width: 900px; height: 430px; border-radius: 10px; overflow: hidden;
+    background: radial-gradient(ellipse 70% 55% at 50% 66%, #121722 0%, #0b0d11 78%); }
+  .iso3 .hudname { position: absolute; left: 16px; top: 12px; font-size: 10px; letter-spacing: 0.15em; color: var(--hud); text-shadow: 0 0 9px var(--hud-dim); z-index: 5; }
+  .iso3 .hudsub { position: absolute; left: 16px; top: 30px; font-size: 8.5px; color: var(--t3); z-index: 5; }
+  .iso3 .camhint { position: absolute; right: 16px; top: 12px; font-size: 8.5px; color: var(--t3); z-index: 5; }
+  .iso3 svg.world { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .iso3 .lbl { position: absolute; font-size: 9px; color: var(--t2); background: #0d1014e0; border: 1px solid #232a36; border-radius: 4px; padding: 1px 7px; z-index: 4; }
+  .iso3 .lbl small { color: var(--t3); }
+  .iso3 .lbl.flow { color: var(--hud); border-color: #2dd4bf3a; }
+  g.rack3 { cursor: pointer; }
+  g.rack3 .lift { transition: transform 0.18s cubic-bezier(0.3, 0.9, 0.3, 1.2); }
+  g.rack3:hover .lift { transform: translateY(-6px); }
+  g.rack3 .halo { opacity: 0; transition: opacity 0.18s; }
+  g.rack3:hover .halo { opacity: 1; }
+  @keyframes rackin { from { transform: translateY(-16px); opacity: 0; } 55% { transform: translateY(2px); opacity: 1; } 75% { transform: translateY(-1px); } to { transform: translateY(0); opacity: 1; } }
+  @keyframes bootled { 0%, 18%, 36% { fill: var(--warning); } 9%, 27% { fill: #332a14; } 45%, 100% { fill: var(--success); } }
+  g.newslot { opacity: 0; }
+  g.newslot.go { animation: rackin 0.55s cubic-bezier(0.3, 0.9, 0.4, 1.25) forwards; }
+  g.newslot.go circle { animation: bootled 2.2s steps(1) forwards; }
+  .demobtn { position: absolute; right: 16px; bottom: 12px; z-index: 6; font: 10px 'JetBrains Mono', monospace; background: #10141bee; border: 1px solid var(--hud-dim); color: var(--hud); border-radius: 5px; padding: 4px 12px; cursor: pointer; }
+  .demobtn:hover { box-shadow: 0 0 10px #7cffe922; }
+  .pod3 { cursor: pointer; }
+  .pod3:hover .podbody { stroke: var(--teal); }
+  .iso3 .foot { position: absolute; left: 16px; bottom: 12px; font-size: 8.5px; color: var(--t3); z-index: 5; }
+  .wasm { border: 1px solid var(--tb); border-left: 3px solid var(--violet); border-radius: 7px; background: var(--surface); padding: 13px 16px; margin-top: 14px; font-size: 11.5px; color: var(--t2); max-width: 100%; }
+  .wasm b { color: var(--t1); }
+  .wasm .q { color: var(--violet); font-size: 10px; letter-spacing: 0.1em; }
+
+  /* ═══ SERVER BOARD v3 ═══ */
+  .board3 { position: relative; min-width: 960px; height: 460px; border-radius: 10px; overflow: hidden;
+    background: radial-gradient(circle at 18% 40%, #10141c 0%, #0c0e12 70%); }
+  .board3::before { content: ''; position: absolute; inset: 0; background-image: radial-gradient(#ffffff07 1px, transparent 1px); background-size: 24px 24px; }
+  .board3 svg.traces { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .board3 svg.traces path.tr { fill: none; stroke-width: 2; opacity: 0.32; }
+  .board3 svg.traces path.cur { fill: none; stroke-width: 2; stroke-dasharray: 7 8; animation: dashflow 0.85s linear infinite; filter: drop-shadow(0 0 3px currentColor); }
+  .b3el { position: absolute; border-radius: 8px; }
+  /* v5 INTAKE: a physical RJ45 jack, face-on — metal bezel, keystone-notch socket, 8 gold
+     pins that ripple as packets land, and the two LEDs everyone already knows how to read:
+     green LINK steady, amber ACT flickering with traffic. The lanes plug INTO the port. */
+  .b3nic { left: 18px; top: 146px; width: 158px; height: 132px; background: none; border: none; }
+  .b3nic .t { position: absolute; left: 0; top: 0; font-size: 9.5px; color: var(--teal); }
+  .b3nic .jack { position: absolute; right: 4px; top: 24px; width: 66px; height: 62px; }
+  .b3nic .jack .bezel { position: absolute; inset: 0; border-radius: 6px; background: linear-gradient(180deg, #24313b, #141d26); border: 1px solid #3fc7b877; box-shadow: 0 0 16px #3fc7b822, inset 0 1px 0 #ffffff14; }
+  .b3nic .jack .socket { position: absolute; left: 9px; right: 9px; top: 9px; bottom: 8px; background: #04070b; clip-path: polygon(0 0, 100% 0, 100% 58%, 76% 58%, 76% 79%, 61% 79%, 61% 100%, 39% 100%, 39% 79%, 24% 79%, 24% 58%, 0 58%); box-shadow: inset 0 2px 6px #000; }
+  .b3nic .jack .pinrow { position: absolute; left: 13px; right: 13px; top: 12px; display: flex; gap: 2px; }
+  .b3nic .jack .pinrow i { flex: 1; height: 9px; border-radius: 0 0 1px 1px; background: linear-gradient(180deg, #f2d488, #a97e2a); opacity: 0.45; animation: pinseq 1.4s linear infinite; }
+  .b3nic .jack .pinrow i:nth-child(2) { animation-delay: 0.07s; }
+  .b3nic .jack .pinrow i:nth-child(3) { animation-delay: 0.14s; }
+  .b3nic .jack .pinrow i:nth-child(4) { animation-delay: 0.21s; }
+  .b3nic .jack .pinrow i:nth-child(5) { animation-delay: 0.28s; }
+  .b3nic .jack .pinrow i:nth-child(6) { animation-delay: 0.35s; }
+  .b3nic .jack .pinrow i:nth-child(7) { animation-delay: 0.42s; }
+  .b3nic .jack .pinrow i:nth-child(8) { animation-delay: 0.49s; }
+  @keyframes pinseq { 0%, 18%, 100% { opacity: 0.45; } 6% { opacity: 1; filter: drop-shadow(0 0 3px #ffd98a); } }
+  .b3nic .jack .led { position: absolute; bottom: 5px; width: 7px; height: 5px; border-radius: 1px; }
+  .b3nic .jack .led.link { left: 4px; background: var(--success); box-shadow: 0 0 6px var(--success); }
+  .b3nic .jack .led.act { right: 4px; background: var(--amber); box-shadow: 0 0 6px var(--amber); animation: actblink 0.34s steps(1) infinite; }
+  @keyframes actblink { 0%, 58% { opacity: 1; } 59%, 100% { opacity: 0.15; } }
+  .b3nic .pk2 { position: absolute; width: 10px; height: 4px; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--hud)); filter: drop-shadow(0 0 3px var(--hud)); }
+  @keyframes laneA { from { transform: translate(0, 0); opacity: 0; } 12% { opacity: 1; } 82% { transform: translate(82px, 12px); opacity: 1; } to { transform: translate(94px, 14px); opacity: 0; } }
+  @keyframes laneB { from { transform: translate(0, 0); opacity: 0; } 12% { opacity: 1; } 82% { transform: translate(82px, -8px); opacity: 1; } to { transform: translate(94px, -9px); opacity: 0; } }
+  @keyframes laneC { from { transform: translate(0, 0); opacity: 0; } 12% { opacity: 1; } 82% { transform: translate(82px, -28px); opacity: 1; } to { transform: translate(94px, -32px); opacity: 0; } }
+  .b3nic .m { position: absolute; left: 0; bottom: 0; font-size: 8.5px; color: var(--t3); }
+  /* v4 VERDICT WALL: a shield silhouette built of rule slats — beacon on top, scan sweep,
+     rejects spark off the face. Clip-path shape; rim + dark inner as stacked layers. */
+  .b3fw2 { left: 196px; top: 126px; width: 104px; height: 172px; filter: drop-shadow(0 0 16px #e0a55226); cursor: pointer; }
+  .b3fw2:hover { filter: drop-shadow(0 0 26px #e0a55240); }
+  .b3fw2 .t { position: absolute; top: -16px; left: 0; font-size: 8.5px; color: var(--amber); letter-spacing: 0.1em; }
+  .b3fw2 .shield { position: absolute; inset: 0; clip-path: polygon(50% 0, 100% 9%, 100% 91%, 50% 100%, 0 91%, 0 9%); background: linear-gradient(180deg, #7a5a26, #3a2c12); }
+  .b3fw2 .inner { position: absolute; inset: 2px; clip-path: polygon(50% 0, 100% 9%, 100% 91%, 50% 100%, 0 91%, 0 9%); background: linear-gradient(180deg, #17120a, #100c06); overflow: hidden; }
+  .b3fw2 .slat { position: absolute; left: 11%; right: 11%; height: 24px; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 8px; }
+  .b3fw2 .slat.allow { top: 25%; background: #22c55e12; border: 1px solid #22c55e50; color: var(--success); }
+  .b3fw2 .slat.allow::after { content: ''; position: absolute; right: -3px; top: 50%; width: 6px; height: 6px; border-radius: 50%; background: var(--success); transform: translateY(-50%); box-shadow: 0 0 6px var(--success); animation: blink 1.6s steps(1) infinite; }
+  .b3fw2 .slat.deny { top: 52%; background: #ef444412; border: 1px solid #ef444450; color: var(--danger); }
+  .b3fw2 .scan { position: absolute; left: 8%; right: 8%; height: 20px; background: linear-gradient(180deg, transparent, #e0a5521c, transparent); animation: scanline 2.8s linear infinite; }
+  .b3fw2 .beacon { position: absolute; top: -5px; left: 50%; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); transform: translateX(-50%); box-shadow: 0 0 9px var(--amber); animation: blink 2.2s steps(1) infinite; }
+  .b3fw2 .spark { position: absolute; left: -16px; top: 62%; width: 10px; height: 4px; border-radius: 2px; background: var(--danger); animation: fwspark 2.4s linear infinite 0.9s; }
+  @keyframes fwspark { 0% { transform: translate(0, 0); opacity: 0; } 8% { opacity: 1; } 55% { transform: translate(14px, 0); opacity: 1; } 66% { transform: translate(20px, -12px); opacity: 1; filter: drop-shadow(0 0 4px var(--danger)); } 100% { transform: translate(26px, -34px); opacity: 0; } }
+  .b3chip { border: 1px solid; padding: 8px 12px; cursor: grab; transition: transform 0.14s, box-shadow 0.14s; border-radius: 8px; }
+  .b3chip:hover { transform: translateY(-2px); box-shadow: 0 8px 22px #000000aa; }
+  .b3chip .nm { font-size: 11px; font-weight: 600; }
+  .b3chip .pt { font-size: 8.5px; color: var(--t3); }
+  .b3chip .act { display: flex; gap: 1.5px; margin-top: 6px; height: 9px; align-items: flex-end; }
+  .b3chip .act i { width: 3px; display: block; background: #232a36; }
+  .b3chip.web { left: 356px; top: 108px; width: 150px; border-color: #5b9cf666; background: #5b9cf60e; }
+  .b3chip.web .nm { color: var(--blue); }
+  .b3chip.web .act i.on { background: var(--blue); box-shadow: 0 0 3px #5b9cf688; }
+  .b3chip.cache { left: 356px; top: 254px; width: 150px; border-color: #3fc7b866; background: #3fc7b80e; }
+  .b3chip.cache .nm { color: var(--teal); }
+  .b3chip.cache .act i.on { background: var(--teal); box-shadow: 0 0 3px #3fc7b888; }
+  .b3addslot { left: 356px; top: 350px; width: 150px; border: 1.5px dashed #2a2e38; border-radius: 8px; padding: 7px; font-size: 9.5px; color: var(--t3); text-align: center; cursor: pointer; transition: color 0.13s, border-color 0.13s; }
+  .b3addslot:hover { color: var(--hud); border-color: var(--hud-dim); }
+  /* hardware substrate */
+  .b3hw { right: 20px; top: 66px; width: 320px; height: 330px; border: 1px solid #222834; border-radius: 10px; background: #0d1016cc; padding: 12px 14px; }
+  .b3hw .zt { font-size: 8.5px; letter-spacing: 0.13em; color: var(--t3); margin-bottom: 6px; }
+  .corebank { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; position: relative; }
+  .corecell { height: 26px; border-radius: 3px; background: #141a24; border: 1px solid #1e2530; position: relative; overflow: hidden; }
+  .corecell i { position: absolute; left: 0; right: 0; bottom: 0; height: var(--h); background: linear-gradient(180deg, #7cb2ff, var(--blue)); animation: coreflicker 1.7s ease-in-out infinite; }
+  .corecell.hot i { background: linear-gradient(180deg, #ffd28a, var(--warning)); }
+  .corecell .stealx { position: absolute; inset: 0; background: repeating-linear-gradient(45deg, transparent 0 3px, #9c8ce0aa 3px 5px); animation: glitch 3.2s steps(1) infinite; }
+  .corebank .banklbl { position: absolute; right: 0; top: -14px; font-size: 8px; color: var(--t3); }
+  .dimms { display: flex; gap: 7px; margin-top: 14px; align-items: flex-end; height: 84px; }
+  .dimm { flex: 1; border: 1px solid #232b38; border-radius: 3px 3px 5px 5px; background: #10151d; position: relative; overflow: hidden; height: 100%; }
+  .dimm .seg { position: absolute; left: 2px; right: 2px; border-radius: 2px; }
+  .dimm .notch { position: absolute; top: 3px; left: 50%; width: 8px; height: 3px; background: #232b38; transform: translateX(-50%); border-radius: 1px; }
+  .dimmleg { font-size: 8px; color: var(--t3); margin-top: 5px; display: flex; gap: 10px; }
+  .dimmleg .sw { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .hwrow2 { display: flex; gap: 14px; margin-top: 12px; align-items: center; }
+  .platter { position: relative; width: 74px; height: 74px; border-radius: 50%; flex-shrink: 0;
+    background: repeating-radial-gradient(circle, #141a24 0 6px, #10151d 6px 12px); border: 1px solid #232b38; }
+  .platter::before { content: ''; position: absolute; inset: 0; border-radius: 50%; background: conic-gradient(from 0deg, transparent 0 330deg, #3fc7b8cc 352deg, transparent 360deg); animation: spin 1.4s linear infinite; }
+  .platter::after { content: ''; position: absolute; left: 50%; top: 50%; width: 12px; height: 12px; border-radius: 50%; background: #232b38; transform: translate(-50%, -50%); }
+  .qdepth { flex: 1; }
+  .qdepth .ql { font-size: 8px; color: var(--t3); display: flex; justify-content: space-between; }
+  .qticks { display: flex; gap: 2.5px; margin-top: 3px; }
+  .qticks i { width: 6px; height: 14px; border-radius: 1.5px; background: #1a212c; }
+  .qticks i.on { background: var(--teal); box-shadow: 0 0 3px #3fc7b866; }
+  .qticks i.warn { background: var(--warning); }
+  .b3insp { right: 20px; bottom: 16px; width: 320px; border: 1px solid var(--hud-dim); border-radius: 8px; background: #0f141add; padding: 8px 12px; overflow: hidden; }
+  .b3insp::after { content: ''; position: absolute; left: 0; right: 0; height: 22px; top: -20%; background: linear-gradient(180deg, transparent, #7cffe90a, transparent); animation: scanline 3.6s linear infinite; }
+  .b3insp .t { font-size: 9px; color: var(--hud); letter-spacing: 0.12em; }
+  .b3insp .row { display: flex; justify-content: space-between; font-size: 9.5px; color: var(--t2); margin-top: 4px; }
+  .b3insp .row .v { color: var(--t1); font-variant-numeric: tabular-nums; }
+  .b3lbl { position: absolute; font-size: 8.5px; color: var(--t3); }
+
+  .decide { margin-top: 70px; border: 1px solid var(--hud-dim); border-radius: 10px; padding: 20px 24px; background: linear-gradient(180deg, #10141a, #0d0f12); }
+  .decide h2 { font-size: 15px; margin-bottom: 10px; }
+  .decide ol { padding-left: 22px; color: var(--t2); font-size: 12px; }
+  .decide li { margin-bottom: 7px; }
+  .decide b { color: var(--t1); }
+</style>
+
+<div class="wrap">
+  <h1>Polish 3 v4 — <span class="k">calmer, shapelier, rack-optional</span></h1>
+  <p class="sub">Round 4. <b>A is locked</b> (B specced in <a href="https://github.com/Tanker2020/scalemap/issues/23" style="color: var(--violet);">issue #23</a>). This page now runs a third of the animations v3 did — the lag you felt became a design rule. Region de-lined, replica rail tucked away until you ask for it, the floor answers your rack questions, and the intake/firewall got the shape language they were missing. Dock locked from v2 ✓.</p>
+
+  <!-- ═══════════ REGION v3 ═══════════ -->
+  <div class="lvhead"><span class="tag" style="color: var(--blue); border-color: #5b9cf655;">LEVEL 2 · REGION</span><h2>v4: same information, half the ink</h2></div>
+  <p class="thesis"><b>De-lined per your note.</b> Source streams became <b>dots on a hairline</b> (count and speed still = that population's real rate — NYC's three fast dots vs baseline's lone slow one), utilization bars went static with a single glowing endpoint, and only the two ingress beams + the trunk still march. The <b>replica rail retreated</b>: 40% presence hugging the gutter, tiny ◆→◇ glyphs always on, and it only brightens with its label when you hover either db row. <b>New motion budget rule for the whole app:</b> one view animates at most ~8 concurrent strokes; everything else encodes with fills, glows, and numbers — this page itself was over budget and you felt it.</p>
+  <div class="stage">
+    <div class="r3">
+      <svg class="flows" viewBox="0 0 950 330" preserveAspectRatio="none">
+        <path class="beam" d="M212 96 C 280 96, 250 60, 302 58" stroke="var(--teal)" stroke-width="3.5"/>
+        <path class="beam" d="M212 116 C 280 120, 250 218, 302 220" stroke="var(--teal)" stroke-width="2.2" style="animation-duration: 1.3s;"/>
+        <rect class="sharepill" x="236" y="50" rx="4" width="60" height="16"/>
+        <text x="242" y="61" fill="var(--hud)">58% · 712</text>
+        <rect class="sharepill" x="236" y="196" rx="4" width="60" height="16"/>
+        <text x="242" y="207">42% · 502</text>
+      </svg>
+      <div class="r3-grid">
+        <div class="src">
+          <h4>▸ WHO'S SENDING</h4>
+          <div class="srcrow">
+            <div class="l1"><span>NYC</span><span class="v">620 rps</span></div>
+            <div class="stream"><i style="animation-duration: 1.2s;"></i><i style="animation-duration: 1.2s; animation-delay: 0.4s;"></i><i style="animation-duration: 1.2s; animation-delay: 0.8s;"></i></div>
+            <div class="l2">18 ms away · via latency policy</div>
+          </div>
+          <div class="srcrow">
+            <div class="l1"><span>São Paulo</span><span class="v">394 rps</span></div>
+            <div class="stream"><i style="animation-duration: 1.9s;"></i><i style="animation-duration: 1.9s; animation-delay: 0.95s;"></i></div>
+            <div class="l2">142 ms away · <span style="color: var(--price);">+$0.09/hr egress</span></div>
+          </div>
+          <div class="srcrow">
+            <div class="l1"><span>baseline</span><span class="v">200 rps</span></div>
+            <div class="stream"><i style="animation-duration: 3s;"></i></div>
+            <div class="l2">synthetic · auto</div>
+          </div>
+          <div class="trunk">
+            <div class="sum"><div class="agg"><i></i></div><span class="n">1,214</span></div>
+            <div class="cap">merged at the edge · dash speed = rate, here and everywhere</div>
+          </div>
+        </div>
+        <div style="margin-left: 90px;">
+          <div class="azcard">
+            <div class="cfgbar"><button class="cfgbtn">⏎ enter</button><button class="cfgbtn">+ server</button><button class="cfgbtn x">⚡ kill</button></div>
+            <div class="hd"><span class="nm">us-east-1a</span><span class="in">◂ 712 rps</span><span class="meta">3 srv · p50 6ms · <span style="color: var(--price);">$352/mo</span></span></div>
+            <div class="azrows">
+              <div class="azrow"><span>lb-01</span><span class="bar"><i style="--w: 42%;"></i></span><span class="rv">418 rps</span></div>
+              <div class="azrow"><span>web-01</span><span class="bar"><i style="--w: 61%;"></i></span><span class="rv">294 rps</span></div>
+              <div class="azrow db"><span>db-primary</span><span class="bar"><i style="--w: 28%; background: var(--amber);"></i></span><span class="rv">201 q/s</span><span class="tagchip" style="color: var(--amber);">◆ PRIMARY</span></div>
+            </div>
+          </div>
+          <div class="azcard">
+            <div class="cfgbar"><button class="cfgbtn">⏎ enter</button><button class="cfgbtn">+ server</button><button class="cfgbtn x">⚡ kill</button></div>
+            <div class="hd"><span class="nm">us-east-1b</span><span class="in">◂ 502 rps</span><span class="meta">3 srv · p50 7ms · $352/mo</span></div>
+            <div class="azrows">
+              <div class="azrow"><span>web-02</span><span class="bar"><i style="--w: 55%;"></i></span><span class="rv">302 rps</span></div>
+              <div class="azrow"><span>api-01</span><span class="bar"><i style="--w: 47%;"></i></span><span class="rv">200 rps</span></div>
+              <div class="azrow db"><span>db-replica</span><span class="bar"><i style="--w: 19%; background: var(--amber);"></i></span><span class="rv">reads only</span><span class="tagchip" style="color: #b98a45;">◇ REPLICA · lag 0.2s</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <svg class="replrail" style="right: -6px; top: 96px; width: 120px; height: 210px;" viewBox="0 0 120 210">
+        <path d="M6 20 C 66 20, 66 20, 66 100 C 66 180, 66 186, 10 186"/>
+        <polygon points="10,181 10,191 1,186" fill="var(--amber)"/>
+        <text class="rlbl" x="74" y="100" transform="rotate(90 74 100)" text-anchor="middle">writes ⇣ 42 KB/s</text>
+      </svg>
+    </div>
+    <div class="r3-band">
+      <div class="cell"><span class="l">P99</span><span class="v">41 ms</span></div>
+      <div class="cell"><span class="l">ERR</span><span class="v">0.02%</span></div>
+      <div class="cell"><span class="l">COST</span><span class="v">$704/mo</span></div>
+      <div class="tick"><span>⚡ 12:04:11 health_check us-east-1b ok · 12:03:58 breaker closed api→db · 12:03:41 replica lag 210ms · 12:03:12 burst credits 84% …</span></div>
+    </div>
+  </div>
+  <p class="caption"><b>The one-glance test:</b> ◆ on 1a's db row, ◇ on 1b's, one amber rail joining exactly those two rows through the right gutter, arrow + "writes ⇣" for direction, lag on the replica tag. Ingress lives entirely on the left, replication entirely on the right — the two stories never cross. Kill the primary and the ◆ migrates to the promoted replica with a pulse (replica_promoted event, already in the engine).</p>
+
+  <!-- ═══════════ ISO DATACENTER v3 ═══════════ -->
+  <div class="lvhead"><span class="tag" style="color: var(--amber); border-color: #e0a55255;">LEVEL 3 · AZ</span><h2>Option A — LOCKED ✓ · now with the rack model answered</h2></div>
+  <p class="thesis"><b>A ships now</b> (B is fully specced as <a href="https://github.com/Tanker2020/scalemap/issues/23" style="color: var(--violet);">issue #23</a> for later — same doc model, instanced rendering, perf budget included). New this round: <b>racks render their real contents</b> (slot count = actual server count; the cabinet grows taller as you mount more, up to capacity), <b>the floor grows a tile ring</b> whenever racks need the room (camera auto-fits), and <b>press the button below</b> to feel the add-server animation — the faceplate drops in, LEDs run an amber boot cascade, then settle green and its first beam connects.</p>
+  <div class="stage" style="padding: 0;">
+    <div class="iso3">
+      <div class="hudname">▸ US-EAST-1A · FLOOR</div>
+      <div class="hudsub">2 racks · 5 servers · 712 rps entering</div>
+      <div class="camhint">pan · zoom · no orbit (spatial memory)</div>
+      <svg class="world" viewBox="0 0 900 430">
+        <!-- floor grid -->
+        <g opacity="0.6">
+          <path d="M450 88 L830 278 L450 424 L74 278 Z" fill="#0f131b" stroke="#1a2130"/>
+          <g stroke="#161c28" stroke-width="1">
+            <path d="M356 135 L736 325" opacity="0.5"/><path d="M262 182 L642 372" opacity="0.5"/><path d="M168 229 L548 419" opacity="0.35"/>
+            <path d="M544 135 L164 325" opacity="0.5"/><path d="M638 182 L258 372" opacity="0.5"/><path d="M732 229 L352 419" opacity="0.35"/>
+          </g>
+          <ellipse cx="450" cy="270" rx="300" ry="120" fill="url(#floorglow)"/>
+        </g>
+        <defs>
+          <radialGradient id="floorglow" cx="50%" cy="50%"><stop offset="0%" stop-color="#7cffe908"/><stop offset="100%" stop-color="transparent"/></radialGradient>
+          <linearGradient id="rackfront" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#20262f"/><stop offset="100%" stop-color="#14181f"/></linearGradient>
+          <linearGradient id="rackside" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#12161d"/><stop offset="100%" stop-color="#0d1015"/></linearGradient>
+          <linearGradient id="racktop" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#2c3542"/><stop offset="100%" stop-color="#222a36"/></linearGradient>
+        </defs>
+
+        <!-- ingress beam: shadow track on floor + elevated beam -->
+        <path d="M60 330 C 160 310, 230 290, 300 268" stroke="#000000aa" stroke-width="5" fill="none" opacity="0.55"/>
+        <path class="cur" d="M56 318 C 156 298, 226 278, 296 256" stroke="var(--hud)" fill="none" stroke-width="2.5" stroke-dasharray="8 9" style="animation: dashflow 0.8s linear infinite;" filter="drop-shadow(0 0 4px #7cffe9)"/>
+
+        <!-- rack-1 (front-left, drawn after rack-2 for depth? rack-1 is nearer viewer: draw last) -->
+        <!-- rack-2 (farther) -->
+        <g class="rack3">
+          <ellipse class="halo" cx="560" cy="242" rx="66" ry="20" fill="#5b9cf61e"/>
+          <g class="lift">
+            <polygon points="512,118 578,151 578,233 512,200" fill="url(#rackfront)" stroke="#2b3342"/>
+            <polygon points="578,151 612,134 612,216 578,233" fill="url(#rackside)" stroke="#232b38"/>
+            <polygon points="512,118 578,151 612,134 546,101" fill="url(#racktop)" stroke="#333d4d"/>
+            <!-- slots on front face (skewed with face) -->
+            <g>
+              <polygon points="518,132 572,159 572,168 518,141" fill="#0e1116" stroke="#232a36"/>
+              <circle cx="567" cy="163" r="1.8" fill="var(--success)" style="animation: blink 2.4s steps(1) infinite;"/>
+              <polygon points="518,146 572,173 572,182 518,155" fill="#0e1116" stroke="#232a36"/>
+              <circle cx="567" cy="177" r="1.8" fill="var(--success)" style="animation: blink 3.4s steps(1) infinite 0.8s;"/>
+            </g>
+          </g>
+        </g>
+        <!-- beams between racks: shadow + elevated -->
+        <path d="M366 260 C 430 250, 470 236, 522 208" stroke="#000000aa" stroke-width="5" fill="none" opacity="0.5"/>
+        <path class="cur" d="M362 246 C 426 236, 466 222, 518 194" stroke="var(--blue)" fill="none" stroke-width="2.2" stroke-dasharray="7 8" style="animation: dashflow 0.9s linear infinite;" filter="drop-shadow(0 0 4px #5b9cf6)"/>
+        <path d="M380 282 C 460 296, 520 282, 560 252" stroke="#000000aa" stroke-width="4" fill="none" opacity="0.5"/>
+        <path class="cur" d="M376 270 C 456 284, 516 270, 556 240" stroke="var(--amber)" fill="none" stroke-width="2" stroke-dasharray="5 9" style="animation: dashflow 1.5s linear infinite;" filter="drop-shadow(0 0 3px #e0a552)"/>
+
+        <!-- rack-1 nearer -->
+        <g class="rack3">
+          <ellipse class="halo" cx="322" cy="300" rx="72" ry="22" fill="#5b9cf61e"/>
+          <g class="lift">
+            <polygon points="266,158 340,195 340,290 266,253" fill="url(#rackfront)" stroke="#2b3342"/>
+            <polygon points="340,195 378,176 378,271 340,290" fill="url(#rackside)" stroke="#232b38"/>
+            <polygon points="266,158 340,195 378,176 304,139" fill="url(#racktop)" stroke="#333d4d"/>
+            <g>
+              <polygon points="272,174 334,205 334,215 272,184" fill="#0e1116" stroke="#232a36"/>
+              <circle cx="329" cy="209" r="2" fill="var(--success)" style="animation: blink 2.1s steps(1) infinite;"/>
+              <polygon points="272,190 334,221 334,231 272,200" fill="#0e1116" stroke="#232a36"/>
+              <circle cx="329" cy="225" r="2" fill="var(--success)" style="animation: blink 3.1s steps(1) infinite 0.5s;"/>
+              <polygon points="272,206 334,237 334,247 272,216" fill="#0e1116" stroke="#232a36"/>
+              <circle cx="329" cy="241" r="2" fill="var(--amber)" style="animation: blink 4.3s steps(1) infinite 1.4s;"/>
+              <g class="newslot" id="newslot">
+                <polygon points="272,222 334,253 334,263 272,232" fill="#0e1116" stroke="#232a36"/>
+                <circle cx="329" cy="257" r="2" fill="var(--success)"/>
+              </g>
+            </g>
+          </g>
+        </g>
+
+        <!-- ghost rack slot -->
+        <g opacity="0.5">
+          <polygon points="600,270 666,303 666,330 600,297" fill="none" stroke="#2a3140" stroke-dasharray="5 5"/>
+          <polygon points="600,270 666,303 700,286 634,253" fill="none" stroke="#2a3140" stroke-dasharray="5 5"/>
+        </g>
+        <!-- FREE POOL: unracked servers as standalone pods (vps / cloud mental model) -->
+        <g class="pod3">
+          <polygon class="podbody" points="700,318 738,337 738,364 700,345" fill="url(#rackfront)" stroke="#2b3342"/>
+          <polygon points="738,337 758,327 758,354 738,364" fill="url(#rackside)" stroke="#232b38"/>
+          <polygon points="700,318 738,337 758,327 720,308" fill="url(#racktop)" stroke="#333d4d"/>
+          <circle cx="730" cy="342" r="2" fill="var(--teal)" style="animation: blink 2.9s steps(1) infinite;"/>
+        </g>
+        <g class="pod3">
+          <polygon class="podbody" points="762,290 800,309 800,336 762,317" fill="url(#rackfront)" stroke="#2b3342"/>
+          <polygon points="800,309 820,299 820,326 800,336" fill="url(#rackside)" stroke="#232b38"/>
+          <polygon points="762,290 800,309 820,299 782,280" fill="url(#racktop)" stroke="#333d4d"/>
+          <circle cx="792" cy="314" r="2" fill="var(--teal)" style="animation: blink 3.7s steps(1) infinite 0.9s;"/>
+        </g>
+      </svg>
+      <span class="lbl" style="left: 296px; top: 128px;">rack-1 <small>· lb, web, db</small></span>
+      <span class="lbl" style="left: 538px; top: 84px;">rack-2 <small>· web, api</small></span>
+      <span class="lbl flow" style="left: 96px; top: 344px;">ingress 712 rps</span>
+      <span class="lbl" style="left: 420px; top: 202px; color: var(--blue); border-color: #5b9cf63a;">lb→web · 598</span>
+      <span class="lbl" style="left: 440px; top: 300px; color: var(--amber); border-color: #e0a5523a;">web→db · 204</span>
+      <span class="lbl" style="left: 606px; top: 300px;">+ rack</span>
+      <span class="lbl" style="left: 700px; top: 374px; color: var(--teal); border-color: #3fc7b83a;">FREE POOL <small>· unracked</small></span>
+      <button class="demobtn" onclick="addServerDemo(this)">▶ add-server demo</button>
+      <div class="foot">hover a rack: lift + under-glow · click a slot: server overlay · hold: enter server · drag between racks or pool re-homes the server (doc edit)</div>
+    </div>
+  </div>
+  <div class="wasm">
+    <div class="q">▸ YOUR WASM QUESTION, STRAIGHT</div>
+    <b>WASM is the wrong lever here, and B doesn't actually need saving.</b> three.js renders through WebGL — the GPU does the drawing; JS only orchestrates. Our globe's cost (and a 3D datacenter's) is <b>draw calls and scene-graph overhead</b>, not raw CPU math, and WASM only accelerates CPU math — the WebGL calls themselves would still cross the same JS boundary. The real fix is <b>instanced rendering</b>: one <code>InstancedMesh</code> draws 500 identical rack cabinets (or 5,000 LEDs) in a single draw call. With instancing + a frameloop that only renders on change, B comfortably handles hundreds of racks at 60fps in this same webview — the globe already proves r3f here. So the honest trade: <b>B is viable, not perf-doomed; its true cost is build time and interaction fidelity</b> (text, hover, drag inside WebGL all cost extra engineering vs DOM). WASM would only enter the picture for something like a physics-grade layout solver — which we don't have planned.
+  </div>
+  <p class="caption"><b>The rack model (your question, answered as a design decision):</b> racks are OPTIONAL organizational containers. A new server lands in the <b>free pool</b> — standalone pods on the same floor, the natural home for the vps/cloud mental model — and you drag it into a rack only if racks are how you think. Rack capacity defaults to <b>8U, configurable 4–42</b> per rack (the cabinet renders exactly its contents and grows to its cap). An <b>auto-arrange</b> action racks the whole pool for people who want tidiness without the ceremony. Floor tiles grow a ring whenever racks + pods need the room; the camera refits. Option B lives on as <a href="https://github.com/Tanker2020/scalemap/issues/23" style="color: var(--violet);">github issue #23</a> with the full technical blueprint (instancing plan, perf budget, acceptance criteria) — same doc model, pure view swap.</p>
+
+  <!-- ═══════════ SERVER v3 ═══════════ -->
+  <div class="lvhead"><span class="tag" style="color: var(--teal); border-color: #3fc7b855;">LEVEL 4 · SERVER</span><h2>v4: the boxes got their shapes — this IS the vision now, not prototype fidelity</h2></div>
+  <p class="thesis"><b>Your amendment, applied: eth0 is now a physical RJ45 jack.</b> Metal bezel, the keystone-notch socket silhouette everyone recognizes, <b>8 gold pins that ripple left-to-right as each packet lands</b>, and the two LEDs the whole industry trained you on: <b>green LINK steady, amber ACT flickering with traffic</b>. The three packet lanes now visibly plug INTO the port. The firewall stays as locked: a <b>shield built from its own rules</b> — each slat IS a rule (green slat = the allow passing traffic, watch its edge-dot fire; red slat = the deny), a scan sweep patrols the face, a beacon crowns it, rejects spark off mid-flight. Substrate (core bank / DIMMs / platter) unchanged — locked since v3.</p>
+  <div class="stage" style="padding: 0;">
+    <div class="board3">
+      <svg class="traces" viewBox="0 0 960 460" preserveAspectRatio="none">
+        <path class="tr" d="M172 208 L196 208" stroke="var(--teal)"/>
+        <path class="cur" d="M172 208 L196 208" stroke="var(--teal)"/>
+        <path class="tr" d="M300 190 C 326 178, 328 148, 356 140" stroke="var(--blue)"/>
+        <path class="cur" d="M300 190 C 326 178, 328 148, 356 140" stroke="var(--blue)"/>
+        <path class="tr" d="M430 156 L430 254" stroke="var(--teal)"/>
+        <path class="cur" d="M430 156 L430 254" stroke="var(--teal)" style="animation-duration: 1.2s;"/>
+        <path class="tr" d="M506 132 C 560 128, 580 130, 634 138" stroke="var(--blue)"/>
+        <path class="cur" d="M506 132 C 560 128, 580 130, 634 138" stroke="var(--blue)" style="animation-duration: 1s;"/>
+        <path class="tr" d="M506 286 C 560 300, 580 320, 640 330" stroke="var(--amber)"/>
+        <path class="cur" d="M506 286 C 560 300, 580 320, 640 330" stroke="var(--amber)" style="animation-duration: 1.4s;"/>
+      </svg>
+      <div class="b3el b3nic">
+        <span class="t">eth0 · 2G INTAKE</span>
+        <div class="jack">
+          <div class="bezel"></div>
+          <div class="socket"></div>
+          <div class="pinrow"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <span class="led link"></span>
+          <span class="led act"></span>
+        </div>
+        <span class="pk2" style="left: 0; top: 42px; animation: laneA 1.4s linear infinite;"></span>
+        <span class="pk2" style="left: 0; top: 62px; animation: laneB 1.4s linear infinite 0.45s;"></span>
+        <span class="pk2" style="left: 0; top: 82px; animation: laneC 1.4s linear infinite 0.9s;"></span>
+        <span class="m">↓8.2 ↑3.1 Mb/s · 2,571 conn</span>
+      </div>
+      <div class="b3el b3fw2">
+        <span class="t">FIREWALL · 2 RULES</span>
+        <div class="shield"></div>
+        <div class="inner">
+          <div class="slat allow">1 · :443 ✓</div>
+          <div class="slat deny">2 · rest ✕</div>
+          <div class="scan"></div>
+        </div>
+        <div class="beacon"></div>
+        <div class="spark"></div>
+      </div>
+      <div class="b3el b3chip web">
+        <div class="nm">web · nginx</div><div class="pt">:8080 · 3 workers · 598 rps</div>
+        <div class="act"><i class="on" style="height: 65%;"></i><i class="on" style="height: 90%;"></i><i style="height: 40%;"></i><i class="on" style="height: 75%;"></i><i class="on" style="height: 55%;"></i><i style="height: 30%;"></i><i class="on" style="height: 85%;"></i><i class="on" style="height: 60%;"></i><i class="on" style="height: 70%;"></i><i style="height: 35%;"></i><i class="on" style="height: 80%;"></i><i class="on" style="height: 50%;"></i></div>
+      </div>
+      <div class="b3el b3chip cache">
+        <div class="nm">cache · redis</div><div class="pt">:6379 · 129 MB · hit 88%</div>
+        <div class="act"><i class="on" style="height: 45%;"></i><i class="on" style="height: 60%;"></i><i class="on" style="height: 38%;"></i><i style="height: 25%;"></i><i class="on" style="height: 52%;"></i><i class="on" style="height: 70%;"></i><i style="height: 30%;"></i><i class="on" style="height: 48%;"></i><i class="on" style="height: 62%;"></i><i class="on" style="height: 40%;"></i><i style="height: 28%;"></i><i class="on" style="height: 55%;"></i></div>
+      </div>
+      <div class="b3el b3addslot">+ mount service</div>
+      <div class="b3el b3hw">
+        <div class="zt">SUBSTRATE — 8 vCPU · SHARED TENANCY</div>
+        <div class="corebank">
+          <span class="banklbl">core load · ▨ = neighbor steal</span>
+          <div class="corecell"><i style="--h: 62%;"></i></div>
+          <div class="corecell"><i style="--h: 38%;"></i><div class="stealx"></div></div>
+          <div class="corecell hot"><i style="--h: 88%;"></i></div>
+          <div class="corecell"><i style="--h: 22%;"></i></div>
+          <div class="corecell"><i style="--h: 55%;"></i></div>
+          <div class="corecell"><i style="--h: 44%;"></i><div class="stealx" style="animation-delay: 1.4s;"></div></div>
+          <div class="corecell"><i style="--h: 30%;"></i></div>
+          <div class="corecell"><i style="--h: 68%;"></i></div>
+        </div>
+        <div class="dimms">
+          <div class="dimm"><div class="notch"></div>
+            <div class="seg" style="bottom: 2px; height: 34%; background: var(--blue); opacity: 0.85;"></div>
+            <div class="seg" style="bottom: 37%; height: 12%; background: var(--teal); opacity: 0.85;"></div>
+            <div class="seg" style="bottom: 50%; height: 9%; background: #4a5361;"></div>
+          </div>
+          <div class="dimm"><div class="notch"></div>
+            <div class="seg" style="bottom: 2px; height: 28%; background: var(--blue); opacity: 0.85;"></div>
+            <div class="seg" style="bottom: 31%; height: 10%; background: var(--teal); opacity: 0.85;"></div>
+            <div class="seg" style="bottom: 42%; height: 9%; background: #4a5361;"></div>
+          </div>
+          <div class="dimm"><div class="notch"></div><div class="seg" style="bottom: 2px; height: 12%; background: #4a5361;"></div></div>
+          <div class="dimm"><div class="notch"></div><div class="seg" style="bottom: 2px; height: 4%; background: #4a5361;"></div></div>
+        </div>
+        <div class="dimmleg"><span><span class="sw" style="background: var(--blue);"></span>web</span><span><span class="sw" style="background: var(--teal);"></span>cache</span><span><span class="sw" style="background: #4a5361;"></span>os</span><span style="margin-left: auto;">5.4 / 16 G</span></div>
+        <div class="hwrow2">
+          <div class="platter"></div>
+          <div class="qdepth">
+            <div class="ql"><span>nvme0 · io queue</span><span>depth 3 / 32</span></div>
+            <div class="qticks"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="warn" style="opacity: 0.35;"></i></div>
+            <div class="ql" style="margin-top: 4px;"><span>24 / 160 G used</span><span>sweep = read head</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="b3el b3insp">
+        <span class="t">▸ INSPECTOR — click any element · esc clears</span>
+        <div class="row"><span>selected</span><span class="v">web · nginx</span></div>
+        <div class="row"><span>cpu/request → rps/core</span><span class="v">8 ms → 125</span></div>
+      </div>
+      <span class="b3lbl" style="left: 24px; top: 140px; color: var(--teal);">INTAKE</span>
+      <span class="b3lbl" style="left: 196px; top: 118px; color: var(--amber);">VERDICT WALL</span>
+      <span class="b3lbl" style="left: 358px; top: 88px; color: var(--blue);">SERVICES — yours, draggable</span>
+      <span class="b3lbl" style="right: 24px; top: 48px; color: var(--t3);">SUBSTRATE — the machine's own instruments</span>
+    </div>
+  </div>
+  <p class="caption"><b>Coupled/decoupled, literally:</b> each element has its own visual dialect (teal intake, amber wall, blue chips, cool-grey substrate) but the SAME current convention joins them — etched trace at rest, flowing dashes under load, thickness ∝ rate. Selecting anything highlights its upstream/downstream path (the traces double as the selection graph). The inspector shrank to a two-line dock strip that expands upward on selection — never eats the board. Steal is now physical: violet interference ON the stolen cores, not a bar.</p>
+
+  <!-- ═══════════ DECISION ═══════════ -->
+  <div class="decide">
+    <h2>Round 5 — everything is LOCKED ✓ (this page is now the visual spec)</h2>
+    <ol>
+      <li><b>Region v4 — LOCKED</b>, plus your amendment: every price-related value renders in a dedicated price color (<span style="color: var(--price);">$352/mo · +$0.09/hr</span> above) — a new <code>--color-price</code> token, defined for both themes, used app-wide wherever money appears.</li>
+      <li><b>Rack model — LOCKED</b>: racks optional, new servers land in the free pool, capacity 8U default (4–42), auto-arrange, floor grows. Option B stays parked as <a href="https://github.com/Tanker2020/scalemap/issues/23" style="color: var(--violet);">issue #23</a>.</li>
+      <li><b>Server v5 — LOCKED</b>, plus your amendment: eth0 is a physical RJ45 jack (bezel, keystone socket, gold pins rippling per packet, green LINK / amber ACT LEDs) — see the board above. Firewall shield + substrate as previously locked.</li>
+      <li>The Polish 3 spec + skeleton + runbook are written and committed — next step is dispatching the executor.</li>
+    </ol>
+  </div>
+</div>
+<script>
+  function addServerDemo(btn) {
+    const slot = document.getElementById('newslot');
+    slot.classList.remove('go');
+    void slot.getBoundingClientRect();   // reflow so the animation can replay
+    slot.classList.add('go');
+    btn.textContent = '▶ again';
+  }
+</script>
