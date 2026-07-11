@@ -1,5 +1,6 @@
 // The app's entire post-home body: breadcrumb header + animated level router.
-// AZ level renders <AzCanvas/> (Task 13); Task 14 adds file actions here.
+// AZ level renders <DatacenterFloor/> (Polish 3 T4 — the isometric floor scene that replaced
+// the React Flow AZ canvas; @xyflow/react has no remaining consumer anywhere in the app).
 import { useEffect, useState, type CSSProperties } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { useNavStore } from '../store/nav.store'
@@ -13,7 +14,7 @@ import { GlobeView } from './GlobeView'
 import { RegionView } from './RegionView'
 import { ServerView } from './ServerView'
 import { WorldPanel } from './panels/WorldPanel'
-import { AzCanvas } from './AzCanvas'
+import { DatacenterFloor } from './az/DatacenterFloor'
 import { openWorldViaDialog, saveWorld } from './fileOps'
 import { SettingsModal } from './SettingsModal'
 
@@ -89,7 +90,7 @@ export function WorldShell() {
       />
     ) :
     nav.level === 'region' ? <RegionView /> :
-    nav.level === 'az' ? <AzCanvas /> :
+    nav.level === 'az' ? <DatacenterFloor /> :
     <ServerView />
 
   // Key by full focus path so descending re-animates even within one level.
