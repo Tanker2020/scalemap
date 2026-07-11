@@ -4,11 +4,12 @@
 // editing content itself lands in T4 — this task is a placeholder mount). Reads the world
 // store directly — mounted as a GlobeScene child (T3). R3F component; NOT jsdom-tested (no
 // WebGL there) — this task's live smoke is the gate.
-import { useMemo, useState, type ReactElement } from 'react'
+import { useContext, useMemo, useState, type ReactElement } from 'react'
 import { Html } from '@react-three/drei'
 import { useWorldStore } from '../../store/world.store'
 import { useUiStore } from '../../store/ui.store'
 import { SceneOverlay } from '../ui/SceneOverlay'
+import { OverlayPortalContext } from './overlayPortal'
 import { latLonToVec3 } from './geo'
 
 const EARTH_RADIUS = 1
@@ -24,6 +25,9 @@ function PopulationMarker({ id, label, lat, lon, peakRps }: MarkerProps): ReactE
   const [hovered, setHovered] = useState(false)
   const position = useMemo(() => latLonToVec3(lat, lon, MARKER_ALTITUDE), [lat, lon])
   const overlayOpen = useUiStore(s => s.sceneOverlay?.kind === 'population' && s.sceneOverlay.id === id)
+  // Overlay Html portals OUTSIDE the aria-hidden canvas wrapper (T3 fix) — same reasoning as
+  // RegionPins.tsx. The hover-label Html stays in the default (decorative) container.
+  const overlayPortal = useContext(OverlayPortalContext)
 
   return (
     <group position={position}>
@@ -48,7 +52,7 @@ function PopulationMarker({ id, label, lat, lon, peakRps }: MarkerProps): ReactE
         </Html>
       )}
       {overlayOpen && (
-        <Html zIndexRange={[100, 90]} style={{ pointerEvents: 'auto' }}>
+        <Html portal={overlayPortal ?? undefined} zIndexRange={[100, 90]} style={{ pointerEvents: 'auto' }}>
           <div style={{ transform: 'translate(14px, -8px)' }}>
             <SceneOverlay
               title={label} subtitle="client population" dotColor="var(--kit-teal)"

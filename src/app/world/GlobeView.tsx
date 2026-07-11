@@ -4,10 +4,11 @@
 // same goRegion navigation renders in BOTH branches — the canvas container is aria-hidden
 // (decorative to a screen reader; the hidden list is the real navigation surface there, and it
 // also covers any environment that passes the WebGL probe but still renders nothing).
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
 import { useUiStore } from '../store/ui.store'
+import { OverlayPortalContext } from './globe/overlayPortal'
 import { GlobeScene } from './globe/GlobeScene'
 import { GlobeCards } from './GlobeCards'
 import { RegionPins } from './globe/RegionPins'
@@ -49,6 +50,11 @@ export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: Gl
   const populations = useWorldStore(s => s.doc.populations)
   const [rotationLocked, setRotationLocked] = useState(false)
   const sceneOverlay = useUiStore(s => s.sceneOverlay)
+  // null! selects React 19's RefObject<HTMLDivElement> overload (matching the context's and
+  // drei portal's non-nullable RefObject type); runtime-safe — the portal div mounts in the
+  // same commit as the canvas, long before any overlay can open, and drei falls back to its
+  // default container if current were ever still null.
+  const overlayPortalRef = useRef<HTMLDivElement>(null!)
 
   // Escape closes an open overlay; WorldShell's own Escape → nav.up() is a no-op at globe
   // level (nav.store.ts:28-33), so the two listeners cannot fight. Overlay state also clears
@@ -89,6 +95,7 @@ export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: Gl
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <OverlayPortalContext.Provider value={overlayPortalRef}>
       <div aria-hidden="true" style={{ width: '100%', height: '100%' }}>
         <GlobeScene placeMode={placeMode} onPlace={onPlace} autoRotate={!rotationLocked && sceneOverlay == null}>
           <RegionPins />
@@ -96,6 +103,10 @@ export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: Gl
           <ArcsLayer />
         </GlobeScene>
       </div>
+      {/* Overlay portal target — outside the aria-hidden canvas wrapper so overlay controls
+          stay in the accessibility tree. pointerEvents none: only the overlay cards
+          themselves (which re-enable pointer events) are interactive. */}
+      <div ref={overlayPortalRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 10 }} />
       <button
         aria-label={rotationLocked ? 'Resume globe rotation' : 'Lock globe rotation'}
         title={rotationLocked ? 'Resume the globe’s idle spin' : 'Stop the globe’s idle spin'}
@@ -111,6 +122,7 @@ export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: Gl
         {rotationLocked ? '🔒 rotation locked' : '🌐 rotating'}
       </button>
       <RegionA11yList />
+      </OverlayPortalContext.Provider>
     </div>
   )
 }

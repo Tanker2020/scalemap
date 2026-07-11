@@ -6,7 +6,7 @@
 // PopulationMarkers/ArcsLayer. R3F component; NOT jsdom-tested (no WebGL there) — this task's
 // live smoke is the gate. The two exported pure helpers below (pinColor, isPulsing) ARE
 // unit-tested (node env, RegionPins.test.ts) since they carry the only testable logic.
-import { useMemo, useRef, useState, type ReactElement } from 'react'
+import { useContext, useMemo, useRef, useState, type ReactElement } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { Html } from '@react-three/drei'
 import { useReducedMotion } from 'framer-motion'
@@ -19,6 +19,7 @@ import { REGION_GEO } from '../../../lib/world/regionGeo'
 import { latLonToVec3 } from './geo'
 import { HoldRing, holdProgress, isAbortedHold } from '../ui/HoldToEnter'
 import { SceneOverlay } from '../ui/SceneOverlay'
+import { OverlayPortalContext } from './overlayPortal'
 import type { HealthState, EngineEvent, EngineEventKind } from '../../../lib/worldEngine/types'
 import type { RegionId } from '../../../lib/world/types'
 
@@ -81,6 +82,10 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
   const sceneOverlay = useUiStore(s => s.sceneOverlay)
   const setSceneOverlay = useUiStore(s => s.setSceneOverlay)
   const overlayOpen = sceneOverlay?.kind === 'region' && sceneOverlay.id === regionId
+  // Overlay Html portals OUTSIDE the aria-hidden canvas wrapper (T3 fix) — the shell's esc
+  // button (and T4's controls) must stay in the accessibility tree. The ring + label Htmls
+  // stay in the default (decorative) container.
+  const overlayPortal = useContext(OverlayPortalContext)
 
   const pinRef = useRef<Mesh>(null)
   const groupRef = useRef<Group>(null)
@@ -192,7 +197,7 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
         </Html>
       )}
       {overlayOpen && (
-        <Html zIndexRange={[100, 90]} style={{ pointerEvents: 'auto' }}>
+        <Html portal={overlayPortal ?? undefined} zIndexRange={[100, 90]} style={{ pointerEvents: 'auto' }}>
           <div style={{ transform: 'translate(14px, -8px)' }}>
             <SceneOverlay title={catalogId} health={health} onClose={() => setSceneOverlay(null)}>
               <div style={{ padding: '10px 13px 2px', color: 'var(--color-text-muted)' }}>
