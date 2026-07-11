@@ -100,6 +100,12 @@ describe('InspectorRail (read panels)', () => {
     expect(rows[1]).toHaveTextContent('anyone')
   })
 
+  it('a server with zero firewall rules still offers the add-rule editor', () => {
+    const { serverId } = seed((d, sid) => { d.servers[sid].firewall = [] })
+    render(<InspectorRail serverId={serverId} selection={{ kind: 'firewall' }} onSelect={() => {}} />)
+    expect(screen.getByLabelText('add rule')).toBeInTheDocument()
+  })
+
   it('firewall reorder and remove dispatches are unchanged after the re-voicing', () => {
     const spy = vi.spyOn(useWorldStore.getState(), 'updateServer')
     const { serverId } = seed((d, sid) => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { holdProgress, HOLD_DURATION_MS, isAbortedHold, HOLD_TAP_MS } from './HoldToEnter'
+import { holdProgress, HOLD_DURATION_MS, isAbortedHold, HOLD_TAP_MS, exceedsHoldSlop, HOLD_SLOP_PX } from './HoldToEnter'
 
 describe('holdProgress', () => {
   it('is 0 with a null start', () => {
@@ -23,5 +23,17 @@ describe('isAbortedHold', () => {
   })
   it('is true at the threshold', () => {
     expect(isAbortedHold(HOLD_TAP_MS)).toBe(true)
+  })
+})
+
+describe('exceedsHoldSlop', () => {
+  it('the exact slop boundary stays within (no cancel)', () => {
+    expect(exceedsHoldSlop(HOLD_SLOP_PX, 0)).toBe(false)
+  })
+  it('one pixel past the boundary exceeds', () => {
+    expect(exceedsHoldSlop(HOLD_SLOP_PX + 1, 0)).toBe(true)
+  })
+  it('uses euclidean distance, not per-axis (9,9 → √162 > 12)', () => {
+    expect(exceedsHoldSlop(9, 9)).toBe(true)
   })
 })

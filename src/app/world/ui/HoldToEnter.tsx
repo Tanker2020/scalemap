@@ -23,6 +23,15 @@ export function isAbortedHold(pressedMs: number): boolean {
   return pressedMs >= HOLD_TAP_MS
 }
 
+// D1's "leaving before completion cancels": under pointer capture the mesh never sees
+// pointerout, so "leaving" = the POINTER moving past this slop from the press point.
+// Globe rotation drift moves the PIN, not the pointer — it must NOT cancel a hold.
+export const HOLD_SLOP_PX = 12
+
+export function exceedsHoldSlop(dxPx: number, dyPx: number): boolean {
+  return dxPx * dxPx + dyPx * dyPx > HOLD_SLOP_PX * HOLD_SLOP_PX
+}
+
 export interface HoldRingProps {
   /** Parent-owned progress cell (0..1), mutated per frame — never setState per frame. */
   progressRef: { current: number }

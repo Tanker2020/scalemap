@@ -17,7 +17,7 @@ import { useSimulationStore } from '../../store/simulation.store'
 import { useUiStore } from '../../store/ui.store'
 import { REGION_GEO } from '../../../lib/world/regionGeo'
 import { latLonToVec3 } from './geo'
-import { HoldRing, holdProgress, isAbortedHold } from '../ui/HoldToEnter'
+import { HoldRing, holdProgress, isAbortedHold, exceedsHoldSlop } from '../ui/HoldToEnter'
 import { RegionOverlay } from '../ui/overlays/RegionOverlay'
 import { OverlayPortalContext } from './overlayPortal'
 import type { HealthState, EngineEvent, EngineEventKind } from '../../../lib/worldEngine/types'
@@ -93,6 +93,11 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
   const [labelVisible, setLabelVisible] = useState(true)
   const labelVisibleRef = useRef(true)
   const holdStartRef = useRef<number | null>(null)
+  // Press-point slop cancel (D1 "leaving before completion cancels"): under pointer capture
+  // the mesh never sees pointerout mid-hold (r3f appends captured intersections to every hit
+  // list), so drag-off is detected by pointer distance from the press point instead.
+  const holdStartPosRef = useRef<{ x: number; y: number } | null>(null)
+  const holdSlopCancelledRef = useRef(false)
   // Deadline (performance.now() ms) until which the next click is swallowed — set by hold
   // completion AND by an aborted hold (released ≥ HOLD_TAP_MS but before completion, spec D1:
   // early release = no navigation). A timestamp, not a boolean: it self-expires, so a swallow
@@ -156,14 +161,27 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
           e.stopPropagation()
           ;(e.target as Element | undefined)?.setPointerCapture?.(e.pointerId)
           holdStartRef.current = performance.now()
+          holdStartPosRef.current = { x: e.clientX, y: e.clientY }
+          holdSlopCancelledRef.current = false   // fresh press — a stale flag must not leak
+        }}
+        onPointerMove={e => {
+          const start = holdStartPosRef.current
+          if (holdStartRef.current !== null && start && exceedsHoldSlop(e.clientX - start.x, e.clientY - start.y)) {
+            holdStartRef.current = null            // deliberate drag-off — cancel the hold (D1)
+            holdSlopCancelledRef.current = true    // and swallow the eventual synthetic click
+          }
         }}
         onPointerUp={e => {
           const start = holdStartRef.current   // capture BEFORE nulling (completion already cleared it)
           ;(e.target as Element | undefined)?.releasePointerCapture?.(e.pointerId)
           holdStartRef.current = null      // released early → cancel (completion already cleared it)
-          // Released after the tap threshold but before completion = an aborted hold (spec D1):
-          // no navigation — swallow the synthetic click that's about to fire. Self-expiring window.
-          if (start !== null && isAbortedHold(performance.now() - start)) swallowClickUntilRef.current = performance.now() + SWALLOW_WINDOW_MS
+          // Released after the tap threshold but before completion = an aborted hold, and a
+          // slop-cancelled drag-off is aborted regardless of press length (spec D1): no
+          // navigation — swallow the synthetic click that's about to fire. Self-expiring window.
+          if ((start !== null && isAbortedHold(performance.now() - start)) || holdSlopCancelledRef.current) {
+            swallowClickUntilRef.current = performance.now() + SWALLOW_WINDOW_MS
+            holdSlopCancelledRef.current = false
+          }
         }}
         onPointerOver={() => { document.body.style.cursor = 'pointer'; setHovered(true) }}
         onPointerOut={() => {

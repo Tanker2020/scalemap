@@ -9,7 +9,9 @@ export function useRollingNumber(target: number, durationMs = 150): number {
 
   useEffect(() => {
     const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (reduced || typeof requestAnimationFrame !== 'function') {
+    // durationMs <= 0 must snap, not ease: the exponential's divide-by-duration would go
+    // NaN/divergent, and a zero duration means "no animation" anyway.
+    if (reduced || typeof requestAnimationFrame !== 'function' || durationMs <= 0) {
       displayRef.current = target
       setDisplay(target)
       return

@@ -100,7 +100,10 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
             </div>
           )
         })}
-        {selection.kind === 'rule' && <FirewallEditor key={serverId} serverId={serverId} />}
+        {/* Editor mounts on a selected rule — or when there are no rules at all, since the
+            rule rows are the only way to reach kind 'rule' and an empty list would otherwise
+            leave "+ add rule" unreachable. */}
+        {(selection.kind === 'rule' || rules.length === 0) && <FirewallEditor key={serverId} serverId={serverId} />}
         <div style={{ ...flowCaption, color: 'var(--color-danger)' }}>▼ everything else: DENIED ▼</div>
       </div>
     </div>

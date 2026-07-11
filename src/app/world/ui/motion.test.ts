@@ -48,4 +48,13 @@ describe('useRollingNumber', () => {
     // effect runs synchronously post-render; no frames flushed — already at target
     expect(result.current).toBe(900)
   })
+
+  it('snaps immediately with durationMs 0 (no divide-by-zero ease)', () => {
+    const { result, rerender } = renderHook(({ target }) => useRollingNumber(target, 0), {
+      initialProps: { target: 100 },
+    })
+    rerender({ target: 900 })
+    // guard branch: no frames flushed — already at target
+    expect(result.current).toBe(900)
+  })
 })

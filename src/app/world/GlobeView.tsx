@@ -47,7 +47,8 @@ export interface GlobeViewProps {
 
 export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: GlobeViewProps) {
   const addPopulation = useWorldStore(s => s.addPopulation)
-  const populations = useWorldStore(s => s.doc.populations)
+  const doc = useWorldStore(s => s.doc)
+  const populations = doc.populations
   const [rotationLocked, setRotationLocked] = useState(false)
   const sceneOverlay = useUiStore(s => s.sceneOverlay)
   // null! selects React 19's RefObject<HTMLDivElement> overload (matching the context's and
@@ -69,6 +70,15 @@ export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: Gl
       useUiStore.getState().setSceneOverlay(null)
     }
   }, [])
+
+  // A dock-side delete of the open overlay's entity must close the overlay: its pin/marker
+  // (and the click-away handler that lived on that mesh) unmounts with the entity, which would
+  // otherwise strand a stale card and keep the globe's rotation paused with no way to resume.
+  useEffect(() => {
+    if (!sceneOverlay) return
+    const exists = sceneOverlay.kind === 'region' ? doc.regions[sceneOverlay.id] : doc.populations[sceneOverlay.id]
+    if (!exists) useUiStore.getState().setSceneOverlay(null)
+  }, [sceneOverlay, doc])
 
   // Place-mode is armed/disarmed by WorldShell (the common ancestor of this component and
   // TrafficPanel) via the placeMode prop; a click on the globe here places a population, then
