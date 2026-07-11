@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   rpsPerCore, hostRpsCapacity, ramAtConnections, residentRamDemandMb, ttlLagHint, diskIoWord,
+  healthWord,
 } from './derived'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
@@ -81,5 +82,17 @@ describe('diskIoWord', () => {
     expect(diskIoWord(0.5)).toBe('moderate')
     expect(diskIoWord(1.9)).toBe('moderate')
     expect(diskIoWord(2)).toBe('heavy')
+  })
+})
+
+describe('healthWord', () => {
+  it('thresholds at 0.70 and 0.90 on the max of the two fractions', () => {
+    expect(healthWord(0.69, 0)).toBe('comfortable')
+    expect(healthWord(0, 0.71)).toBe('tight')
+    expect(healthWord(0.9, 0.1)).toBe('straining')
+  })
+  it('boundary values: exactly 0.70 is tight, exactly 0.90 is straining', () => {
+    expect(healthWord(0.7, 0)).toBe('tight')
+    expect(healthWord(0.9, 0)).toBe('straining')
   })
 })

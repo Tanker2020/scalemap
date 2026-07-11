@@ -37,3 +37,11 @@ export function diskIoWord(diskIoPerRequest: number): 'light' | 'moderate' | 'he
   if (diskIoPerRequest < 2) return 'moderate'
   return 'heavy'
 }
+
+// Plain-words health for a server row (spec D7a): worst of the two pressure fractions.
+export function healthWord(cpuFraction: number, ramFraction: number): 'comfortable' | 'tight' | 'straining' {
+  const worst = Math.max(cpuFraction, ramFraction)
+  if (worst < 0.70) return 'comfortable'
+  if (worst < 0.90) return 'tight'
+  return 'straining'
+}

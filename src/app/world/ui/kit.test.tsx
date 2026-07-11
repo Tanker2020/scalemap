@@ -156,3 +156,19 @@ describe('Explainer', () => {
     expect(screen.getByText(/fastest healthy region/)).toBeInTheDocument()
   })
 })
+
+describe('kit motion grammar (Polish 2 T1)', () => {
+  const css = () => document.getElementById('scalemap-kit-styles')?.textContent ?? ''
+  it('ships the four motion classes', () => {
+    expect(css()).toContain('.kit-press:active')
+    expect(css()).toContain('.kit-ripple::after')
+    expect(css()).toContain('.kit-ink')
+    expect(css()).toContain('.kit-row:hover')
+  })
+  it('every motion class is inside the reduced-motion no-op block', () => {
+    const reduced = css().split('@media (prefers-reduced-motion: reduce)')[1] ?? ''
+    for (const cls of ['.kit-press', '.kit-ink', '.kit-ripple::after', '.kit-row:hover']) {
+      expect(reduced).toContain(cls)
+    }
+  })
+})
