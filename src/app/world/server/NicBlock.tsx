@@ -87,8 +87,7 @@ export function NicBlock({ box, nicMbps, inMbps, outMbps, inboundRps = 0, health
               flex: 1, height: 9, borderRadius: '0 0 1px 1px',
               background: `linear-gradient(180deg, ${PIN_GOLD_TOP}, ${PIN_GOLD_BOTTOM})`,
               opacity: rippling ? undefined : 0.45,
-              animation: rippling ? `gw-pinseq ${pinDurationS}s linear infinite` : undefined,
-              animationDelay: rippling ? `${delayS}s` : undefined,
+              animation: rippling ? `gw-pinseq ${pinDurationS}s linear infinite ${delayS}s` : undefined,
             }} className={rippling ? 'gw-pin' : undefined} />
           ))}
         </div>
@@ -110,7 +109,7 @@ export function NicBlock({ box, nicMbps, inMbps, outMbps, inboundRps = 0, health
         <span key={lane.key} className="gw-lane" style={{
           position: 'absolute', left: 4, top: lane.top, width: 10, height: 4, borderRadius: 2,
           background: 'linear-gradient(90deg, transparent, #7CFFE9)', filter: 'drop-shadow(0 0 3px #7CFFE9)',
-          animation: `gw-lane${lane.key} 1.4s linear infinite`, animationDelay: `${lane.delayS}s`,
+          animation: `gw-lane${lane.key} 1.4s linear infinite ${lane.delayS}s`,
         }} />
       ))}
 
