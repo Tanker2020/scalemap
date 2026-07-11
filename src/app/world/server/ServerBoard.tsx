@@ -3,7 +3,10 @@
 // TraceLayer (SVG z0) → DOM blocks (z1) → PacketLayer (canvas z2, T5: engine-driven particles).
 // T4 wires live metrics (useServerDisplayMetrics, D5) into ServiceChip/NicBlock and mounts the
 // unified HardwarePlatform (D4) at layout.hardware.box. T5 also feeds gateStats.blockedPerSecond
-// into FirewallGate's "✕ N/s blocked" line from the store's events + latestBatch.simMs.
+// into FirewallGate's reject sparks from the store's events + latestBatch.simMs, and derives
+// `inboundRps` (Σ resident instance rps — no server-level rps metric exists) once, shared by
+// NicBlock's ACT LED and FirewallGate's allow-slat edge-dot gate (D6/D7 physical-jack + shield
+// redesign).
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import { attributeCores, type BoardLayout, type CoreAttribution, type StaticTrace } from './boardLayout'
 import type { BlueprintId, InstanceId, ServerId } from '../../../lib/world/types'
@@ -49,6 +52,13 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
   const gateBlockedPerSecond = useMemo(
     () => blockedPerSecond(events, serverId, layout.residentInstanceIds, displaySimMs),
     [events, serverId, layout.residentInstanceIds, displaySimMs],
+  )
+  // D6/D7 (T5): inbound rps has no server-level metric — derive it as Σ resident instance rps.
+  // Feeds both the NIC's ACT LED blink period and the firewall shield's allow-slat edge-dot gate
+  // (same "is traffic passing" signal, computed once here).
+  const inboundRps = useMemo(
+    () => layout.residentInstanceIds.reduce((sum, id) => sum + (display.instances[id]?.rps ?? 0), 0),
+    [layout.residentInstanceIds, display.instances],
   )
 
   useEffect(() => {
@@ -141,12 +151,13 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
         <NicBlock
           box={layout.nic.box} nicMbps={server?.specs.nicMbps ?? 0}
           inMbps={display.server?.nicInMbps} outMbps={display.server?.nicOutMbps}
-          utilFraction={display.server && server?.specs.nicMbps ? (display.server.nicInMbps + display.server.nicOutMbps) / server.specs.nicMbps : undefined}
+          inboundRps={inboundRps} health={display.server?.health}
           selected={props.selection?.kind === 'nic'}
           onSelect={() => props.onSelect({ kind: 'nic' })} onHover={() => {}}
         />
         <FirewallGate
-          box={layout.gate.box} ruleCount={server?.firewall.length ?? 0} blockedPerSecond={gateBlockedPerSecond}
+          box={layout.gate.box} rules={server?.firewall ?? []} blockedPerSecond={gateBlockedPerSecond}
+          trafficActive={inboundRps > 0}
           selected={props.selection?.kind === 'firewall' || props.selection?.kind === 'rule'}
           onSelect={() => props.onSelect({ kind: 'firewall' })}
         />
