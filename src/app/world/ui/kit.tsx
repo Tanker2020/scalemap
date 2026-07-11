@@ -30,6 +30,7 @@ if (typeof document !== 'undefined' && !document.getElementById(KIT_STYLE_ID)) {
   --kit-cat-compute: ${CATEGORY_COLORS.compute.accent};
   --kit-cat-messaging: ${CATEGORY_COLORS.messaging.accent};
   --kit-cat-network: ${CATEGORY_COLORS.network.accent};
+  --kit-cat-storage: ${CATEGORY_COLORS.storage.accent};
 }
 :root[data-theme="light"] {
   --kit-accent: ${KIT_GLOW_TEXT_LIGHT};
@@ -43,6 +44,7 @@ if (typeof document !== 'undefined' && !document.getElementById(KIT_STYLE_ID)) {
   --kit-cat-compute: ${CATEGORY_COLORS.compute.foreground.light};
   --kit-cat-messaging: ${CATEGORY_COLORS.messaging.foreground.light};
   --kit-cat-network: ${CATEGORY_COLORS.network.foreground.light};
+  --kit-cat-storage: ${CATEGORY_COLORS.storage.foreground.light};
 }
 .kit-row { border: 1px solid transparent; }
 .kit-row:hover {

@@ -90,26 +90,44 @@ describe('WorldPanel signature headers (Polish 3 T7)', () => {
 
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
 
+    // 1-of-each fixture (1 region/AZ/server/blueprint/placement/population) doubles as the
+    // singular-aware-grammar exercise (review fix wave, Polish 3 T7) — every count below is
+    // exactly 1, so the singular branch of each `${n}${n===1?'':'s'}` must be hit.
     fireEvent.click(screen.getByText('Topology'))
-    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 regions · 1 AZs · 1 servers')
+    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 region · 1 AZ · 1 server')
 
     fireEvent.click(screen.getByText('Blueprints'))
-    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 blueprints')
+    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 blueprint')
 
     fireEvent.click(screen.getByText('Placements'))
-    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 placements')
+    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 placement')
 
     fireEvent.click(screen.getByText('Traffic'))
-    expect(screen.getByTestId('signature-header')).toHaveTextContent('1,000 rps baseline · 1 populations')
+    expect(screen.getByTestId('signature-header')).toHaveTextContent('1,000 rps baseline · 1 population')
 
     fireEvent.click(screen.getByText('Analysis'))
-    expect(screen.getByTestId('signature-header')).toHaveTextContent(/\d+ findings \(\d+ errors\)/)
+    expect(screen.getByTestId('signature-header')).toHaveTextContent(/\d+ findings? \(\d+ errors?\)/)
 
     fireEvent.click(screen.getByText('Events'))
     expect(screen.getByTestId('signature-header')).toHaveTextContent('—')
 
     fireEvent.click(screen.getByText('Cost'))
     expect(screen.getByTestId('signature-header')).toHaveTextContent(/\$\d+\.\d{2}\/hr/)
+  })
+
+  it('all seven tab-header accents are distinct CSS var tokens (light-mode collision fix)', () => {
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+
+    const labels = ['Topology', 'Blueprints', 'Placements', 'Traffic', 'Analysis', 'Events', 'Cost']
+    const accents = labels.map(label => {
+      fireEvent.click(screen.getByText(label))
+      const header = screen.getByTestId('signature-header')
+      const match = header.style.borderLeft.match(/var\(--[\w-]+\)/)
+      expect(match).not.toBeNull()
+      return match![0]
+    })
+
+    expect(new Set(accents).size).toBe(7)
   })
 
   it('cost header uses the price color', () => {
@@ -128,7 +146,7 @@ describe('WorldPanel signature headers (Polish 3 T7)', () => {
 
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
     // Starts on Topology by default — no metrics batch has ever been set.
-    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 regions · 1 AZs · 1 servers')
+    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 region · 1 AZ · 1 server')
   })
 
   it('renders the signature header between the tab bar and the fieldset, outside disabled scope', () => {

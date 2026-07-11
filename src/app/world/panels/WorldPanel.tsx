@@ -101,40 +101,49 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
   useLayoutEffect(() => { placeInk(tab) }, [tab])
 
   // Per-tab signature header config — computed only for the ACTIVE tab (glyph/accent are
-  // static per tab; the summary is the one live-derived piece). Accents for the three
-  // CATEGORY_COLORS-sourced tabs ride the --kit-cat-* vars (ui/kit.tsx), which already swap
-  // dark/light for exactly this token family.
+  // static per tab; the summary is the one live-derived piece). Each tab rides a distinct
+  // hue that stays distinct in BOTH themes (review fix wave, Polish 3 T7): topology and
+  // blueprints previously both resolved to #3F6DAC in light mode (--color-accent's light
+  // value equals compute's foreground.light) — blueprints moved onto --kit-cat-storage to
+  // break the collision. The four CATEGORY_COLORS-sourced tabs ride the --kit-cat-* vars
+  // (ui/kit.tsx), which already swap dark/light for exactly this token family.
   let header: SignatureHeaderProps
   switch (tab) {
     case 'topology': {
       const nRegions = Object.keys(doc.regions).length
       const nAzs = Object.keys(doc.azs).length
       const nServers = Object.keys(doc.servers).length
-      header = { glyph: '▦', accent: 'var(--color-accent)', summary: `${nRegions} regions · ${nAzs} AZs · ${nServers} servers` }
+      header = {
+        glyph: '▦', accent: 'var(--color-accent)',
+        summary: `${nRegions} region${nRegions === 1 ? '' : 's'} · ${nAzs} AZ${nAzs === 1 ? '' : 's'} · ${nServers} server${nServers === 1 ? '' : 's'}`,
+      }
       break
     }
     case 'blueprints': {
       const nBlueprints = Object.keys(doc.blueprints).length
-      header = { glyph: '⚙', accent: 'var(--kit-cat-compute)', summary: `${nBlueprints} blueprints` }
+      header = { glyph: '⚙', accent: 'var(--kit-cat-storage)', summary: `${nBlueprints} blueprint${nBlueprints === 1 ? '' : 's'}` }
       break
     }
     case 'placements': {
       const nPlacements = Object.keys(doc.placements).length
-      header = { glyph: '◎', accent: 'var(--kit-cat-messaging)', summary: `${nPlacements} placements` }
+      header = { glyph: '◎', accent: 'var(--kit-cat-messaging)', summary: `${nPlacements} placement${nPlacements === 1 ? '' : 's'}` }
       break
     }
     case 'traffic': {
       const nPopulations = Object.keys(doc.populations).length
       header = {
         glyph: '⇢', accent: 'var(--kit-cat-network)',
-        summary: `${doc.traffic.baselineTotalRps.toLocaleString('en-US')} rps baseline · ${nPopulations} populations`,
+        summary: `${doc.traffic.baselineTotalRps.toLocaleString('en-US')} rps baseline · ${nPopulations} population${nPopulations === 1 ? '' : 's'}`,
       }
       break
     }
     case 'analysis': {
       const errorCount = analysis.filter(f => f.severity === 'critical').length
         + compileExtra.filter(cf => cf.severity === 'error').length
-      header = { glyph: '▲', accent: 'var(--color-warning)', summary: `${analysisCount} findings (${errorCount} errors)` }
+      header = {
+        glyph: '▲', accent: 'var(--color-danger)',
+        summary: `${analysisCount} finding${analysisCount === 1 ? '' : 's'} (${errorCount} error${errorCount === 1 ? '' : 's'})`,
+      }
       break
     }
     case 'events': {
@@ -144,7 +153,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
         const last = events[nEvents - 1]
         const nowMs = displayBatch?.simMs ?? last.simMs
         const agoS = Math.max(0, Math.round((nowMs - last.simMs) / 1000))
-        summary = `${nEvents} events · last ${agoS}s ago`
+        summary = `${nEvents} event${nEvents === 1 ? '' : 's'} · last ${agoS}s ago`
       }
       header = { glyph: '◷', accent: 'var(--color-text-muted)', summary }
       break
