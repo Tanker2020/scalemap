@@ -16,6 +16,38 @@ import { ChipValue } from '../ui/kit'
 import { useRollingNumber } from '../ui/motion'
 import { computeWorldCost, HOURS_PER_MONTH } from '../../../lib/costModelV2'
 
+// ─── SignatureHeader (Polish 3 T7 / spec D9) ──────────────────────────────────────
+// Every dock tab gets a per-tab identity: a glyph, an accent, and a one-line live summary.
+// Rendered BETWEEN the tab bar and the `<fieldset disabled={running}>` body (never inside
+// it) — this is a read surface, not a control, and must stay legible while the sim runs.
+// Identical DOM/layout across every tab; the ONLY thing that varies is glyph + accent, so
+// the seven tabs read distinct-at-a-glance without becoming seven different box shapes.
+interface SignatureHeaderProps { glyph: string; accent: string; summary: string; summaryColor?: string }
+
+function SignatureHeader({ glyph, accent, summary, summaryColor }: SignatureHeaderProps) {
+  return (
+    <div
+      data-testid="signature-header"
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8, minWidth: 0,
+        padding: '6px 9px', marginBottom: 8, borderRadius: 6,
+        border: '1px solid var(--color-node-border)', borderLeft: `2px solid ${accent}`,
+        background: 'var(--color-node-base)',
+      }}
+    >
+      <span aria-hidden style={{ fontSize: 13, lineHeight: 1, color: accent, flexShrink: 0, width: 14, textAlign: 'center' }}>
+        {glyph}
+      </span>
+      <span style={{
+        fontSize: 10.5, color: summaryColor ?? 'var(--color-text-secondary)', minWidth: 0,
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
+      }}>
+        {summary}
+      </span>
+    </div>
+  )
+}
+
 export interface WorldPanelProps {
   running: boolean
   placeMode: boolean
@@ -41,8 +73,10 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
   const compiled = useCompiledWorld()
   const doc = useWorldStore(s => s.doc)
   const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
+  const events = useSimulationStore(s => s.events)
   const analysis = useMemo(() => runAnalysis(doc, compiled, displayBatch), [compiled, displayBatch?.simMs])
-  const analysisCount = analysis.length + unsuppressedCompileFindings(analysis, compiled.findings).length
+  const compileExtra = useMemo(() => unsuppressedCompileFindings(analysis, compiled.findings), [analysis, compiled.findings])
+  const analysisCount = analysis.length + compileExtra.length
   const tabs: { id: PanelTab; label: string }[] = [
     { id: 'topology', label: 'Topology' },
     { id: 'blueprints', label: 'Blueprints' },
@@ -65,6 +99,62 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
     if (el) setInk({ left: el.offsetLeft, width: el.offsetWidth, top: el.offsetTop + el.offsetHeight - 2 })
   }
   useLayoutEffect(() => { placeInk(tab) }, [tab])
+
+  // Per-tab signature header config — computed only for the ACTIVE tab (glyph/accent are
+  // static per tab; the summary is the one live-derived piece). Accents for the three
+  // CATEGORY_COLORS-sourced tabs ride the --kit-cat-* vars (ui/kit.tsx), which already swap
+  // dark/light for exactly this token family.
+  let header: SignatureHeaderProps
+  switch (tab) {
+    case 'topology': {
+      const nRegions = Object.keys(doc.regions).length
+      const nAzs = Object.keys(doc.azs).length
+      const nServers = Object.keys(doc.servers).length
+      header = { glyph: '▦', accent: 'var(--color-accent)', summary: `${nRegions} regions · ${nAzs} AZs · ${nServers} servers` }
+      break
+    }
+    case 'blueprints': {
+      const nBlueprints = Object.keys(doc.blueprints).length
+      header = { glyph: '⚙', accent: 'var(--kit-cat-compute)', summary: `${nBlueprints} blueprints` }
+      break
+    }
+    case 'placements': {
+      const nPlacements = Object.keys(doc.placements).length
+      header = { glyph: '◎', accent: 'var(--kit-cat-messaging)', summary: `${nPlacements} placements` }
+      break
+    }
+    case 'traffic': {
+      const nPopulations = Object.keys(doc.populations).length
+      header = {
+        glyph: '⇢', accent: 'var(--kit-cat-network)',
+        summary: `${doc.traffic.baselineTotalRps.toLocaleString('en-US')} rps baseline · ${nPopulations} populations`,
+      }
+      break
+    }
+    case 'analysis': {
+      const errorCount = analysis.filter(f => f.severity === 'critical').length
+        + compileExtra.filter(cf => cf.severity === 'error').length
+      header = { glyph: '▲', accent: 'var(--color-warning)', summary: `${analysisCount} findings (${errorCount} errors)` }
+      break
+    }
+    case 'events': {
+      const nEvents = events.length
+      let summary = '—'
+      if (nEvents > 0) {
+        const last = events[nEvents - 1]
+        const nowMs = displayBatch?.simMs ?? last.simMs
+        const agoS = Math.max(0, Math.round((nowMs - last.simMs) / 1000))
+        summary = `${nEvents} events · last ${agoS}s ago`
+      }
+      header = { glyph: '◷', accent: 'var(--color-text-muted)', summary }
+      break
+    }
+    case 'cost': {
+      const hourlyUsd = computeWorldCost(doc, displayBatch?.world ?? null).monthlyUsd / HOURS_PER_MONTH
+      header = { glyph: '¤', accent: 'var(--color-price)', summary: `$${hourlyUsd.toFixed(2)}/hr`, summaryColor: 'var(--color-price)' }
+      break
+    }
+  }
 
   return (
     <aside style={panel}>
@@ -90,6 +180,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
         ))}
         <span className="kit-ink" aria-hidden style={{ left: ink.left, width: ink.width, top: ink.top }} />
       </div>
+      <SignatureHeader {...header} />
       {/* Native fieldset-disabled cascades into every descendant button/input/select with zero
           changes to TopologyPanel/BlueprintPanel/PlacementPanel. Findings/Events have no form
           controls, so wrapping them here too is a harmless no-op — kept uniform on purpose. */}

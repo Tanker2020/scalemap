@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, within } from '@testing-library/react'
 import { WorldPanel } from './WorldPanel'
 import { useWorldStore } from '../../store/world.store'
 import { useUiStore } from '../../store/ui.store'
@@ -76,5 +76,67 @@ describe('WorldPanel findings tab', () => {
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
     expect(screen.getByText('$0.04/hr')).toHaveStyle({ color: 'var(--color-price)' })
     useSimulationStore.setState({ latestBatch: null })
+  })
+})
+
+describe('WorldPanel signature headers (Polish 3 T7)', () => {
+  it('every tab renders a signature header with its live one-liner', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const bpId = useWorldStore.getState().addBlueprint('api')
+    useWorldStore.getState().addPlacement(bpId, serverId)
+    useWorldStore.getState().addPopulation('nyc', 40.7, -74)
+
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+
+    fireEvent.click(screen.getByText('Topology'))
+    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 regions · 1 AZs · 1 servers')
+
+    fireEvent.click(screen.getByText('Blueprints'))
+    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 blueprints')
+
+    fireEvent.click(screen.getByText('Placements'))
+    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 placements')
+
+    fireEvent.click(screen.getByText('Traffic'))
+    expect(screen.getByTestId('signature-header')).toHaveTextContent('1,000 rps baseline · 1 populations')
+
+    fireEvent.click(screen.getByText('Analysis'))
+    expect(screen.getByTestId('signature-header')).toHaveTextContent(/\d+ findings \(\d+ errors\)/)
+
+    fireEvent.click(screen.getByText('Events'))
+    expect(screen.getByTestId('signature-header')).toHaveTextContent('—')
+
+    fireEvent.click(screen.getByText('Cost'))
+    expect(screen.getByTestId('signature-header')).toHaveTextContent(/\$\d+\.\d{2}\/hr/)
+  })
+
+  it('cost header uses the price color', () => {
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    fireEvent.click(screen.getByText('Cost'))
+    const header = screen.getByTestId('signature-header')
+    const summary = within(header).getByText(/^\$\d+\.\d{2}\/hr$/)
+    expect(summary).toHaveStyle({ color: 'var(--color-price)' })
+  })
+
+  it('header summaries show at rest where metrics-driven (topology counts render without a batch)', () => {
+    useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(Object.keys(useWorldStore.getState().doc.regions)[0], 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    expect(useSimulationStore.getState().latestBatch).toBeNull()
+
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    // Starts on Topology by default — no metrics batch has ever been set.
+    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 regions · 1 AZs · 1 servers')
+  })
+
+  it('renders the signature header between the tab bar and the fieldset, outside disabled scope', () => {
+    render(<WorldPanel running={true} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    const header = screen.getByTestId('signature-header')
+    // A header nested inside `<fieldset disabled>` would itself carry the disabled attribute
+    // cascade only for form controls — but the header must not be a fieldset descendant at all
+    // per the brief ("never grays a header out"). Assert it sits outside any fieldset.
+    expect(header.closest('fieldset')).toBeNull()
   })
 })

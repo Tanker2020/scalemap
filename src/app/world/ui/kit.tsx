@@ -3,6 +3,7 @@
 // design (see task brief). Token-only styling — the only sanctioned raw hexes in the app are
 // the glow constants below, exposed to CSS as --kit-* vars so consumers stay theme-correct.
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { CATEGORY_COLORS } from '../../../lib/theme'
 
 // ─── sanctioned hexes (ONLY here, no other file — consumers use the --kit-* CSS vars below,
 // never these constants directly) ────────────────────────────────────────────────
@@ -26,11 +27,22 @@ if (typeof document !== 'undefined' && !document.getElementById(KIT_STYLE_ID)) {
   --kit-accent: ${KIT_GLOW_TEXT};
   --kit-accent-dim: ${KIT_GLOW_DIM};
   --kit-teal: ${KIT_TEAL};
+  --kit-cat-compute: ${CATEGORY_COLORS.compute.accent};
+  --kit-cat-messaging: ${CATEGORY_COLORS.messaging.accent};
+  --kit-cat-network: ${CATEGORY_COLORS.network.accent};
 }
 :root[data-theme="light"] {
   --kit-accent: ${KIT_GLOW_TEXT_LIGHT};
   --kit-accent-dim: ${KIT_GLOW_DIM_LIGHT};
   --kit-teal: ${KIT_TEAL_LIGHT};
+  /* Dock v2 signature headers (Polish 3 T7) use these as an icon-stroke/border color, not a
+     saturated chip background — CATEGORY_COLORS.*.accent alone reads ~2.8:1 on a white
+     card (fails even the 3:1 non-text-contrast floor). .foreground.light is the SAME
+     swap-on-light-theme idiom region/r3Styles.ts and az/azFloorStyles.ts already use for
+     these exact tokens ("light mode text/icon-stroke use" per theme.ts's own comment). */
+  --kit-cat-compute: ${CATEGORY_COLORS.compute.foreground.light};
+  --kit-cat-messaging: ${CATEGORY_COLORS.messaging.foreground.light};
+  --kit-cat-network: ${CATEGORY_COLORS.network.foreground.light};
 }
 .kit-row { border: 1px solid transparent; }
 .kit-row:hover {
