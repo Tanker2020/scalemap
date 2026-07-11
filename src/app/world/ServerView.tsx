@@ -61,14 +61,17 @@ export function ServerView(): ReactElement | null {
             an unracked server (e.g. reached before T4's free-pool tray/rack UI exists). */}
         {' — '}{az?.label ?? '?'} › {server.rack ? `${server.rack.rackId} › U${server.rack.unit}` : 'unracked'}
       </div>
-      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <div style={{ flex: 2.6, display: 'flex', minWidth: 0 }}>
-          <ServerBoard
-            serverId={serverId} layout={layout} traces={traces}
-            selection={selection} onSelect={setSelection}
-            hoveredBlueprintId={hoveredBlueprintId} onHoverBlueprint={setHoveredBlueprintId}
-          />
-        </div>
+      {/* D8/T6: InspectorRail re-housed from a permanent-width flex sidebar to a docked overlay
+          (position:absolute inside this wrapper — see InspectorRail.tsx's own comment) so the
+          board gets the full width regardless of selection state ("never eats the board"). This
+          wrapper is InspectorRail's positioning ancestor; it spans exactly the area ServerBoard
+          fills, so "docked to the board's bottom-right" resolves against the board itself. */}
+      <div style={{ position: 'relative', display: 'flex', flex: 1, minHeight: 0 }}>
+        <ServerBoard
+          serverId={serverId} layout={layout} traces={traces}
+          selection={selection} onSelect={setSelection}
+          hoveredBlueprintId={hoveredBlueprintId} onHoverBlueprint={setHoveredBlueprintId}
+        />
         <InspectorRail serverId={serverId} selection={selection} onSelect={setSelection} />
       </div>
     </div>

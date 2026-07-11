@@ -1,11 +1,17 @@
 // src/app/world/server/HardwarePlatform.test.tsx
 // @vitest-environment jsdom
-import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
-import { HardwarePlatform } from './HardwarePlatform'
+// Polish 3 T6 (D8): rewritten for the substrate redesign — corebank/corecell (coreCells), DIMM
+// sticks (dimmStrata, worked example from the brief), spinning platter, queue-depth ticks. The
+// prior D4/D5 CPU-ring/RAM-reservoir/disk-slice-per-volume suite is superseded (that DOM no
+// longer exists); oom/volume detail now live in InspectorRail/StackPlate instead (see
+// HardwarePlatform.tsx's header comment).
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
+import { HardwarePlatform, coreCells, dimmStrata } from './HardwarePlatform'
 import { createWorld, createRegion, createAz, createServer } from '../../../lib/world/factories'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import type { ServerMetrics } from '../../../lib/worldEngine/types'
+import type { BlueprintId, ServiceBlueprint } from '../../../lib/world/types'
 
 function server(kind: 'vps' | 'dedicated' = 'vps') {
   createWorld()
@@ -18,80 +24,152 @@ const metrics = (over: Partial<ServerMetrics> = {}): ServerMetrics => ({
   ramByInstance: [{ instanceId: 'i1', blueprintId: 'b1', ramMb: 1400 }, { instanceId: 'i2', blueprintId: 'b2', ramMb: 610 }],
   ramUsedMb: 5900, ramTotalMb: 8192, nicInMbps: 214, nicOutMbps: 118, diskIoFraction: 0.12, health: 'healthy', ...over,
 })
-const residents = [
-  { instanceId: 'i1', blueprintId: 'b1', color: '#A78BFA', name: 'postgres', ramBaseMb: 256 },
-  { instanceId: 'i2', blueprintId: 'b2', color: '#4A9EFF', name: 'api', ramBaseMb: 128 },
-]
+const blueprint = (id: string, color: string, name = id): ServiceBlueprint => ({
+  id, name, color, workload: { cpuMsPerRequest: 5, ramBaseMb: 128, ramPerConnMb: 0.5, diskIoPerRequest: 0 },
+  ports: [], dependencies: [], stateful: false, volumeName: null,
+})
+const blueprints: Record<BlueprintId, ServiceBlueprint> = {
+  b1: blueprint('b1', '#A78BFA', 'postgres'), b2: blueprint('b2', '#4A9EFF', 'api'),
+}
+const residents = [{ instanceId: 'i1', blueprintId: 'b1' }, { instanceId: 'i2', blueprintId: 'b2' }]
+
+describe('coreCells (pure)', () => {
+  it('marks hot at 0.85 and applies steal only when stealing', () => {
+    const noSteal = coreCells([0.5, 0.9], 0)
+    expect(noSteal.every(c => !c.steal)).toBe(true)
+    expect(noSteal[1].hot).toBe(true)   // 0.9 >= 0.85
+    expect(noSteal[0].hot).toBe(false)
+
+    const eightCores = new Array(8).fill(0.5)
+    const withSteal = coreCells(eightCores, 0.3)   // ceil(0.3*8) = 3 -> cores 0,1,2 steal
+    expect(withSteal.map(c => c.steal)).toEqual([true, true, true, false, false, false, false, false])
+
+    const exactlyHot = coreCells([0.85], 0)
+    expect(exactlyHot[0].hot).toBe(true)
+  })
+})
+
+describe('dimmStrata (pure)', () => {
+  it('partitions sticks by blueprint color with exact fractions (worked example)', () => {
+    const bps: Record<BlueprintId, ServiceBlueprint> = { b1: blueprint('b1', '#4A9EFF') }
+    const sticks = dimmStrata([{ blueprintId: 'b1', ramMb: 8000 }], bps, 16000)
+    expect(sticks).toEqual([
+      [{ color: '#4A9EFF', frac: 1 }],
+      [{ color: '#4A9EFF', frac: 1 }],
+      [{ color: '#4a5361', frac: 1 }],
+      [{ color: '#4a5361', frac: 1 }],
+    ])
+  })
+
+  it('returns 4 empty sticks when ramTotalMb is zero', () => {
+    expect(dimmStrata([], {}, 0)).toEqual([[], [], [], []])
+  })
+
+  it('splits a stratum across a stick boundary', () => {
+    // capPerStick = 1000/4 = 250; one 300mb blueprint spans stick0 (250) + spills 50 into stick1.
+    const bps: Record<BlueprintId, ServiceBlueprint> = { b1: blueprint('b1', '#111') }
+    const sticks = dimmStrata([{ blueprintId: 'b1', ramMb: 300 }], bps, 1000)
+    expect(sticks[0]).toEqual([{ color: '#111', frac: 1 }])
+    expect(sticks[1][0]).toEqual({ color: '#111', frac: 50 / 250 })
+  })
+})
 
 describe('HardwarePlatform', () => {
   it('renders one core cell per vcpu', () => {
     const s = server()
-    render(<HardwarePlatform server={s} metrics={metrics()} residentBlueprints={residents} attribution={[]} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    render(<HardwarePlatform server={s} metrics={metrics()} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
     expect(screen.getAllByTestId('core-cell')).toHaveLength(4)
   })
 
-  it('steal arc appears only for vps with steal', () => {
+  it('marks hot cores and applies the steal overlay only to stolen cores', () => {
     const s = server('vps')
-    const { rerender } = render(<HardwarePlatform server={s} metrics={metrics({ stealFraction: 0.18 })} residentBlueprints={residents} attribution={[]} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
-    expect(screen.getByText(/steal/)).toBeInTheDocument()
-    rerender(<HardwarePlatform server={s} metrics={metrics({ stealFraction: 0 })} residentBlueprints={residents} attribution={[]} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
-    expect(screen.queryByText(/steal/)).not.toBeInTheDocument()
+    render(<HardwarePlatform server={s} metrics={metrics({ stealFraction: 0.3 })} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    const cells = screen.getAllByTestId('core-cell')
+    // 4 cores, stealFraction 0.3 -> ceil(0.3*4)=2 stolen (indices 0,1)
+    expect(cells[0]).toHaveAttribute('data-steal', 'true')
+    expect(cells[1]).toHaveAttribute('data-steal', 'true')
+    expect(cells[2]).toHaveAttribute('data-steal', 'false')
+    expect(screen.getAllByTestId('core-steal')).toHaveLength(2)
+    // core index 2 has utilization 0.9 -> hot
+    expect(cells[2]).toHaveAttribute('data-hot', 'true')
   })
 
-  it('ram strata follow ramByInstance order and include os+cache remainder', () => {
+  it('no steal overlay when stealFraction is 0', () => {
     const s = server()
-    render(<HardwarePlatform server={s} metrics={metrics()} residentBlueprints={residents} attribution={[]} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
-    const strata = screen.getAllByTestId('ram-stratum')
-    // 2 instance strata + os+cache remainder
-    expect(strata.length).toBe(3)
-    expect(screen.getByText(/os \+ cache/i)).toBeInTheDocument()
+    render(<HardwarePlatform server={s} metrics={metrics({ stealFraction: 0 })} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    expect(screen.queryAllByTestId('core-steal')).toHaveLength(0)
   })
 
-  it('at-rest estimate uses ramBaseMb when no batch', () => {
+  it('renders 4 dimm sticks with signature-colored segments and a free remainder', () => {
     const s = server()
-    render(<HardwarePlatform server={s} metrics={null} residentBlueprints={residents} attribution={[]} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    render(<HardwarePlatform server={s} metrics={metrics()} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    expect(screen.getAllByTestId('dimm-stick')).toHaveLength(4)
+    const segs = screen.getAllByTestId('dimm-seg')
+    expect(segs[0]).toHaveAttribute('data-blueprint', 'b1')
+    expect(segs.some(s => s.getAttribute('data-blueprint') === 'free')).toBe(true)
+    expect(screen.getByText('postgres')).toBeInTheDocument()
+    expect(screen.getByText('api')).toBeInTheDocument()
+    expect(screen.getByText('free')).toBeInTheDocument()
+  })
+
+  it('hovering a dimm segment cross-highlights by blueprint; free segments never dim', () => {
+    const s = server()
+    render(<HardwarePlatform server={s} metrics={metrics()} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId="b1" onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    const segs = screen.getAllByTestId('dimm-seg')
+    const b1Seg = segs.find(s => s.getAttribute('data-blueprint') === 'b1')!
+    const b2Seg = segs.find(s => s.getAttribute('data-blueprint') === 'b2')!
+    const freeSeg = segs.find(s => s.getAttribute('data-blueprint') === 'free')!
+    expect(b1Seg.style.opacity).toBe('1')
+    expect(b2Seg.style.opacity).toBe('0.45')
+    expect(freeSeg.style.opacity).toBe('1')
+  })
+
+  it('at-rest estimate uses blueprint ramBaseMb when metrics is null', () => {
+    const s = server()
+    render(<HardwarePlatform server={s} metrics={null} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
     expect(screen.getByText(/at rest/i)).toBeInTheDocument()
-    // strata should reflect each resident's ramBaseMb (256, 128), not 0
-    expect(screen.getByText(/256/)).toBeInTheDocument()
-    expect(screen.getByText(/128/)).toBeInTheDocument()
+    // 2 residents x 128 (default ramBaseMb) = 256M used, out of the 8192M vps-medium preset.
+    expect(screen.getByText(/\/ 8 G \(at rest\)/)).toBeInTheDocument()
+    const segs = screen.getAllByTestId('dimm-seg')
+    expect(segs[0]).toHaveAttribute('data-blueprint', 'b1')
+    expect(segs[1]).toHaveAttribute('data-blueprint', 'b2')
   })
 
-  it('oom falsy-zero guard: memLimits/instanceRamMb of 0 renders no stray "0" or oom marker', () => {
+  it('platter is static at zero IO', () => {
     const s = server()
-    render(<HardwarePlatform server={s} metrics={metrics()} residentBlueprints={residents}
-      attribution={[]} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}}
-      memLimits={{ i2: 0 }} instanceRamMb={{ i2: 0 }} />)
-    expect(screen.queryByText('⚠oom')).not.toBeInTheDocument()
-    const apiRow = screen.getByText(/api/)
-    expect(apiRow.textContent).not.toMatch(/\b0\b/)
+    render(<HardwarePlatform server={s} metrics={metrics({ diskIoFraction: 0 })} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    const spin = screen.getByTestId('platter-spin')
+    expect(spin).toHaveAttribute('data-spinning', 'false')
+    expect(spin.style.animation).toBe('')
   })
 
-  it('disk slices proportional to volume sizes', () => {
+  it('platter spins when IO is active', () => {
     const s = server()
-    s.stacks = [{ name: 'app', networks: [], volumes: [{ name: 'pgdata', sizeGb: 12 }] }]
-    render(<HardwarePlatform server={s} metrics={metrics()} residentBlueprints={residents} attribution={[]} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
-    expect(screen.getByText(/pgdata/)).toBeInTheDocument()
+    render(<HardwarePlatform server={s} metrics={metrics({ diskIoFraction: 0.4 })} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    const spin = screen.getByTestId('platter-spin')
+    expect(spin).toHaveAttribute('data-spinning', 'true')
+    expect(spin.style.animation).toMatch(/^spin /)
   })
 
-  it('disk-slice cross-highlight (D8): hovered volume consumer keeps slice bright, others dim it', () => {
+  it('queue-depth ticks reflect summed active connections', () => {
     const s = server()
-    s.stacks = [{ name: 'app', networks: [], volumes: [{ name: 'pgdata', sizeGb: 12 }] }]
-    const { rerender } = render(<HardwarePlatform server={s} metrics={metrics()} residentBlueprints={residents}
-      attribution={[]} hoveredBlueprintId="b1" onHoverBlueprint={() => {}} onSelect={() => {}}
-      volumeConsumers={{ pgdata: 'b1' }} />)
-    expect(screen.getByTestId('disk-slice-pgdata')).toHaveAttribute('opacity', '0.85')
-
-    rerender(<HardwarePlatform server={s} metrics={metrics()} residentBlueprints={residents}
-      attribution={[]} hoveredBlueprintId="b2" onHoverBlueprint={() => {}} onSelect={() => {}}
-      volumeConsumers={{ pgdata: 'b1' }} />)
-    expect(screen.getByTestId('disk-slice-pgdata')).toHaveAttribute('opacity', `${0.85 * 0.45}`)
+    render(<HardwarePlatform server={s} metrics={metrics()} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} queueDepth={9} />)
+    const ticks = screen.getAllByTestId('qtick')
+    expect(ticks).toHaveLength(12)
+    // 9 conns / 3 per tick = 3 on-ticks
+    expect(ticks.filter(t => t.getAttribute('data-on') === 'true')).toHaveLength(3)
+    expect(screen.getByText(/depth 9/)).toBeInTheDocument()
   })
 
-  it('oom warning appears at 90% of memLimit', () => {
+  it('clicking the core bank, dimms, and disk zones dispatches the matching hardware selection', () => {
     const s = server()
-    render(<HardwarePlatform server={s} metrics={metrics()} residentBlueprints={residents}
-      attribution={[]} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}}
-      memLimits={{ i2: 640 }} instanceRamMb={{ i2: 610 }} />)
-    expect(screen.getByText(/oom/i)).toBeInTheDocument()
+    const onSelect = vi.fn()
+    const { container } = render(<HardwarePlatform server={s} metrics={metrics()} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={onSelect} />)
+    fireEvent.click(container.querySelector('[data-corebank]')!)
+    expect(onSelect).toHaveBeenLastCalledWith({ kind: 'hardware', part: 'cpu' })
+    fireEvent.click(container.querySelector('[data-dimms]')!)
+    expect(onSelect).toHaveBeenLastCalledWith({ kind: 'hardware', part: 'ram' })
+    fireEvent.click(container.querySelector('[data-disk]')!)
+    expect(onSelect).toHaveBeenLastCalledWith({ kind: 'hardware', part: 'disk' })
   })
 })

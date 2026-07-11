@@ -59,7 +59,8 @@ describe('ServerBoard (static stage)', () => {
       d.placements['p'] = createPlacement(bp.id, sid)
     })
     renderBoard(doc, server.id)
-    const chip = screen.getByText('nginx').closest('[data-chip]') as HTMLElement
+    // "nginx" now also appears in HardwarePlatform's DIMM legend (D8) — disambiguate to the chip.
+    const chip = screen.getAllByText('nginx').map(el => el.closest('[data-chip]')).find(Boolean) as HTMLElement
     expect(chip).toBeInTheDocument()
     // signature-color tab present
     expect(chip.querySelector('[data-chip-tab]')).toBeTruthy()
@@ -76,7 +77,8 @@ describe('ServerBoard (static stage)', () => {
     })
     renderBoard(doc, server.id)
     expect(screen.getByText(/stack: app/)).toBeInTheDocument()
-    expect(screen.getByText('api')).toBeInTheDocument()
+    // "api" now also appears in HardwarePlatform's DIMM legend (D8) — assert at least one match.
+    expect(screen.getAllByText('api').length).toBeGreaterThan(0)
     expect(screen.getByText(/3000.*8080/)).toBeInTheDocument()   // :host→container
   })
 
@@ -121,7 +123,8 @@ describe('ServerBoard (static stage)', () => {
     seed((d, sid) => { d.servers[sid].rack = { rackId: 'A1', unit: 7, heightU: 1 } })
     render(<ServerView />)
     expect(screen.getByText(/web-01/)).toBeInTheDocument()
-    expect(screen.getByText(/vCPU/)).toBeInTheDocument()
+    // "vCPU" now also appears in HardwarePlatform's SUBSTRATE header line (D8) — assert both exist.
+    expect(screen.getAllByText(/vCPU/).length).toBeGreaterThan(0)
     expect(screen.getByText(/A1/)).toBeInTheDocument()
     expect(screen.getByText(/U7/)).toBeInTheDocument()
   })

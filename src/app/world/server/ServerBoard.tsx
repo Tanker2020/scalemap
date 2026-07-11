@@ -2,14 +2,16 @@
 // Fixed-composition stage (D1): scale-to-fit a 1000x560 logical space; PCB grid bg; layer stack
 // TraceLayer (SVG z0) → DOM blocks (z1) → PacketLayer (canvas z2, T5: engine-driven particles).
 // T4 wires live metrics (useServerDisplayMetrics, D5) into ServiceChip/NicBlock and mounts the
-// unified HardwarePlatform (D4) at layout.hardware.box. T5 also feeds gateStats.blockedPerSecond
-// into FirewallGate's reject sparks from the store's events + latestBatch.simMs, and derives
-// `inboundRps` (Σ resident instance rps — no server-level rps metric exists) once, shared by
-// NicBlock's ACT LED and FirewallGate's allow-slat edge-dot gate (D6/D7 physical-jack + shield
-// redesign).
+// substrate instruments at layout.hardware.box (T6, D8: HardwarePlatform's corebank/DIMM/platter
+// redesign — see that file's header). T5 also feeds gateStats.blockedPerSecond into FirewallGate's
+// reject sparks from the store's events + latestBatch.simMs, and derives `inboundRps` (Σ resident
+// instance rps — no server-level rps metric exists) once, shared by NicBlock's ACT LED and
+// FirewallGate's allow-slat edge-dot gate (D6/D7 physical-jack + shield redesign). T6 adds two
+// more resident-walk derivations of the same shape (`queueDepth`, `instanceRps`) for the
+// substrate's queue ticks and TraceLayer's flowing-dash overlay.
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
-import { attributeCores, type BoardLayout, type CoreAttribution, type StaticTrace } from './boardLayout'
-import type { BlueprintId, InstanceId, ServerId } from '../../../lib/world/types'
+import type { BoardLayout, StaticTrace } from './boardLayout'
+import type { BlueprintId, ServerId } from '../../../lib/world/types'
 import type { BoardSelection } from './selection'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
@@ -60,6 +62,13 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
     () => layout.residentInstanceIds.reduce((sum, id) => sum + (display.instances[id]?.rps ?? 0), 0),
     [layout.residentInstanceIds, display.instances],
   )
+  // D8 (T6): Σ resident instance activeConnections feeds HardwarePlatform's io-queue ticks. Same
+  // "walk residents, pull one live metric" shape as inboundRps above (TraceLayer reads rps
+  // straight off `display.instances` itself — no separate derived map needed there).
+  const queueDepth = useMemo(
+    () => layout.residentInstanceIds.reduce((sum, id) => sum + (display.instances[id]?.activeConnections ?? 0), 0),
+    [layout.residentInstanceIds, display.instances],
+  )
 
   useEffect(() => {
     const el = containerRef.current
@@ -80,55 +89,15 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
     return bp?.ports.map(p => `:${p.port}`).join(' ') || 'internal'
   }
 
-  // Resident blueprints for the hardware platform (D4): signature color/name + at-rest ramBaseMb
-  // (D5, used when metrics is null). Memoized (T7 hygiene, Phase-3 carry-forward) — recomputed
-  // only when the chip list or blueprint table changes, not on every render/1Hz metrics tick.
-  const residentBlueprints = useMemo(() => layout.chips.map(chip => {
-    const bp = doc.blueprints[chip.blueprintId]
-    return {
-      instanceId: chip.instanceId, blueprintId: chip.blueprintId,
-      color: bp?.color ?? '#888', name: bp?.name ?? '?', ramBaseMb: bp?.workload.ramBaseMb ?? 0,
-    }
-  }), [layout.chips, doc.blueprints])
-
-  // Live per-core attribution (D8): dominant blueprint per vCPU from live cpuCoresUsed.
-  const attribution: CoreAttribution[] = useMemo(() => attributeCores(
-    server?.specs.vcpu ?? 0,
-    layout.chips.map(chip => ({
-      instanceId: chip.instanceId, blueprintId: chip.blueprintId,
-      cpuCoresUsed: display.instances[chip.instanceId]?.cpuCoresUsed ?? 0,
-    })),
-  ), [server?.specs.vcpu, layout.chips, display.instances])
-
-  // Container memLimitMb by instance (oom check) + live per-instance ramMb. Grouped into one
-  // memo — both loops walk the same layout.chips list and feed the same HardwarePlatform props,
-  // so memoizing them separately would be an arbitrary split of one logical derivation.
-  const { memLimits, instanceRamMb } = useMemo(() => {
-    const memLimits: Record<InstanceId, number> = {}
-    for (const chip of layout.chips) {
-      const rt = doc.placements[chip.placementId]?.runtime
-      if (rt?.type === 'container' && rt.memLimitMb != null) memLimits[chip.instanceId] = rt.memLimitMb
-    }
-    const instanceRamMb: Record<InstanceId, number> = {}
-    for (const chip of layout.chips) {
-      const m = display.instances[chip.instanceId]
-      if (m) instanceRamMb[chip.instanceId] = m.ramMb
-    }
-    return { memLimits, instanceRamMb }
-  }, [layout.chips, doc.placements, display.instances])
-
-  // Volume -> consumer blueprint id (D8 disk-slice cross-highlight): attribute each volume to
-  // the resident blueprint whose volumeName matches it.
-  const volumeConsumers: Record<string, string> = useMemo(() => {
-    const consumers: Record<string, string> = {}
-    for (const st of server?.stacks ?? []) {
-      for (const v of st.volumes) {
-        const bp = Object.values(doc.blueprints).find(b => b.volumeName === v.name)
-        if (bp) consumers[v.name] = bp.id
-      }
-    }
-    return consumers
-  }, [server, doc.blueprints])
+  // Resident instance identity pairs for the hardware platform's substrate (D8) — just enough
+  // for the at-rest RAM synthesis (D5) when no live batch exists; blueprint color/name/ramBaseMb
+  // now come from `doc.blueprints` directly (HardwarePlatform's `blueprints` prop below), so this
+  // no longer needs its own denormalized copy of those fields. Memoized (T7 hygiene, Phase-3
+  // carry-forward) — recomputed only when the chip list changes, not on every 1Hz metrics tick.
+  const residentInstances = useMemo(
+    () => layout.chips.map(chip => ({ instanceId: chip.instanceId, blueprintId: chip.blueprintId })),
+    [layout.chips],
+  )
 
   return (
     <div ref={containerRef} style={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', background: 'radial-gradient(ellipse at 40% 35%, #0C1018 0%, #07090D 70%)' }}>
@@ -141,7 +110,10 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
         {/* PCB grid */}
         <div style={{ position: 'absolute', inset: 0, backgroundImage: `linear-gradient(${PCB_GRID} 1px,transparent 1px),linear-gradient(90deg,${PCB_GRID} 1px,transparent 1px)`, backgroundSize: '26px 26px', opacity: 0.5 }} />
         {/* z0 traces */}
-        <TraceLayer layout={layout} traces={traces} selection={props.selection} onSelect={props.onSelect} hoveredBlueprintId={props.hoveredBlueprintId} />
+        <TraceLayer
+          layout={layout} traces={traces} selection={props.selection} onSelect={props.onSelect}
+          hoveredBlueprintId={props.hoveredBlueprintId} serverId={serverId} instances={display.instances}
+        />
         {/* z1 DOM blocks */}
         {layout.stacks.map(st => {
           const stackChips = layout.chips.filter(c => c.stackName === st.stackName)
@@ -173,6 +145,7 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
               portsLabel={portsLabel(chip)}
               health={m?.health}
               connLabel={m ? `${m.activeConnections} conn · p50 ${m.p50Ms.toFixed(1)}ms` : '—'}
+              rps={m?.rps ?? 0}
               selected={selected} hovered={hovered} dimmed={dimmed}
               onSelect={() => props.onSelect({ kind: 'instance', instanceId: chip.instanceId })}
               onHover={v => props.onHoverBlueprint(v ? chip.blueprintId : null)}
@@ -184,14 +157,14 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
             +{layout.overflowCount} more instance{layout.overflowCount > 1 ? 's' : ''}
           </div>
         )}
-        {/* Unified hardware platform (D4): CPU die, RAM reservoir, disk platter — right rail */}
+        {/* Substrate instruments (D8): core bank, DIMM sticks, platter, queue-depth — right rail */}
         {server && (
           <div style={{ position: 'absolute', left: layout.hardware.box.x, top: layout.hardware.box.y, width: layout.hardware.box.w, height: layout.hardware.box.h }}>
             <HardwarePlatform
-              server={server} metrics={display.server} residentBlueprints={residentBlueprints}
-              attribution={attribution} hoveredBlueprintId={props.hoveredBlueprintId}
+              server={server} metrics={display.server} residentInstances={residentInstances}
+              blueprints={doc.blueprints} hoveredBlueprintId={props.hoveredBlueprintId}
               onHoverBlueprint={props.onHoverBlueprint} onSelect={props.onSelect}
-              memLimits={memLimits} instanceRamMb={instanceRamMb} volumeConsumers={volumeConsumers}
+              queueDepth={queueDepth}
             />
           </div>
         )}

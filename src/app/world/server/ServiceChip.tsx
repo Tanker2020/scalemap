@@ -1,11 +1,18 @@
 // src/app/world/server/ServiceChip.tsx
-// Process/container service chip. T4 fills the conn/p50 line + health dot; T6 adds dim/glow
-// (cross-highlight, D8) and gates the hover transition behind prefers-reduced-motion.
-import type { CSSProperties, ReactElement } from 'react'
+// Process/container service chip. T4 filled the conn/p50 line + health dot; T6 (D8, mockup
+// `.b3chip .act`) adds a 12-bucket activity sparkbar fed by a rolling window of `rps` samples
+// kept in component state (cap 12, drop oldest) plus a hover lift (translateY(-2px) + glow,
+// mockup `.b3chip:hover`). Existing drag/select/hover dispatches (onSelect/onHover, both already
+// wired to the same handlers as before) are UNCHANGED — this is additive only.
+import { useEffect, useState, type CSSProperties, type ReactElement } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import type { ChipLayout } from './boardLayout'
 import type { HealthState } from '../../../lib/worldEngine/types'
 import { HEALTH_COLOR } from './healthColor'
+
+const SPARK_CAP = 12
+const SPARK_MIN_HEIGHT_PCT = 6   // floor so a real-but-tiny sample stays visible
+const SPARK_ON_THRESHOLD_PCT = 50
 
 export interface ServiceChipProps {
   chip: ChipLayout
@@ -14,6 +21,7 @@ export interface ServiceChipProps {
   portsLabel: string           // ":443 :80" or ":3000→8080"
   health?: HealthState
   connLabel?: string           // "1.1k conn · p50 2.1ms" — T4; T3 passes "—"
+  rps?: number                 // live admitted rps — T6 sparkbar sample source
   selected?: boolean
   hovered?: boolean
   dimmed?: boolean
@@ -21,16 +29,31 @@ export interface ServiceChipProps {
   onHover?: (v: boolean) => void
 }
 
-export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy', connLabel = '—', selected, hovered, dimmed, onSelect, onHover }: ServiceChipProps): ReactElement {
+export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy', connLabel = '—', rps = 0, selected, hovered, dimmed, onSelect, onHover }: ServiceChipProps): ReactElement {
   const reduced = useReducedMotion()
+  const [samples, setSamples] = useState<number[]>([])
+
+  useEffect(() => {
+    setSamples(prev => [...prev, rps].slice(-SPARK_CAP))
+  }, [rps])
+
   const style: CSSProperties = {
     position: 'absolute', left: chip.box.x, top: chip.box.y, width: chip.box.w, minHeight: chip.box.h,
     background: 'linear-gradient(160deg,#16202E,#0E141E)',
     border: `1px solid ${selected || hovered ? color : color + '88'}`, borderRadius: 6, padding: 6,
     boxShadow: hovered ? `0 0 16px ${color}` : `0 0 10px ${color}22`,
     opacity: dimmed ? 0.45 : 1, cursor: 'pointer', font: '9px var(--font-mono)',
-    transition: reduced ? undefined : 'opacity 0.15s, box-shadow 0.15s',
+    transform: hovered ? 'translateY(-2px)' : undefined,
+    transition: reduced ? undefined : 'transform 0.14s, box-shadow 0.14s, opacity 0.15s',
   }
+
+  // Always render SPARK_CAP bars — pad the front with empty (no-sample-yet) placeholders so the
+  // sparkbar's width is stable from the chip's first render, filling in from the right as real
+  // samples arrive (D8: "12-bucket activity sparkbar").
+  const padCount = Math.max(0, SPARK_CAP - samples.length)
+  const bars: (number | null)[] = [...new Array(padCount).fill(null), ...samples]
+  const maxSample = Math.max(1, ...samples)
+
   return (
     <div data-chip data-instance={chip.instanceId} style={style} onClick={onSelect}
       onMouseEnter={() => onHover?.(true)} onMouseLeave={() => onHover?.(false)}>
@@ -40,6 +63,18 @@ export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy',
       </div>
       <div style={{ color: '#7CFFE9', marginTop: 2, fontSize: 7 }}>{portsLabel}</div>
       <div style={{ color: 'var(--color-text-secondary)', fontSize: 7 }}>{connLabel}</div>
+      <div style={{ display: 'flex', gap: 1.5, marginTop: 6, height: 9, alignItems: 'flex-end' }}>
+        {bars.map((v, i) => {
+          const pct = v == null ? 0 : Math.max(SPARK_MIN_HEIGHT_PCT, Math.round((v / maxSample) * 100))
+          const on = v != null && pct >= SPARK_ON_THRESHOLD_PCT
+          return (
+            <i key={i} data-testid="spark-bar" data-on={on} style={{
+              width: 3, display: 'block', height: `${pct}%`,
+              background: on ? color : '#232a36', boxShadow: on ? `0 0 3px ${color}88` : undefined,
+            }} />
+          )
+        })}
+      </div>
     </div>
   )
 }

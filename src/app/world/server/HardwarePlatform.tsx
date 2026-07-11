@@ -1,147 +1,236 @@
 // src/app/world/server/HardwarePlatform.tsx
-// Unified host platform (D4): CPU die + utilization ring (hatched amber steal arc for VPS),
-// stratified RAM reservoir (one colored stratum per resident + os/cache remainder), sliced disk
-// platter with an io scanner. All numbers from ServerMetrics (order-stable); at-rest estimate
-// from blueprint ramBaseMb when metrics is null (D5). prefers-reduced-motion parks the scanner
-// and drops idle shimmer.
-import type { ReactElement } from 'react'
+// Polish 3 T6 (spec D8): the substrate instruments, transcribed from the mockup's `.b3hw` section
+// (docs/superpowers/specs/mockups/level-redesign-v5.html — CSS lines 196-220, markup 472-507): a
+// per-core bank (one `.corecell` per vCPU, live-utilization fill, `hot` >= 0.85, a violet
+// `.stealx` interference overlay ON the stolen cores — steal is physical, not a bar), 4 DIMM
+// sticks stratified by resident blueprint's signature color + free headroom, a spinning disk
+// platter (spin duration ∝ diskIoFraction, stopped at 0 — one of the board's animated strokes),
+// and queue-depth ticks driven by Σ resident instance activeConnections. Replaces the D4/D5
+// CPU-ring/RAM-reservoir/disk-slice-per-volume design; that design's oom warning and per-volume
+// detail now live elsewhere (InspectorRail's `instance` panel already computes its own oom flag;
+// StackPlate's volume cylinders dispatch `{kind:'volume',...}` independently of this panel), so
+// this component no longer needs memLimits/instanceRamMb/volumeConsumers/attribution.
+import type { CSSProperties, ReactElement } from 'react'
 import { useReducedMotion } from 'framer-motion'
-import type { Server, InstanceId } from '../../../lib/world/types'   // id types from world/types (not re-exported by worldEngine/types)
+import type { Server, InstanceId, BlueprintId, ServiceBlueprint } from '../../../lib/world/types'
 import type { ServerMetrics } from '../../../lib/worldEngine/types'
-import type { CoreAttribution } from './boardLayout'
 import type { BoardSelection } from './selection'
-import { HEALTH_COLOR } from './healthColor'
+import './hwStyles'
 
-const AMBER = '#F5A623', CPU_BLUE = '#4A9EFF'
+const CORE_BLUE = '#5B9CF6', CORE_BLUE_HI = '#7cb2ff'      // mockup --blue
+const TEAL = '#3FC7B8'                                     // mockup --teal
+const STEAL_VIOLET = '#9c8ce0aa'                            // mockup .stealx repeating-gradient stop
+const FREE_GREY = '#4a5361'                                 // dimmStrata's own free-stratum color
+const CORE_BG = '#141a24', CORE_BORDER = '#1e2530'
+const DIMM_BG = '#10151d', DIMM_BORDER = '#232b38'
+const PLATTER_RING = '#232b38'
+
+const STICK_COUNT = 4
+const QTICK_COUNT = 12
+// No true "max io-queue depth" metric exists on ServerMetrics/InstanceMetrics — this is a
+// documented, deliberately soft visual scale (connections per lit tick), not a spec'd constant.
+const QUEUE_CONN_PER_TICK = 3
+
+// ── Pure derivations (exported for tests, brief's exact signatures) ──
+
+export function coreCells(
+  coreUtilization: number[], stealFraction: number,
+): { h: number; hot: boolean; steal: boolean }[] {
+  const stealCount = stealFraction > 0 ? Math.ceil(stealFraction * coreUtilization.length) : 0
+  return coreUtilization.map((u, i) => ({ h: u, hot: u >= 0.85, steal: stealFraction > 0 && i < stealCount }))
+}
+
+interface TaggedSeg { blueprintId: BlueprintId | null; color: string; frac: number }
+
+// Shared walk behind both `dimmStrata` (exported, exact-shape tested) and the component's own
+// render (which additionally needs each segment's blueprintId for cross-highlight dim + legend +
+// hover — a strict superset, stripped below to produce the public shape).
+function dimmStrataTagged(
+  ramByInstance: { blueprintId: BlueprintId; ramMb: number }[],
+  blueprints: Record<BlueprintId, ServiceBlueprint>,
+  ramTotalMb: number,
+): TaggedSeg[][] {
+  const sticks: TaggedSeg[][] = Array.from({ length: STICK_COUNT }, () => [])
+  if (ramTotalMb <= 0) return sticks
+
+  const byBp = new Map<BlueprintId, number>()
+  for (const r of ramByInstance) byBp.set(r.blueprintId, (byBp.get(r.blueprintId) ?? 0) + r.ramMb)
+  const usedTotal = [...byBp.values()].reduce((a, b) => a + b, 0)
+
+  const strata: { blueprintId: BlueprintId | null; color: string; mb: number }[] =
+    [...byBp.keys()].sort().map(id => ({ blueprintId: id, color: blueprints[id]?.color ?? '#888', mb: byBp.get(id)! }))
+  strata.push({ blueprintId: null, color: FREE_GREY, mb: Math.max(0, ramTotalMb - usedTotal) })
+
+  const capPerStick = ramTotalMb / STICK_COUNT
+  let stickIdx = 0
+  let stickRemaining = capPerStick
+  for (const s of strata) {
+    let mbLeft = s.mb
+    while (mbLeft > 1e-9 && stickIdx < STICK_COUNT) {
+      const take = Math.min(mbLeft, stickRemaining)
+      if (take > 1e-9) sticks[stickIdx].push({ blueprintId: s.blueprintId, color: s.color, frac: take / capPerStick })
+      mbLeft -= take
+      stickRemaining -= take
+      if (stickRemaining <= 1e-9) { stickIdx++; stickRemaining = capPerStick }
+    }
+  }
+  return sticks
+}
+
+export function dimmStrata(
+  ramByInstance: { blueprintId: BlueprintId; ramMb: number }[],
+  blueprints: Record<BlueprintId, ServiceBlueprint>,
+  ramTotalMb: number,
+): { color: string; frac: number }[][] {
+  return dimmStrataTagged(ramByInstance, blueprints, ramTotalMb).map(stick => stick.map(({ color, frac }) => ({ color, frac })))
+}
 
 export interface HardwarePlatformProps {
   server: Server
   metrics: ServerMetrics | null
-  residentBlueprints: { instanceId: InstanceId; blueprintId: string; color: string; name: string; ramBaseMb: number }[]
-  attribution: CoreAttribution[]
-  hoveredBlueprintId: string | null
-  onHoverBlueprint: (id: string | null) => void
+  // Identity pairs only (D5 at-rest synthesis needs "which instances are resident"; the RAM
+  // baseline itself comes from `blueprints[blueprintId].workload.ramBaseMb`).
+  residentInstances: { instanceId: InstanceId; blueprintId: BlueprintId }[]
+  blueprints: Record<BlueprintId, ServiceBlueprint>
+  hoveredBlueprintId: BlueprintId | null
+  onHoverBlueprint: (id: BlueprintId | null) => void
   onSelect: (s: BoardSelection | null) => void
-  box?: { x: number; y: number; w: number; h: number }   // hardware.box from layout (optional)
-  memLimits?: Record<InstanceId, number>                  // container memLimitMb by instance
-  instanceRamMb?: Record<InstanceId, number>              // live per-instance ramMb (oom check)
-  volumeConsumers?: Record<string, string>                // volumeName -> consumer blueprintId (D8 disk-slice cross-highlight)
+  queueDepth?: number   // Σ resident instance activeConnections
 }
 
 export function HardwarePlatform(props: HardwarePlatformProps): ReactElement {
-  const { server, metrics, residentBlueprints, attribution, hoveredBlueprintId, onHoverBlueprint, onSelect } = props
+  const { server, metrics, residentInstances, blueprints, hoveredBlueprintId, onHoverBlueprint, onSelect, queueDepth = 0 } = props
   const reduced = useReducedMotion()
   const vcpu = server.specs.vcpu
-  const cols = Math.ceil(Math.sqrt(vcpu))
-  const dimFor = (bpId: string | null) => (hoveredBlueprintId && bpId !== hoveredBlueprintId ? 0.45 : 1)
+  const cols = Math.min(8, Math.max(1, vcpu))
+  const dimFor = (bpId: BlueprintId | null): number => (bpId && hoveredBlueprintId && bpId !== hoveredBlueprintId ? 0.45 : 1)
 
-  const cores = metrics?.coreUtilization ?? new Array(vcpu).fill(0)
-  const meanUtil = cores.length ? cores.reduce((a, b) => a + b, 0) / cores.length : 0
-  const steal = metrics?.stealFraction ?? 0
-
-  // RAM strata: instance slices in order + os/cache remainder (D4).
   const atRest = metrics === null
-  const strata = atRest
-    // at-rest estimate (D5): each resident blueprint's workload.ramBaseMb
-    ? residentBlueprints.map(r => ({ instanceId: r.instanceId, blueprintId: r.blueprintId, color: r.color, name: r.name, ramMb: r.ramBaseMb }))
-    : (metrics!.ramByInstance).map(s => {
-        const rb = residentBlueprints.find(r => r.instanceId === s.instanceId)
-        return { instanceId: s.instanceId, blueprintId: s.blueprintId, color: rb?.color ?? CPU_BLUE, name: rb?.name ?? '?', ramMb: s.ramMb }
-      })
-  const ramUsed = metrics?.ramUsedMb ?? strata.reduce((a, s) => a + s.ramMb, 0)
-  const ramTotal = metrics?.ramTotalMb ?? server.specs.ramMb
-  const osCache = Math.max(0, ramUsed - strata.reduce((a, s) => a + s.ramMb, 0))
-
-  // Disk slices: system 15% + one per volume, remainder free (D4).
-  const diskGb = server.specs.diskGb
-  const volumes = server.stacks.flatMap(st => st.volumes)
-  const systemGb = diskGb * 0.15
-  const usedGb = systemGb + volumes.reduce((a, v) => a + v.sizeGb, 0)
+  const cores = metrics?.coreUtilization ?? new Array(vcpu).fill(0)
+  const steal = metrics?.stealFraction ?? 0
   const io = metrics?.diskIoFraction ?? 0
-  const hostHealth = metrics?.health ?? 'healthy'
+  const cells = coreCells(cores, steal)
+
+  const ramTotalMb = metrics?.ramTotalMb ?? server.specs.ramMb
+  const ramByInstance = atRest
+    ? residentInstances.map(r => ({ blueprintId: r.blueprintId, ramMb: blueprints[r.blueprintId]?.workload.ramBaseMb ?? 0 }))
+    : metrics!.ramByInstance.map(s => ({ blueprintId: s.blueprintId, ramMb: s.ramMb }))
+  const ramUsedMb = metrics?.ramUsedMb ?? ramByInstance.reduce((a, s) => a + s.ramMb, 0)
+  const sticks = dimmStrataTagged(ramByInstance, blueprints, ramTotalMb)
+
+  const legend = new Map<BlueprintId, { name: string; color: string }>()
+  for (const stick of sticks) for (const seg of stick) {
+    if (seg.blueprintId && !legend.has(seg.blueprintId)) {
+      legend.set(seg.blueprintId, { name: blueprints[seg.blueprintId]?.name ?? '?', color: seg.color })
+    }
+  }
+
+  const spinning = !reduced && io > 0
+  const platterDurationS = Math.max(0.4, 1.4 / Math.max(io, 0.05))
+  const onTicks = Math.min(QTICK_COUNT, Math.round(queueDepth / QUEUE_CONN_PER_TICK))
+  const ticks = Array.from({ length: QTICK_COUNT }, (_, i) => ({ on: i < onTicks, warn: i === QTICK_COUNT - 1 && onTicks >= QTICK_COUNT }))
+
+  const legendSwatch: CSSProperties = { display: 'inline-block', width: 5, height: 5, borderRadius: 1, marginRight: 3, verticalAlign: -0.5 }
 
   return (
-    <div data-hardware style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 8, font: '7px var(--font-mono)', color: 'var(--color-text-secondary)' }}>
-      <div style={{ color: '#8FA8C7', letterSpacing: '0.12em', display: 'flex', alignItems: 'center', gap: 4 }}>
-        <span data-host-health style={{ width: 5, height: 5, borderRadius: '50%', background: HEALTH_COLOR[hostHealth], boxShadow: `0 0 5px ${HEALTH_COLOR[hostHealth]}` }} />
-        ⬢ HOST · {server.kind}{server.kind === 'vps' ? ' (shared tenancy)' : ''}
+    <div data-hardware style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', gap: 9, padding: 8, font: '7px var(--font-mono)', color: 'var(--color-text-secondary)', overflowY: 'auto' }}>
+      <div style={{ fontSize: 7, letterSpacing: '0.12em', color: 'var(--color-text-muted)' }}>
+        SUBSTRATE — {vcpu} vCPU · {server.kind === 'vps' ? 'SHARED TENANCY' : 'DEDICATED'}
       </div>
 
-      {/* CPU die */}
-      <div data-cpu onClick={() => onSelect({ kind: 'hardware', part: 'cpu' })} style={{ cursor: 'pointer' }}>
-        <svg width={100} height={100} viewBox="0 0 100 100">
-          <circle cx={50} cy={50} r={45} fill="none" stroke="#16202E" strokeWidth={5} />
-          <circle cx={50} cy={50} r={45} fill="none" stroke={CPU_BLUE} strokeWidth={5} strokeLinecap="round"
-            strokeDasharray={`${meanUtil * 283} 283`} transform="rotate(-90 50 50)" style={{ filter: `drop-shadow(0 0 5px ${CPU_BLUE})` }} />
-          {steal > 0 && (
-            <circle cx={50} cy={50} r={45} fill="none" stroke={AMBER} strokeWidth={5}
-              strokeDasharray="2 3.1" strokeDashoffset={-meanUtil * 283} pathLength={283} transform="rotate(-90 50 50)" opacity={0.9} />
-          )}
-        </svg>
-        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 3, width: 56, margin: '-78px auto 0' }}>
-          {cores.map((u, i) => {
-            const dom = attribution[i]?.dominantBlueprintId ?? null
-            const color = residentBlueprints.find(r => r.blueprintId === dom)?.color ?? CPU_BLUE
-            return <div key={i} data-testid="core-cell" style={{ height: 18, borderRadius: 2, background: `linear-gradient(0deg, ${color} ${Math.round(u * 100)}%, #141B26 ${Math.round(u * 100)}%)`, opacity: dimFor(dom) }} />
-          })}
-        </div>
-        <div style={{ textAlign: 'center', color: '#9CC8FF', marginTop: 6 }}>
-          cpu {Math.round(meanUtil * 100)}%{steal > 0 && <span style={{ color: AMBER }}> +{Math.round(steal * 100)}% steal</span>}
-        </div>
-        {metrics?.burstCredits != null && (
-          <div style={{ height: 2, background: '#0F2B27', marginTop: 2 }}><div style={{ width: `${metrics.burstCredits * 100}%`, height: '100%', background: AMBER }} /></div>
-        )}
+      {/* Core bank (mockup .corebank/.corecell) */}
+      <div data-corebank onClick={() => onSelect({ kind: 'hardware', part: 'cpu' })}
+        style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 3, cursor: 'pointer' }}>
+        {cells.map((c, i) => (
+          <div key={i} data-testid="core-cell" data-hot={c.hot} data-steal={c.steal}
+            style={{ height: 14, borderRadius: 2, background: CORE_BG, border: `1px solid ${CORE_BORDER}`, position: 'relative', overflow: 'hidden' }}>
+            <div className={reduced ? undefined : 'hw-flicker'} style={{
+              position: 'absolute', left: 0, right: 0, bottom: 0, height: `${Math.round(c.h * 100)}%`,
+              background: c.hot ? 'linear-gradient(180deg,#ffd28a,var(--color-warning))' : `linear-gradient(180deg,${CORE_BLUE_HI},${CORE_BLUE})`,
+              animation: reduced ? undefined : 'hw-coreflicker 1.7s ease-in-out infinite',
+            }} />
+            {c.steal && (
+              <div data-testid="core-steal" className={reduced ? undefined : 'hw-steal'} style={{
+                position: 'absolute', inset: 0,
+                background: `repeating-linear-gradient(45deg, transparent 0 3px, ${STEAL_VIOLET} 3px 5px)`,
+                animation: reduced ? undefined : `hw-glitch 3.2s steps(1) infinite ${(i % 2) * 1.4}s`,
+              }} />
+            )}
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize: 6.5, color: 'var(--color-text-muted)' }}>
+        core load · ▨ = neighbor steal
+        {steal > 0 && <span style={{ color: '#9c8ce0' }}> · +{Math.round(steal * 100)}% steal</span>}
       </div>
 
-      {/* RAM reservoir */}
-      <div data-ram onClick={() => onSelect({ kind: 'hardware', part: 'ram' })} style={{ display: 'flex', gap: 6, alignItems: 'flex-end', cursor: 'pointer' }}>
-        <div style={{ width: 34, height: 64, background: '#0C1119', border: '1px solid #2A3648', borderRadius: '5px 5px 3px 3px', position: 'relative', overflow: 'hidden' }}>
-          {(() => { let acc = 0; return strata.map(s => {
-            const pct = ramTotal ? (s.ramMb / ramTotal) * 100 : 0
-            const el = <div key={s.instanceId} data-testid="ram-stratum" onMouseEnter={() => onHoverBlueprint(s.blueprintId)} onMouseLeave={() => onHoverBlueprint(null)}
-              style={{ position: 'absolute', bottom: `${acc}%`, width: '100%', height: `${pct}%`, background: s.color, opacity: dimFor(s.blueprintId) }} />
-            acc += pct; return el
-          }) })()}
-          <div data-testid="ram-stratum" style={{ position: 'absolute', bottom: `${ramTotal ? (ramUsed - osCache) / ramTotal * 100 : 0}%`, width: '100%', height: `${ramTotal ? osCache / ramTotal * 100 : 0}%`, background: 'linear-gradient(0deg,#F5A62388,#F5A62333)' }} />
-          {!reduced && metrics && (
-            <div style={{ position: 'absolute', bottom: `${ramTotal ? (ramUsed / ramTotal) * 100 : 0}%`, width: '100%', height: 1.5, background: 'linear-gradient(90deg,transparent,#FFE9C2,transparent)', opacity: 0.8, animation: 'shimmer 1.8s ease-in-out infinite' }} />
-          )}
-        </div>
-        <div style={{ flex: 1, lineHeight: 1.7 }}>
-          <div style={{ color: '#E2E8F0' }}>ram {(ramUsed / 1024).toFixed(1)}/{(ramTotal / 1024).toFixed(0)}G {atRest && <span style={{ color: 'var(--color-text-muted)' }}>(at rest)</span>}</div>
-          {strata.map(s => {
-            const oom = !!(props.memLimits?.[s.instanceId] && props.instanceRamMb?.[s.instanceId] && props.instanceRamMb[s.instanceId] >= props.memLimits[s.instanceId] * 0.9)
-            return <div key={s.instanceId} style={{ opacity: dimFor(s.blueprintId) }}><span style={{ color: s.color }}>▮</span> {s.name} {Math.round(s.ramMb)}M {oom && <span style={{ color: 'var(--color-danger)' }}>⚠oom</span>}</div>
-          })}
-          <div><span style={{ color: AMBER }}>▮</span> os + cache {Math.round(osCache)}M</div>
-        </div>
+      {/* DIMM sticks (mockup .dimms/.dimm/.seg/.notch) */}
+      <div data-dimms onClick={() => onSelect({ kind: 'hardware', part: 'ram' })}
+        style={{ display: 'flex', gap: 5, height: 56, alignItems: 'flex-end', cursor: 'pointer' }}>
+        {sticks.map((segs, i) => (
+          <div key={i} data-testid="dimm-stick" style={{
+            flex: 1, height: '100%', position: 'relative', overflow: 'hidden',
+            border: `1px solid ${DIMM_BORDER}`, borderRadius: '3px 3px 5px 5px', background: DIMM_BG,
+          }}>
+            <div style={{ position: 'absolute', top: 3, left: '50%', width: 8, height: 3, background: DIMM_BORDER, transform: 'translateX(-50%)', borderRadius: 1 }} />
+            {(() => {
+              let acc = 0
+              return segs.map((seg, k) => {
+                const el = (
+                  <div key={k} data-testid="dimm-seg" data-blueprint={seg.blueprintId ?? 'free'}
+                    onMouseEnter={() => seg.blueprintId && onHoverBlueprint(seg.blueprintId)}
+                    onMouseLeave={() => seg.blueprintId && onHoverBlueprint(null)}
+                    style={{
+                      position: 'absolute', left: 2, right: 2, bottom: `${acc * 100}%`, height: `${seg.frac * 100}%`,
+                      background: seg.color, opacity: dimFor(seg.blueprintId), borderRadius: 1,
+                    }} />
+                )
+                acc += seg.frac
+                return el
+              })
+            })()}
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize: 6, color: 'var(--color-text-muted)', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        {[...legend.entries()].map(([id, l]) => (
+          <span key={id}><span style={{ ...legendSwatch, background: l.color }} />{l.name}</span>
+        ))}
+        <span><span style={{ ...legendSwatch, background: FREE_GREY }} />free</span>
+        <span style={{ marginLeft: 'auto' }}>
+          {(ramUsedMb / 1024).toFixed(1)} / {(ramTotalMb / 1024).toFixed(0)} G{atRest && ' (at rest)'}
+        </span>
       </div>
 
-      {/* Disk platter */}
-      <div data-disk onClick={() => onSelect({ kind: 'hardware', part: 'disk' })} style={{ display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
-        <svg width={52} height={52} viewBox="0 0 52 52">
-          <circle cx={26} cy={26} r={23} fill="#0C1119" stroke="#2A3648" strokeWidth={1} />
-          {(() => {
-            const circ = 2 * Math.PI * 11.5
-            let off = 0
-            const slices: ReactElement[] = []
-            const push = (gb: number, color: string, key: string, opacity: number, testId?: string) => {
-              const len = diskGb ? (gb / diskGb) * circ : 0
-              slices.push(<circle key={key} data-testid={testId} cx={26} cy={26} r={11.5} fill="none" stroke={color} strokeWidth={21} strokeDasharray={`${len} ${circ - len}`} strokeDashoffset={-off} transform="rotate(-90 26 26)" opacity={opacity} />)
-              off += len
-            }
-            push(systemGb, '#33415888', 'system', 0.85)
-            volumes.forEach(v => push(v.sizeGb, AMBER, v.name, 0.85 * dimFor(props.volumeConsumers?.[v.name] ?? null), `disk-slice-${v.name}`))
-            return slices
-          })()}
-          <line x1={26} y1={26} x2={26} y2={4} stroke="#7CFFE9" strokeWidth={1} opacity={0.7}
-            style={reduced || !metrics ? undefined : { transformOrigin: '26px 26px', animation: `spin ${(3.5 / Math.max(io, 0.05)).toFixed(2)}s linear infinite` }} />
-          <circle cx={26} cy={26} r={3} fill="#141B26" stroke="#2A3648" />
-        </svg>
-        <div style={{ flex: 1, lineHeight: 1.7 }}>
-          <div style={{ color: '#E2E8F0' }}>nvme0 {Math.round(usedGb)}/{diskGb}G · io {Math.round(io * 100)}%</div>
-          {volumes.map(v => <div key={v.name}><span style={{ color: AMBER }}>▮</span> vol {v.name} {v.sizeGb}G</div>)}
-          <div><span style={{ color: '#64748B' }}>▮</span> system {Math.round(systemGb)}G · free {Math.round(diskGb - usedGb)}G</div>
+      {/* Disk platter + queue-depth ticks (mockup .platter/.qdepth/.qticks) */}
+      <div data-disk onClick={() => onSelect({ kind: 'hardware', part: 'disk' })}
+        style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, cursor: 'pointer', marginTop: 2 }}>
+        <div data-testid="platter" style={{
+          position: 'relative', width: 44, height: 44, borderRadius: '50%', flexShrink: 0,
+          background: `repeating-radial-gradient(circle, ${CORE_BG} 0 4px, ${DIMM_BG} 4px 8px)`, border: `1px solid ${PLATTER_RING}`,
+        }}>
+          <div data-testid="platter-spin" data-spinning={spinning} className={spinning ? 'hw-spin' : undefined} style={{
+            position: 'absolute', inset: 0, borderRadius: '50%',
+            background: `conic-gradient(from 0deg, transparent 0 330deg, ${TEAL}cc 352deg, transparent 360deg)`,
+            animation: spinning ? `spin ${platterDurationS.toFixed(2)}s linear infinite` : undefined,
+          }} />
+          <div style={{ position: 'absolute', left: '50%', top: '50%', width: 8, height: 8, borderRadius: '50%', background: PLATTER_RING, transform: 'translate(-50%,-50%)' }} />
+        </div>
+        <div style={{ color: 'var(--color-text-secondary)' }}>nvme0 · io {Math.round(io * 100)}%</div>
+        <div style={{ width: '100%' }}>
+          <div style={{ fontSize: 6, color: 'var(--color-text-muted)', display: 'flex', justifyContent: 'space-between' }}>
+            <span>io queue</span><span>depth {queueDepth}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 2, marginTop: 3, justifyContent: 'center' }}>
+            {ticks.map((t, i) => (
+              <i key={i} data-testid="qtick" data-on={t.on} data-warn={t.warn} style={{
+                width: 5, height: 12, borderRadius: 1,
+                background: t.warn ? 'var(--color-warning)' : (t.on ? TEAL : '#1a212c'),
+                boxShadow: t.on && !t.warn ? `0 0 3px ${TEAL}66` : undefined,
+                opacity: t.warn ? 0.35 : 1,
+              }} />
+            ))}
+          </div>
         </div>
       </div>
     </div>

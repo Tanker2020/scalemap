@@ -94,8 +94,11 @@ describe('ServerView interaction (selection model + Esc + cross-highlight)', () 
     })
     render(<ServerView />)
 
-    const webChip = screen.getByText('web').closest('[data-chip]') as HTMLElement
-    const cacheChip = screen.getByText('cache').closest('[data-chip]') as HTMLElement
+    // "web"/"cache" now also appear in HardwarePlatform's DIMM legend (D8) — disambiguate to the chip.
+    const webChip = screen.getAllByText('web').map(el => el.closest('[data-chip]')).find(Boolean) as HTMLElement
+    const cacheChip = screen.getAllByText('cache').map(el => el.closest('[data-chip]')).find(Boolean) as HTMLElement
+    const webBlueprintId = Object.values(useWorldStore.getState().doc.blueprints).find(b => b.name === 'web')!.id
+    const cacheBlueprintId = Object.values(useWorldStore.getState().doc.blueprints).find(b => b.name === 'cache')!.id
     expect(webChip).toBeTruthy()
     expect(cacheChip).toBeTruthy()
 
@@ -104,10 +107,12 @@ describe('ServerView interaction (selection model + Esc + cross-highlight)', () 
     expect(webChip.style.opacity).toBe('1')
     expect(cacheChip.style.opacity).toBe('0.45')
 
-    // HardwarePlatform's RAM reservoir: at-rest (no live metrics), strata render in resident
-    // order (web, then cache) ahead of the always-present os/cache remainder stratum.
-    const strata = screen.getAllByTestId('ram-stratum')
-    expect(strata[0].style.opacity).toBe('1')      // web — hovered, highlighted
-    expect(strata[1].style.opacity).toBe('0.45')   // cache — unrelated, dimmed
+    // HardwarePlatform's DIMM sticks (D8, Polish 3 T6 — was a RAM-reservoir stratum bar pre-T6):
+    // dimmStrata orders strata by blueprintId (not creation order), so look segments up by their
+    // `data-blueprint` tag rather than assuming a fixed index.
+    const webSeg = screen.getAllByTestId('dimm-seg').find(el => el.getAttribute('data-blueprint') === webBlueprintId)!
+    const cacheSeg = screen.getAllByTestId('dimm-seg').find(el => el.getAttribute('data-blueprint') === cacheBlueprintId)!
+    expect(webSeg.style.opacity).toBe('1')      // web — hovered, highlighted
+    expect(cacheSeg.style.opacity).toBe('0.45')   // cache — unrelated, dimmed
   })
 })

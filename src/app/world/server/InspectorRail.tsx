@@ -3,8 +3,11 @@
 // metrics (useServerDisplayMetrics); each panel mounts its matching edit form from
 // `./inspectorForms.tsx` (WorkloadForm/RuntimeForm/FirewallEditor/VolumesEditor) — those forms own
 // all world-store writes and self-lock via <fieldset disabled={running}> (D9). Rule rows drill
-// into `{kind:'rule'}`.
+// into `{kind:'rule'}`. Polish 3 T6 (D8, mockup `.b3insp`) re-housed the outer shell only — see
+// the comment on the returned `<aside>` below; every branch of `body` and `header()` above it is
+// untouched from Phase 3/T4/T5.
 import type { CSSProperties, ReactElement } from 'react'
+import { useReducedMotion } from 'framer-motion'
 import { useWorldStore } from '../../store/world.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { useServerDisplayMetrics } from './useServerDisplayMetrics'
@@ -12,6 +15,7 @@ import type { BoardSelection } from './selection'
 import { WorkloadForm, RuntimeForm, FirewallEditor, VolumesEditor } from './inspectorForms'
 import { SectionHeader, KIT_GLOW_TEXT } from '../ui/kit'
 import { ruleSourceWords, rulePortPhrase } from './ruleSentence'
+import './hwStyles'
 
 const railText = { font: '7.5px var(--font-mono)', color: 'var(--color-text-secondary)', lineHeight: 1.9 } as const
 
@@ -30,6 +34,7 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
   const compiled = useCompiledWorld()
   const display = useServerDisplayMetrics(serverId)
   const server = doc.servers[serverId]
+  const reduced = useReducedMotion()
 
   // The rail keeps a hardcoded dark scene background regardless of app theme (below), so it
   // can't ride SectionHeader's default --kit-accent, which flips to the light-theme teal under
@@ -141,8 +146,30 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
   const title = selection?.kind === 'instance'
     ? (doc.blueprints[compiled.instances[selection.instanceId]?.blueprintId]?.name ?? 'instance')
     : (selection?.kind ?? 'server')
+  // D8/T6 (mockup `.b3insp`): re-housed as a docked strip pinned to the board's bottom-right by
+  // `bottom`/`right` (not `top`) — a collapsed empty-selection body is naturally just the header
+  // + one hint line ("two-line dock strip"); selecting anything grows `body` underneath the SAME
+  // byte-identical header/body pair, and because the box's BOTTOM edge stays pinned while its
+  // height is intrinsic, the growth reads as "expands upward" for free, no JS/state needed. Was a
+  // permanent-width flex sidebar (`width:240` + `borderLeft`) that always ate board layout width;
+  // now an absolutely-positioned overlay (`position:relative` on ServerView's board wrapper is
+  // the positioning ancestor) so the board itself gets the full width back regardless of
+  // selection state ("never eats the board" — spec D8).
   return (
-    <aside style={{ width: 240, borderLeft: '1px solid #1E2734', background: 'linear-gradient(180deg,#0D1117EE,#0A0D12EE)', padding: 10, overflowY: 'auto' }}>
+    <aside data-inspector-rail data-expanded={selection !== null} style={{
+      position: 'absolute', right: 16, bottom: 16, width: 280, maxHeight: 'calc(100% - 32px)',
+      borderRadius: 8, border: '1px solid #1E2734', background: 'linear-gradient(180deg,#0D1117EE,#0A0D12EE)',
+      boxShadow: '0 12px 32px #00000066', padding: 10, overflowY: 'auto', zIndex: 4,
+    }}>
+      {/* mockup .b3insp::after scan sweep — purely decorative, so it's the one part of this
+          shell allowed to be reduced-motion-gated without affecting body/dispatches. */}
+      {!reduced && (
+        <div aria-hidden="true" className="hw-scan" style={{
+          position: 'absolute', left: 0, right: 0, height: 22, top: '-20%', overflow: 'hidden',
+          background: 'linear-gradient(180deg, transparent, #7cffe90a, transparent)',
+          animation: 'hw-scanline 3.6s linear infinite', pointerEvents: 'none',
+        }} />
+      )}
       {header(title)}
       {body}
     </aside>

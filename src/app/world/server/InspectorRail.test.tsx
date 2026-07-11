@@ -122,6 +122,31 @@ describe('InspectorRail (read panels)', () => {
       expect.objectContaining({ id: 'r2' }), expect.objectContaining({ id: 'r1' }),
     ] })
   })
+
+  it('inspector strip expands to the existing forms and their dispatches are unchanged', () => {
+    // T6 (D8) re-housed ONLY the outer shell (position/sizing) — collapsed when nothing is
+    // selected, `data-expanded` flips true and the SAME header()/body branches (byte-identical,
+    // untouched above) render underneath once something is selected.
+    const spy = vi.spyOn(useWorldStore.getState(), 'updateServer')
+    const { serverId } = seed((d, sid) => {
+      d.servers[sid].firewall = [
+        { id: 'r1', action: 'allow', port: 443, protocol: 'tcp', source: 'any' },
+        { id: 'r2', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' },
+      ]
+    })
+    const { rerender, container } = render(<InspectorRail serverId={serverId} selection={null} onSelect={() => {}} />)
+    const strip = container.querySelector('[data-inspector-rail]')!
+    expect(strip).toHaveAttribute('data-expanded', 'false')
+    expect(screen.getByText(/click any element/i)).toBeInTheDocument()
+
+    rerender(<InspectorRail serverId={serverId} selection={{ kind: 'rule', ruleId: 'r1' }} onSelect={() => {}} />)
+    expect(strip).toHaveAttribute('data-expanded', 'true')
+    // The existing FirewallEditor form (untouched) still mounts and dispatches exactly as before.
+    fireEvent.click(screen.getAllByLabelText('move rule down')[0])
+    expect(spy).toHaveBeenCalledWith(serverId, { firewall: [
+      expect.objectContaining({ id: 'r2' }), expect.objectContaining({ id: 'r1' }),
+    ] })
+  })
 })
 
 describe('inspector editing forms', () => {
