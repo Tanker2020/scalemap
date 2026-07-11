@@ -18,7 +18,7 @@ import { useUiStore } from '../../store/ui.store'
 import { REGION_GEO } from '../../../lib/world/regionGeo'
 import { latLonToVec3 } from './geo'
 import { HoldRing, holdProgress, isAbortedHold } from '../ui/HoldToEnter'
-import { SceneOverlay } from '../ui/SceneOverlay'
+import { RegionOverlay } from '../ui/overlays/RegionOverlay'
 import { OverlayPortalContext } from './overlayPortal'
 import type { HealthState, EngineEvent, EngineEventKind } from '../../../lib/worldEngine/types'
 import type { RegionId } from '../../../lib/world/types'
@@ -199,11 +199,7 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
       {overlayOpen && (
         <Html portal={overlayPortal ?? undefined} zIndexRange={[100, 90]} style={{ pointerEvents: 'auto' }}>
           <div style={{ transform: 'translate(14px, -8px)' }}>
-            <SceneOverlay title={catalogId} health={health} onClose={() => setSceneOverlay(null)}>
-              <div style={{ padding: '10px 13px 2px', color: 'var(--color-text-muted)' }}>
-                region controls arrive in T4
-              </div>
-            </SceneOverlay>
+            <RegionOverlay regionId={regionId} onClose={() => setSceneOverlay(null)} />
           </div>
         </Html>
       )}

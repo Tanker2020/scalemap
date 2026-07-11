@@ -24,13 +24,18 @@ export interface WorldPanelProps {
 
 export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopulationId, openSettings }: WorldPanelProps) {
   const [tab, setTab] = useState<PanelTab>(() => useUiStore.getState().pendingPanelTab ?? 'topology')
+  const pendingPanelTab = useUiStore(s => s.pendingPanelTab)
   useEffect(() => {
-    // One-shot consume: the vault's teaching card (or any future caller) queues a tab to open
-    // to, WorldPanel reads it once in the initializer above and clears it here so a later
-    // remount doesn't re-apply a stale request. Read+clear via getState() (not the reactive
-    // hook) — this effect must not re-run when the store updates, only once on mount.
-    if (useUiStore.getState().pendingPanelTab) useUiStore.getState().setPendingPanelTab(null)
-  }, [])
+    // One-shot consume, now reactive (Polish 2 D4): the vault path still lands via the
+    // mount-time initializer above (this effect's first run just re-selects the same tab and
+    // clears the field — the previous mount-only effect's behavior, subsumed); a
+    // pendingPanelTab set while the panel is ALREADY mounted (scene overlay "traffic panel →")
+    // now switches the tab too. Clear via getState() so the write doesn't re-fire the effect.
+    if (pendingPanelTab) {
+      setTab(pendingPanelTab)
+      useUiStore.getState().setPendingPanelTab(null)
+    }
+  }, [pendingPanelTab])
   const compiled = useCompiledWorld()
   const doc = useWorldStore(s => s.doc)
   const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { WorldPanel } from './WorldPanel'
 import { useWorldStore } from '../../store/world.store'
 import { useUiStore } from '../../store/ui.store'
@@ -35,5 +35,14 @@ describe('WorldPanel findings tab', () => {
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
     expect(screen.getByText('No findings — the compiled world is clean.')).toBeInTheDocument()
     expect(useUiStore.getState().pendingPanelTab).toBeNull()
+  })
+
+  it('switches to a pendingPanelTab set while mounted and clears it', () => {
+    useUiStore.setState({ pendingPanelTab: null })
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    expect(screen.queryByLabelText('autoBaseline')).not.toBeInTheDocument()   // starts on Topology
+    act(() => useUiStore.getState().setPendingPanelTab('traffic'))
+    expect(screen.getByLabelText('autoBaseline')).toBeInTheDocument()         // switched to Traffic
+    expect(useUiStore.getState().pendingPanelTab).toBeNull()                  // one-shot consumed
   })
 })

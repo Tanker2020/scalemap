@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
   rpsPerCore, hostRpsCapacity, ramAtConnections, residentRamDemandMb, ttlLagHint, diskIoWord,
-  healthWord,
+  healthWord, populationLanding,
 } from './derived'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
+  createPopulation,
 } from '../../../lib/world/factories'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { compileWorld } from '../../../lib/world/compileWorld'
@@ -94,5 +95,22 @@ describe('healthWord', () => {
   it('boundary values: exactly 0.70 is tight, exactly 0.90 is straining', () => {
     expect(healthWord(0.7, 0)).toBe('tight')
     expect(healthWord(0.9, 0)).toBe('straining')
+  })
+})
+
+describe('populationLanding', () => {
+  it('lands on the first policy-ordered region with its km-derived latency', () => {
+    const doc = createWorld()
+    const r1 = createRegion('us-east-1'); doc.regions[r1.id] = r1
+    const r2 = createRegion('eu-west-1'); doc.regions[r2.id] = r2
+    const pop = createPopulation('São Paulo', -23.55, -46.63); doc.populations[pop.id] = pop
+    const compiled = compileWorld(doc)
+    const landing = populationLanding(pop, doc, compiled)
+    expect(landing).toEqual({ regionCatalogId: 'us-east-1', latencyMs: 77 })
+  })
+  it('returns null with no regions', () => {
+    const doc = createWorld()
+    const pop = createPopulation('nyc', 40.7, -74); doc.populations[pop.id] = pop
+    expect(populationLanding(pop, doc, compileWorld(doc))).toBeNull()
   })
 })

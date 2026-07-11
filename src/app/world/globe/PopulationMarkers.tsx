@@ -8,7 +8,7 @@ import { useContext, useMemo, useState, type ReactElement } from 'react'
 import { Html } from '@react-three/drei'
 import { useWorldStore } from '../../store/world.store'
 import { useUiStore } from '../../store/ui.store'
-import { SceneOverlay } from '../ui/SceneOverlay'
+import { PopulationOverlay } from '../ui/overlays/PopulationOverlay'
 import { OverlayPortalContext } from './overlayPortal'
 import { latLonToVec3 } from './geo'
 
@@ -54,14 +54,7 @@ function PopulationMarker({ id, label, lat, lon, peakRps }: MarkerProps): ReactE
       {overlayOpen && (
         <Html portal={overlayPortal ?? undefined} zIndexRange={[100, 90]} style={{ pointerEvents: 'auto' }}>
           <div style={{ transform: 'translate(14px, -8px)' }}>
-            <SceneOverlay
-              title={label} subtitle="client population" dotColor="var(--kit-teal)"
-              onClose={() => useUiStore.getState().setSceneOverlay(null)}
-            >
-              <div style={{ padding: '10px 13px 2px', color: 'var(--color-text-muted)' }}>
-                demand controls arrive in T4
-              </div>
-            </SceneOverlay>
+            <PopulationOverlay populationId={id} onClose={() => useUiStore.getState().setSceneOverlay(null)} />
           </div>
         </Html>
       )}
