@@ -11,6 +11,7 @@ import { useServerDisplayMetrics } from './useServerDisplayMetrics'
 import type { BoardSelection } from './selection'
 import { WorkloadForm, RuntimeForm, FirewallEditor, VolumesEditor } from './inspectorForms'
 import { SectionHeader, KIT_GLOW_TEXT } from '../ui/kit'
+import { ruleSourceWords, rulePortPhrase } from './ruleSentence'
 
 const railText = { font: '7.5px var(--font-mono)', color: 'var(--color-text-secondary)', lineHeight: 1.9 } as const
 
@@ -76,21 +77,30 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
         marginTop: 6,
       }}>
         <div style={flowCaption}>▼ evaluated top-down · first match wins ▼</div>
-        {rules.map((r, i) => (
-          <div key={r.id} data-testid="fw-rule-row" onClick={() => onSelect({ kind: 'rule', ruleId: r.id })}
-            style={{
-              display: 'flex', gap: 8, fontSize: 10.5, padding: '4px 6px', borderRadius: 4,
-              cursor: 'pointer',
-              background: selection.kind === 'rule' && selection.ruleId === r.id
-                ? 'color-mix(in srgb, var(--color-text-primary) 3%, transparent)' : undefined,
-            }}>
-            <span style={{ color: 'var(--color-text-muted)', width: 12, fontVariantNumeric: 'tabular-nums' }}>{i + 1}</span>
-            <span style={{ color: r.action === 'allow' ? 'var(--color-success)' : 'var(--color-danger)' }}>{r.action.toUpperCase()}</span>
-            <span>:{r.port} {r.protocol}</span>
-            <span style={{ color: 'var(--color-text-muted)' }}>from {r.source}</span>
-          </div>
-        ))}
-        <FirewallEditor key={serverId} serverId={serverId} />
+        {rules.map((r, i) => {
+          const selected = selection.kind === 'rule' && selection.ruleId === r.id
+          return (
+            <div key={r.id} data-testid="fw-rule-row"
+              onClick={() => onSelect(selected ? { kind: 'firewall' } : { kind: 'rule', ruleId: r.id })}
+              style={{
+                display: 'flex', gap: 6, fontSize: 10.5, padding: '4px 6px', borderRadius: 4,
+                cursor: 'pointer', alignItems: 'baseline',
+                background: selected ? 'color-mix(in srgb, var(--color-text-primary) 3%, transparent)' : undefined,
+              }}>
+              <span style={{ color: 'var(--color-text-muted)', width: 12, fontVariantNumeric: 'tabular-nums' }}>{i + 1}</span>
+              <span>
+                <span style={{ color: r.action === 'allow' ? 'var(--color-success)' : 'var(--color-danger)' }}>
+                  {r.action === 'allow' ? 'Let' : 'Block'}
+                </span>{' '}
+                <b style={{ color: '#DBEAFE' }}>{ruleSourceWords(r.source)}</b>{' '}
+                {r.action === 'allow' ? 'reach' : 'reaching'}{' '}
+                <b style={{ color: '#DBEAFE' }}>{rulePortPhrase(r)}</b>
+                {r.protocol === 'udp' ? ' udp' : ''}
+              </span>
+            </div>
+          )
+        })}
+        {selection.kind === 'rule' && <FirewallEditor key={serverId} serverId={serverId} />}
         <div style={{ ...flowCaption, color: 'var(--color-danger)' }}>▼ everything else: DENIED ▼</div>
       </div>
     </div>

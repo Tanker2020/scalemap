@@ -94,10 +94,27 @@ describe('InspectorRail (read panels)', () => {
     expect(screen.getByText(/everything else: DENIED/)).toBeInTheDocument()
     const rows = screen.getAllByTestId('fw-rule-row')
     expect(rows[0]).toHaveTextContent('1')
-    expect(rows[0]).toHaveTextContent('ALLOW')
+    expect(rows[0]).toHaveTextContent('Let')
     expect(rows[1]).toHaveTextContent('2')
-    expect(rows[1]).toHaveTextContent('DENY')
-    expect(rows[1]).toHaveTextContent('from any')
+    expect(rows[1]).toHaveTextContent('Block')
+    expect(rows[1]).toHaveTextContent('anyone')
+  })
+
+  it('firewall reorder and remove dispatches are unchanged after the re-voicing', () => {
+    const spy = vi.spyOn(useWorldStore.getState(), 'updateServer')
+    const { serverId } = seed((d, sid) => {
+      d.servers[sid].firewall = [
+        { id: 'r1', action: 'allow', port: 443, protocol: 'tcp', source: 'any' },
+        { id: 'r2', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' },
+      ]
+    })
+    render(<InspectorRail serverId={serverId} selection={{ kind: 'rule', ruleId: 'r1' }} onSelect={() => {}} />)
+    expect(screen.getByText('Let')).toBeInTheDocument()                       // sentence read view
+    expect(screen.getByText('postgres :5432')).toBeInTheDocument()            // service word
+    fireEvent.click(screen.getAllByLabelText('move rule down')[0])            // FirewallEditor visible when a rule is selected
+    expect(spy).toHaveBeenCalledWith(serverId, { firewall: [
+      expect.objectContaining({ id: 'r2' }), expect.objectContaining({ id: 'r1' }),
+    ] })
   })
 })
 

@@ -112,4 +112,23 @@ describe('TopologyPanel — instrument restyle', () => {
     expect(server.catalogId).toBe('dedicated-8')
     expect(server.kind).toBe('dedicated')
   })
+
+  it('healthWord chip appears only with metrics and uses the status color', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useSimulationStore.setState({ latestBatch: serverBatch(serverId, regionId) })
+    render(<TopologyPanel />)
+    const word = screen.getByText('comfortable')          // healthWord(0.62, 0.5)
+    expect(word).toHaveStyle({ color: 'var(--color-success)' })
+    useSimulationStore.setState({ latestBatch: null })
+  })
+
+  it('no health word at rest', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<TopologyPanel />)
+    expect(screen.queryByText(/comfortable|tight|straining/)).not.toBeInTheDocument()
+  })
 })

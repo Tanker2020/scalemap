@@ -12,6 +12,7 @@ import { nextWorldId } from '../../../lib/world/factories'
 import type { Region, Server } from '../../../lib/world/types'
 import { SectionHeader, EdgeRow, ChipValue, MicroBars, PresetCardGrid, type EdgeRowStatus } from '../ui/kit'
 import { field, smallBtn, dangerBtn, row } from './panelStyles'
+import { healthWord } from '../ui/derived'
 
 const HEALTH_COLOR: Record<'healthy' | 'degraded' | 'down', string> = {
   healthy: 'var(--color-success)',
@@ -167,6 +168,12 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
         trailing={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {metrics && <MicroBars cpu={cpuMean} ram={ramFrac} io={metrics.diskIoFraction} />}
+            {metrics && (() => {
+              const word = healthWord(cpuMean, ramFrac)
+              const color = word === 'comfortable' ? 'var(--color-success)'
+                : word === 'tight' ? 'var(--color-warning)' : 'var(--color-danger)'
+              return <span style={{ fontSize: 10, color }}>{word}</span>
+            })()}
             <span style={{ fontSize: 10, color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
               ${server.hourlyUsd}/hr
             </span>
