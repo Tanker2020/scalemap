@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   rpsPerCore, hostRpsCapacity, ramAtConnections, residentRamDemandMb, ttlLagHint, diskIoWord,
-  healthWord, populationLanding,
+  healthWord, populationLanding, frontlineCapacityRps,
 } from './derived'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
@@ -112,5 +112,28 @@ describe('populationLanding', () => {
     const doc = createWorld()
     const pop = createPopulation('nyc', 40.7, -74); doc.populations[pop.id] = pop
     expect(populationLanding(pop, doc, compileWorld(doc))).toBeNull()
+  })
+})
+
+describe('frontlineCapacityRps', () => {
+  it('sums vcpu·1000/cpuMs over entry placements only', () => {
+    const doc = createWorld()
+    const r = createRegion('us-east-1'); doc.regions[r.id] = r
+    const az = createAz(r.id, 'us-east-1a'); doc.azs[az.id] = az
+    const s1 = createServer(az.id, getPreset('vps-medium')!); doc.servers[s1.id] = s1      // 4 vcpu
+    const s2 = createServer(az.id, getPreset('dedicated-8')!); doc.servers[s2.id] = s2     // 8 vcpu
+    const web = createBlueprint('web', 0)
+    web.ports = [{ port: 8080, protocol: 'tcp', visibility: 'public' }]
+    web.workload.cpuMsPerRequest = 8
+    doc.blueprints[web.id] = web
+    const api = createBlueprint('api', 1)          // default port is internal → not an entry
+    doc.blueprints[api.id] = api
+    const p1 = createPlacement(web.id, s1.id); doc.placements[p1.id] = p1
+    const p2 = createPlacement(web.id, s2.id); doc.placements[p2.id] = p2
+    const p3 = createPlacement(api.id, s1.id); doc.placements[p3.id] = p3
+    expect(frontlineCapacityRps(doc, compileWorld(doc))).toBe(1500)   // 4·125 + 8·125, api excluded
+  })
+  it('is 0 with no entry placements', () => {
+    expect(frontlineCapacityRps(createWorld(), compileWorld(createWorld()))).toBe(0)
   })
 })

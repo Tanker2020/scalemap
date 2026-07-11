@@ -4,7 +4,7 @@ import type { WorldDoc, RegionId, AzId } from './world/types'
 import type { WorldMetrics } from './worldEngine/types'
 import { getServiceSpec, egressMonthlyCost, type CloudProvider } from './cloudRegistry'
 
-const HOURS_PER_MONTH = 730
+export const HOURS_PER_MONTH = 730
 const CROSS_AZ_USD_PER_GB = 0.01
 const CROSS_REGION_USD_PER_GB = 0.02
 const BYTES_PER_GB = 1024 ** 3

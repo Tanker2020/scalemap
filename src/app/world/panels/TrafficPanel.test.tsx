@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { TrafficPanel } from './TrafficPanel'
 import { useWorldStore } from '../../store/world.store'
+import { getPreset } from '../../../lib/world/instanceCatalog'
 
 beforeEach(() => useWorldStore.getState().newWorld())
 
@@ -19,6 +20,7 @@ describe('TrafficPanel — populations', () => {
     expect(pops[0]).toMatchObject({ label: 'pop-1', lat: 40.7, lon: -74, peakRps: 100, diurnal: 'flat' })
 
     const id = pops[0].id
+    fireEvent.click(screen.getByText(/pop-1/))   // expand the sentence row to reveal the tuning fields
     fireEvent.change(screen.getByLabelText(`label-${id}`), { target: { value: 'nyc' } })
     expect(useWorldStore.getState().doc.populations[id].label).toBe('nyc')
 
@@ -39,6 +41,7 @@ describe('TrafficPanel — populations', () => {
   it('remove population dispatches removePopulation', () => {
     const id = useWorldStore.getState().addPopulation('nyc', 40.7, -74)
     render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
+    fireEvent.click(screen.getByText(/nyc/))   // expand the sentence row
     fireEvent.click(screen.getByLabelText(`remove-${id}`))
     expect(useWorldStore.getState().doc.populations[id]).toBeUndefined()
   })
@@ -46,6 +49,7 @@ describe('TrafficPanel — populations', () => {
   it('lat clamps to [-90,90]', () => {
     const id = useWorldStore.getState().addPopulation('nyc', 40.7, -74)
     render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
+    fireEvent.click(screen.getByText(/nyc/))   // expand the sentence row
     const latInput = screen.getByLabelText(`lat-${id}`)
 
     fireEvent.change(latInput, { target: { value: '999' } })
@@ -87,6 +91,7 @@ describe('TrafficPanel — traffic', () => {
     fireEvent.click(screen.getByLabelText('autoBaseline'))
     expect(useWorldStore.getState().doc.traffic.autoBaseline).toBe(true)
 
+    fireEvent.click(screen.getByText('▸ exact value'))   // open the exact-value expander
     const rps = screen.getByLabelText('baselineTotalRps')
     fireEvent.change(rps, { target: { value: '250' } })
     fireEvent.blur(rps)
@@ -159,5 +164,62 @@ describe('TrafficPanel — routing', () => {
     fireEvent.blur(ttl)
     expect(useWorldStore.getState().doc.routing.dnsTtlSec).toBe(60)
     expect(screen.queryByText(/< detection/)).not.toBeInTheDocument()
+  })
+})
+
+describe('TrafficPanel — hero sentence (Polish 2)', () => {
+  function seedFrontline() {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const s1 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)     // 4 vcpu
+    const s2 = useWorldStore.getState().addServer(azId, getPreset('dedicated-8')!)    // 8 vcpu
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    useWorldStore.getState().updateBlueprint(bpId, {
+      ports: [{ port: 8080, protocol: 'tcp', visibility: 'public' }],
+      workload: { cpuMsPerRequest: 8, ramBaseMb: 128, ramPerConnMb: 0.5, diskIoPerRequest: 0 },
+    })
+    useWorldStore.getState().addPlacement(bpId, s1)
+    useWorldStore.getState().addPlacement(bpId, s2)
+    // frontline capacity = 1500 rps across 2 entry placements
+  }
+
+  it('hero slider commits baselineTotalRps on release with the exact patch', () => {
+    render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
+    const slider = screen.getByLabelText('hero-baseline-rps')
+    fireEvent.change(slider, { target: { value: '5000' } })
+    expect(useWorldStore.getState().doc.traffic.baselineTotalRps).toBe(1000)   // drag = draft only
+    fireEvent.mouseUp(slider)
+    expect(useWorldStore.getState().doc.traffic.baselineTotalRps).toBe(5000)
+  })
+
+  it('hero hint turns warning at 70% of frontline capacity and sheds at 100%', () => {
+    seedFrontline()
+    render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
+    const slider = screen.getByLabelText('hero-baseline-rps')
+
+    fireEvent.change(slider, { target: { value: '900' } })    // 60% of 1500
+    expect(screen.getByText('≈ 450 rps per frontline replica — comfortable (est. 60% cpu)')).toBeInTheDocument()
+
+    fireEvent.change(slider, { target: { value: '1200' } })   // 80%
+    expect(screen.getByText('≈ 600 rps per frontline replica — tight (est. 80% cpu)')).toBeInTheDocument()
+
+    fireEvent.change(slider, { target: { value: '1600' } })   // 107%
+    expect(screen.getByText('≈ 800 rps per frontline replica — ✗ will shed load (est. 107% cpu). Add replicas or bigger presets.')).toBeInTheDocument()
+  })
+
+  it('hero hint hides when the world has no entry placements', () => {
+    render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
+    expect(screen.queryByText(/frontline replica/)).not.toBeInTheDocument()
+  })
+
+  it('population sentence row expands to the existing fields and their dispatch is unchanged', () => {
+    const id = useWorldStore.getState().addPopulation('São Paulo', -23.55, -46.63)
+    render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
+    expect(screen.queryByLabelText(`rps-${id}`)).not.toBeInTheDocument()          // collapsed
+    fireEvent.click(screen.getByText(/São Paulo/))
+    const rpsInput = screen.getByLabelText(`rps-${id}`)                            // same aria-label
+    fireEvent.change(rpsInput, { target: { value: '250' } })
+    fireEvent.blur(rpsInput)
+    expect(useWorldStore.getState().doc.populations[id].peakRps).toBe(250)         // same dispatch
   })
 })

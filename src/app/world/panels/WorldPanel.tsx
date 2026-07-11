@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, type CSSProperties } from 'react'
 import { TopologyPanel } from './TopologyPanel'
 import { BlueprintPanel } from './BlueprintPanel'
 import { PlacementPanel } from './PlacementPanel'
@@ -13,6 +13,8 @@ import { EventsTab } from '../EventsTab'
 import { CostTab } from '../CostTab'
 import { panel } from './panelStyles'
 import { ChipValue } from '../ui/kit'
+import { useRollingNumber } from '../ui/motion'
+import { computeWorldCost, HOURS_PER_MONTH } from '../../../lib/costModelV2'
 
 export interface WorldPanelProps {
   running: boolean
@@ -52,6 +54,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
   ]
   return (
     <aside style={panel}>
+      <WorldSummary />
       <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
         {tabs.map(t => (
           <button key={t.id}
@@ -87,5 +90,63 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
         {tab === 'cost' && <CostTab />}
       </fieldset>
     </aside>
+  )
+}
+
+// World summary strip (Polish 2 D5): a read surface above the tab bar, OUTSIDE the
+// fieldset — it must not gray out while the sim is running. At rest (no metrics batch yet)
+// it shows the authored doc's counts; once metrics are flowing it becomes the live sentence
+// (rolling rps, health dot, $/hr, p50).
+function WorldSummary() {
+  const doc = useWorldStore(s => s.doc)
+  const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
+  const rolledRps = useRollingNumber(displayBatch?.world.totalRps ?? 0)
+
+  const regionCount = Object.keys(doc.regions).length
+  const serverCount = Object.keys(doc.servers).length
+  const cityCount = Object.keys(doc.populations).length
+
+  const box: CSSProperties = {
+    border: '1px solid var(--color-node-border)', borderRadius: 7, padding: '11px 13px',
+    background: 'linear-gradient(180deg, var(--color-surface-hover), var(--color-node-base))',
+    marginBottom: 8,
+  }
+
+  if (!displayBatch) {
+    return (
+      <div style={box} data-testid="world-summary">
+        <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
+          {regionCount} region{regionCount === 1 ? '' : 's'} · {serverCount} server{serverCount === 1 ? '' : 's'} · baseline {doc.traffic.baselineTotalRps.toLocaleString('en-US')} rps
+        </div>
+      </div>
+    )
+  }
+
+  const regions = Object.values(displayBatch.regions)
+  const downCount = regions.filter(r => r.health === 'down').length
+  const degradedCount = regions.filter(r => r.health === 'degraded').length
+  const healthText = downCount > 0
+    ? `● ${downCount} region${downCount === 1 ? '' : 's'} down`
+    : degradedCount > 0
+      ? `● ${degradedCount} region${degradedCount === 1 ? '' : 's'} degraded`
+      : '● all healthy'
+  const healthColor = downCount > 0 ? 'var(--color-danger)' : degradedCount > 0 ? 'var(--color-warning)' : 'var(--color-success)'
+  // Decision 9: WorldMetrics exposes no latency — rps-weighted mean of region p50Ms.
+  const totalRps = regions.reduce((s, r) => s + r.rps, 0)
+  const p50 = totalRps > 0 ? regions.reduce((s, r) => s + r.p50Ms * r.rps, 0) / totalRps : 0
+  const hourlyUsd = computeWorldCost(doc, displayBatch.world).monthlyUsd / HOURS_PER_MONTH
+
+  return (
+    <div style={box} data-testid="world-summary">
+      <div style={{ fontSize: 12.5 }}>
+        Handling <b style={{ color: 'var(--kit-accent)', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{Math.round(rolledRps).toLocaleString('en-US')} rps</b>
+        {' '}from {cityCount} {cityCount === 1 ? 'city' : 'cities'} across {regionCount} region{regionCount === 1 ? '' : 's'}
+      </div>
+      <div style={{ fontSize: 10.5, color: 'var(--color-text-muted)', marginTop: 3, display: 'flex', gap: 10, flexWrap: 'wrap', fontVariantNumeric: 'tabular-nums' }}>
+        <span style={{ color: healthColor }}>{healthText}</span>
+        <span>${hourlyUsd.toFixed(2)}/hr</span>
+        <span>p50 {Math.round(p50)} ms</span>
+      </div>
+    </div>
   )
 }

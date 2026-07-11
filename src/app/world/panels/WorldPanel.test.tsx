@@ -4,6 +4,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react'
 import { WorldPanel } from './WorldPanel'
 import { useWorldStore } from '../../store/world.store'
 import { useUiStore } from '../../store/ui.store'
+import { getPreset } from '../../../lib/world/instanceCatalog'
 
 beforeEach(() => useWorldStore.getState().newWorld())
 
@@ -44,5 +45,13 @@ describe('WorldPanel findings tab', () => {
     act(() => useUiStore.getState().setPendingPanelTab('traffic'))
     expect(screen.getByLabelText('autoBaseline')).toBeInTheDocument()         // switched to Traffic
     expect(useUiStore.getState().pendingPanelTab).toBeNull()                  // one-shot consumed
+  })
+
+  it('world summary at rest counts the authored doc', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    expect(screen.getByText(/1 region · 1 server · baseline 1,000 rps/)).toBeInTheDocument()
   })
 })

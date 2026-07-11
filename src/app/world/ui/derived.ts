@@ -1,6 +1,8 @@
 // Pure derived-consequence math for the hybrid panel kit (Polish 1 D2). Panels never inline
 // this arithmetic — they call these. No store imports, no React.
-import type { WorldDoc, CompiledWorld, RoutingConfig, ClientPopulation } from '../../../lib/world/types'
+import type {
+  WorldDoc, CompiledWorld, RoutingConfig, ClientPopulation, ServiceBlueprint,
+} from '../../../lib/world/types'
 import { reservedRamMb } from '../../../lib/analysis/rules/capacity'
 import { REGION_GEO, greatCircleKm } from '../../../lib/world/regionGeo'
 
@@ -66,4 +68,25 @@ export function populationLanding(
     regionCatalogId: region.catalogId,
     latencyMs: Math.round(greatCircleKm(pop.lat, pop.lon, geo.lat, geo.lon) / POP_LATENCY_KM_PER_MS),
   }
+}
+
+// The engine's client-entry predicate (worldEngine/index.ts:122-123), reimplemented purely —
+// never imported from engine internals (Global Constraints).
+export function isEntryBlueprint(bp: ServiceBlueprint): boolean {
+  return bp.ports.some(p => p.visibility === 'public')
+}
+
+// Total rps the frontline (entry-blueprint placements) can absorb at 100% cpu: Σ
+// hostRpsCapacity(host vcpu, blueprint cpuMs) over every placement of an entry blueprint.
+// The compiled world is accepted for signature symmetry with its consumers (and future
+// instance-count refinements) — the sum itself is authored-doc math.
+export function frontlineCapacityRps(doc: WorldDoc, _compiled: CompiledWorld): number {
+  let sum = 0
+  for (const pl of Object.values(doc.placements)) {
+    const bp = doc.blueprints[pl.blueprintId]
+    const server = doc.servers[pl.serverId]
+    if (!bp || !server || !isEntryBlueprint(bp)) continue
+    sum += hostRpsCapacity(server.specs.vcpu, bp.workload.cpuMsPerRequest)
+  }
+  return sum
 }
