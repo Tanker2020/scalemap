@@ -44,6 +44,7 @@ export function SimControls() {
         />
       )}
       <button
+        className="kit-press"
         style={running ? btnRunning : btn}
         onClick={() => (running ? stop() : start(doc, compiled))}
       >

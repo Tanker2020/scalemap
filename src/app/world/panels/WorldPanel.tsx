@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, type CSSProperties } from 'react'
+import { useState, useMemo, useEffect, useLayoutEffect, useRef, type CSSProperties } from 'react'
 import { TopologyPanel } from './TopologyPanel'
 import { BlueprintPanel } from './BlueprintPanel'
 import { PlacementPanel } from './PlacementPanel'
@@ -52,18 +52,34 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
     { id: 'events', label: 'Events' },
     { id: 'cost', label: 'Cost' },
   ]
+
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({})
+  const barRef = useRef<HTMLDivElement>(null)
+  const [ink, setInk] = useState<{ left: number; width: number; top: number }>({ left: 0, width: 0, top: 0 })
+
+  const placeInk = (id: PanelTab) => {
+    const el = tabRefs.current[id]
+    // top is tracked per-tab because the bar WRAPS (flexWrap, 7 tabs in a 360px dock) — a
+    // bottom-anchored ink would underline the container's last row for every tab. With an
+    // explicit height + top, the .kit-ink CSS `bottom: 0` is overconstrained-ignored.
+    if (el) setInk({ left: el.offsetLeft, width: el.offsetWidth, top: el.offsetTop + el.offsetHeight - 2 })
+  }
+  useLayoutEffect(() => { placeInk(tab) }, [tab])
+
   return (
     <aside style={panel}>
       <WorldSummary />
-      <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
+      <div ref={barRef} onMouseLeave={() => placeInk(tab)}
+        style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap', position: 'relative' }}>
         {tabs.map(t => (
           <button key={t.id}
+            ref={el => { tabRefs.current[t.id] = el }}
             type="button"
+            onMouseEnter={() => placeInk(t.id)}
             style={{
               display: 'flex', alignItems: 'center', gap: 5,
               padding: '5px 10px', background: 'transparent',
               border: '1px solid transparent',
-              borderBottom: tab === t.id ? '2px solid var(--color-accent)' : '2px solid transparent',
               color: tab === t.id ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
               cursor: 'pointer', font: '11px var(--font-mono)',
             }}
@@ -72,6 +88,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
             {t.id === 'analysis' && <ChipValue>{analysisCount}</ChipValue>}
           </button>
         ))}
+        <span className="kit-ink" aria-hidden style={{ left: ink.left, width: ink.width, top: ink.top }} />
       </div>
       {/* Native fieldset-disabled cascades into every descendant button/input/select with zero
           changes to TopologyPanel/BlueprintPanel/PlacementPanel. Findings/Events have no form
@@ -125,11 +142,14 @@ function WorldSummary() {
   const regions = Object.values(displayBatch.regions)
   const downCount = regions.filter(r => r.health === 'down').length
   const degradedCount = regions.filter(r => r.health === 'degraded').length
-  const healthText = downCount > 0
-    ? `● ${downCount} region${downCount === 1 ? '' : 's'} down`
+  // The dot glyph moved out of this string into its own .kit-ripple span (Polish 2 T7) — a
+  // ripple radiating from an inline text run spanning "N regions down" would paint an oval
+  // over the words, not a dot; the dot needs its own small, roughly-square box.
+  const healthLabel = downCount > 0
+    ? `${downCount} region${downCount === 1 ? '' : 's'} down`
     : degradedCount > 0
-      ? `● ${degradedCount} region${degradedCount === 1 ? '' : 's'} degraded`
-      : '● all healthy'
+      ? `${degradedCount} region${degradedCount === 1 ? '' : 's'} degraded`
+      : 'all healthy'
   const healthColor = downCount > 0 ? 'var(--color-danger)' : degradedCount > 0 ? 'var(--color-warning)' : 'var(--color-success)'
   // Decision 9: WorldMetrics exposes no latency — rps-weighted mean of region p50Ms.
   const totalRps = regions.reduce((s, r) => s + r.rps, 0)
@@ -142,8 +162,11 @@ function WorldSummary() {
         Handling <b style={{ color: 'var(--kit-accent)', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{Math.round(rolledRps).toLocaleString('en-US')} rps</b>
         {' '}from {cityCount} {cityCount === 1 ? 'city' : 'cities'} across {regionCount} region{regionCount === 1 ? '' : 's'}
       </div>
-      <div style={{ fontSize: 10.5, color: 'var(--color-text-muted)', marginTop: 3, display: 'flex', gap: 10, flexWrap: 'wrap', fontVariantNumeric: 'tabular-nums' }}>
-        <span style={{ color: healthColor }}>{healthText}</span>
+      <div style={{ fontSize: 10.5, color: 'var(--color-text-muted)', marginTop: 3, display: 'flex', gap: 10, flexWrap: 'wrap', fontVariantNumeric: 'tabular-nums', alignItems: 'center' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: healthColor }}>
+          <span className={displayBatch ? 'kit-ripple' : undefined} style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor', flexShrink: 0 }} />
+          {healthLabel}
+        </span>
         <span>${hourlyUsd.toFixed(2)}/hr</span>
         <span>p50 {Math.round(p50)} ms</span>
       </div>

@@ -227,7 +227,7 @@ function PopulationsSection({ selectedPopulationId, placeMode, onTogglePlaceMode
                     <option value="flat">flat</option>
                     <option value="day-night">day-night</option>
                   </select>
-                  <button style={dangerBtn} aria-label={`remove-${pop.id}`} onClick={() => removePopulation(pop.id)}>✕</button>
+                  <button className="kit-press" style={dangerBtn} aria-label={`remove-${pop.id}`} onClick={() => removePopulation(pop.id)}>✕</button>
                 </div>
               </div>
             )}
@@ -248,8 +248,9 @@ function PopulationsSection({ selectedPopulationId, placeMode, onTogglePlaceMode
         </select>
       </div>
       <div style={row}>
-        <button style={smallBtn} onClick={addDraft}>+ add</button>
+        <button className="kit-press" style={smallBtn} onClick={addDraft}>+ add</button>
         <button
+          className="kit-press"
           style={{ ...smallBtn, ...(placeMode ? armedBtn : {}) }}
           aria-pressed={placeMode}
           onClick={onTogglePlaceMode}
@@ -301,8 +302,8 @@ function RoutingSection() {
         return (
           <div key={regionId} style={row}>
             <span style={{ flex: 1 }}>{i + 1}. {label}</span>
-            <button style={smallBtn} aria-label={`move ${label} up`} disabled={i === 0} onClick={() => move(regionId, -1)}>↑</button>
-            <button style={smallBtn} aria-label={`move ${label} down`} disabled={i === priorityOrder.length - 1} onClick={() => move(regionId, 1)}>↓</button>
+            <button className="kit-press" style={smallBtn} aria-label={`move ${label} up`} disabled={i === 0} onClick={() => move(regionId, -1)}>↑</button>
+            <button className="kit-press" style={smallBtn} aria-label={`move ${label} down`} disabled={i === priorityOrder.length - 1} onClick={() => move(regionId, 1)}>↓</button>
           </div>
         )
       })}

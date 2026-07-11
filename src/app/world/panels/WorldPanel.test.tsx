@@ -54,4 +54,11 @@ describe('WorldPanel findings tab', () => {
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
     expect(screen.getByText(/1 region · 1 server · baseline 1,000 rps/)).toBeInTheDocument()
   })
+
+  it('tab ink slides — clicking a tab still switches content with the ink element present', () => {
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    fireEvent.click(screen.getByText('Traffic'))
+    expect(screen.getByLabelText('autoBaseline')).toBeInTheDocument()
+    expect(document.querySelector('.kit-ink')).not.toBeNull()
+  })
 })

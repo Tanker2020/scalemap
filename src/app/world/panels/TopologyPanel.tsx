@@ -67,7 +67,7 @@ export function TopologyPanel() {
           value={newRegion} onChange={e => setNewRegion(e.target.value)}>
           {available.map(w => <option key={w.id} value={w.id}>{w.id}</option>)}
         </select>
-        <button style={smallBtn} disabled={available.length === 0}
+        <button className="kit-press" style={smallBtn} disabled={available.length === 0}
           onClick={() => store.addRegion(newRegion)}>+ Region</button>
       </div>
 
@@ -94,11 +94,11 @@ export function TopologyPanel() {
                     <option value="active">active</option>
                     <option value="passive">passive</option>
                   </select>
-                  <button style={dangerBtn} onClick={() => store.removeRegion(region.id)}>×</button>
+                  <button className="kit-press" style={dangerBtn} onClick={() => store.removeRegion(region.id)}>×</button>
                 </div>
               }
             />
-            <button style={smallBtn} onClick={() => store.addAz(region.id, nextAzLabel(region.catalogId, region.id))}>+ AZ</button>
+            <button className="kit-press" style={smallBtn} onClick={() => store.addAz(region.id, nextAzLabel(region.catalogId, region.id))}>+ AZ</button>
 
             {Object.values(doc.azs).filter(a => a.regionId === region.id).map(az => {
               const selectedPreset = presetByAz[az.id] ?? 'vps-medium'
@@ -107,14 +107,14 @@ export function TopologyPanel() {
                 <div key={az.id} style={{ marginTop: 6, paddingLeft: 8, borderLeft: '2px solid var(--color-node-border)' }}>
                   <div style={row}>
                     <span style={{ flex: 1 }}>{az.label}</span>
-                    <button style={dangerBtn} onClick={() => store.removeAz(az.id)}>×</button>
+                    <button className="kit-press" style={dangerBtn} onClick={() => store.removeAz(az.id)}>×</button>
                   </div>
                   <div style={row}>
                     <button type="button" aria-label="choose server preset" style={unstyledButton}
                       onClick={() => setPresetGridOpenAz(cur => cur === az.id ? null : az.id)}>
                       <ChipValue title="server preset">{selectedPreset}</ChipValue>
                     </button>
-                    <button style={smallBtn}
+                    <button className="kit-press" style={smallBtn}
                       onClick={() => store.addServer(az.id, getPreset(selectedPreset)!)}>+ Server</button>
                   </div>
                   {gridOpen && (
@@ -148,6 +148,7 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
   const doc = useWorldStore(s => s.doc)
   const az = doc.azs[server.azId]
   const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
+  const running = useSimulationStore(s => s.running)
   const metrics = displayBatch?.servers[server.id]
 
   const upd = (patch: Partial<Server>) => store.updateServer(server.id, patch)
@@ -165,6 +166,7 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
       <EdgeRow
         status={health}
         edgeColor={edgeColor}
+        ripple={running}
         trailing={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {metrics && <MicroBars cpu={cpuMean} ram={ramFrac} io={metrics.diskIoFraction} />}
@@ -177,14 +179,14 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
             <span style={{ fontSize: 10, color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
               ${server.hourlyUsd}/hr
             </span>
-            {az && <button style={smallBtn} title="Open server view"
+            {az && <button className="kit-press" style={smallBtn} title="Open server view"
               onClick={() => nav.goServer(az.regionId, az.id, server.id)}>→</button>}
-            <button style={dangerBtn} onClick={() => store.removeServer(server.id)}>×</button>
+            <button className="kit-press" style={dangerBtn} onClick={() => store.removeServer(server.id)}>×</button>
           </div>
         }
       >
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-          <button style={{ ...smallBtn, border: 'none', padding: 0, background: 'transparent', textAlign: 'left' }} onClick={onToggle}>
+          <button className="kit-press" style={{ ...smallBtn, border: 'none', padding: 0, background: 'transparent', textAlign: 'left' }} onClick={onToggle}>
             {expanded ? '▾' : '▸'} {server.label} <span style={{ color: 'var(--color-text-muted)' }}>({server.kind})</span>
           </button>
           <span style={{ fontSize: 9.5, color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
@@ -226,22 +228,22 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
                 onChange={e => upd({ firewall: server.firewall.map((x, j) => j === i ? { ...x, source: e.target.value === 'cidr' ? '10.0.0.0/8' : e.target.value } : x) })}>
                 <option value="internal">internal</option><option value="any">any</option><option value="cidr">cidr…</option>
               </select>
-              <button style={smallBtn} disabled={i === 0}
+              <button className="kit-press" style={smallBtn} disabled={i === 0}
                 onClick={() => {
                   const swapped = [...server.firewall]
                   ;[swapped[i - 1], swapped[i]] = [swapped[i], swapped[i - 1]]
                   upd({ firewall: swapped })
                 }}>↑</button>
-              <button style={smallBtn} disabled={i === server.firewall.length - 1}
+              <button className="kit-press" style={smallBtn} disabled={i === server.firewall.length - 1}
                 onClick={() => {
                   const swapped = [...server.firewall]
                   ;[swapped[i], swapped[i + 1]] = [swapped[i + 1], swapped[i]]
                   upd({ firewall: swapped })
                 }}>↓</button>
-              <button style={dangerBtn} onClick={() => upd({ firewall: server.firewall.filter((_, j) => j !== i) })}>×</button>
+              <button className="kit-press" style={dangerBtn} onClick={() => upd({ firewall: server.firewall.filter((_, j) => j !== i) })}>×</button>
             </div>
           ))}
-          <button style={smallBtn}
+          <button className="kit-press" style={smallBtn}
             onClick={() => upd({ firewall: [...server.firewall, { id: nextWorldId('fw'), action: 'allow', port: 443, protocol: 'tcp', source: 'any' }] })}>
             + Rule
           </button>
@@ -252,7 +254,7 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
               <div style={row}>
                 <input style={{ ...field, marginBottom: 0, flex: 1 }} value={st.name} aria-label={`stack-name-${i}`}
                   onChange={e => upd({ stacks: server.stacks.map((x, j) => j === i ? { ...x, name: e.target.value } : x) })} />
-                <button style={dangerBtn} onClick={() => upd({ stacks: server.stacks.filter((_, j) => j !== i) })}>×</button>
+                <button className="kit-press" style={dangerBtn} onClick={() => upd({ stacks: server.stacks.filter((_, j) => j !== i) })}>×</button>
               </div>
               <input style={field} placeholder="networks: name@cidr, name@cidr" aria-label={`stack-nets-${i}`}
                 value={st.networks.map(n => `${n.name}@${n.cidr}`).join(', ')}
@@ -274,7 +276,7 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
                 } : x) })} />
             </div>
           ))}
-          <button style={smallBtn}
+          <button className="kit-press" style={smallBtn}
             onClick={() => upd({ stacks: [...server.stacks, { name: `stack-${server.stacks.length + 1}`, networks: [{ name: 'default', cidr: '172.18.0.0/16' }], volumes: [] }] })}>
             + Stack
           </button>

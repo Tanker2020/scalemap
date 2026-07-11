@@ -42,9 +42,12 @@ export interface SceneOverlayProps {
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
+  /** Additive (Polish 2 T7): header dot ripples while true. Callers gate on `running` (or
+   *  equivalent live-read) — never on by default. */
+  ripple?: boolean
 }
 
-export function SceneOverlay({ title, health, subtitle, dotColor, onClose, children, footer }: SceneOverlayProps) {
+export function SceneOverlay({ title, health, subtitle, dotColor, onClose, children, footer, ripple }: SceneOverlayProps) {
   const dot = health ? HEALTH_DOT[health] : dotColor
   return (
     <div
@@ -62,9 +65,10 @@ export function SceneOverlay({ title, health, subtitle, dotColor, onClose, child
         borderBottom: '1px solid var(--color-toolbar-border)',
       }}>
         {dot && (
-          <span data-testid="scene-ovl-dot" style={{
+          <span data-testid="scene-ovl-dot" className={ripple ? 'kit-ripple' : undefined} style={{
             width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
             background: dot, boxShadow: `0 0 6px ${dot}`,
+            ...(ripple ? { color: dot } : null),
           }} />
         )}
         <b style={{ fontSize: 12, fontWeight: 600 }}>{title}</b>

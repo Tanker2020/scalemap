@@ -61,7 +61,7 @@ export function PlacementPanel() {
           <div style={row}>
             <span style={{ width: 10, height: 10, borderRadius: 3, background: bp.color, flexShrink: 0 }} />
             <strong style={{ flex: 1 }}>{bp.name}</strong>
-            <button style={smallBtn} disabled={servers.length === 0}
+            <button className="kit-press" style={smallBtn} disabled={servers.length === 0}
               onClick={() => store.addPlacement(bp.id, servers[0].id)}>+ Place</button>
           </div>
           {Object.values(doc.placements).filter(p => p.blueprintId === bp.id).map(pl => (
@@ -83,14 +83,14 @@ export function PlacementPanel() {
           onChange={e => setMsProvider(e.target.value as ManagedService['provider'])}>
           {PROVIDERS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
         </select>
-        <button style={smallBtn} disabled={!msScope} onClick={() => {
+        <button className="kit-press" style={smallBtn} disabled={!msScope} onClick={() => {
           const [kind, id] = msScope.split(':')
           store.addManagedService(msType, MANAGED_TYPES.find(t => t.key === msType)?.label ?? msType,
             kind === 'region' ? { kind: 'region', regionId: id } : { kind: 'az', azId: id }, 5432, msProvider)
         }}>+ Add</button>
       </div>
       {Object.values(doc.managedServices).map(ms => (
-        <EdgeRow key={ms.id} trailing={<button style={dangerBtn} onClick={() => store.removeManagedService(ms.id)}>×</button>}>
+        <EdgeRow key={ms.id} trailing={<button className="kit-press" style={dangerBtn} onClick={() => store.removeManagedService(ms.id)}>×</button>}>
           {ms.label} <span style={{ color: 'var(--color-text-muted)' }}>:{ms.port}</span>
         </EdgeRow>
       ))}
@@ -115,7 +115,7 @@ function PlacementRow({ pl, edgeColor }: { pl: Placement; edgeColor: string }) {
   return (
     <EdgeRow
       edgeColor={edgeColor}
-      trailing={<button style={dangerBtn} onClick={() => store.removePlacement(pl.id)}>×</button>}
+      trailing={<button className="kit-press" style={dangerBtn} onClick={() => store.removePlacement(pl.id)}>×</button>}
     >
       <div style={row}>
         <select style={{ ...field, flex: 1, marginBottom: 0 }} value={pl.serverId}

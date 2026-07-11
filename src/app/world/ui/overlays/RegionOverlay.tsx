@@ -50,6 +50,7 @@ export function RegionOverlay({ regionId, onClose }: { regionId: RegionId; onClo
       title={regionTitle(region.catalogId)}
       health={metrics?.health ?? null}
       subtitle="region"
+      ripple={running}
       onClose={onClose}
       footer={
         <>

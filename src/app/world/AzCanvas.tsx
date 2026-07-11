@@ -127,6 +127,14 @@ export function AzCanvas() {
     // Parents (frames) must precede their children (chassis) in React Flow's node array.
     const nodes: Node[] = [...frameNodes, ...chassisNodes, ...managedNodes]
 
+    // Flow shimmer (Polish 2 T7, decision 13): source-server rps as the animation proxy — an
+    // edge only shimmers when its SOURCE server is actually pushing live traffic. Lifted into a
+    // Map (rather than recomputed per edge) since multiple edges can share a source server.
+    const rpsByServer = new Map(servers.map(s => [
+      s.id,
+      Object.values(compiled.instances).filter(i => i.serverId === s.id).reduce((sum, i) => sum + (batch?.instances[i.id]?.rps ?? 0), 0),
+    ]))
+
     const edges: Edge[] = [...agg.entries()].map(([key, e]) => ({
       id: key,
       source: e.source,
@@ -136,6 +144,8 @@ export function AzCanvas() {
         ? { stroke: 'var(--color-danger)', strokeDasharray: '5 4' }
         : { stroke: 'var(--color-success)' },
       labelStyle: { fill: e.blocked > 0 ? 'var(--color-danger)' : 'var(--color-text-muted)', fontSize: 10, fontFamily: 'var(--font-mono)' },
+      // Blocked edges keep their static red dash — never shimmer a refused path.
+      animated: e.blocked === 0 && (rpsByServer.get(e.source) ?? 0) > 0,
     }))
 
     return { nodes, edges }

@@ -23,7 +23,7 @@ export function BlueprintPanel() {
       <div style={row}>
         <input style={{ ...field, marginBottom: 0, flex: 1 }} placeholder="new blueprint name"
           value={name} onChange={e => setName(e.target.value)} />
-        <button style={smallBtn} disabled={!name.trim()}
+        <button className="kit-press" style={smallBtn} disabled={!name.trim()}
           onClick={() => { store.addBlueprint(name.trim()); setName('') }}>+ Blueprint</button>
       </div>
       {Object.values(doc.blueprints).map(bp => <BlueprintCard key={bp.id} bp={bp} compiled={compiled} />)}
@@ -78,7 +78,7 @@ function BlueprintCard({ bp, compiled }: { bp: ServiceBlueprint; compiled: Compi
         <input style={{ ...field, marginBottom: 0, flex: 1 }} value={bp.name} aria-label="bp-name"
           onChange={e => upd({ name: e.target.value })} />
         <ChipValue title="placed instances">×{instanceCount}</ChipValue>
-        <button style={dangerBtn} onClick={() => store.removeBlueprint(bp.id)}>×</button>
+        <button className="kit-press" style={dangerBtn} onClick={() => store.removeBlueprint(bp.id)}>×</button>
       </div>
       <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 2 }}>
         {portsSummary}{depsSummary}
@@ -93,10 +93,10 @@ function BlueprintCard({ bp, compiled }: { bp: ServiceBlueprint; compiled: Compi
             onChange={e => upd({ ports: bp.ports.map((x, j) => j === i ? { ...x, visibility: e.target.value as 'public' | 'internal' } : x) })}>
             <option value="internal">internal</option><option value="public">public</option>
           </select>
-          <button style={dangerBtn} onClick={() => upd({ ports: bp.ports.filter((_, j) => j !== i) })}>×</button>
+          <button className="kit-press" style={dangerBtn} onClick={() => upd({ ports: bp.ports.filter((_, j) => j !== i) })}>×</button>
         </div>
       ))}
-      <button style={smallBtn} onClick={() => upd({ ports: [...bp.ports, { port: 8080, protocol: 'tcp', visibility: 'internal' }] })}>+ Port</button>
+      <button className="kit-press" style={smallBtn} onClick={() => upd({ ports: [...bp.ports, { port: 8080, protocol: 'tcp', visibility: 'internal' }] })}>+ Port</button>
 
       <SectionHeader label="▸ WORKLOAD" />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -147,7 +147,7 @@ function BlueprintCard({ bp, compiled }: { bp: ServiceBlueprint; compiled: Compi
         )}
       </div>
 
-      <button style={smallBtn} onClick={() => setShowDeps(s => !s)}>{showDeps ? '▾ deps' : '▸ deps'}</button>
+      <button className="kit-press" style={smallBtn} onClick={() => setShowDeps(s => !s)}>{showDeps ? '▾ deps' : '▸ deps'}</button>
       {showDeps && (
         <div style={{ marginTop: 4 }}>
           {bp.dependencies.map((d, i) => {
@@ -164,11 +164,11 @@ function BlueprintCard({ bp, compiled }: { bp: ServiceBlueprint; compiled: Compi
                   <option value="http">http</option><option value="db">db</option>
                   <option value="event">event</option><option value="stream">stream</option>
                 </select>
-                <button style={dangerBtn} onClick={() => upd({ dependencies: bp.dependencies.filter((_, j) => j !== i) })}>×</button>
+                <button className="kit-press" style={dangerBtn} onClick={() => upd({ dependencies: bp.dependencies.filter((_, j) => j !== i) })}>×</button>
               </div>
             )
           })}
-          <button style={smallBtn} disabled={targets.length === 0} onClick={addDep}>+ Dependency</button>
+          <button className="kit-press" style={smallBtn} disabled={targets.length === 0} onClick={addDep}>+ Dependency</button>
         </div>
       )}
     </div>

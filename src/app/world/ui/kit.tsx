@@ -114,6 +114,9 @@ export interface EdgeRowProps {
   edgeColor?: string
   trailing?: ReactNode
   onClick?: () => void
+  /** Additive (Polish 2 T7): dot ripples while true AND status is non-null. Gated by callers
+   *  on `running` (or equivalent live-read) — never on by default. */
+  ripple?: boolean
 }
 
 const STATUS_COLOR: Record<'healthy' | 'degraded' | 'down', string> = {
@@ -122,7 +125,7 @@ const STATUS_COLOR: Record<'healthy' | 'degraded' | 'down', string> = {
   down: 'var(--color-danger)',
 }
 
-export function EdgeRow({ children, status, edgeColor, trailing, onClick }: EdgeRowProps) {
+export function EdgeRow({ children, status, edgeColor, trailing, onClick, ripple }: EdgeRowProps) {
   const style: CSSProperties = {
     display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 5,
     marginBottom: 3,
@@ -137,10 +140,12 @@ export function EdgeRow({ children, status, edgeColor, trailing, onClick }: Edge
       {status !== undefined && (
         <span
           data-testid="kit-dot"
+          className={ripple && status ? 'kit-ripple' : undefined}
           style={{
             width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
             background: status === null ? 'var(--color-text-muted)' : STATUS_COLOR[status],
             boxShadow: status === null ? 'none' : `0 0 5px ${STATUS_COLOR[status]}`,
+            ...(ripple && status ? { color: STATUS_COLOR[status] } : null),
           }}
         />
       )}
@@ -369,6 +374,7 @@ export function Segmented<T extends string>({ ariaLabel, value, onChange, option
           <button
             key={opt.value}
             type="button"
+            className="kit-press"
             aria-pressed={selected}
             onClick={() => onChange(opt.value)}
             style={{
@@ -411,7 +417,7 @@ export function PresetCardGrid({ value, onChange, options }: PresetCardGridProps
           <button
             key={opt.value}
             type="button"
-            className="kit-pcard kit-t"
+            className="kit-pcard kit-t kit-press"
             aria-pressed={selected}
             onClick={() => onChange(opt.value)}
             style={{
