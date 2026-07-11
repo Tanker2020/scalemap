@@ -68,7 +68,9 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
       {/* Native fieldset-disabled cascades into every descendant button/input/select with zero
           changes to TopologyPanel/BlueprintPanel/PlacementPanel. Findings/Events have no form
           controls, so wrapping them here too is a harmless no-op — kept uniform on purpose. */}
-      <fieldset disabled={running} style={{ border: 'none', margin: 0, padding: 0 }}>
+      {/* minInlineSize 0: a fieldset defaults to min-inline-size:min-content and refuses to
+          shrink to the dock's width, pushing rows past the viewport edge. */}
+      <fieldset disabled={running} style={{ border: 'none', margin: 0, padding: 0, minInlineSize: 0 }}>
         {tab === 'topology' && <TopologyPanel />}
         {tab === 'blueprints' && <BlueprintPanel />}
         {tab === 'placements' && <PlacementPanel />}

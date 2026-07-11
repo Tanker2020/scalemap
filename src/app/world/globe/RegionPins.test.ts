@@ -5,7 +5,7 @@
 // RegionPins.tsx pulls in @react-three/fiber/drei, which are import-safe outside a browser
 // (see fragment header J3).
 import { describe, it, expect } from 'vitest'
-import { pinColor, isPulsing } from './RegionPins'
+import { pinColor, isPulsing, isFrontFacing } from './RegionPins'
 import type { EngineEvent } from '../../../lib/worldEngine/types'
 
 function evt(over: Partial<EngineEvent>): EngineEvent {
@@ -42,5 +42,23 @@ describe('isPulsing', () => {
   it('a failover_started event also triggers the pulse', () => {
     const events = [evt({ kind: 'failover_started', affected: ['r1'], simMs: 8000 })]
     expect(isPulsing(events, 'r1', 8500)).toBe(true)
+  })
+})
+
+describe('isFrontFacing', () => {
+  // Camera at the default distance 2.8: horizon at dot = 1/2.8 + 0.05 margin ≈ 0.407.
+  it('shows a label whose pin faces the camera head-on', () => {
+    expect(isFrontFacing(1, 2.8)).toBe(true)
+  })
+
+  it('hides a label at the limb (dot 0) and on the far side (dot -1)', () => {
+    expect(isFrontFacing(0, 2.8)).toBe(false)
+    expect(isFrontFacing(-1, 2.8)).toBe(false)
+  })
+
+  it('the horizon widens as the camera zooms out', () => {
+    // dot = 0.3: hidden at distance 2.8 (threshold ≈ .407), visible zoomed out to 5 (≈ .25)
+    expect(isFrontFacing(0.3, 2.8)).toBe(false)
+    expect(isFrontFacing(0.3, 5)).toBe(true)
   })
 })

@@ -1,7 +1,10 @@
 import type { CSSProperties } from 'react'
 
 export const panel: CSSProperties = {
-  width: 300, flexShrink: 0, overflowY: 'auto', padding: 12,
+  // overflowX hidden is a hard guarantee: a row that can't shrink must clip inside the dock,
+  // never spill past the viewport edge (the Polish 1 rows at 300px did exactly that).
+  width: 360, flexShrink: 0, overflowY: 'auto', overflowX: 'hidden', padding: 12,
+  boxSizing: 'border-box',
   borderLeft: '1px solid var(--color-toolbar-border)', background: 'var(--color-surface)',
   font: '11px var(--font-mono)', color: 'var(--color-text-primary)',
 }

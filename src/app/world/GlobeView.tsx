@@ -4,7 +4,7 @@
 // same goRegion navigation renders in BOTH branches — the canvas container is aria-hidden
 // (decorative to a screen reader; the hidden list is the real navigation surface there, and it
 // also covers any environment that passes the WebGL probe but still renders nothing).
-import type { CSSProperties } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
 import { GlobeScene } from './globe/GlobeScene'
@@ -46,6 +46,7 @@ export interface GlobeViewProps {
 export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: GlobeViewProps) {
   const addPopulation = useWorldStore(s => s.addPopulation)
   const populations = useWorldStore(s => s.doc.populations)
+  const [rotationLocked, setRotationLocked] = useState(false)
 
   // Place-mode is armed/disarmed by WorldShell (the common ancestor of this component and
   // TrafficPanel) via the placeMode prop; a click on the globe here places a population, then
@@ -73,12 +74,26 @@ export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: Gl
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div aria-hidden="true" style={{ width: '100%', height: '100%' }}>
-        <GlobeScene placeMode={placeMode} onPlace={onPlace}>
+        <GlobeScene placeMode={placeMode} onPlace={onPlace} autoRotate={!rotationLocked}>
           <RegionPins />
           <PopulationMarkers />
           <ArcsLayer />
         </GlobeScene>
       </div>
+      <button
+        aria-label={rotationLocked ? 'Resume globe rotation' : 'Lock globe rotation'}
+        title={rotationLocked ? 'Resume the globe’s idle spin' : 'Stop the globe’s idle spin'}
+        onClick={() => setRotationLocked(l => !l)}
+        style={{
+          position: 'absolute', top: 12, left: 12,
+          display: 'flex', alignItems: 'center', gap: 6,
+          background: 'var(--color-toolbar)', border: '1px solid var(--color-toolbar-border)',
+          borderRadius: 5, padding: '4px 9px', cursor: 'pointer',
+          font: '10px var(--font-mono)', color: 'var(--color-text-secondary)',
+        }}
+      >
+        {rotationLocked ? '🔒 rotation locked' : '🌐 rotating'}
+      </button>
       <RegionA11yList />
     </div>
   )

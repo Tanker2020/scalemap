@@ -10,7 +10,7 @@ import { useMemo, useRef, useState, type ReactElement } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { Html } from '@react-three/drei'
 import { useReducedMotion } from 'framer-motion'
-import { AdditiveBlending, type Mesh } from 'three'
+import { AdditiveBlending, Vector3, type Group, type Mesh } from 'three'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore } from '../../store/simulation.store'
@@ -25,6 +25,20 @@ const PIN_RADIUS = 0.018
 const GLOW_RADIUS = PIN_RADIUS * 2.4
 const PULSE_WINDOW_MS = 10_000
 const PULSE_PERIOD_S = 1
+
+// Scratch vectors for the per-frame horizon test (module-level: no per-frame allocation).
+const TMP_PIN = new Vector3()
+const TMP_CAM = new Vector3()
+// Margin past the exact horizon: a label right on the limb is unreadable anyway, and hiding a
+// touch early avoids one-frame flicker at the boundary.
+const HORIZON_MARGIN = 0.05
+
+/** True when a point on the unit sphere (pin world position) is on the camera-facing cap.
+ *  For a camera at distance d from the globe's center, the horizon sits where the angle α
+ *  between the point's normal and the camera direction satisfies cos α = 1/d. */
+export function isFrontFacing(pinDotCam: number, cameraDistance: number): boolean {
+  return pinDotCam > EARTH_RADIUS / cameraDistance + HORIZON_MARGIN
+}
 
 // Local hex map (Theme/constants: material colors inside a WebGL scene aren't a plain CSS
 // var() substitution — same carve-out the arc colors use). Values match theme.ts's DARK_COLORS.
@@ -60,15 +74,29 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
   const pulsing = !reduced && isPulsing(events, regionId, simMs)
 
   const pinRef = useRef<Mesh>(null)
+  const groupRef = useRef<Group>(null)
   const [hovered, setHovered] = useState(false)
+  const [labelVisible, setLabelVisible] = useState(true)
+  const labelVisibleRef = useRef(true)
   const position = useMemo(() => latLonToVec3(lat, lon, PIN_ALTITUDE), [lat, lon])
   const color = pinColor(health)
   const down = health === 'down'
 
   // Frame callback: reads `pulsing` from the latest render's closure (r3f updates useFrame's
-  // callback ref every render — no stale-closure risk) and writes ONLY to the mesh's scale ref.
-  // Never calls setState here.
+  // callback ref every render — no stale-closure risk) and writes to the mesh's scale ref.
+  // The one setState here (label visibility) fires only on a horizon crossing, not per frame —
+  // drei <Html> is a DOM element, so hiding it has to go through React, and its raycast-based
+  // `occlude` prop demonstrably left far-side labels floating over the globe.
   useFrame((state) => {
+    if (groupRef.current) {
+      const pin = groupRef.current.getWorldPosition(TMP_PIN).normalize()
+      const cameraDistance = state.camera.position.length()
+      const facing = isFrontFacing(pin.dot(TMP_CAM.copy(state.camera.position).normalize()), cameraDistance)
+      if (facing !== labelVisibleRef.current) {
+        labelVisibleRef.current = facing
+        setLabelVisible(facing)
+      }
+    }
     if (!pinRef.current) return
     if (!pulsing) { pinRef.current.scale.setScalar(1); return }
     const t = (state.clock.elapsedTime % PULSE_PERIOD_S) / PULSE_PERIOD_S   // 0..1 sawtooth
@@ -76,7 +104,7 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
   })
 
   return (
-    <group position={position}>
+    <group ref={groupRef} position={position}>
       <mesh
         ref={pinRef}
         onClick={e => { e.stopPropagation(); goRegion(regionId) }}
@@ -95,11 +123,16 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
         <sphereGeometry args={[GLOW_RADIUS, 12, 12]} />
         <meshBasicMaterial color={color} transparent opacity={0.28} depthWrite={false} blending={AdditiveBlending} />
       </mesh>
-      <Html occlude distanceFactor={8} style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}>
-        <span style={{ font: '9px var(--font-mono)', color: down ? DOWN_LABEL_COLOR : HEALTHY_LABEL_COLOR }}>
-          {catalogId}{down && <span style={{ color: DOWN_LABEL_COLOR }}> ▼ down</span>}
-        </span>
-      </Html>
+      {/* No distanceFactor: it CSS-scaled the 9px label up ~3x at the default camera distance —
+          blurry and globe-covering. A fixed screen-size 10px label reads the same at every zoom.
+          Visibility comes from the useFrame horizon test above, not drei's `occlude`. */}
+      {labelVisible && (
+        <Html style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}>
+          <span style={{ font: '10px var(--font-mono)', color: down ? DOWN_LABEL_COLOR : HEALTHY_LABEL_COLOR, marginLeft: 8 }}>
+            {catalogId}{down && <span style={{ color: DOWN_LABEL_COLOR }}> ▼ down</span>}
+          </span>
+        </Html>
+      )}
     </group>
   )
 }

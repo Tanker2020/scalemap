@@ -28,8 +28,9 @@ function PopulationMarker({ label, lat, lon, peakRps }: MarkerProps): ReactEleme
         <meshStandardMaterial color="black" emissive={TEAL} emissiveIntensity={hovered ? 1.6 : 1} />
       </mesh>
       {hovered && (
-        <Html occlude distanceFactor={8} style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}>
-          <span style={{ font: '9px var(--font-mono)', color: LABEL_COLOR }}>
+        // Fixed screen-size label (no distanceFactor) — same reasoning as RegionPins.tsx.
+        <Html occlude style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}>
+          <span style={{ font: '10px var(--font-mono)', color: LABEL_COLOR, marginLeft: 8 }}>
             {label} · {peakRps.toFixed(0)} rps
           </span>
         </Html>

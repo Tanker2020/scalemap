@@ -36,7 +36,7 @@ interface SimulationStoreV2 {
   getTracedRequests: (scope: RenderScope) => TracedRequest[]
 }
 
-export const useSimulationStore = create<SimulationStoreV2>((set) => ({
+export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
   running: false,
   timeScale: 1,
   latestBatch: null,
@@ -57,6 +57,10 @@ export const useSimulationStore = create<SimulationStoreV2>((set) => ({
         }),
       onHealthChange: () => {},
     })
+    // The engine's start() always begins at 1x; re-apply the store's selection so the UI's
+    // timeScale survives Stop → Simulate (it silently reset to realtime before, leaving the
+    // select claiming 2x/4x while the engine ran 1x).
+    worldEngine.setTimeScale(get().timeScale)
   },
   stop: () => {
     worldEngine.stop()

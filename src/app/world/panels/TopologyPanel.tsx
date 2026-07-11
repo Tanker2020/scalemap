@@ -201,7 +201,7 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
 
           <SectionHeader label="▸ FIREWALL — TOP-DOWN, DEFAULT DENY" />
           {server.firewall.map((r, i) => (
-            <div key={r.id} style={row}>
+            <div key={r.id} style={{ ...row, flexWrap: 'wrap' }}>
               <select style={{ ...field, width: 60, marginBottom: 0 }} value={r.action}
                 onChange={e => upd({ firewall: server.firewall.map((x, j) => j === i ? { ...x, action: e.target.value as 'allow' | 'deny' } : x) })}>
                 <option value="allow">allow</option><option value="deny">deny</option>

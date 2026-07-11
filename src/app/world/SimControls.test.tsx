@@ -37,9 +37,13 @@ describe('SimControls', () => {
     expect(setTimeScaleSpy).toHaveBeenCalledWith(4)
   })
 
-  it('disables the timeScale select while stopped', () => {
+  it('keeps the timeScale select usable while stopped (start() re-applies the selection)', () => {
+    const setTimeScaleSpy = vi.spyOn(useSimulationStore.getState(), 'setTimeScale').mockImplementation(() => {})
     render(<SimControls />)
-    expect(screen.getByLabelText('time-scale')).toBeDisabled()
+    const select = screen.getByLabelText('time-scale')
+    expect(select).not.toBeDisabled()
+    fireEvent.change(select, { target: { value: '2' } })
+    expect(setTimeScaleSpy).toHaveBeenCalledWith(2)
   })
 
   it('shows the degraded chip when the store flag is set', () => {

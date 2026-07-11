@@ -64,15 +64,16 @@ export function SectionHeader({ label, trailing, accent }: SectionHeaderProps) {
   const color = accent ?? 'var(--kit-accent)'
   const glow = accent ? `${accent}44` : 'var(--kit-accent-dim)'
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '14px 0 8px' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '14px 0 8px', minWidth: 0 }}>
       <span style={{
         fontSize: 9.5, letterSpacing: '0.15em', whiteSpace: 'nowrap',
+        overflow: 'hidden', textOverflow: 'ellipsis', flexShrink: 1, minWidth: 0,
         color, textShadow: `0 0 8px ${glow}`,
       }}>
         {label}
       </span>
-      <div style={{ height: 1, flex: 1, background: `linear-gradient(90deg, ${glow}, transparent)` }} />
-      {trailing}
+      <div style={{ height: 1, flex: 1, minWidth: 8, background: `linear-gradient(90deg, ${glow}, transparent)` }} />
+      {trailing != null && <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>{trailing}</div>}
     </div>
   )
 }

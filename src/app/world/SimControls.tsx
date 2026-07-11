@@ -49,11 +49,14 @@ export function SimControls() {
       >
         {running ? 'Stop' : 'Simulate'}
       </button>
+      {/* Enabled while stopped too: the selection lives in the store and start() re-applies it
+          to the engine, so picking 2x before hitting Simulate now works (it used to be a
+          disabled control that "didn't seem to do anything"). */}
       <select
         aria-label="time-scale"
+        title="Simulation speed"
         style={selectStyle}
         value={timeScale}
-        disabled={!running}
         onChange={e => setTimeScale(Number(e.target.value))}
       >
         <option value={1}>1x</option>

@@ -108,7 +108,9 @@ export function WorldShell() {
           <button style={hdrBtn} aria-label="settings" onClick={() => setSettingsOpen(true)}>⚙</button>
           <span style={{ font: '10px var(--font-mono)', color: 'var(--color-text-muted)' }}>esc = up one level</span>
           {dirty && <span style={{ color: 'var(--color-warning)', font: '10px var(--font-mono)' }}>● unsaved</span>}
-          <button style={hdrBtn} onClick={() => { useWorldStore.getState().newWorld(); useFileStore.getState().setFilePath(null); useNavStore.getState().goGlobe() }}>New</button>
+          {/* New returns to the home screen (user request 2026-07-10) — the fresh doc is ready
+              behind it, so "New World" there drops straight into an empty globe. */}
+          <button style={hdrBtn} onClick={() => { useWorldStore.getState().newWorld(); useFileStore.getState().setFilePath(null); useNavStore.getState().goGlobe(); useFileStore.getState().setShowHome(true) }}>New</button>
           <button style={hdrBtn} onClick={() => { openWorldViaDialog().catch(e => setFileError(e instanceof Error ? e.message : 'open failed')) }}>Open</button>
           <button style={hdrBtn} onClick={() => { saveWorld().catch(e => setFileError(e instanceof Error ? e.message : 'save failed')) }}>Save</button>
           <button style={hdrBtn} onClick={() => { saveWorld({ forceDialog: true }).catch(e => setFileError(e instanceof Error ? e.message : 'save failed')) }}>Save As</button>

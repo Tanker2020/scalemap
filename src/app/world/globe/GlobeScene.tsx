@@ -5,17 +5,19 @@
 // (RegionPins, PopulationMarkers, ArcsLayer) mount as `children` INSIDE the rotating group so
 // they track the globe's orientation for free — no extra wiring needed here or in those files.
 import { Suspense, useCallback, useLayoutEffect, useMemo, useRef, type ReactElement, type ReactNode } from 'react'
-import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber'
+import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import { OrbitControls, useTexture } from '@react-three/drei'
 import { useReducedMotion } from 'framer-motion'
 import * as THREE from 'three'
 import { vec3ToLatLon } from './geo'
 // Texture: NASA Black Marble 2016 night-lights composite (public domain,
-// https://earthobservatory.nasa.gov/features/NightLights), downsampled to 2048x1024 in T1.
-import earthTextureUrl from '../../../assets/globe/black-marble-2k.jpg'
+// https://earthobservatory.nasa.gov/features/NightLights). 4096x2048, downsampled from the
+// 13500x6750 "3km" original — the 2k version undersampled badly on a full-window globe
+// (visible hemisphere ≈ 1024 texture px stretched across ~1500 device px).
+import earthTextureUrl from '../../../assets/globe/black-marble-4k.jpg'
 
 const EARTH_RADIUS = 1
-const ATMOSPHERE_SCALE = 1.05
+const ATMOSPHERE_SCALE = 1.035
 const IDLE_ROTATION_RAD_PER_S = 0.02
 
 // J1 (fragment header): three.js's default SphereGeometry (phiStart=0, phiLength=2π) places
@@ -58,8 +60,8 @@ const ATMOSPHERE_FRAGMENT_SHADER = `
     // max(dot, 0) clamp saturated every visible fragment to full intensity, rendering a
     // hard uniform ring instead of an atmosphere.)
     float toward = clamp(-dot(normalize(vNormal), normalize(vViewDir)) / limbDot, 0.0, 1.0);
-    float intensity = pow(toward, 1.8);
-    gl_FragColor = vec4(glowColor, intensity * 0.55);
+    float intensity = pow(toward, 3.0);
+    gl_FragColor = vec4(glowColor, intensity * 0.32);
   }
 `
 
@@ -67,6 +69,7 @@ interface EarthProps { placeMode: boolean; onPlace: (lat: number, lon: number) =
 
 function Earth({ placeMode, onPlace }: EarthProps): ReactElement {
   const texture = useTexture(earthTextureUrl)
+  const gl = useThree(s => s.gl)
   // Phase 6 T9 carry-forward: this texture wrap/offset mutation is a SIDE EFFECT (mutating a
   // shared THREE.Texture instance + flagging it for a GPU re-upload), not a memoized pure
   // derivation — useLayoutEffect is the conventional home for a synchronous, pre-paint
@@ -79,12 +82,15 @@ function Earth({ placeMode, onPlace }: EarthProps): ReactElement {
     texture.wrapS = THREE.RepeatWrapping
     texture.offset.x = TEXTURE_LON_OFFSET
     texture.colorSpace = THREE.SRGBColorSpace
+    // Max anisotropic filtering keeps the equirectangular map crisp at the sphere's grazing
+    // angles (the limb smeared badly without it — part of the reported "globe looks low res").
+    texture.anisotropy = gl.capabilities.getMaxAnisotropy()
     // useTexture returns an already-uploaded texture; changing wrap mode after upload needs
     // needsUpdate so the GPU sampler is re-configured — otherwise some three.js versions keep
     // ClampToEdge and smear a seam at the offset's wrap boundary. (wrapT/repeat unchanged: the
     // offset only shifts horizontally and the image already spans the full 0..1 V range.)
     texture.needsUpdate = true
-  }, [texture])
+  }, [texture, gl])
 
   // Raycasts the earth mesh only (r3f's onClick gives the world-space intersection point,
   // already correct even though this mesh lives inside the rotating group — r3f resolves hits
@@ -128,12 +134,12 @@ function Atmosphere(): ReactElement {
   )
 }
 
-interface RotatingGroupProps { reduced: boolean; interactingRef: { current: boolean }; children?: ReactNode }
+interface RotatingGroupProps { paused: boolean; interactingRef: { current: boolean }; children?: ReactNode }
 
-function RotatingGroup({ reduced, interactingRef, children }: RotatingGroupProps): ReactElement {
+function RotatingGroup({ paused, interactingRef, children }: RotatingGroupProps): ReactElement {
   const groupRef = useRef<THREE.Group>(null)
   useFrame((_, delta) => {
-    if (reduced || interactingRef.current) return
+    if (paused || interactingRef.current) return
     if (groupRef.current) groupRef.current.rotation.y += IDLE_ROTATION_RAD_PER_S * delta
   })
   return <group ref={groupRef}>{children}</group>
@@ -142,10 +148,11 @@ function RotatingGroup({ reduced, interactingRef, children }: RotatingGroupProps
 export interface GlobeSceneProps {
   placeMode: boolean                                   // T6 arms this; T3 wires the prop through inert
   onPlace: (lat: number, lon: number) => void
+  autoRotate?: boolean                                 // GlobeView's lock button; default on
   children?: ReactNode                                 // T4/T5 layers mount inside the Canvas
 }
 
-export function GlobeScene({ placeMode, onPlace, children }: GlobeSceneProps): ReactElement {
+export function GlobeScene({ placeMode, onPlace, autoRotate = true, children }: GlobeSceneProps): ReactElement {
   const reduced = useReducedMotion() ?? false
   // J4 (fragment header): OrbitControls' onStart/onEnd are documented pass-throughs to the
   // underlying three.js controls' 'start'/'end' events, which fire on pointerdown/pointerup —
@@ -160,7 +167,7 @@ export function GlobeScene({ placeMode, onPlace, children }: GlobeSceneProps): R
       style={{ cursor: placeMode ? 'crosshair' : 'default' }}
     >
       <Suspense fallback={null}>
-        <RotatingGroup reduced={reduced} interactingRef={interactingRef}>
+        <RotatingGroup paused={reduced || !autoRotate} interactingRef={interactingRef}>
           <Earth placeMode={placeMode} onPlace={onPlace} />
           <Atmosphere />
           {children}

@@ -54,7 +54,8 @@ export default function App() {
         useWorldStore.getState().newWorld()
         useNavStore.getState().goGlobe()
         useFileStore.getState().setFilePath(null)
-        useFileStore.getState().setShowHome(false)
+        // Matches the header New button: a new world starts from the home screen.
+        useFileStore.getState().setShowHome(true)
       }
     }
     window.addEventListener('keydown', handler)
