@@ -14,9 +14,11 @@ import { AdditiveBlending, Vector3, type Group, type Mesh } from 'three'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore } from '../../store/simulation.store'
+import { useUiStore } from '../../store/ui.store'
 import { REGION_GEO } from '../../../lib/world/regionGeo'
 import { latLonToVec3 } from './geo'
 import { HoldRing, holdProgress, isAbortedHold } from '../ui/HoldToEnter'
+import { SceneOverlay } from '../ui/SceneOverlay'
 import type { HealthState, EngineEvent, EngineEventKind } from '../../../lib/worldEngine/types'
 import type { RegionId } from '../../../lib/world/types'
 
@@ -26,6 +28,9 @@ const PIN_RADIUS = 0.018
 const GLOW_RADIUS = PIN_RADIUS * 2.4
 const PULSE_WINDOW_MS = 10_000
 const PULSE_PERIOD_S = 1
+// Generous window for the synthetic click; self-expires so a stale swallow can never eat a
+// later tap.
+const SWALLOW_WINDOW_MS = 400
 
 // Scratch vectors for the per-frame horizon test (module-level: no per-frame allocation).
 const TMP_PIN = new Vector3()
@@ -73,6 +78,9 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
   const simMs = useSimulationStore(s => (s.scrubBatch ?? s.latestBatch)?.simMs ?? 0)
   const reduced = useReducedMotion() ?? false
   const pulsing = !reduced && isPulsing(events, regionId, simMs)
+  const sceneOverlay = useUiStore(s => s.sceneOverlay)
+  const setSceneOverlay = useUiStore(s => s.setSceneOverlay)
+  const overlayOpen = sceneOverlay?.kind === 'region' && sceneOverlay.id === regionId
 
   const pinRef = useRef<Mesh>(null)
   const groupRef = useRef<Group>(null)
@@ -114,8 +122,8 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
     if (p >= 1 && holdStartRef.current !== null) {
       holdStartRef.current = null
       holdProgressRef.current = 0
-      // Swallow the synthetic click that follows pointerup — generous 400ms window, self-expiring.
-      swallowClickUntilRef.current = performance.now() + 400
+      // Swallow the synthetic click that follows pointerup — generous window, self-expiring.
+      swallowClickUntilRef.current = performance.now() + SWALLOW_WINDOW_MS
       goRegion(regionId)
     }
 
@@ -133,7 +141,11 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
           e.stopPropagation()
           // Completed or aborted hold — swallow its synthetic click; a plain tap falls through.
           if (performance.now() < swallowClickUntilRef.current) { swallowClickUntilRef.current = 0; return }
-          goRegion(regionId)
+          setSceneOverlay({ kind: 'region', id: regionId })
+        }}
+        onPointerMissed={() => {
+          const cur = useUiStore.getState().sceneOverlay
+          if (cur?.kind === 'region' && cur.id === regionId) useUiStore.getState().setSceneOverlay(null)
         }}
         onPointerDown={e => {
           e.stopPropagation()
@@ -146,7 +158,7 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
           holdStartRef.current = null      // released early → cancel (completion already cleared it)
           // Released after the tap threshold but before completion = an aborted hold (spec D1):
           // no navigation — swallow the synthetic click that's about to fire. Self-expiring window.
-          if (start !== null && isAbortedHold(performance.now() - start)) swallowClickUntilRef.current = performance.now() + 400
+          if (start !== null && isAbortedHold(performance.now() - start)) swallowClickUntilRef.current = performance.now() + SWALLOW_WINDOW_MS
         }}
         onPointerOver={() => { document.body.style.cursor = 'pointer'; setHovered(true) }}
         onPointerOut={() => {
@@ -177,6 +189,17 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
           <span style={{ font: '10px var(--font-mono)', color: down ? DOWN_LABEL_COLOR : HEALTHY_LABEL_COLOR, marginLeft: 8 }}>
             {catalogId}{down && <span style={{ color: DOWN_LABEL_COLOR }}> ▼ down</span>}
           </span>
+        </Html>
+      )}
+      {overlayOpen && (
+        <Html zIndexRange={[100, 90]} style={{ pointerEvents: 'auto' }}>
+          <div style={{ transform: 'translate(14px, -8px)' }}>
+            <SceneOverlay title={catalogId} health={health} onClose={() => setSceneOverlay(null)}>
+              <div style={{ padding: '10px 13px 2px', color: 'var(--color-text-muted)' }}>
+                region controls arrive in T4
+              </div>
+            </SceneOverlay>
+          </div>
         </Html>
       )}
     </group>

@@ -1,9 +1,10 @@
 // src/app/world/globe/RegionPins.test.ts
 // Pure-logic coverage for RegionPins.tsx's two exported helpers (pinColor, isPulsing) — the
 // component itself is R3F and NOT jsdom-tested (no WebGL there); this task's live smoke is its
-// gate. Runs in the default node env (no environment override in this file): importing
-// RegionPins.tsx pulls in @react-three/fiber/drei, which are import-safe outside a browser
-// (see fragment header J3).
+// gate. @react-three/fiber/drei are import-safe outside a browser (see fragment header J3), but
+// as of Polish 2 T3 this module also imports ui.store.ts, which touches `localStorage` at
+// module init — jsdom (not the default node env) so that global resolves.
+// @vitest-environment jsdom
 import { describe, it, expect } from 'vitest'
 import { pinColor, isPulsing, isFrontFacing } from './RegionPins'
 import type { EngineEvent } from '../../../lib/worldEngine/types'

@@ -4,9 +4,10 @@
 // same goRegion navigation renders in BOTH branches — the canvas container is aria-hidden
 // (decorative to a screen reader; the hidden list is the real navigation surface there, and it
 // also covers any environment that passes the WebGL probe but still renders nothing).
-import { useState, type CSSProperties } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
+import { useUiStore } from '../store/ui.store'
 import { GlobeScene } from './globe/GlobeScene'
 import { GlobeCards } from './GlobeCards'
 import { RegionPins } from './globe/RegionPins'
@@ -47,6 +48,21 @@ export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: Gl
   const addPopulation = useWorldStore(s => s.addPopulation)
   const populations = useWorldStore(s => s.doc.populations)
   const [rotationLocked, setRotationLocked] = useState(false)
+  const sceneOverlay = useUiStore(s => s.sceneOverlay)
+
+  // Escape closes an open overlay; WorldShell's own Escape → nav.up() is a no-op at globe
+  // level (nav.store.ts:28-33), so the two listeners cannot fight. Overlay state also clears
+  // on unmount (level change) so a stale overlay never survives navigation.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && useUiStore.getState().sceneOverlay) useUiStore.getState().setSceneOverlay(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      useUiStore.getState().setSceneOverlay(null)
+    }
+  }, [])
 
   // Place-mode is armed/disarmed by WorldShell (the common ancestor of this component and
   // TrafficPanel) via the placeMode prop; a click on the globe here places a population, then
@@ -74,7 +90,7 @@ export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: Gl
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div aria-hidden="true" style={{ width: '100%', height: '100%' }}>
-        <GlobeScene placeMode={placeMode} onPlace={onPlace} autoRotate={!rotationLocked}>
+        <GlobeScene placeMode={placeMode} onPlace={onPlace} autoRotate={!rotationLocked && sceneOverlay == null}>
           <RegionPins />
           <PopulationMarkers />
           <ArcsLayer />
