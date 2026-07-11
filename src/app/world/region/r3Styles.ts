@@ -27,7 +27,7 @@ if (typeof document !== 'undefined' && !document.getElementById(R3_STYLE_ID)) {
 }
 :root[data-theme="light"] {
   --r3-teal: ${CATEGORY_COLORS.network.foreground.light};
-  --r3-amber: ${CATEGORY_COLORS.storage.accent};
+  --r3-amber: ${CATEGORY_COLORS.storage.foreground.light};
   --r3-amber-text: ${CATEGORY_COLORS.storage.foreground.light};
   --r3-hud: #0F766E;
   --r3-hud-dim: #0F766E33;

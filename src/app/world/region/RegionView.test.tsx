@@ -203,6 +203,41 @@ describe('RegionView (Phase 4 flow page)', () => {
     expect(screen.getByTestId(`src-row-${baselineId}`).getAttribute('data-dot-count')).toBe('0')
   })
 
+  it('replica rail caps concurrent dashflow animation at MAX_ANIMATED_RAILS regardless of pair count', () => {
+    const { doc, azA, azB } = seedRegion()
+    // Two independent cross-AZ primary/replica blueprint pairs — the rail must draw both curves
+    // but animate only the first (review fix: unbounded animation was a motion-budget bug).
+    const db1 = createBlueprint('db1', 1)
+    db1.stateful = true
+    doc.blueprints[db1.id] = db1
+    const primary1 = createPlacement(db1.id, doc.servers[Object.keys(doc.servers).find(id => doc.servers[id].azId === azB.id)!].id)
+    const replica1 = createPlacement(db1.id, doc.servers[Object.keys(doc.servers).find(id => doc.servers[id].azId === azA.id)!].id)
+    replica1.role = 'replica'
+    doc.placements[primary1.id] = primary1
+    doc.placements[replica1.id] = replica1
+
+    const serverC = createServer(azA.id, getPreset('vps-medium')!)
+    const serverD = createServer(azB.id, getPreset('vps-medium')!)
+    doc.servers[serverC.id] = serverC
+    doc.servers[serverD.id] = serverD
+    const db2 = createBlueprint('db2', 2)
+    db2.stateful = true
+    doc.blueprints[db2.id] = db2
+    const primary2 = createPlacement(db2.id, serverD.id)
+    const replica2 = createPlacement(db2.id, serverC.id)
+    replica2.role = 'replica'
+    doc.placements[primary2.id] = primary2
+    doc.placements[replica2.id] = replica2
+
+    useWorldStore.setState({ doc })
+    const { container } = render(<RegionView />)
+
+    const railPaths = container.querySelectorAll('path[stroke="var(--r3-amber)"]')
+    expect(railPaths.length).toBe(2)   // both cross-AZ pairs are drawn
+    const animatedPaths = container.querySelectorAll('path[stroke="var(--r3-amber)"][data-animated]')
+    expect(animatedPaths.length).toBe(1)   // but at most MAX_ANIMATED_RAILS (1) carries dashflow
+  })
+
   it('egress figure renders in the price color', () => {
     const { doc, region } = seedRegion()
     doc.populations.p1 = { id: 'p1', label: 'NYC', lat: 40, lon: -74, peakRps: 500, diurnal: 'flat' }

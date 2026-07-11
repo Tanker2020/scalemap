@@ -8,6 +8,12 @@
 // already established (AZ-index-based Y, not a real per-row DOM measurement). Hover-brighten
 // uses the `hoveredServerId` REACT state RegionView.tsx owns, per the T3 brief — never CSS
 // `:has()`, which is webview-flaky.
+// Motion budget (review fix wave, mirrors `SplitLines.tsx`'s `MAX_ANIMATED_BEAMS` cap): the
+// mockup shows a SINGLE animated rail, and the region page's total concurrent-infinite-stroke
+// budget (2 cross-AZ beams + 1 trunk + up to 5 dot-streams already) has no room for one
+// `dashflow` per replica pair. Only the first `MAX_ANIMATED_RAILS` entries (in `entries` order —
+// there's no per-pair "loudness" metric to rank by, unlike `SplitLines.tsx`'s fraction sort) get
+// the `dashflow` animation; every rail beyond the cap renders the identical static stroke.
 import { useReducedMotion } from 'framer-motion'
 import type { ReactElement } from 'react'
 import type { BlueprintId, ServerId } from '../../../lib/world/types'
@@ -29,7 +35,7 @@ export interface ReplicaRailProps {
 }
 
 const RAIL_W = 40
-const AMBER = '#E0A552'   // mockup `--amber` (verbatim) — see r3Styles.ts's header note
+const MAX_ANIMATED_RAILS = 1
 
 export function ReplicaRail({ entries, azCount, rowsHeight, hoveredServerId }: ReplicaRailProps): ReactElement | null {
   const reduced = useReducedMotion()
@@ -43,8 +49,9 @@ export function ReplicaRail({ entries, azCount, rowsHeight, hoveredServerId }: R
       style={{ position: 'absolute', right: -6, top: 0, pointerEvents: 'none', overflow: 'visible' }}
       aria-hidden="true"
     >
-      {entries.map(entry => {
+      {entries.map((entry, i) => {
         const active = hoveredServerId === entry.primaryServerId || hoveredServerId === entry.replicaServerId
+        const animated = !reduced && i < MAX_ANIMATED_RAILS
         const y1 = rowY(entry.primaryAzIndex)
         const y2 = rowY(entry.replicaAzIndex)
         const midY = (y1 + y2) / 2
@@ -52,13 +59,14 @@ export function ReplicaRail({ entries, azCount, rowsHeight, hoveredServerId }: R
         return (
           <g key={`${entry.primaryServerId}:${entry.replicaServerId}`} style={{ opacity: active ? 1 : 0.38, transition: 'opacity 0.16s' }}>
             <path
-              d={d} fill="none" stroke={AMBER} strokeWidth={1.5} strokeDasharray="2 8" strokeLinecap="round"
-              style={!reduced ? { animation: 'dashflow 2s linear infinite' } : undefined}
+              d={d} fill="none" stroke="var(--r3-amber)" strokeWidth={1.5} strokeDasharray="2 8" strokeLinecap="round"
+              data-animated={animated || undefined}
+              style={animated ? { animation: 'dashflow 2s linear infinite' } : undefined}
             />
-            <text x={2} y={y1 - 4} fontSize={8} fill={AMBER}>◆</text>
-            <text x={2} y={y2 + 10} fontSize={8} fill={AMBER}>◇</text>
+            <text x={2} y={y1 - 4} fontSize={8} fill="var(--r3-amber)">◆</text>
+            <text x={2} y={y2 + 10} fontSize={8} fill="var(--r3-amber)">◇</text>
             <text
-              x={RAIL_W + 4} y={midY} fontSize={8.5} fill={AMBER} textAnchor="middle"
+              x={RAIL_W + 4} y={midY} fontSize={8.5} fill="var(--r3-amber-text)" textAnchor="middle"
               transform={`rotate(90 ${RAIL_W + 4} ${midY})`}
               style={{ opacity: active ? 1 : 0, transition: 'opacity 0.16s', font: '8.5px var(--font-mono)' }}
             >
