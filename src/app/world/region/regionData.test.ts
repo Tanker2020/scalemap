@@ -7,6 +7,7 @@ import { getPreset } from '../../../lib/world/instanceCatalog'
 import { compileWorld } from '../../../lib/world/compileWorld'
 import {
   azShares, ribbonAlert, regionEvents, replicationPairs, crossAzEntries, sparklineSeries, dominantBlueprintColor,
+  dotStreamParams, replicaRailPairs,
 } from './regionData'
 import type { MetricsBatch, EngineEvent, AzMetrics, RegionMetrics, ReplayFrame } from '../../../lib/worldEngine/types'
 
@@ -248,6 +249,52 @@ describe('sparklineSeries', () => {
     }))
     const series = sparklineSeries(frames, regionId, 5)
     expect(series).toEqual([0, 0, 10, 20, 30])
+  })
+})
+
+describe('dotStreamParams', () => {
+  it('maps rps quartiles to 1/2/3 dots and clamps the period', () => {
+    expect(dotStreamParams(0, 1000)).toEqual({ dots: 1, periodSec: 3.0 })
+    const low = dotStreamParams(200, 1000)
+    expect(low.dots).toBe(1)
+    expect(dotStreamParams(500, 1000)).toEqual({ dots: 2, periodSec: 2.1 })
+    expect(dotStreamParams(1000, 1000)).toEqual({ dots: 3, periodSec: 1.2 })
+  })
+
+  it('treats a zero maxRps as ratio 0 (no division by zero)', () => {
+    expect(dotStreamParams(50, 0)).toEqual({ dots: 1, periodSec: 3.0 })
+  })
+})
+
+describe('replicaRailPairs', () => {
+  it('pairs primary and replica across azs and ignores same-az pairs', () => {
+    const { doc, regionA, azB, serverA, serverB } = tworegionWorld()
+    const db = createBlueprint('db', 2)
+    db.stateful = true
+    db.volumeName = 'data'
+    doc.blueprints[db.id] = db
+    const primary = createPlacement(db.id, serverB.id)   // primary in azB
+    const replica = createPlacement(db.id, serverA.id)
+    replica.role = 'replica'                              // replica in azA — cross-AZ, should pair
+    doc.placements[primary.id] = primary
+    doc.placements[replica.id] = replica
+
+    // A second replica placement on the SAME server as the primary (same AZ) — must be ignored.
+    const sameAzServer = createServer(azB.id, getPreset('vps-medium')!)
+    doc.servers[sameAzServer.id] = sameAzServer
+    const sameAzReplica = createPlacement(db.id, sameAzServer.id)
+    sameAzReplica.role = 'replica'
+    doc.placements[sameAzReplica.id] = sameAzReplica
+
+    const compiled = compileWorld(doc)
+    const pairs = replicaRailPairs(doc, compiled, regionA.id)
+    expect(pairs).toEqual([{ primaryServerId: serverB.id, replicaServerId: serverA.id, blueprintId: db.id }])
+  })
+
+  it('returns empty when there is no cross-az replica', () => {
+    const { doc, regionA } = tworegionWorld()
+    const compiled = compileWorld(doc)
+    expect(replicaRailPairs(doc, compiled, regionA.id)).toEqual([])
   })
 })
 

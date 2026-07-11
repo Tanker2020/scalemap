@@ -163,4 +163,58 @@ describe('RegionView (Phase 4 flow page)', () => {
     expect(screen.getAllByText('$26/mo')).toHaveLength(2)
     for (const el of screen.getAllByText('$26/mo')) expect(el).toHaveStyle({ color: 'var(--color-price)' })
   })
+
+  it("az card kill is disabled while stopped and dispatches setOutage('az', id, true) while running", () => {
+    const { azA } = seedRegion()
+    const { rerender } = render(<RegionView />)
+    const stoppedBtn = screen.getByLabelText('Simulate outage for us-east-1a') as HTMLButtonElement
+    expect(stoppedBtn.disabled).toBe(true)
+
+    const setOutageSpy = vi.fn()
+    useSimulationStore.setState({ running: true, setOutage: setOutageSpy })
+    rerender(<RegionView />)
+    const runningBtn = screen.getByLabelText('Simulate outage for us-east-1a') as HTMLButtonElement
+    expect(runningBtn.disabled).toBe(false)
+    fireEvent.click(runningBtn)
+    expect(setOutageSpy).toHaveBeenCalledWith('az', azA.id, true)
+  })
+
+  it('sources column renders one row per population plus baseline, top-5 animated', () => {
+    const { doc, region } = seedRegion()
+    const popRps: [string, number][] = [['p1', 600], ['p2', 500], ['p3', 400], ['p4', 300], ['p5', 200], ['p6', 100]]
+    for (const [id, peakRps] of popRps) {
+      doc.populations[id] = { id, label: `pop-${id}`, lat: 40, lon: -74, peakRps, diurnal: 'flat' }
+    }
+    useWorldStore.setState({ doc })
+    const populationRoutes = popRps.map(([id, rps]) => ({ populationId: id, regionId: region.id, rps }))
+    const baselineId = `baseline:${region.id}`
+    populationRoutes.push({ populationId: baselineId, regionId: region.id, rps: 50 })
+    useSimulationStore.setState({
+      latestBatch: {
+        simMs: 1000, instances: {}, servers: {}, azs: {}, regions: {},
+        world: { ...emptyWorldMetrics(), populationRoutes, totalRps: 2150 },
+      },
+    })
+    render(<RegionView />)
+    for (const [id] of popRps.slice(0, 5)) {
+      expect(screen.getByTestId(`src-row-${id}`).getAttribute('data-dot-count')).not.toBe('0')
+    }
+    expect(screen.getByTestId('src-row-p6').getAttribute('data-dot-count')).toBe('0')
+    expect(screen.getByTestId(`src-row-${baselineId}`).getAttribute('data-dot-count')).toBe('0')
+  })
+
+  it('egress figure renders in the price color', () => {
+    const { doc, region } = seedRegion()
+    doc.populations.p1 = { id: 'p1', label: 'NYC', lat: 40, lon: -74, peakRps: 500, diurnal: 'flat' }
+    useWorldStore.setState({ doc })
+    useSimulationStore.setState({
+      latestBatch: {
+        simMs: 1000, instances: {}, servers: {}, azs: {}, regions: {},
+        world: { ...emptyWorldMetrics(), populationRoutes: [{ populationId: 'p1', regionId: region.id, rps: 500 }], totalRps: 500, internetEgressBytesPerSec: 1000 },
+      },
+    })
+    render(<RegionView />)
+    const egressEl = screen.getByText(/\/hr egress/)
+    expect(egressEl).toHaveStyle({ color: 'var(--color-price)' })
+  })
 })

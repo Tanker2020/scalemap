@@ -199,6 +199,49 @@ export function sparklineSeries(frames: ReplayFrame[], regionId: RegionId, n = 6
   return tail.length >= n ? tail : [...new Array(n - tail.length).fill(0), ...tail]
 }
 
+// Region v4 (Polish 3 T3, mockup `.r3` `.srcrow .stream`): how many dots animate a source row's
+// hairline and how fast, both driven purely by that row's share of the loudest row (`maxRps`) —
+// ratio 0 → the calmest single dot at the slowest period, ratio 1 → three dots at the fastest.
+const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n))
+
+export function dotStreamParams(rps: number, maxRps: number): { dots: 1 | 2 | 3; periodSec: number } {
+  const ratio = maxRps > 0 ? rps / maxRps : 0
+  const dots: 1 | 2 | 3 = ratio < 0.25 ? 1 : ratio < 0.60 ? 2 : 3
+  const periodSec = clamp(3.0 - 1.8 * ratio, 1.2, 3.0)
+  return { dots, periodSec }
+}
+
+export interface ReplicaRailPair { primaryServerId: ServerId; replicaServerId: ServerId; blueprintId: BlueprintId }
+
+// Region v4 (Polish 3 T3, mockup `.replrail`): every cross-AZ primary/replica instance pair in
+// this region, keyed by the SERVERS they sit on (the rail draws server-to-server, not
+// instance-to-instance) — deliberately NOT `replicationPairs`' `bp.stateful` gate above; per the
+// T3 brief this only cares about role pairing + different AZs, not the blueprint's stateful flag.
+// `_doc` is unused (everything needed is already resolved onto `compiled.instances`) — kept in
+// the signature to match the brief's exact `(doc, compiled, regionId)` shape.
+export function replicaRailPairs(_doc: WorldDoc, compiled: CompiledWorld, regionId: RegionId): ReplicaRailPair[] {
+  const regionInstances = Object.values(compiled.instances).filter(i => i.regionId === regionId)
+  const byBlueprint = new Map<BlueprintId, { primaries: typeof regionInstances; replicas: typeof regionInstances }>()
+  for (const inst of regionInstances) {
+    if (inst.role !== 'primary' && inst.role !== 'replica') continue
+    const entry = byBlueprint.get(inst.blueprintId) ?? { primaries: [], replicas: [] }
+    if (inst.role === 'primary') entry.primaries.push(inst)
+    else entry.replicas.push(inst)
+    byBlueprint.set(inst.blueprintId, entry)
+  }
+
+  const pairs: ReplicaRailPair[] = []
+  for (const [blueprintId, { primaries, replicas }] of byBlueprint) {
+    for (const p of primaries) {
+      for (const r of replicas) {
+        if (p.azId === r.azId) continue
+        pairs.push({ primaryServerId: p.serverId, replicaServerId: r.serverId, blueprintId })
+      }
+    }
+  }
+  return pairs
+}
+
 // Signature color of the blueprint with the highest instance count on this server (ties →
 // first by compiled iteration order); fallback 'var(--color-text-muted)'.
 export function dominantBlueprintColor(serverId: ServerId, doc: WorldDoc, compiled: CompiledWorld): string {

@@ -1,18 +1,26 @@
 // src/app/world/region/AzRow.tsx
-// One AZ's row in the region flow (D4, mockup lines 199-246): health ring, clickable server
-// strips (or the drain line when down), per-AZ $/mo, and a running-gated outage switch.
+// One AZ's card in the region flow (Region v4, Polish 3 T3, mockup `.azcard`): health ring +
+// name + live inbound rps + $/mo in the header, a hover-revealed `.r3-cfgbar` (⏎ enter / +
+// server / ⚡ kill·✓ restore — all three reuse EXISTING dispatches byte-for-byte, no new store
+// surface: `onNavigateAz`, `addServer(azId, getPreset('vps-medium')!)`, `setOutage('az', azId,
+// !azDown)`), then either the drain line (down) or one static-bar `.azrow` per server — a
+// db-tagged row (amber fill, ◆ PRIMARY/◇ REPLICA chip) for every server this AZ's `dbEndpoints`
+// prop marks as a replica-rail endpoint (computed once in RegionView.tsx via
+// `regionData.ts`'s `replicaRailPairs` and threaded down, the same "compute once, thread down"
+// reuse `monthlyUsd` already established). Preserves every Phase-4/5 down-state distinction
+// (`outage` vs `outage (manual)`, replica promotion, drain targets, the health ring's `—`
+// at-rest numeral) — this restyles AzRow's existing shape, it does not replace it.
 import type { CSSProperties, ReactElement } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { useCompiledWorld } from '../useCompiledWorld'
+import { getPreset } from '../../../lib/world/instanceCatalog'
 import { dominantBlueprintColor } from './regionData'
 import type { AzId, RegionId, ServerId } from '../../../lib/world/types'
 import type { HealthState } from '../../../lib/worldEngine/types'
+import './r3Styles'
 
-const ROW_BG = '#12151C'
-const ROW_BORDER = '#232833'
 const RING_TRACK = '#1E2430'
-const STRIP_TRACK = '#1E2430'
 const RING_NUMERAL_OK = '#E2E8F0'
 // Ring-numeral/az-label tint for a down row — lighter than --color-danger for legibility on
 // the dark ring/row background; the mockup uses this exact literal hex too, no token match (R2).
@@ -23,17 +31,30 @@ const HEALTH_COLOR: Record<HealthState, string> = {
   healthy: 'var(--color-success)', degraded: 'var(--color-warning)', down: 'var(--color-danger)',
 }
 const PROMOTE_WINDOW_MS = 30_000
+const BLUE = '#5B9CF6'   // mockup `--blue` (verbatim) — non-db utilization-bar fill
+
+const CFG_BTN_STYLE: CSSProperties = {
+  font: '10px var(--font-mono)', border: '1px solid var(--color-node-border)', borderRadius: 4,
+  background: '#10141bee', color: 'var(--color-text-secondary)', padding: '2px 8px', cursor: 'pointer',
+}
+
+export interface AzRowDbEndpoint { serverId: ServerId; role: 'primary' | 'replica' }
 
 export interface AzRowProps {
   azId: AzId
   regionId: RegionId
   monthlyUsd: number
+  dbEndpoints: AzRowDbEndpoint[]
   onNavigateAz: () => void
   onNavigateServer: (serverId: ServerId) => void
+  onHoverServer: (serverId: ServerId | null) => void
 }
 
-export function AzRow({ azId, regionId, monthlyUsd, onNavigateAz, onNavigateServer }: AzRowProps): ReactElement {
+export function AzRow({
+  azId, regionId, monthlyUsd, dbEndpoints, onNavigateAz, onNavigateServer, onHoverServer,
+}: AzRowProps): ReactElement {
   const doc = useWorldStore(s => s.doc)
+  const addServer = useWorldStore(s => s.addServer)
   const compiled = useCompiledWorld()
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const running = useSimulationStore(s => s.running)
@@ -46,7 +67,7 @@ export function AzRow({ azId, regionId, monthlyUsd, onNavigateAz, onNavigateServ
   const instanceCount = Object.values(compiled.instances).filter(i => i.azId === azId).length
   const metrics = batch?.azs[azId] ?? null
   const isDown = metrics?.health === 'down'
-  const usd = monthlyUsd
+  const dbByServerId = new Map(dbEndpoints.map(e => [e.serverId, e.role]))
 
   const residentInstanceIds = Object.values(compiled.instances).filter(i => i.azId === azId).map(i => i.id)
   const promoting = batch != null && events.some(e =>
@@ -61,90 +82,111 @@ export function AzRow({ azId, regionId, monthlyUsd, onNavigateAz, onNavigateServ
   const dashOffset = score == null ? RING_CIRC : RING_CIRC * (1 - score / 100)
   const ringColor = HEALTH_COLOR[metrics?.health ?? 'healthy']
 
-  const rowStyle: CSSProperties = {
-    display: 'flex', alignItems: 'center', gap: 14, background: ROW_BG,
-    border: `1px solid ${isDown ? 'var(--color-danger)' : ROW_BORDER}`,
-    borderLeft: `2px solid ${ringColor}`,
-    borderRadius: 8, padding: '8px 14px', cursor: 'pointer', opacity: isDown ? 0.8 : 1,
-    font: '11px var(--font-mono)',
+  const cardStyle: CSSProperties = {
+    border: `1px solid ${isDown ? 'var(--color-danger)' : 'var(--color-node-border)'}`,
+    borderRadius: 10, background: 'var(--color-node-base)', padding: '11px 13px',
+    position: 'relative', font: '11px var(--font-mono)', opacity: isDown ? 0.85 : 1,
   }
 
   return (
-    <div data-az-row={azId} style={rowStyle} onClick={onNavigateAz}>
-      <svg width={34} height={34} viewBox="0 0 34 34" style={{ flexShrink: 0 }}>
-        <circle cx={17} cy={17} r={RING_R} fill="none" stroke={RING_TRACK} strokeWidth={3.5} />
-        {score != null && (
-          <circle
-            cx={17} cy={17} r={RING_R} fill="none" stroke={ringColor} strokeWidth={3.5}
-            strokeDasharray={RING_CIRC} strokeDashoffset={dashOffset} strokeLinecap="round"
-            transform="rotate(-90 17 17)"
-          />
-        )}
-        <text x={17} y={21} fill={isDown ? DOWN_TINT : RING_NUMERAL_OK} fontSize={9} textAnchor="middle">
-          {score != null ? Math.round(score) : '—'}
-        </text>
-      </svg>
+    <div className="r3-azcard" data-az-row={azId} style={cardStyle}>
+      <div className="r3-cfgbar" style={{ position: 'absolute', top: 8, right: 10, display: 'flex', gap: 5, zIndex: 3 }}>
+        <button className="r3-cfgbtn" style={CFG_BTN_STYLE} onClick={onNavigateAz}>⏎ enter</button>
+        <button className="r3-cfgbtn" style={CFG_BTN_STYLE} onClick={() => addServer(azId, getPreset('vps-medium')!)}>+ server</button>
+        <button
+          className="r3-cfgbtn x" style={CFG_BTN_STYLE} disabled={!running}
+          aria-label={`${isManuallyDown ? 'Clear' : 'Simulate'} outage for ${az?.label ?? azId}`}
+          onClick={() => setOutage('az', azId, !isManuallyDown)}
+        >
+          {isManuallyDown ? '✓ restore' : '⚡ kill'}
+        </button>
+      </div>
 
-      <div style={{ width: 110, flexShrink: 0 }}>
-        <div style={{ color: isDown ? DOWN_TINT : 'var(--color-text-primary)' }}>{az?.label ?? azId}</div>
-        <div style={{ color: isDown ? 'var(--color-danger)' : 'var(--color-text-muted)' }}>
-          {isDown ? (isManuallyDown ? 'outage (manual)' : 'outage') : `${servers.length} srv · ${instanceCount} svc`}
-        </div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, cursor: 'pointer' }} onClick={onNavigateAz}>
+        <svg width={22} height={22} viewBox="0 0 34 34" style={{ flexShrink: 0 }}>
+          <circle cx={17} cy={17} r={RING_R} fill="none" stroke={RING_TRACK} strokeWidth={3.5} />
+          {score != null && (
+            <circle
+              cx={17} cy={17} r={RING_R} fill="none" stroke={ringColor} strokeWidth={3.5}
+              strokeDasharray={RING_CIRC} strokeDashoffset={dashOffset} strokeLinecap="round"
+              transform="rotate(-90 17 17)"
+            />
+          )}
+          <text x={17} y={21} fill={isDown ? DOWN_TINT : RING_NUMERAL_OK} fontSize={9} textAnchor="middle">
+            {score != null ? Math.round(score) : '—'}
+          </text>
+        </svg>
+        <span style={{ fontWeight: 600, fontSize: 11.5, color: isDown ? DOWN_TINT : 'var(--color-text-primary)' }}>
+          {az?.label ?? azId}
+        </span>
+        <span style={{ color: isDown ? 'var(--color-danger)' : 'var(--r3-hud)', fontSize: 10.5, fontVariantNumeric: 'tabular-nums' }}>
+          {isDown ? (isManuallyDown ? 'outage (manual)' : 'outage') : `◂ ${(metrics?.rps ?? 0).toFixed(0)} rps`}
+        </span>
+        <span style={{ color: 'var(--color-text-muted)', fontSize: 9.5 }}>
+          {servers.length} srv · {instanceCount} svc
+          {!isDown && <> · p50 {(metrics?.p50Ms ?? 0).toFixed(0)}ms</>}
+          {' · '}<span style={{ color: 'var(--color-price)' }}>${Math.round(monthlyUsd)}/mo</span>
+        </span>
       </div>
 
       {isDown ? (
-        <div style={{ flex: 1, color: 'var(--color-text-secondary)' }}>
+        <div style={{ marginTop: 8, color: 'var(--color-text-secondary)', fontSize: 10 }}>
           draining → {healthyAzLabels.map(label => (
             <span key={label} style={{ color: 'var(--color-success)', marginRight: 4 }}>{label}</span>
           ))}
           {promoting && <span> · replicas promoting</span>}
         </div>
       ) : (
-        <div style={{ display: 'flex', gap: 2.5, alignItems: 'flex-end', height: 22, flex: 1 }}>
+        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
           {servers.map(server => {
             const sm = batch?.servers[server.id]
             const mean = sm && sm.coreUtilization.length
               ? sm.coreUtilization.reduce((a, b) => a + b, 0) / sm.coreUtilization.length
               : 0
-            const heightPct = batch ? Math.max(4, mean * 100) : 6
-            const color = dominantBlueprintColor(server.id, doc, compiled)
+            const pct = batch ? Math.max(4, Math.round(mean * 100)) : 6
+            const role = dbByServerId.get(server.id)
+            const isDb = role != null
+            const barColor = isDb ? 'var(--r3-amber)' : (dominantBlueprintColor(server.id, doc, compiled) || BLUE)
+            const rps = Object.values(compiled.instances)
+              .filter(i => i.serverId === server.id)
+              .reduce((sum, i) => sum + (batch?.instances[i.id]?.rps ?? 0), 0)
             return (
               <div
                 key={server.id} title={server.label}
-                style={{ width: 9, height: `${heightPct}%`, background: STRIP_TRACK, borderTop: `2px solid ${color}`, borderRadius: 1, cursor: 'pointer' }}
+                style={{
+                  display: 'grid', gridTemplateColumns: '120px 1fr 58px', gap: 10, alignItems: 'center',
+                  fontSize: 10, color: 'var(--color-text-secondary)', padding: '3px 6px', borderRadius: 4,
+                  borderLeft: isDb ? '2px solid var(--r3-amber)' : '2px solid transparent',
+                  background: isDb ? '#e0a5520a' : 'transparent', cursor: 'pointer', position: 'relative',
+                }}
+                onMouseEnter={() => isDb && onHoverServer(server.id)}
+                onMouseLeave={() => isDb && onHoverServer(null)}
                 onClick={e => { e.stopPropagation(); onNavigateServer(server.id) }}
-              />
+              >
+                <span>{server.label}</span>
+                <span style={{ height: 5, borderRadius: 3, background: '#1a202b', overflow: 'hidden', position: 'relative', display: 'block' }}>
+                  <span style={{ position: 'absolute', inset: '0 auto 0 0', width: `${pct}%`, background: barColor, display: 'block', height: '100%' }}>
+                    <span style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 4, borderRadius: 2, background: '#ffffffcc', filter: 'blur(1px)', opacity: 0.7 }} />
+                  </span>
+                </span>
+                <span style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                  {role === 'replica' ? 'reads only' : `${Math.round(rps)} rps`}
+                </span>
+                {isDb && (
+                  <span
+                    style={{
+                      position: 'absolute', right: -4, top: '50%', transform: 'translate(100%, -50%)',
+                      fontSize: 8, letterSpacing: '0.08em', whiteSpace: 'nowrap',
+                      color: role === 'primary' ? 'var(--r3-amber)' : 'var(--r3-amber-text)',
+                    }}
+                  >
+                    {role === 'primary' ? '◆ PRIMARY' : '◇ REPLICA'}
+                  </span>
+                )}
+              </div>
             )
           })}
         </div>
-      )}
-
-      <div style={{ textAlign: 'right', color: 'var(--color-text-secondary)', width: 130, flexShrink: 0 }}>
-        {isDown ? (
-          <span style={{ color: 'var(--color-text-muted)' }}>0 rps · —</span>
-        ) : (
-          <>
-            {(metrics?.rps ?? 0).toFixed(0)} rps · p50 {(metrics?.p50Ms ?? 0).toFixed(0)}ms<br />
-            <span style={{ color: 'var(--color-text-muted)' }}>
-              err {((metrics?.errorRate ?? 0) * 100).toFixed(1)}% · <span style={{ color: 'var(--color-price)' }}>${Math.round(usd)}/mo</span>
-            </span>
-          </>
-        )}
-      </div>
-
-      {running && (
-        <button
-          aria-label={`${isManuallyDown ? 'Clear' : 'Simulate'} outage for ${az?.label ?? azId}`}
-          style={{
-            background: 'var(--color-node-base)',
-            border: `1px solid ${isManuallyDown ? 'var(--color-danger)' : 'var(--color-node-border)'}`,
-            borderRadius: 4, padding: '3px 6px', cursor: 'pointer', flexShrink: 0,
-            font: '10px var(--font-mono)', color: isManuallyDown ? 'var(--color-danger)' : 'var(--color-text-secondary)',
-          }}
-          onClick={e => { e.stopPropagation(); setOutage('az', azId, !isManuallyDown) }}
-        >
-          {isManuallyDown ? '✓' : '⚡'}
-        </button>
       )}
     </div>
   )

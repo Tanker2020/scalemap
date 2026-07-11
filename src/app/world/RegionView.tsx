@@ -1,38 +1,39 @@
 // src/app/world/RegionView.tsx
-// Level-2 region flow page (Phase 4 D1-D6, mockup "Level 2 · Region page (v2)"): global-edge
-// inbound -> animated split shares -> AZ rows (health ring, clickable server strips, $/mo) ->
-// cross-AZ column, with one alert ribbon above and (T3) a failover timeline below. Fully
-// scrub-aware: every metric reads `scrubBatch ?? latestBatch` (D1) and renders a meaningful
-// static state ("—", doc-derived counts) before the sim has ever produced a batch.
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+// Level-2 region flow page (Region v4, Polish 3 T3, mockup `.r3`): a de-lined restyle of the
+// Phase-4 shape — WHO'S-SENDING sources column -> ingress beams (top-2 animated, motion-budget
+// capped) -> AZ cards (hover-revealed cfgbar, static per-server bars) -> cross-AZ column, with
+// a tucked replica rail in the gutter, one alert ribbon above and a failover timeline below.
+// Fully scrub-aware: every metric reads `scrubBatch ?? latestBatch` (D1) and renders a
+// meaningful static state ("—", doc-derived counts) before the sim has ever produced a batch.
+import { useEffect, useRef, useState } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useCompiledWorld } from './useCompiledWorld'
 import { WORLD_REGIONS } from '../../lib/regionConfig'
 import { computeWorldCost } from '../../lib/costModelV2'
-import type { RoutingPolicyKind } from '../../lib/world/types'
-import { azShares, ribbonAlert, sparklineSeries } from './region/regionData'
+import type { RoutingPolicyKind, ServerId } from '../../lib/world/types'
+import { azShares, ribbonAlert, replicaRailPairs } from './region/regionData'
 import { AlertRibbon } from './region/AlertRibbon'
 import { SplitLines } from './region/SplitLines'
-import { AzRow } from './region/AzRow'
+import { AzRow, type AzRowDbEndpoint } from './region/AzRow'
 import { CrossAzColumn } from './region/CrossAzColumn'
+import { SourcesColumn } from './region/SourcesColumn'
+import { ReplicaRail, type ReplicaRailEntry } from './region/ReplicaRail'
 import { TimelineStrip } from './region/TimelineStrip'
 
 const POLICY_LABEL: Record<RoutingPolicyKind, string> = {
   latency: 'latency-based routing', geo: 'geo-based routing',
   weighted: 'weighted routing', priority: 'priority routing',
 }
-const TEAL = '#2DD4BF'
-const CHIP: CSSProperties = { borderRadius: 10, padding: '2px 8px', font: '9px var(--font-mono)' }
+const CHIP = { borderRadius: 10, padding: '2px 8px', font: '9px var(--font-mono)' } as const
 const ACCENT_CHIP_BORDER = '#4A9EFF44'
 const SUCCESS_CHIP_BORDER = '#22C55E44'
-// Schematic estimate for SplitLines' height, not a live DOM measurement — see the fragment's
-// judgment-call note (D11 budgets the page at ~1Hz re-render; a ResizeObserver-driven height
-// sync would add churn for a purely schematic diagram).
-const ROW_HEIGHT_ESTIMATE = 64
-const SPARK_W = 80
-const SPARK_H = 20
+// Schematic estimate for the az-card column's height, not a live DOM measurement — see the
+// fragment's judgment-call note (D11 budgets the page at ~1Hz re-render; a ResizeObserver-driven
+// height sync would add churn for a purely schematic diagram). Region v4's cards are taller
+// (header + one row per server) than Phase 4's compact single-line AzRow, hence the bump.
+const ROW_HEIGHT_ESTIMATE = 110
 
 export function RegionView() {
   const doc = useWorldStore(s => s.doc)
@@ -43,17 +44,12 @@ export function RegionView() {
   const events = useSimulationStore(s => s.events)
   const isDown = useSimulationStore(s => s.healthOverrides[regionId ?? ''] ?? false)
   const setOutage = useSimulationStore(s => s.setOutage)
-  const [spark, setSpark] = useState<number[]>([])
+  const [hoveredServerId, setHoveredServerId] = useState<ServerId | null>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    if (!regionId) return
-    const poll = () => setSpark(sparklineSeries(useSimulationStore.getState().getReplayFrames(), regionId))
-    poll()
-    if (!running) return
-    const id = setInterval(poll, 1000)
-    return () => clearInterval(id)
-  }, [running, regionId])
+  // Reset the replica-rail hover whenever the focused region changes, so a stale hover from a
+  // previous region's server id can never light up this region's rail.
+  useEffect(() => { setHoveredServerId(null) }, [regionId])
 
   if (!regionId || !doc.regions[regionId]) return null
 
@@ -66,9 +62,27 @@ export function RegionView() {
   const shares = azShares(regionId, doc, batch)
   const alert = ribbonAlert(regionId, doc, events, batch?.simMs ?? 0)
   const costs = computeWorldCost(doc, batch?.world ?? null)
-  const regionRps = batch?.regions[regionId]?.rps ?? 0
   const rowsHeight = Math.max(140, azs.length * ROW_HEIGHT_ESTIMATE)
-  const maxSpark = Math.max(1, ...spark)
+
+  // Replica rail + per-az db-endpoint tagging, computed ONCE here and threaded down (the same
+  // "compute once, thread down" reuse `monthlyUsd` already established for AzRow) rather than
+  // each AzRow independently re-deriving a whole-region pairing.
+  const azIndexById = new Map(azs.map((a, i) => [a.id, i]))
+  const railPairs = replicaRailPairs(doc, compiled, regionId)
+  const railEntries: ReplicaRailEntry[] = railPairs.map(p => ({
+    blueprintId: p.blueprintId,
+    primaryServerId: p.primaryServerId,
+    replicaServerId: p.replicaServerId,
+    primaryAzIndex: azIndexById.get(doc.servers[p.primaryServerId]?.azId ?? '') ?? 0,
+    replicaAzIndex: azIndexById.get(doc.servers[p.replicaServerId]?.azId ?? '') ?? 0,
+  }))
+  const dbEndpointsByAz = new Map<string, AzRowDbEndpoint[]>()
+  for (const p of railPairs) {
+    const primaryAzId = doc.servers[p.primaryServerId]?.azId
+    const replicaAzId = doc.servers[p.replicaServerId]?.azId
+    if (primaryAzId) dbEndpointsByAz.set(primaryAzId, [...(dbEndpointsByAz.get(primaryAzId) ?? []), { serverId: p.primaryServerId, role: 'primary' }])
+    if (replicaAzId) dbEndpointsByAz.set(replicaAzId, [...(dbEndpointsByAz.get(replicaAzId) ?? []), { serverId: p.replicaServerId, role: 'replica' }])
+  }
 
   return (
     <div style={{ padding: 18, font: '12px var(--font-mono)' }}>
@@ -118,30 +132,23 @@ export function RegionView() {
           No AZs yet — add one in the World panel →
         </div>
       ) : (
-        <div style={{ display: 'flex', alignItems: 'stretch', gap: 0 }}>
-          <div style={{ width: 120, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-            <div style={{ fontSize: 20, color: TEAL }}>◍</div>
-            <div style={{ fontSize: 10, color: 'var(--color-text-primary)' }}>global edge</div>
-            <div style={{ fontSize: 12, color: TEAL }}>{regionRps.toFixed(0)} rps</div>
-            <svg width={SPARK_W} height={SPARK_H}>
-              <polyline
-                points={spark.map((v, i) => `${(i / Math.max(1, spark.length - 1)) * SPARK_W},${SPARK_H - (v / maxSpark) * SPARK_H}`).join(' ')}
-                fill="none" stroke={TEAL} strokeWidth={1.2} opacity={0.8}
-              />
-            </svg>
-          </div>
+        <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, position: 'relative' }}>
+          <SourcesColumn regionId={regionId} internetEgressMonthlyUsd={costs.egress.internetUsd} />
 
           <SplitLines shares={shares} height={rowsHeight} />
 
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', gap: 8, marginRight: 20 }}>
             {azs.map(az => (
               <AzRow
                 key={az.id} azId={az.id} regionId={regionId}
                 monthlyUsd={costs.byAz.find(e => e.azId === az.id)?.monthlyUsd ?? 0}
+                dbEndpoints={dbEndpointsByAz.get(az.id) ?? []}
                 onNavigateAz={() => goAz(regionId, az.id)}
                 onNavigateServer={serverId => goServer(regionId, az.id, serverId)}
+                onHoverServer={setHoveredServerId}
               />
             ))}
+            <ReplicaRail entries={railEntries} azCount={azs.length} rowsHeight={rowsHeight} hoveredServerId={hoveredServerId} />
           </div>
 
           <CrossAzColumn regionId={regionId} />
