@@ -831,7 +831,7 @@ attach to; the AZ canvas (an actual React Flow edge graph) is the only surface w
 treatment applies. **Reduced-motion selector, verified not reworded:** T1's stylesheet block
 already carried `.react-flow__edge.animated .react-flow__edge-path { animation: none; }` inside
 the `@media (prefers-reduced-motion: reduce)` query; checked against the installed
-`@xyflow/react@12.10.2` (`node_modules/@xyflow/react/dist/style.css`) — the library's own dashed-
+`@xyflow/react@12.11.1` (`node_modules/@xyflow/react/dist/style.css`) — the library's own dashed-
 flow rule is `.react-flow__edge.animated path` and the rendered `<path>` element DOES carry the
 `react-flow__edge-path` class (confirmed in `dist/esm/index.js`'s `BaseEdge`), so the reduced-
 motion override matches AND wins on specificity (three class selectors vs. the base rule's two
