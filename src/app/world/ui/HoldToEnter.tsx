@@ -15,6 +15,14 @@ export function holdProgress(nowMs: number, startMs: number | null, durationMs =
   return Math.min(1, Math.max(0, (nowMs - startMs) / durationMs))
 }
 
+// A press shorter than this is a tap; a longer-but-incomplete press is an aborted hold —
+// its synthetic click must be swallowed (spec D1: early release = no navigation, no overlay).
+export const HOLD_TAP_MS = 250
+
+export function isAbortedHold(pressedMs: number): boolean {
+  return pressedMs >= HOLD_TAP_MS
+}
+
 export interface HoldRingProps {
   /** Parent-owned progress cell (0..1), mutated per frame — never setState per frame. */
   progressRef: { current: number }

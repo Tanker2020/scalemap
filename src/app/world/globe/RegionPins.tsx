@@ -16,7 +16,7 @@ import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { REGION_GEO } from '../../../lib/world/regionGeo'
 import { latLonToVec3 } from './geo'
-import { HoldRing, holdProgress } from '../ui/HoldToEnter'
+import { HoldRing, holdProgress, isAbortedHold } from '../ui/HoldToEnter'
 import type { HealthState, EngineEvent, EngineEventKind } from '../../../lib/worldEngine/types'
 import type { RegionId } from '../../../lib/world/types'
 
@@ -80,7 +80,11 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
   const [labelVisible, setLabelVisible] = useState(true)
   const labelVisibleRef = useRef(true)
   const holdStartRef = useRef<number | null>(null)
-  const holdFiredRef = useRef(false)
+  // Deadline (performance.now() ms) until which the next click is swallowed — set by hold
+  // completion AND by an aborted hold (released ≥ HOLD_TAP_MS but before completion, spec D1:
+  // early release = no navigation). A timestamp, not a boolean: it self-expires, so a swallow
+  // whose synthetic click the browser never delivers can't eat the NEXT genuine tap.
+  const swallowClickUntilRef = useRef(0)
   const holdProgressRef = useRef(0)
   const position = useMemo(() => latLonToVec3(lat, lon, PIN_ALTITUDE), [lat, lon])
   const color = pinColor(health)
@@ -101,21 +105,24 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
         setLabelVisible(facing)
       }
     }
-    if (!pinRef.current) return
-    if (!pulsing) { pinRef.current.scale.setScalar(1); return }
-    const t = (state.clock.elapsedTime % PULSE_PERIOD_S) / PULSE_PERIOD_S   // 0..1 sawtooth
-    pinRef.current.scale.setScalar(1 + 0.35 * Math.sin(t * Math.PI))        // 1 -> 1.35 -> 1
-
     // Hold-to-enter (Polish 2 D5): drive the ring from performance.now() (pointer handlers
-    // can't read the r3f clock — one coherent timebase, see plan header decision 1).
+    // can't read the r3f clock — one coherent timebase, see plan header decision 1). Placed
+    // ABOVE the pulse block: its `!pulsing` early return would otherwise make this dead code
+    // on any non-pulsing (i.e. normal) pin.
     const p = holdProgress(performance.now(), holdStartRef.current)
     holdProgressRef.current = p
     if (p >= 1 && holdStartRef.current !== null) {
       holdStartRef.current = null
       holdProgressRef.current = 0
-      holdFiredRef.current = true      // swallow the synthetic click that follows pointerup
+      // Swallow the synthetic click that follows pointerup — generous 400ms window, self-expiring.
+      swallowClickUntilRef.current = performance.now() + 400
       goRegion(regionId)
     }
+
+    if (!pinRef.current) return
+    if (!pulsing) { pinRef.current.scale.setScalar(1); return }
+    const t = (state.clock.elapsedTime % PULSE_PERIOD_S) / PULSE_PERIOD_S   // 0..1 sawtooth
+    pinRef.current.scale.setScalar(1 + 0.35 * Math.sin(t * Math.PI))        // 1 -> 1.35 -> 1
   })
 
   return (
@@ -124,7 +131,8 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
         ref={pinRef}
         onClick={e => {
           e.stopPropagation()
-          if (holdFiredRef.current) { holdFiredRef.current = false; return }   // hold completed — not a tap
+          // Completed or aborted hold — swallow its synthetic click; a plain tap falls through.
+          if (performance.now() < swallowClickUntilRef.current) { swallowClickUntilRef.current = 0; return }
           goRegion(regionId)
         }}
         onPointerDown={e => {
@@ -133,8 +141,12 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
           holdStartRef.current = performance.now()
         }}
         onPointerUp={e => {
+          const start = holdStartRef.current   // capture BEFORE nulling (completion already cleared it)
           ;(e.target as Element | undefined)?.releasePointerCapture?.(e.pointerId)
           holdStartRef.current = null      // released early → cancel (completion already cleared it)
+          // Released after the tap threshold but before completion = an aborted hold (spec D1):
+          // no navigation — swallow the synthetic click that's about to fire. Self-expiring window.
+          if (start !== null && isAbortedHold(performance.now() - start)) swallowClickUntilRef.current = performance.now() + 400
         }}
         onPointerOver={() => { document.body.style.cursor = 'pointer'; setHovered(true) }}
         onPointerOut={() => {
