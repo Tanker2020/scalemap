@@ -6,10 +6,15 @@
 // health-tinted). Each slat is its own `RackSlot`: tap selects, hold drills into the server
 // (`useHoldTap`, reusing `ui/HoldToEnter`'s primitives). A newly-added resident (tracked by
 // `DatacenterFloor`'s seen-ids ref) mounts with the mockup's `rackin`/`bootled` boot cascade.
+// `animatedLedIds` (T8 motion-budget sweep): LED blink used to be gated on nothing but
+// `lit > 0`/reduced-motion, so an AZ full of active servers could blink every slat at once —
+// unbounded by D1's ≤8-concurrent budget. `DatacenterFloor.tsx` now ranks every AZ server by
+// cpuMean and passes down the top `MAX_ANIMATED_LEDS`; a slat outside that set still shows its
+// lit color, just statically (see `FreePoolPod.tsx`'s matching free-pool-side comment).
 import { type ReactElement } from 'react'
 import { isoBox, isoSlat, type IsoBox } from './iso'
 import { serverHeightU } from '../../../lib/world/rackModel'
-import { ledParams } from './floorData'
+import { ledParams, meanUtilization } from './floorData'
 import { useHoldTap } from './useHoldTap'
 import { HoldRing } from '../ui/HoldToEnter'
 import type { Rack, Server, ServerId } from '../../../lib/world/types'
@@ -22,11 +27,6 @@ export const MIN_DISPLAY_U = 1
 
 export function cabinetHeightPx(usedU: number): number {
   return Math.max(MIN_DISPLAY_U, usedU) * (SLOT_PX + SLOT_GAP) + CAB_PAD * 2
-}
-
-function mean(values?: number[]): number {
-  if (!values || values.length === 0) return 0
-  return values.reduce((a, b) => a + b, 0) / values.length
 }
 
 const HEALTH_STROKE: Record<HealthState, string> = {
@@ -45,18 +45,20 @@ interface RackSlotProps {
   health: HealthState
   selected: boolean
   isNew: boolean
+  animatedLed: boolean
   reducedMotion: boolean
   onSelect: (id: ServerId) => void
   onEnter: (id: ServerId) => void
 }
 
 function RackSlot({
-  server, box, yTop, yBottom, cpuMean, health, selected, isNew, reducedMotion, onSelect, onEnter,
+  server, box, yTop, yBottom, cpuMean, health, selected, isNew, animatedLed, reducedMotion, onSelect, onEnter,
 }: RackSlotProps): ReactElement {
   const { handlers, progressRef } = useHoldTap(() => onSelect(server.id), () => onEnter(server.id))
   const { poly: slatPoly, led } = isoSlat(box, yTop, yBottom)
   const { lit, color } = ledParams(cpuMean)
   const ledColor = health === 'down' ? 'var(--color-danger)' : LED_COLOR[color]
+  const blinking = lit > 0 && animatedLed && !reducedMotion
 
   return (
     <g
@@ -77,10 +79,10 @@ function RackSlot({
         strokeWidth={selected ? 1.5 : 1}
       />
       <circle
-        className={lit > 0 && !reducedMotion ? 'az-led az-led-blink' : 'az-led'}
+        className={blinking ? 'az-led az-led-blink' : 'az-led'}
         cx={led.x} cy={led.y} r={2}
         fill={ledColor}
-        style={lit > 0 && !reducedMotion ? { animationDuration: `${2.1 + (yTop % 3)}s` } : undefined}
+        style={blinking ? { animationDuration: `${2.1 + (yTop % 3)}s` } : undefined}
       />
       <g transform={`translate(${led.x - 12},${led.y - 12})`}>
         <HoldRing progressRef={progressRef} size={24} />
@@ -98,13 +100,14 @@ export interface RackCabinetProps {
   batch: MetricsBatch | null
   selectedServerId: ServerId | null
   newServerIds: ReadonlySet<ServerId>
+  animatedLedIds: ReadonlySet<ServerId>
   reducedMotion: boolean
   onSelect: (id: ServerId) => void
   onEnter: (id: ServerId) => void
 }
 
 export function RackCabinet({
-  rack, cell, cols, residents, usedU, batch, selectedServerId, newServerIds, reducedMotion, onSelect, onEnter,
+  rack, cell, cols, residents, usedU, batch, selectedServerId, newServerIds, animatedLedIds, reducedMotion, onSelect, onEnter,
 }: RackCabinetProps): ReactElement {
   const heightPx = cabinetHeightPx(usedU)
   const box = isoBox(cell.x, cell.y, cols, heightPx)
@@ -138,10 +141,11 @@ export function RackCabinet({
           <RackSlot
             key={server.id}
             server={server} box={box} yTop={yTop} yBottom={yBottom}
-            cpuMean={mean(batch?.servers[server.id]?.coreUtilization)}
+            cpuMean={meanUtilization(batch?.servers[server.id]?.coreUtilization)}
             health={batch?.servers[server.id]?.health ?? 'healthy'}
             selected={selectedServerId === server.id}
             isNew={newServerIds.has(server.id)}
+            animatedLed={animatedLedIds.has(server.id)}
             reducedMotion={reducedMotion}
             onSelect={onSelect} onEnter={onEnter}
           />

@@ -42,9 +42,9 @@ Core systems that exist today:
 - **Four-level navigation shell** (`src/app/world/`, `nav.store.ts`'s `WorldLevel`) — a
   react-three-fiber globe (night-earth, health-colored region pins, population markers,
   engine-driven great-circle traffic arcs) → a region flow page (cross-AZ traffic columns, rack
-  chassis) → a live React Flow AZ canvas → a per-server "circuit board" view (NIC/firewall gate,
-  service chips, a unified hardware platform). All four are live-metrics-aware and
-  replay-scrubbable.
+  chassis) → a DOM/SVG isometric datacenter floor (racks, free-pool pods, flow traces) → a
+  per-server "circuit board" view (NIC/firewall gate, service chips, a unified hardware
+  platform). All four are live-metrics-aware and replay-scrubbable.
 - **Traffic authoring** — client populations (placed by hand or by clicking the globe),
   auto-baseline synthetic per-region demand, and routing policy (latency/geo/weighted/priority)
   with DNS TTL + health-check tuning.
@@ -128,9 +128,11 @@ src/
                                     # unavailable
       RegionView.tsx, region/       # Level 2: cross-AZ traffic columns, timeline strip, rack
                                     # chassis (SplitLines, AzRow, CrossAzColumn)
-      AzCanvas.tsx, AzSimOverlay.tsx # Level 3: live React Flow render of the focused AZ (the
-                                    # app's one remaining @xyflow/react surface) + particle
-                                    # overlay canvas
+      az/                           # Level 3: DOM/SVG isometric datacenter floor (DatacenterFloor
+                                    # — WorldShell.tsx renders it directly, no separate top-level
+                                    # AzView.tsx — RackCabinet, FreePoolPod, floorLayout, floorData)
+                                    # — replaced the React Flow AZ canvas outright (Polish 3 T4);
+                                    # @xyflow/react has no remaining consumer anywhere in the app
       ServerView.tsx, server/       # Level 4: the "circuit board" — NIC/firewall gate, service
                                     # chips, HardwarePlatform, PacketLayer, InspectorRail
       SettingsModal.tsx             # ⚙ modal — Appearance (theme toggle) + AI Review (LLM
@@ -141,7 +143,12 @@ src/
   lib/
     world/                        # Pure document model + compiler — the schema of .scalemap v2
       types.ts                     # WorldDoc entities + CompiledWorld output types
-      factories.ts, instanceCatalog.ts, regionGeo.ts, layoutRacks.ts, populationLabel.ts
+      factories.ts, instanceCatalog.ts, regionGeo.ts, populationLabel.ts
+      rackModel.ts                 # Pure rack capacity/placement model (Polish 3): Rack/
+                                    # RackPosition types live in types.ts; this file has
+                                    # serverHeightU/rackUsedU/canAssign/autoArrangePlan — no
+                                    # engine/compile/analysis/cost semantics, consumed by
+                                    # world.store.ts's rack actions + app/world/az/
       compileWorld.ts (+ network.ts, routing.ts)  # doc -> instances, permitted/blocked paths,
                                     # routing tables, compile findings — the gate every
                                     # consumer reads through instead of the raw doc
@@ -191,10 +198,13 @@ directly (`start`/`stop`/`attachRenderer`/`getReplayFrames`/`getTracedRequests`/
 Every view reads the store, never the engine facade. `worldEngine/types.ts` is a frozen contract
 — additive-only changes, logged in `.superpowers/sdd/contract-drift.md` when they happen.
 
-**AZ canvas:** `@xyflow/react` (React Flow) still renders one thing — the live AZ-level canvas
-(`AzCanvas.tsx`), read-only (servers + managed services as nodes, aggregated compiled paths as
-edges). It is not a general node/edge authoring surface the way the deleted canvas app was;
-don't assume React Flow appears anywhere else.
+**AZ level:** the Level-3 AZ view is `src/app/world/az/DatacenterFloor.tsx` — a DOM/SVG isometric
+datacenter floor (racks as 3-face isometric boxes with per-server LED slats, free-pool servers as
+standalone pods, flow traces between them), read-only, rendered directly by `WorldShell.tsx` for
+`nav.level === 'az'`. **`@xyflow/react` (React Flow) is no longer in the app** (Polish 3 Task 4)
+— it previously rendered this same AZ-level canvas (`AzCanvas.tsx`/`AzSimOverlay.tsx`/
+`RackNodes.tsx`, plus `src/lib/world/layoutRacks.ts`), all four deleted in the same commit that
+replaced them with `az/`; don't assume React Flow appears anywhere in the app.
 
 **State management:** Zustand, one store per domain (`nav`, `world`, `simulation`, `file`, `ui` —
 no monolithic store). `nav.store.ts` deliberately has no dependency on `world.store.ts`:
@@ -318,7 +328,6 @@ Decisions).
 | `@react-three/fiber` | React renderer for three.js — the globe scene (`Canvas`, `useFrame`, hooks) |
 | `@react-three/drei` | `OrbitControls`, `useTexture`, and other r3f scene helpers used by the globe |
 | `three` | The WebGL scene graph underlying the globe (night-earth sphere, atmosphere shader, arc geometry) |
-| `@xyflow/react` | The AZ-level canvas (`AzCanvas.tsx`) — node/edge rendering, pan/zoom. The only remaining React Flow surface; the original node-authoring canvas app that used it more broadly was deleted in Phase 2 |
 | `zustand` | State management — one store per domain (`nav`/`world`/`simulation`/`file`/`ui`) |
 | `framer-motion` | Panel/globe/board animations; every animated component also checks `useReducedMotion()` |
 | `lucide-react` | Icons — today's only live consumer is `HomeScreen.tsx`; `nodeConfig.ts`'s `NODE_CONFIG` icon registry has no consumer in the world-model UI (see Key Architecture Decisions) |

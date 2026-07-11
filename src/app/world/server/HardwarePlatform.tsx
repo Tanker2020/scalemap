@@ -27,6 +27,14 @@ const PLATTER_RING = '#232b38'
 
 const STICK_COUNT = 4
 const QTICK_COUNT = 12
+// Motion budget (D1, T8 sweep): `hw-coreflicker`/`hw-glitch` were gated on nothing but hot/steal
+// state, so a large dedicated box (up to 32 vCPU — see instanceCatalog.ts's `dedicated-32`)
+// could animate every one of its 32 core cells at once, unbounded. Capped to the top
+// MAX_ANIMATED_CORES busiest cores (by utilization) — the same "rank by magnitude, render the
+// rest static" shape as `az/DatacenterFloor.tsx`'s `MAX_ANIMATED_LEDS` and region's dot-stream/
+// beam/rail caps; a core outside the top-N still shows its exact fill height, just without the
+// flicker/steal-glitch overlay animating.
+const MAX_ANIMATED_CORES = 4
 // No true "max io-queue depth" metric exists on ServerMetrics/InstanceMetrics — this is a
 // documented, deliberately soft visual scale (connections per lit tick), not a spec'd constant.
 const QUEUE_CONN_PER_TICK = 3
@@ -110,6 +118,13 @@ export function HardwarePlatform(props: HardwarePlatformProps): ReactElement {
   const steal = metrics?.stealFraction ?? 0
   const io = metrics?.diskIoFraction ?? 0
   const cells = coreCells(cores, steal)
+  const animatedCoreIndices = new Set(
+    cells
+      .map((c, i) => ({ i, h: c.h }))
+      .sort((a, b) => b.h - a.h)
+      .slice(0, MAX_ANIMATED_CORES)
+      .map(x => x.i),
+  )
 
   const ramTotalMb = metrics?.ramTotalMb ?? server.specs.ramMb
   const ramByInstance = atRest
@@ -141,23 +156,26 @@ export function HardwarePlatform(props: HardwarePlatformProps): ReactElement {
       {/* Core bank (mockup .corebank/.corecell) */}
       <div data-corebank onClick={() => onSelect({ kind: 'hardware', part: 'cpu' })}
         style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 3, cursor: 'pointer' }}>
-        {cells.map((c, i) => (
-          <div key={i} data-testid="core-cell" data-hot={c.hot} data-steal={c.steal}
-            style={{ height: 14, borderRadius: 2, background: CORE_BG, border: `1px solid ${CORE_BORDER}`, position: 'relative', overflow: 'hidden' }}>
-            <div className={reduced ? undefined : 'hw-flicker'} style={{
-              position: 'absolute', left: 0, right: 0, bottom: 0, height: `${Math.round(c.h * 100)}%`,
-              background: c.hot ? 'linear-gradient(180deg,#ffd28a,var(--color-warning))' : `linear-gradient(180deg,${CORE_BLUE_HI},${CORE_BLUE})`,
-              animation: reduced ? undefined : 'hw-coreflicker 1.7s ease-in-out infinite',
-            }} />
-            {c.steal && (
-              <div data-testid="core-steal" className={reduced ? undefined : 'hw-steal'} style={{
-                position: 'absolute', inset: 0,
-                background: `repeating-linear-gradient(45deg, transparent 0 3px, ${STEAL_VIOLET} 3px 5px)`,
-                animation: reduced ? undefined : `hw-glitch 3.2s steps(1) infinite ${(i % 2) * 1.4}s`,
+        {cells.map((c, i) => {
+          const flickering = !reduced && animatedCoreIndices.has(i)
+          return (
+            <div key={i} data-testid="core-cell" data-hot={c.hot} data-steal={c.steal}
+              style={{ height: 14, borderRadius: 2, background: CORE_BG, border: `1px solid ${CORE_BORDER}`, position: 'relative', overflow: 'hidden' }}>
+              <div className={flickering ? 'hw-flicker' : undefined} style={{
+                position: 'absolute', left: 0, right: 0, bottom: 0, height: `${Math.round(c.h * 100)}%`,
+                background: c.hot ? 'linear-gradient(180deg,#ffd28a,var(--color-warning))' : `linear-gradient(180deg,${CORE_BLUE_HI},${CORE_BLUE})`,
+                animation: flickering ? 'hw-coreflicker 1.7s ease-in-out infinite' : undefined,
               }} />
-            )}
-          </div>
-        ))}
+              {c.steal && (
+                <div data-testid="core-steal" className={flickering ? 'hw-steal' : undefined} style={{
+                  position: 'absolute', inset: 0,
+                  background: `repeating-linear-gradient(45deg, transparent 0 3px, ${STEAL_VIOLET} 3px 5px)`,
+                  animation: flickering ? `hw-glitch 3.2s steps(1) infinite ${(i % 2) * 1.4}s` : undefined,
+                }} />
+              )}
+            </div>
+          )
+        })}
       </div>
       <div style={{ fontSize: 6.5, color: 'var(--color-text-muted)' }}>
         core load · ▨ = neighbor steal

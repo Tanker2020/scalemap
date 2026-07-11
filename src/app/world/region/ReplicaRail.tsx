@@ -10,10 +10,13 @@
 // `:has()`, which is webview-flaky.
 // Motion budget (review fix wave, mirrors `SplitLines.tsx`'s `MAX_ANIMATED_BEAMS` cap): the
 // mockup shows a SINGLE animated rail, and the region page's total concurrent-infinite-stroke
-// budget (2 cross-AZ beams + 1 trunk + up to 5 dot-streams already) has no room for one
-// `dashflow` per replica pair. Only the first `MAX_ANIMATED_RAILS` entries (in `entries` order —
-// there's no per-pair "loudness" metric to rank by, unlike `SplitLines.tsx`'s fraction sort) get
-// the `dashflow` animation; every rail beyond the cap renders the identical static stroke.
+// budget (1 cross-AZ beam + 1 trunk + up to 5 dot-streams already, per the T8 sweep's tightening
+// of `SplitLines.tsx`'s own cap) has no room for more than one `dashflow` per page, let alone one
+// per replica pair. Only the first `MAX_ANIMATED_RAILS` entries (in `entries` order — there's no
+// per-pair "loudness" metric to rank by, unlike `SplitLines.tsx`'s fraction sort) get the
+// `dashflow` animation; every rail beyond the cap renders the identical static stroke. Region's
+// documented worst-case total is now 1 (beam) + 1 (trunk) + 5 (dot-streams) + 1 (rail) = 8 — see
+// module-boundaries.md §R.
 import { useReducedMotion } from 'framer-motion'
 import type { ReactElement } from 'react'
 import type { BlueprintId, ServerId } from '../../../lib/world/types'

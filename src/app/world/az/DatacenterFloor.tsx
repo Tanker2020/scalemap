@@ -13,7 +13,7 @@ import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { layoutFloor } from './floorLayout'
-import { aggregateFlows } from './floorData'
+import { aggregateFlows, meanUtilization } from './floorData'
 import { rackUsedU } from '../../../lib/world/rackModel'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { RackCabinet, cabinetHeightPx } from './RackCabinet'
@@ -23,7 +23,18 @@ import { VIEW_W, VIEW_H, floorOutline, tileOutline, tileCenter, isoBox } from '.
 import type { RackId, Server, ServerId } from '../../../lib/world/types'
 import './azFloorStyles'
 
-const TOP_ANIMATED = 8
+// Motion budget (D1, T8 sweep): the floor has TWO independent top-N-by-magnitude animated
+// categories — flow traces and LED blink — so, mirroring region's own 5-primary/N-secondary
+// split (`SourcesColumn`'s dot-streams + `SplitLines`'/`ReplicaRail`'s beam/rail), their caps
+// are sized so the two SUM to the app-wide ≤8 concurrent-infinite-stroke budget (D1) rather than
+// each independently claiming 8. Tightened from 8 in the T8 sweep, which also found LED blink
+// (`RackCabinet`/`FreePoolPod`'s `az-led-blink`) had NO cap at all — every server with any cpu
+// utilization got its own infinite blink, unbounded by AZ server count. Both are now ranked
+// (traces by source-server rps, LEDs by cpuMean) and the loser of each ranking renders the same
+// visual — a static etched trace, a steadily-lit LED — without the animation. See
+// module-boundaries.md §R's motion-budget table.
+const TOP_ANIMATED = 5
+const MAX_ANIMATED_LEDS = 3
 const NEW_ANIMATION_MS = 2400
 const APPLIANCE_HEIGHT_PX = 30
 const EMPTY_SERVER_ID_SET: ReadonlySet<ServerId> = new Set()
@@ -113,8 +124,9 @@ export function DatacenterFloor() {
     [compiled, azId, managedHere],
   )
 
-  // Motion budget (spec D1): only the top 8 permitted flows BY SOURCE-SERVER RPS animate;
-  // blocked flows are always static (red dash + reason label), regardless of rank.
+  // Motion budget (spec D1, tightened 8→5 in the T8 sweep — see TOP_ANIMATED's comment above):
+  // only the top-N permitted flows BY SOURCE-SERVER RPS animate; blocked flows are always static
+  // (red dash + reason label), regardless of rank.
   const rpsByServer = useMemo(() => {
     const m = new Map<ServerId, number>()
     for (const s of azServers) {
@@ -135,6 +147,18 @@ export function DatacenterFloor() {
     return new Map(ranked.map(r => [r.key, r.rate]))
   }, [flows, rpsByServer])
   const maxAnimatedRate = Math.max(1, ...animatedKeys.values())
+
+  // Motion budget (D1, T8 sweep): rank every AZ server (racked or free-pool) by live cpuMean and
+  // let only the top MAX_ANIMATED_LEDS blink — same "top-N by magnitude" shape as `animatedKeys`
+  // above, just a separate, smaller budget line (see the MAX_ANIMATED_LEDS comment).
+  const animatedLedIds = useMemo(() => {
+    const ranked = azServers
+      .map(s => ({ id: s.id, cpuMean: meanUtilization(batch?.servers[s.id]?.coreUtilization) }))
+      .filter(s => s.cpuMean > 0)
+      .sort((a, b) => b.cpuMean - a.cpuMean)
+      .slice(0, MAX_ANIMATED_LEDS)
+    return new Set(ranked.map(r => r.id))
+  }, [azServers, batch])
 
   if (!azId || !regionId) return null
 
@@ -249,6 +273,7 @@ export function DatacenterFloor() {
                   batch={batch}
                   selectedServerId={selectedServerId}
                   newServerIds={reducedMotion ? EMPTY_SERVER_ID_SET : newIds}
+                  animatedLedIds={animatedLedIds}
                   reducedMotion={reducedMotion}
                   onSelect={setSelectedServerId}
                   onEnter={id => regionId && azId && goServer(regionId, azId, id)}
@@ -265,6 +290,7 @@ export function DatacenterFloor() {
                   batch={batch}
                   selectedServerId={selectedServerId}
                   isNew={newIds.has(server.id) && !reducedMotion}
+                  animatedLed={animatedLedIds.has(server.id)}
                   reducedMotion={reducedMotion}
                   onSelect={setSelectedServerId}
                   onEnter={id => regionId && azId && goServer(regionId, azId, id)}

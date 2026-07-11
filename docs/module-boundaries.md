@@ -846,6 +846,179 @@ classes + one type selector) regardless of stylesheet load order — no selector
 
 ---
 
+### R. Polish 3: motion budget, `price` token, rack doc model, `@xyflow/react` removal (`src/lib/theme.ts` Task 1, `src/lib/world/rackModel.ts`/`world.store.ts` Task 2, `src/app/world/region/` Task 3, `src/app/world/az/` Task 4, `src/app/world/server/` Tasks 5-6, `src/app/world/panels/WorldPanel.tsx` Task 7, motion-budget enforcement Task 8, 2026-07-11)
+
+Eight tasks, one phase, one design constitution (spec D1: "no animation unless it carries
+information; per view, at most ~8 concurrent infinite animated strokes; everything else encodes
+with static fills, glows, and numbers" — `docs/superpowers/specs/2026-07-11-polish3-level-
+redesign-design.md`): a dedicated money-value color (Task 1); an optional rack doc model layered
+under the free-pool server model (Task 2); a full visual rebuild of Region v4 (Task 3), the AZ
+level (Task 4 — the isometric datacenter floor, which removes `@xyflow/react` from the app
+entirely), and the server board v5 (Tasks 5-6); Dock v2 signature tab headers (Task 7); and this
+task's closing motion-budget audit plus these doc updates. This section documents the six items
+the brief scoped to Task 8: the `az/` module map, the rack doc model + serializer compat rule, the
+`@xyflow/react` removal, the `price` token, the motion-budget inventory, and the relocated-
+dispatch statement. §L (server board) and §M (region/AZ, Phase 4) predate this phase and describe
+the PRE-Polish-3 shape of those directories — §L's server/ file table is superseded piece-by-piece
+by Tasks 5-6 below (not rewritten there, per this task's append-only scope); §M's `AzCanvas.tsx`/
+`AzSimOverlay.tsx`/`RackNodes.tsx`/`src/lib/world/layoutRacks.ts` rows are now HISTORY — all four
+files are deleted (Task 4; see the `@xyflow/react` removal below) and §M is left as-is as the
+historical record of the Phase-4 design those files implemented.
+
+**`price` token (Task 1, `src/lib/theme.ts`).** A dedicated `price: string` field on both
+`DARK_COLORS`/`LIGHT_COLORS` (dark `#6EE7B7`, light `#047857` — 6.4:1 on white, normal-text AA),
+picked up automatically as `--color-price` by `App.tsx`'s `useThemeBootstrap` (which already
+walks every `COLORS` key generically — no bootstrap change needed). Every money value in the app
+now renders `var(--color-price)`: `CostTab.tsx`'s rollups, `TopologyPanel.tsx`'s hourly meta,
+`WorldPanel.tsx`'s dock summary `$N/hr`, `region/AzRow.tsx`'s `$N/mo` and `region/
+SourcesColumn.tsx`'s `+$N/hr egress` figure, `ui/kit.tsx`'s instance-catalog picker prices, and
+`ui/overlays/RegionOverlay.tsx`'s capacity/cost chips. One token, both themes — grep-verified no
+other UI surface uses that hue.
+
+**Rack doc model (Task 2, `src/lib/world/rackModel.ts` + `world.store.ts` + `types.ts`).** Racks
+are an OPTIONAL authored container layered over the pre-existing free-pool server model —
+`WorldDoc.racks: Record<RackId, Rack>` (`Rack { id, azId, label, capacityU }`) and
+`Server.rack: RackPosition | null` (`RackPosition { rackId, unit, heightU }`; `null` = unracked,
+free pool). `rackModel.ts` is pure (no React/store imports): `serverHeightU` (2U dedicated / 1U
+vps, matching the old factory-seeded split), `rackUsedU`, `canAssign` (capacity check excluding
+the server's own current usage if it's already in that rack), and `autoArrangePlan` (deterministic
+bin-packing — free-pool servers sorted label-then-id into existing racks bottom-up, new racks
+`rack-<n>` created on demand once existing targets are full, `<n>` the smallest globally-unused
+integer). `world.store.ts` gained five rack actions — `addRack`, `updateRack` (capacity clamped to
+`[RACK_CAPACITY_MIN, RACK_CAPACITY_MAX]` and never below current usage), `removeRack` (sends every
+resident to the free pool THEN deletes the rack, one `mutate()`/one undo step), `assignServerToRack`
+(no-ops if `canAssign` fails), `autoArrangeAz` (applies an entire `autoArrangePlan` — new racks +
+every assignment — in one `mutate()`) — all routed through the existing `mutate()` helper, so
+undo/dirty-marking come free with zero new plumbing (this file's top-level "Undo/redo" Key
+Architecture Decision still holds unchanged). `InspectorV2.tsx`'s selected-server pane gained a
+`rack` `<select>` (free pool + every AZ rack, options disabled via `canAssign` when the server
+can't fit) dispatching `assignServerToRack` on change. Grep-verified production call sites:
+`assignServerToRack` (`InspectorV2.tsx`), `addRack`/`autoArrangeAz` (`az/DatacenterFloor.tsx`'s
+toolbar + its "+ rack" ghost-slot click) — `removeRack`/`updateRack` have no UI call site yet
+(store-level + `world.store.test.ts` only; a rack-management UI beyond assign/auto-arrange is
+parked, not built).
+
+**Serializer additive-compat (Task 2, `src/lib/serializer.ts`).** `racks` and non-null
+`server.rack` were both introduced after the v2 format shipped, so `deserializeWorld` normalizes
+rather than rejects: `result.world.racks ??= {}` and, for every server, `if (server.rack ===
+undefined) server.rack = null`. A pre-Polish-3 `.scalemap` file — no `racks` key at all, no `rack`
+key on any server — loads, edits, saves, and reopens unchanged; nothing in the required-
+collections validation (`meta` + the 9 top-level `WorldDoc` collections) changed, `racks` is
+normalized AFTER that check passes, not added to the required list.
+
+**`src/app/world/az/` — the isometric datacenter floor (Task 4), Level-3's new home.** Replaces
+the React Flow AZ canvas outright (see the `@xyflow/react` removal below). Composition root +
+pure data/geometry helpers, the same "pure layout, dumb presentational leaves" split `server/`
+(§L) and the deleted `layoutRacks.ts`/`RackNodes.tsx` pair (§M) already established:
+
+| File | Role |
+|---|---|
+| `floorLayout.ts` | Pure grid layout (no React/store/pixel math): assigns every rack, free-pool server, and managed service a GRID CELL — `layoutFloor(racks, rackedByRack, freePool, managedIds): FloorPlan`. Grid grows in rings from a 4×4 base (`BASE_GRID=4`, `GROWTH_STEP=2`) as occupant count exceeds capacity; `rackedByRack` is accepted but unused for the grid math itself (only occupant COUNT matters, not contents) — kept as a parameter because every caller already has it in hand for rendering |
+| `floorData.ts` | Pure derivations, no React/store: `aggregateFlows` (a verbatim port of the deleted `AzCanvas.tsx`'s edge-aggregation block — same per-`(fromServer,target)` totals/blocked/first-reason semantics, same same-server-pairs-draw-no-edge rule, now operating on `CompiledWorld` directly since it already carries each instance's `azId`), `ledParams(cpuMean): { lit, color }` (6-LED CPU-threshold language), and `meanUtilization` (T8 addition — shared by `RackCabinet.tsx`/`FreePoolPod.tsx`'s own per-slot cpuMean AND `DatacenterFloor.tsx`'s AZ-wide LED-blink ranking, replacing three independent copies of the same one-liner) |
+| `iso.ts` | Isometric tile projection + 3-face box geometry (roof cap + two walls sharing edges with a tile's diamond footprint), generalizing the mockup's fixed 2-rack/2-pod illustration to an arbitrary N×N `layoutFloor` grid at a fixed `VIEW_W`/`VIEW_H` (growing the ring shrinks tiles, not the scene — "the camera refits"). No React/store imports |
+| `useHoldTap.ts` | DOM/SVG pointer-event wiring around `ui/HoldToEnter.tsx`'s pure primitives (§Q) — reused, never forked. `RegionPins.tsx` (§Q) is r3f/WebGL and needs a synthetic-click swallow dance around its raycaster; real DOM elements with `setPointerCapture` don't, so tap-vs-hold-vs-abort resolves entirely in `onPointerUp` here. Pointer CAPTURE (not `pointerleave`) still governs "left mid-hold", via `exceedsHoldSlop` distance-from-press-point in `onPointerMove` — the same D1 rule §Q's hold-to-enter established, reapplied rather than reinvented |
+| `azFloorStyles.ts` | The injected-stylesheet-once idiom `region/r3Styles.ts` established, self-contained (pulls its one theme-matched token, teal, from `lib/theme.ts` rather than `ui/kit.tsx`), keyframes namespaced `az-*` so they can't collide with `region/`'s unprefixed copies or `server/`'s `hw-`/`gw-` copies. Every infinite-iteration rule (`.az-trace-animated`, `.az-led-blink`) plus the boot cascade (`.az-newslot.go`, one-shot `forwards`, not `infinite`) is neutralized under `@media (prefers-reduced-motion: reduce)` |
+| `RackCabinet.tsx` | One rack cabinet: 3-face isometric box, hover lift + halo (CSS `transition`, not `animation` — excluded from the motion budget), one `RackSlot` per resident (tap selects, hold drills in via `useHoldTap`). Height grows with occupancy up to `capacityU`. `RackSlot`'s LED blink is now gated on an `animatedLed` prop (T8, see the motion-budget table below) in addition to `lit > 0`/reduced-motion |
+| `FreePoolPod.tsx` | One free-pool (unracked) server: same 3-face box + LED language as a `RackSlot`, one pod = one whole box, no internal slat stack. Same tap/hold interaction, same boot-cascade treatment, same T8 `animatedLed` gating |
+| `DatacenterFloor.tsx` | Composition root: reads `doc`/`compiled`/`batch`/`nav`, runs `layoutFloor`/`aggregateFlows`, renders tiles + one `RackCabinet` per rack + one `FreePoolPod` per unracked server + a small appliance box per in-scope managed service, flow traces, and the toolbar (`+ server`/`+ rack`/`auto-arrange` — Task 2's rack actions). Owns `selectedServerId` and a seen-ids ref driving the boot-cascade animation for newly-added servers (skipped entirely under reduced motion — instant-appear, the D1 functional exception). Computes BOTH of T8's ranked animation sets (`animatedKeys` for traces, `animatedLedIds` for LEDs) here, since both need AZ-wide visibility no single leaf component has |
+
+**Boundary rules:** `az/*` imports only `lib/` (world types, `rackModel.ts`, `worldEngine/types`
+type-only) and app stores (`useWorldStore`, `useNavStore`, `useSimulationStore`,
+`useCompiledWorld`) — the same shape `region/*` (§M) established. `RackCabinet.tsx`/
+`FreePoolPod.tsx` are presentational leaves fed AZ-wide-computed props (`animatedLedIds`/
+`animatedLed`, `newServerIds`/`isNew`) by `DatacenterFloor.tsx`, never re-deriving cross-server
+rankings themselves — the same "compute once at the composition root, thread down" shape
+`region/AzRow.tsx`'s `monthlyUsd` prop and `server/ServerBoard.tsx`'s `boardLayout.ts` outputs
+both already use. `floorLayout.ts`/`floorData.ts`/`iso.ts` are pure — no React/store/engine
+imports; `az/` as a whole never imports `worldEngine/index.ts` (the executable facade), matching
+the seam §K/§L/§M established for `server/`/`region/`.
+
+**`@xyflow/react` removal (Task 4).** `AzCanvas.tsx`, `AzSimOverlay.tsx`, `RackNodes.tsx`, and
+`src/lib/world/layoutRacks.ts` were all deleted in Task 4 — `az/DatacenterFloor.tsx` (DOM/SVG, no
+React Flow) replaces the Level-3 view outright, and grep-verified these were `@xyflow/react`'s
+only import sites in the app; `package.json`'s `@xyflow/react` dependency was removed in the same
+task (grep-confirmed absent from `package.json` and from every file under `src/` as of this task).
+CLAUDE.md's Key Dependencies table and architecture notes still claimed React Flow renders the AZ
+level as of the start of this task — corrected below. §M's description of the deleted quartet is
+left unedited as the historical record of the Phase-4 design; this section is the forward pointer
+to "these files are gone, and here's what replaced them."
+
+**Motion budget (spec D1) — the T8 sweep.** Every `animation:`/`animate` occurrence under
+`region/`, `az/`, `server/`, `panels/` was inventoried. `panels/` (the Dock v2 tab bar, Task 7) has
+ZERO — Dock v2's signature headers are static glyphs/gradients, no `@keyframes` at all. The other
+three views each have one or more top-N-by-magnitude ranked categories (mirroring the established
+`SplitLines.MAX_ANIMATED_BEAMS`/`ReplicaRail.MAX_ANIMATED_RAILS` shape) plus, on the server board
+only, a set of FIXED-cardinality effects the design spec (D6/D7) mandates outright — 8 NIC pins,
+3 intake lanes, a firewall scan/beacon/spark — whose count never scales with world size and so
+carries no proliferation risk regardless of how large the world grows (unlike a ranked category,
+whose whole point is capping something that otherwise scales with server/AZ/population count).
+
+| View | Ranked (data-scaling) categories, capped | Fixed chrome (spec-mandated, doesn't scale) | Worst-case ranked total |
+|---|---|---|---|
+| Region | dot-streams top-5 (`SourcesColumn`, rps-ranked) + beam top-1 (`SplitLines`, fraction-ranked — tightened from top-2 this task) + replica-rail top-1 (`ReplicaRail`) + trunk march ×1 (`SourcesColumn`, fixed single element, counted with the ranked total per this file's own established arithmetic) | none | 5+1+1+1 = **8** |
+| Floor (AZ) | flow traces top-5 (`DatacenterFloor`, rps-ranked — tightened from top-8 this task) + LED blink top-3 (`RackCabinet`/`FreePoolPod`, cpuMean-ranked — **newly capped this task; previously unbounded**) | boot cascade (`az-rackin`/`az-bootled`) is one-shot `forwards`, not `infinite` — excluded | 5+3 = **8** |
+| Board (server) | flow overlays top-8 (`TraceLayer.MAX_ANIMATED_TRACES`, rate-ranked, pre-existing) + core flicker/steal-glitch top-4 (`HardwarePlatform`, utilization-ranked — **newly capped this task; previously unbounded, up to 32 vCPU on a `dedicated-32` box**) | NIC: 8 pins + 3 lanes + 1 ACT LED (`NicBlock`, D6-mandated exact counts) · Firewall: 1 scan + 1 beacon + up to 4 edge-dots (bounded by `shieldSlats`'s `maxSlats=4`) + 1 reject spark (`FirewallGate`, D7) · Disk platter spin ×1, `InspectorRail` scanline ×1 | 8 (traces) OR 4 (cores), not summed — see note below |
+
+The board row is the one place this table's "ranked total" column doesn't sum to a single number:
+`TraceLayer`'s traces and `HardwarePlatform`'s cores are two INDEPENDENT top-N categories in two
+different DOM subtrees (like region's four categories, not summed against a shared pool), and the
+board additionally carries D6/D7's fixed-count hardware chrome (NIC pins/lanes, firewall
+scan/beacon/spark) that a literal instance count would push well past 8 regardless of any ranked
+cap — those counts are explicit, written spec requirements (D6: "8 gold pins that ripple"), not a
+proliferation risk (they never grow with world size), and D1 itself expects most of a view's
+information to be static ("everything else encodes with static fills, glows, and numbers") — the
+board's literal worst-case simultaneous CSS-`animation` DOM-element count is intentionally above a
+strict 8 for this reason. Region and Floor, by contrast, have no such fixed-chrome carve-out, so
+both were tightened until their own literal sums land at exactly 8, matching the precedent
+`SplitLines.tsx`'s and `ReplicaRail.tsx`'s file comments already set by doing this arithmetic by
+hand.
+
+**Two genuine bugs found and fixed (previously unbounded, not just re-tuned):** (1) floor LED
+blink had no cap at all — `lit > 0 && !reducedMotion` was the only gate, so an AZ with many active
+servers blinked every one of them concurrently. Fixed via `DatacenterFloor.tsx`'s new
+`animatedLedIds` (top-`MAX_ANIMATED_LEDS` by cpuMean, computed once and threaded to
+`RackCabinet`/`FreePoolPod` as `animatedLedIds`/`animatedLed`); a lit LED outside the set still
+shows its color, just statically. (2) `HardwarePlatform`'s per-core `hw-coreflicker`/`hw-glitch`
+had no cap either — every core cell animated regardless of vCPU count, and `dedicated-32`
+(`instanceCatalog.ts`) has 32. Fixed via a new `animatedCoreIndices` set (top-`MAX_ANIMATED_CORES`
+by utilization); a core outside the set still shows its exact fill height, just without the
+flicker/glitch overlay animating. One pre-existing arithmetic-consistency fix: `ReplicaRail.tsx`'s
+`MAX_ANIMATED_RAILS` (added in an earlier review-fix wave) pushed region's own documented running
+total from 8 to 9 without anyone re-checking the sum — `SplitLines.MAX_ANIMATED_BEAMS` tightened
+2→1 to restore it, and `DatacenterFloor.tsx`'s trace cap was similarly tightened 8→5 to make room
+for the new LED cap under the same discipline. All three fixes are ranked-cap additions/
+tightenings in the VIEW layer only; zero changes under `src/lib/worldEngine/` (Global Constraint
+honored — `git status --short src/lib/worldEngine/` is clean for this task).
+
+**Reduced motion verified zero (code-read; the live phase-gate confirmation is CONTROLLER-run —
+see this task's report):** every ranked category above is gated `!reducedMotion &&`/`!reduced &&`
+at the point the `animation` inline style or class is applied (`SourcesColumn`/`SplitLines`/
+`ReplicaRail` in region; `DatacenterFloor`'s trace `animated` flag AND `RackCabinet`/
+`FreePoolPod`'s new `blinking` gate in the floor; `TraceLayer`/`HardwarePlatform`'s new
+`flickering` gate, `NicBlock`, `FirewallGate` in the board), and every injected stylesheet
+(`r3Styles.ts`/`azFloorStyles.ts`/`hwStyles.ts`/`gateStyles.ts`) additionally neutralizes its own
+classes inside `@media (prefers-reduced-motion: reduce)` as belt-and-suspenders. The ONE
+functional exception is the hold-ring sweep (`useHoldTap.ts`'s rAF-driven `progressRef`, §Q) — not
+a CSS `animation` at all, self-terminating on release/completion, never `infinite`-iterating, so
+it was never in scope for this budget. The add-server boot animation (`az-rackin`/`az-bootled`)
+degrades to instant-appear under reduced motion (`DatacenterFloor.tsx` passes an empty
+`newServerIds` set when `reducedMotion` is true, rather than gating the CSS alone) — confirmed by
+the pre-existing `DatacenterFloor.test.tsx` reduced-motion tests, unchanged by this task.
+
+**Relocated-dispatch statement (Tasks 4-7, carried forward from D10/§Q's own rule).** Every
+control this phase restyled or relocated reuses its EXISTING store dispatch byte-for-byte:
+`region/AzRow.tsx`'s `⏎ enter`/`+ server`/`⚡ kill` reuse `onNavigateAz`/`addServer`/`setOutage`
+unchanged from pre-Polish-3; `az/DatacenterFloor.tsx`'s `+ server` toolbar button reuses
+`addServer`; `server/HardwarePlatform.tsx`/`NicBlock.tsx`/`FirewallGate.tsx`/`ServiceChip.tsx`'s
+click handlers all still call the same `onSelect(BoardSelection)` callback `ServerBoard.tsx` has
+wired since Phase 3 (§L); `panels/WorldPanel.tsx`'s Dock v2 tab headers still call the same
+`setTab`. **The only new store surface across the entire eight-task phase is Task 2's rack CRUD in
+`world.store.ts`** (`addRack`/`updateRack`/`removeRack`/`assignServerToRack`/`autoArrangeAz`,
+surfaced through `az/DatacenterFloor.tsx`'s toolbar and `InspectorV2.tsx`'s new rack selector) —
+`nav`/`simulation`/`file`/`ui` stores gain nothing (matches spec D10 verbatim).
+
+---
+
 ## 2. Shared "hub" files (everyone touches these — high conflict risk)
 
 These aren't feature modules; they're registries other code plugs into. The fix

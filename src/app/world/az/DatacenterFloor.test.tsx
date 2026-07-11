@@ -72,7 +72,7 @@ describe('DatacenterFloor', () => {
     expect(screen.getByTestId(`rack-slot-${racked}`)).toBeTruthy()
   })
 
-  it('only the top 8 flows by source-server rps get the animated class', () => {
+  it('only the top 5 flows by source-server rps get the animated class', () => {
     const { azId } = seedAz()
     const msId = useWorldStore.getState().addManagedService('rds', 'db', { kind: 'az', azId }, 5432)
     const api = useWorldStore.getState().addBlueprint('api')
@@ -97,13 +97,46 @@ describe('DatacenterFloor', () => {
     const animated = screen.getAllByTestId(/^flow-/).filter(el => el.getAttribute('data-animated') === 'true')
     const all = screen.getAllByTestId(/^flow-/)
     expect(all).toHaveLength(N)
-    expect(animated).toHaveLength(8)
+    expect(animated).toHaveLength(5)
 
     // The two lowest-rps servers (10, 20 rps -> servers 0 and 1) must NOT be animated.
     const animatedSources = new Set(animated.map(el => el.getAttribute('data-testid')))
     expect(animatedSources.has(`flow-${serverIds[0]}->${msId}`)).toBe(false)
     expect(animatedSources.has(`flow-${serverIds[1]}->${msId}`)).toBe(false)
     expect(animatedSources.has(`flow-${serverIds[9]}->${msId}`)).toBe(true)
+  })
+
+  it('LED blink is capped at MAX_ANIMATED_LEDS (3), ranked by cpu utilization', () => {
+    const { azId } = seedAz()
+    const N = 6
+    const serverIds: string[] = []
+    for (let i = 0; i < N; i++) {
+      serverIds.push(useWorldStore.getState().addServer(azId, getPreset('vps-medium')!))
+    }
+    const serverRecord: MetricsBatch['servers'] = {}
+    serverIds.forEach((id, i) => {
+      // Strictly increasing utilization, all > 0 so every LED is lit — only the busiest 3 may blink.
+      serverRecord[id] = { ...emptyServer, serverId: id, coreUtilization: [(i + 1) / N] }
+    })
+    useSimulationStore.setState({
+      latestBatch: {
+        simMs: 1000, instances: {}, servers: serverRecord, azs: {}, regions: {},
+        world: { totalRps: 0, populationRoutes: [] } as unknown as MetricsBatch['world'],
+      },
+    })
+
+    render(<DatacenterFloor />)
+
+    const blinking = serverIds.filter(id => {
+      const pod = screen.getByTestId(`free-pod-${id}`)
+      return pod.querySelector('circle')?.getAttribute('class')?.includes('az-led-blink') ?? false
+    })
+    expect(blinking).toHaveLength(3)
+    // The three least-busy servers (indices 0-2) must NOT blink; the busiest (index 5) must.
+    expect(blinking).not.toContain(serverIds[0])
+    expect(blinking).not.toContain(serverIds[1])
+    expect(blinking).not.toContain(serverIds[2])
+    expect(blinking).toContain(serverIds[5])
   })
 
   it('a newly-added free-pool server mounts with the boot-cascade class', () => {

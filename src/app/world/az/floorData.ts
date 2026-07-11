@@ -61,3 +61,11 @@ export function ledParams(cpuMean: number): LedParams {
   const color: LedParams['color'] = cpuMean >= 0.9 ? 'danger' : cpuMean >= 0.7 ? 'warning' : 'success'
   return { lit, color }
 }
+
+// Shared with `RackCabinet.tsx`/`FreePoolPod.tsx` (each already computed its own copy for its
+// own slot's LED) and `DatacenterFloor.tsx` (T8 motion-budget sweep — needs the same figure,
+// AZ-wide, to rank which servers' LEDs are allowed to blink; see `MAX_ANIMATED_LEDS`).
+export function meanUtilization(values?: number[]): number {
+  if (!values || values.length === 0) return 0
+  return values.reduce((a, b) => a + b, 0) / values.length
+}

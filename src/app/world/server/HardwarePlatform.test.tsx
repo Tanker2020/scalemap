@@ -161,6 +161,21 @@ describe('HardwarePlatform', () => {
     expect(screen.getByText(/depth 9/)).toBeInTheDocument()
   })
 
+  it('core flicker/glitch is capped at MAX_ANIMATED_CORES (4) on a large dedicated box, ranked by utilization', () => {
+    const s = server('dedicated')   // dedicated-8 preset (8 vCPU) — see instanceCatalog.ts
+    const util = [0.1, 0.2, 0.9, 0.3, 0.4, 0.5, 0.6, 0.7]   // 8 cores, strictly varied utilization
+    render(<HardwarePlatform server={s} metrics={metrics({ coreUtilization: util, stealFraction: 0 })} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    const cells = screen.getAllByTestId('core-cell')
+    expect(cells).toHaveLength(8)
+    const flickering = cells.filter(c => c.querySelector('div')?.getAttribute('class') === 'hw-flicker')
+    expect(flickering).toHaveLength(4)
+    // The 4 highest-utilization cores (indices 2, 6, 7, 5 -> 0.9, 0.6, 0.7, 0.5) must be among the
+    // flickering set; the two lowest (indices 0, 1 -> 0.1, 0.2) must not.
+    expect(cells[0].querySelector('div')?.getAttribute('class')).not.toBe('hw-flicker')
+    expect(cells[1].querySelector('div')?.getAttribute('class')).not.toBe('hw-flicker')
+    expect(cells[2].querySelector('div')?.getAttribute('class')).toBe('hw-flicker')
+  })
+
   it('clicking the core bank, dimms, and disk zones dispatches the matching hardware selection', () => {
     const s = server()
     const onSelect = vi.fn()

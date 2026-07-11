@@ -2,10 +2,15 @@
 // Ingress-beam SVG column between the source column and the AZ card stack (Region v4, Polish 3
 // T3, mockup `.r3 svg.flows path.beam`/`.sharepill`). One cubic path per AZ share, its width
 // scaling with the share's fraction, labeled with a "58% · 712" share pill; a down AZ gets a
-// thin dashed red stub pinned to 0%. Motion budget (spec D1): at most the TOP TWO (by fraction,
-// excluding down AZs) beams march via `dashflow` — every other beam (a third-plus AZ, or any
+// thin dashed red stub pinned to 0%. Motion budget (spec D1): at most the TOP ONE (by fraction,
+// excluding down AZs) beam marches via `dashflow` — every other beam (a second-plus AZ, or any
 // down AZ) renders the identical dashed stroke statically, no `<animate>` child. This is a hard
-// cap independent of AZ count, not just this mock's 2-AZ example — see the T3 report.
+// cap independent of AZ count, not just this mock's 2-AZ example — see the T3 report. Tightened
+// from TOP TWO to TOP ONE in the T8 motion-budget sweep: with `ReplicaRail.tsx`'s
+// `MAX_ANIMATED_RAILS` (added after this file, in a later review-fix wave) folded in, the
+// region page's documented running total (1 trunk + up to 5 dot-streams + up to N beams + up to
+// 1 rail) exceeded the app-wide ≤8 concurrent-infinite-stroke budget (D1) at TOP TWO beams — see
+// module-boundaries.md §R's motion-budget table.
 import { useReducedMotion } from 'framer-motion'
 import type { ReactElement } from 'react'
 import type { AzShare } from './regionData'
@@ -18,7 +23,7 @@ const PILL_STROKE = '#2a2e38'
 const SVG_W = 90
 const ORIGIN_X = 5
 const TARGET_X = 85
-const MAX_ANIMATED_BEAMS = 2
+const MAX_ANIMATED_BEAMS = 1
 
 export interface SplitLinesProps { shares: AzShare[]; height: number }
 
