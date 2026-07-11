@@ -957,21 +957,29 @@ whose whole point is capping something that otherwise scales with server/AZ/popu
 |---|---|---|---|
 | Region | dot-streams top-5 (`SourcesColumn`, rps-ranked) + beam top-1 (`SplitLines`, fraction-ranked — tightened from top-2 this task) + replica-rail top-1 (`ReplicaRail`) + trunk march ×1 (`SourcesColumn`, fixed single element, counted with the ranked total per this file's own established arithmetic) | none | 5+1+1+1 = **8** |
 | Floor (AZ) | flow traces top-5 (`DatacenterFloor`, rps-ranked — tightened from top-8 this task) + LED blink top-3 (`RackCabinet`/`FreePoolPod`, cpuMean-ranked — **newly capped this task; previously unbounded**) | boot cascade (`az-rackin`/`az-bootled`) is one-shot `forwards`, not `infinite` — excluded | 5+3 = **8** |
-| Board (server) | flow overlays top-8 (`TraceLayer.MAX_ANIMATED_TRACES`, rate-ranked, pre-existing) + core flicker/steal-glitch top-4 (`HardwarePlatform`, utilization-ranked — **newly capped this task; previously unbounded, up to 32 vCPU on a `dedicated-32` box**) | NIC: 8 pins + 3 lanes + 1 ACT LED (`NicBlock`, D6-mandated exact counts) · Firewall: 1 scan + 1 beacon + up to 4 edge-dots (bounded by `shieldSlats`'s `maxSlats=4`) + 1 reject spark (`FirewallGate`, D7) · Disk platter spin ×1, `InspectorRail` scanline ×1 | 8 (traces) OR 4 (cores), not summed — see note below |
+| Board (server) | flow overlays top-8 (`TraceLayer.MAX_ANIMATED_TRACES`, rate-ranked, pre-existing) + core flicker/steal-glitch top-4 (`HardwarePlatform`, utilization-ranked — **newly capped this task; previously unbounded, up to 32 vCPU on a `dedicated-32` box**) | NIC: 8 pins + 3 lanes + 1 ACT LED (`NicBlock`, D6-mandated exact counts) · Firewall: 1 scan + 1 beacon + up to 4 edge-dots (bounded by `shieldSlats`'s `maxSlats=4`) + 1 reject spark (`FirewallGate`, D7) · Disk platter spin ×1, `InspectorRail` scanline ×1 | **8 + 4 = 12** (two independent pools, summed, not "8 or 4") — intentional exception, see note below |
 
-The board row is the one place this table's "ranked total" column doesn't sum to a single number:
-`TraceLayer`'s traces and `HardwarePlatform`'s cores are two INDEPENDENT top-N categories in two
-different DOM subtrees (like region's four categories, not summed against a shared pool), and the
-board additionally carries D6/D7's fixed-count hardware chrome (NIC pins/lanes, firewall
-scan/beacon/spark) that a literal instance count would push well past 8 regardless of any ranked
-cap — those counts are explicit, written spec requirements (D6: "8 gold pins that ripple"), not a
-proliferation risk (they never grow with world size), and D1 itself expects most of a view's
-information to be static ("everything else encodes with static fills, glows, and numbers") — the
-board's literal worst-case simultaneous CSS-`animation` DOM-element count is intentionally above a
-strict 8 for this reason. Region and Floor, by contrast, have no such fixed-chrome carve-out, so
-both were tightened until their own literal sums land at exactly 8, matching the precedent
-`SplitLines.tsx`'s and `ReplicaRail.tsx`'s file comments already set by doing this arithmetic by
-hand.
+**The board is an intentional, user-approved exception to D1's ≤8 rule — accepted as-built,
+2026-07-11.** `TraceLayer`'s traces (top-8, rate-ranked) and `HardwarePlatform`'s cores (top-4,
+utilization-ranked) are two INDEPENDENT ranked pools in two separate DOM subtrees (like region's
+four categories, not summed against a shared pool) — so their own concurrent maximum is **8 + 4 =
+12**, not "8 or 4, not summed" and not ≤8; any doc wording implying otherwise was wrong and is
+corrected here. On top of that ranked-pool total, the board additionally carries D6/D7's
+FIXED-cardinality hardware chrome — 8 NIC pins + 3 intake lanes + 1 ACT LED (`NicBlock`), a
+firewall scan sweep + beacon + up to 4 edge-dots + 1 reject spark (`FirewallGate`), a disk-platter
+spin, and `InspectorRail`'s scanline — whose count never scales with world size (unlike a ranked
+category, whose whole point is capping something that DOES scale with server/AZ/population
+count). D1's ≤8-concurrent rule targets WORLD-SCALING data-viz motion, which is now capped
+everywhere it appears (region's dot-streams/beam/rail, the floor's traces + LED blinks, and the
+board's own two ranked pools above); the board's hardware chrome is a bounded, cheap, non-scaling
+set that the round-5 mockup locks verbatim (the user personally locked the rippling RJ45 pins
+during mockup review) and that D6 specifies by exact count ("8 gold pins that ripple"). Given
+that, the user directly adjudicated this question: **accept the board as-built** — no product-code
+changes follow from this; this doc entry is the record of that decision, not a call to tighten the
+board to match region/floor's arithmetic. Region and Floor, by contrast, have no such fixed-chrome
+carve-out and no cross-pool summing question, so both were tightened until their own literal sums
+land at exactly 8, matching the precedent `SplitLines.tsx`'s and `ReplicaRail.tsx`'s file comments
+already set by doing this arithmetic by hand.
 
 **Two genuine bugs found and fixed (previously unbounded, not just re-tuned):** (1) floor LED
 blink had no cap at all — `lit > 0 && !reducedMotion` was the only gate, so an AZ with many active
@@ -995,9 +1003,16 @@ see this task's report):** every ranked category above is gated `!reducedMotion 
 at the point the `animation` inline style or class is applied (`SourcesColumn`/`SplitLines`/
 `ReplicaRail` in region; `DatacenterFloor`'s trace `animated` flag AND `RackCabinet`/
 `FreePoolPod`'s new `blinking` gate in the floor; `TraceLayer`/`HardwarePlatform`'s new
-`flickering` gate, `NicBlock`, `FirewallGate` in the board), and every injected stylesheet
-(`r3Styles.ts`/`azFloorStyles.ts`/`hwStyles.ts`/`gateStyles.ts`) additionally neutralizes its own
-classes inside `@media (prefers-reduced-motion: reduce)` as belt-and-suspenders. The ONE
+`flickering` gate, `NicBlock`, `FirewallGate` in the board). Three of the four injected
+stylesheets — `azFloorStyles.ts`/`hwStyles.ts`/`gateStyles.ts` — additionally neutralize their own
+classes inside `@media (prefers-reduced-motion: reduce)` as belt-and-suspenders; **`region/
+r3Styles.ts` does NOT** (verified by reading the file — it has no `@media` block at all). Region's
+reduced-motion compliance rests entirely on REACT-LEVEL gating instead — `reduced ? {} : {
+animation: ... }` in `SourcesColumn`/`ReplicaRail`, `{animated && <animate/>}` in
+`SplitLines.tsx` — which is sufficient on its own (React never emits the animating class, inline
+style, or `<animate>` element when reduced), just not doubly-enforced at the CSS layer the way the
+other three views are; a prior version of this doc incorrectly claimed `r3Styles.ts` carried the
+same CSS-level neutralization, corrected here. The ONE
 functional exception is the hold-ring sweep (`useHoldTap.ts`'s rAF-driven `progressRef`, §Q) — not
 a CSS `animation` at all, self-terminating on release/completion, never `infinite`-iterating, so
 it was never in scope for this budget. The add-server boot animation (`az-rackin`/`az-bootled`)

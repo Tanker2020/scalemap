@@ -132,6 +132,10 @@ describe('DatacenterFloor', () => {
       return pod.querySelector('circle')?.getAttribute('class')?.includes('az-led-blink') ?? false
     })
     expect(blinking).toHaveLength(3)
+    // The animated set must be EXACTLY the top-3 by cpuMean (indices 3, 4, 5) — not just "excludes
+    // the bottom 3, includes the busiest one" (which an off-by-one in the ranking slice, e.g.
+    // keeping indices 2-4 instead of 3-5, could still satisfy).
+    expect(new Set(blinking)).toEqual(new Set([serverIds[3], serverIds[4], serverIds[5]]))
     // The three least-busy servers (indices 0-2) must NOT blink; the busiest (index 5) must.
     expect(blinking).not.toContain(serverIds[0])
     expect(blinking).not.toContain(serverIds[1])
