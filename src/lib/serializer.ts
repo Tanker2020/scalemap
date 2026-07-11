@@ -57,5 +57,14 @@ export function deserializeWorld(raw: string): ScalemapFileV2 {
   if (meta == null || typeof meta !== 'object' || !worldIsValid) {
     throw new Error('Invalid .scalemap file: missing or malformed world document')
   }
-  return data as ScalemapFileV2
+  // Additive-format normalization (Polish 3 Task 2): `racks` and non-null `server.rack`
+  // were both introduced after v2 shipped, so a pre-Polish-3 file simply won't carry
+  // them — default racks to {} and any server missing a `rack` key to the free pool
+  // (null) rather than rejecting/leaving the field undefined.
+  const result = data as ScalemapFileV2
+  result.world.racks ??= {}
+  for (const server of Object.values(result.world.servers)) {
+    if (server.rack === undefined) server.rack = null
+  }
+  return result
 }

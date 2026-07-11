@@ -4,6 +4,7 @@
 export type RegionId = string
 export type AzId = string
 export type ServerId = string
+export type RackId = string
 export type BlueprintId = string
 export type PlacementId = string
 export type ManagedServiceId = string
@@ -83,6 +84,11 @@ export type ServerKind = 'dedicated' | 'vps'
 
 export interface RackPosition { rackId: string; unit: number; heightU: number }
 
+// Optional authored container (Polish 3 Task 2, spec D4) — purely a doc-model/UI concept;
+// racks carry ZERO engine/compile/analysis/cost semantics. A server born via createServer
+// starts in the free pool (Server.rack === null) until explicitly assigned or auto-arranged.
+export interface Rack { id: RackId; azId: AzId; label: string; capacityU: number }
+
 export interface Server {
   id: ServerId
   label: string
@@ -95,7 +101,7 @@ export interface Server {
   burstable: boolean                   // vps only
   firewall: FirewallRule[]             // evaluated in array order, first match wins, default deny
   stacks: ComposeStack[]
-  rack: RackPosition
+  rack: RackPosition | null            // null = free pool (unracked)
 }
 
 export interface ServicePort {
@@ -181,6 +187,7 @@ export interface WorldDoc {
   blueprints: Record<BlueprintId, ServiceBlueprint>
   placements: Record<PlacementId, Placement>
   managedServices: Record<ManagedServiceId, ManagedService>
+  racks: Record<RackId, Rack>
 }
 
 // ─── Compiled output (produced by compileWorld, consumed by views/engine) ────

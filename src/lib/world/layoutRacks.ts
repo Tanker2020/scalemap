@@ -40,9 +40,14 @@ export interface RackLayout {
   managed: Record<string, { x: number; y: number }>  // absolute, single column right of frames
 }
 
+// Interim shim (Polish 3 Task 2): Server.rack is now RackPosition | null (free pool) —
+// this whole file is deleted in Task 4 in favor of a free-pool-aware layout, so free-pool
+// servers are simply skipped here rather than laid out (callers are expected to have
+// already filtered to racked servers; this guard just keeps the geometry loop honest).
 export function layoutRacks(servers: Server[], managedIds: string[]): RackLayout {
   const byRack = new Map<string, Server[]>()
   for (const s of servers) {
+    if (!s.rack) continue
     const list = byRack.get(s.rack.rackId) ?? []
     list.push(s)
     byRack.set(s.rack.rackId, list)
@@ -58,8 +63,10 @@ export function layoutRacks(servers: Server[], managedIds: string[]): RackLayout
     // deterministic tie-break. This order matters because factories.createServer always
     // seeds unit:1 — every server in a frame collides on the same unit unless the
     // caller/UI has moved it, so re-stacking is the common path, not an edge case.
-    const sorted = [...rackServers].sort((a, b) => a.rack.unit - b.rack.unit || a.label.localeCompare(b.label))
-    const minUnit = Math.min(...sorted.map(s => s.rack.unit))
+    // Non-null assertions below are safe: byRack only ever collects servers with a
+    // non-null .rack (see the `if (!s.rack) continue` guard above).
+    const sorted = [...rackServers].sort((a, b) => a.rack!.unit - b.rack!.unit || a.label.localeCompare(b.label))
+    const minUnit = Math.min(...sorted.map(s => s.rack!.unit))
 
     // Re-stack: each server claims max(its own authored unit, the next free slot), so
     // occupied spans never overlap regardless of how many servers share a unit number or
@@ -67,9 +74,9 @@ export function layoutRacks(servers: Server[], managedIds: string[]): RackLayout
     let nextUnit = minUnit
     const placed: { server: Server; unit: number }[] = []
     for (const s of sorted) {
-      const unit = Math.max(nextUnit, s.rack.unit)
+      const unit = Math.max(nextUnit, s.rack!.unit)
       placed.push({ server: s, unit })
-      nextUnit = unit + s.rack.heightU
+      nextUnit = unit + s.rack!.heightU
     }
 
     const frameX = frameIndex * (RACK_W + RACK_GAP)
@@ -79,14 +86,14 @@ export function layoutRacks(servers: Server[], managedIds: string[]): RackLayout
 
     placed.forEach((p, i) => {
       const y = RACK_PAD + (p.unit - minUnit) * UNIT_PITCH
-      const h = p.server.rack.heightU * U_PX
+      const h = p.server.rack!.heightU * U_PX
       chassis[p.server.id] = { rackId, x: RACK_PAD + RAIL_W, y, w: CHASSIS_W, h }
       serverIds.push(p.server.id)
       maxBottom = Math.max(maxBottom, y + h)
 
       const next = placed[i + 1]
       if (next) {
-        const curBottomUnit = p.unit + p.server.rack.heightU
+        const curBottomUnit = p.unit + p.server.rack!.heightU
         const gapUnits = next.unit - curBottomUnit
         // One filler strip per contiguous gap region (not per empty unit-slot), capped at
         // 3 strips per frame — a server authored far from its neighbors shouldn't draw

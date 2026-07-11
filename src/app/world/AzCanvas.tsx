@@ -29,7 +29,11 @@ export function AzCanvas() {
 
   const { nodes, edges } = useMemo(() => {
     if (!azId || !regionId) return { nodes: [] as Node[], edges: [] as Edge[] }
-    const servers = Object.values(doc.servers).filter(s => s.azId === azId)
+    // Interim shim (Polish 3 T2): racks are now optional and a server is born in the free
+    // pool (`rack: null`) — this rack-frame canvas only renders racked servers until T4
+    // adds a free-pool tray; a server won't appear here until it's assigned to a rack (or
+    // the AZ is auto-arranged). This file is rewritten in Task 4.
+    const servers = Object.values(doc.servers).filter(s => s.azId === azId && s.rack != null)
     const managed = Object.values(doc.managedServices).filter(m =>
       (m.scope.kind === 'az' && m.scope.azId === azId) ||
       (m.scope.kind === 'region' && m.scope.regionId === regionId))
@@ -103,7 +107,8 @@ export function AzCanvas() {
         e.simMs <= displaySimMs && displaySimMs - e.simMs <= NOISY_WINDOW_MS)
       return {
         id: server.id, type: 'worldChassis' as const,
-        parentId: `frame:${server.rack.rackId}`, extent: 'parent' as const, draggable: false,
+        // Non-null assertion is safe: `servers` above is already filtered to `rack != null`.
+        parentId: `frame:${server.rack!.rackId}`, extent: 'parent' as const, draggable: false,
         position: { x: box.x, y: box.y }, width: box.w, height: box.h,
         data: {
           server,

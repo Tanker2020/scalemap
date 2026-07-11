@@ -4,12 +4,16 @@
 import { create } from 'zustand'
 import type {
   WorldDoc, Server, ServiceBlueprint, Placement, ManagedScope, ManagedService, ClientPopulation,
-  RoutingConfig, TrafficConfig,
+  RoutingConfig, TrafficConfig, AzId, Rack, RackId,
 } from '../../lib/world/types'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
-  createPopulation, nextWorldId, type InstancePresetLike,
+  createPopulation, createRack, nextWorldId, type InstancePresetLike,
 } from '../../lib/world/factories'
+import {
+  canAssign, rackUsedU, serverHeightU, autoArrangePlan,
+  RACK_CAPACITY_MIN, RACK_CAPACITY_MAX,
+} from '../../lib/world/rackModel'
 import { useFileStore } from './file.store'
 import { useSimulationStore } from './simulation.store'
 
@@ -85,6 +89,11 @@ interface WorldStore {
   removePopulation: (id: string) => void
   updateRouting: (patch: Partial<RoutingConfig>) => void
   updateTraffic: (patch: Partial<TrafficConfig>) => void
+  addRack: (azId: AzId) => void
+  updateRack: (id: RackId, patch: Partial<Pick<Rack, 'label' | 'capacityU'>>) => void
+  removeRack: (id: RackId) => void
+  assignServerToRack: (serverId: string, rackId: RackId | null) => void
+  autoArrangeAz: (azId: AzId) => void
   pushHistory: () => void
   undo: () => void
   redo: () => void
@@ -219,6 +228,53 @@ export const useWorldStore = create<WorldStore>((set, get) => {
 
     updateRouting: (patch) => mutate(d => ({ ...d, routing: { ...d.routing, ...patch } })),
     updateTraffic: (patch) => mutate(d => ({ ...d, traffic: { ...d.traffic, ...patch } })),
+
+    addRack: (azId) => mutate(d => {
+      const count = Object.values(d.racks).filter(r => r.azId === azId).length
+      const rack = createRack(azId, `rack-${count + 1}`)
+      return { ...d, racks: { ...d.racks, [rack.id]: rack } }
+    }),
+    updateRack: (id, patch) => mutate(d => {
+      const existing = d.racks[id]
+      if (!existing) return d
+      const next = { ...existing, ...patch }
+      if (patch.capacityU !== undefined) {
+        const clamped = Math.min(RACK_CAPACITY_MAX, Math.max(RACK_CAPACITY_MIN, patch.capacityU))
+        next.capacityU = Math.max(clamped, rackUsedU(d, id))
+      }
+      return { ...d, racks: { ...d.racks, [id]: next } }
+    }),
+    // Sends every resident server to the free pool, then deletes the rack — one mutate,
+    // one undo step (the brief's explicit acceptance test).
+    removeRack: (id) => mutate(d => {
+      if (!d.racks[id]) return d
+      const servers = Object.fromEntries(Object.entries(d.servers).map(([sid, s]) =>
+        s.rack?.rackId === id ? [sid, { ...s, rack: null }] : [sid, s]))
+      const racks = { ...d.racks }
+      delete racks[id]
+      return { ...d, servers, racks }
+    }),
+    assignServerToRack: (serverId, rackId) => mutate(d => {
+      const server = d.servers[serverId]
+      if (!server) return d
+      if (rackId === null) {
+        return { ...d, servers: { ...d.servers, [serverId]: { ...server, rack: null } } }
+      }
+      if (!canAssign(d, serverId, rackId)) return d
+      const position = { rackId, unit: rackUsedU(d, rackId) + 1, heightU: serverHeightU(server) }
+      return { ...d, servers: { ...d.servers, [serverId]: { ...server, rack: position } } }
+    }),
+    // Applies an autoArrangePlan's newRacks + all assignments in ONE mutate — one undo step.
+    autoArrangeAz: (azId) => mutate(d => {
+      const plan = autoArrangePlan(d, azId)
+      const racks = { ...d.racks }
+      for (const r of plan.newRacks) racks[r.id] = r
+      const servers = { ...d.servers }
+      for (const [sid, pos] of Object.entries(plan.assignments)) {
+        servers[sid] = { ...servers[sid], rack: pos }
+      }
+      return { ...d, racks, servers }
+    }),
 
     pushHistory: () => {
       const { doc, history } = get()

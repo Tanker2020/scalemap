@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, BLUEPRINT_COLORS } from './factories'
+import { createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, createRack, BLUEPRINT_COLORS } from './factories'
+import { RACK_CAPACITY_DEFAULT } from './rackModel'
 
 describe('world factories', () => {
   it('creates an empty world with sane routing defaults', () => {
@@ -9,6 +10,18 @@ describe('world factories', () => {
     expect(w.routing.dnsTtlSec).toBe(30)
     expect(Object.keys(w.regions)).toHaveLength(0)
     expect(w.traffic.autoBaseline).toBe(true)
+    expect(w.racks).toEqual({})
+  })
+
+  it('createServer lands in the free pool', () => {
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    const server = createServer(az.id, {
+      id: 'vps-medium', kind: 'vps',
+      specs: { vcpu: 4, threadsPerCore: 2, ramMb: 8192, diskGb: 80, nicMbps: 1000 },
+      hourlyUsd: 0.04, oversubscriptionRatio: 4, burstable: true,
+    })
+    expect(server.rack).toBeNull()
   })
 
   it('creates linked region → az → server with default-internal firewall', () => {
@@ -43,5 +56,13 @@ describe('world factories', () => {
   it('generates unique ids', () => {
     const ids = new Set([createRegion('us-east-1').id, createRegion('us-east-1').id, createRegion('us-east-1').id])
     expect(ids.size).toBe(3)
+  })
+
+  it('creates a rack with the default capacity and a given label', () => {
+    const rack = createRack('az-1', 'rack-1')
+    expect(rack.azId).toBe('az-1')
+    expect(rack.label).toBe('rack-1')
+    expect(rack.capacityU).toBe(RACK_CAPACITY_DEFAULT)
+    expect(createRack('az-1').label).toBe('rack')
   })
 })

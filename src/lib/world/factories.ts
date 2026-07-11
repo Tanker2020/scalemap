@@ -1,7 +1,8 @@
 import type {
   WorldDoc, Region, AvailabilityZone, Server, ServiceBlueprint, Placement,
-  ServerKind, ServerSpecs, ClientPopulation,
+  ServerKind, ServerSpecs, ClientPopulation, AzId, Rack,
 } from './types'
+import { RACK_CAPACITY_DEFAULT } from './rackModel'
 
 let worldCounter = 0
 export function nextWorldId(prefix: string): string {
@@ -29,6 +30,7 @@ export function createWorld(): WorldDoc {
     blueprints: {},
     placements: {},
     managedServices: {},
+    racks: {},
   }
 }
 
@@ -64,8 +66,12 @@ export function createServer(azId: string, preset: InstancePresetLike): Server {
     // Default: allow all in-world traffic; internet exposure must be opted into explicitly.
     firewall: [{ id: nextWorldId('fw'), action: 'allow', port: 'any', protocol: 'any', source: 'internal' }],
     stacks: [],
-    rack: { rackId: 'rack-1', unit: 1, heightU: preset.kind === 'dedicated' ? 2 : 1 },
+    rack: null,   // free pool — racks are optional/authored (Polish 3 Task 2, spec D4)
   }
+}
+
+export function createRack(azId: AzId, label?: string): Rack {
+  return { id: nextWorldId('rack'), azId, label: label ?? 'rack', capacityU: RACK_CAPACITY_DEFAULT }
 }
 
 export function createBlueprint(name: string, colorIndex: number): ServiceBlueprint {

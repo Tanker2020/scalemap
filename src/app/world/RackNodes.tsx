@@ -11,6 +11,7 @@ import { motion, useReducedMotion } from 'framer-motion'
 import type { Server } from '../../lib/world/types'
 import type { HealthState } from '../../lib/worldEngine/types'
 import { RACK_PAD, RAIL_W, CHASSIS_W, PDU_H } from '../../lib/world/layoutRacks'
+import { serverHeightU } from '../../lib/world/rackModel'
 
 // ─── RackFrameNode ──────────────────────────────────────────────────────────────
 // Non-interactive rack backdrop: mounting rails, caption, blank-U fillers, PDU strip.
@@ -103,7 +104,11 @@ export interface RackChassisNodeData {
 export function RackChassisNode({ data }: NodeProps): ReactElement {
   const { server, chips, internalBlocked, health, metrics, noisy } = data as RackChassisNodeData
   const reduced = useReducedMotion()
-  const heightU = server.rack.heightU
+  // Chassis U-height is a property of the server kind (2U dedicated / 1U vps), not of its
+  // current rack assignment — reads via rackModel's serverHeightU (Polish 3 T2) rather
+  // than server.rack.heightU, which is now nullable (free-pool servers have no position
+  // but should still render at their correct chassis height wherever this node is used).
+  const heightU = serverHeightU(server)
   const gb = Math.round(server.specs.ramMb / 1024)
   // D8/mockup formula, verbatim from the skeleton — only ever evaluated at heightU 1 or 2
   // in this app (vps/dedicated). See the plan's flagged note: this undershoots the

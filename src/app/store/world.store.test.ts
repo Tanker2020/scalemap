@@ -3,6 +3,7 @@ import { useWorldStore } from './world.store'
 import { useFileStore } from './file.store'
 import { useSimulationStore } from './simulation.store'
 import { getPreset } from '../../lib/world/instanceCatalog'
+import { rackUsedU, RACK_CAPACITY_MIN, RACK_CAPACITY_MAX } from '../../lib/world/rackModel'
 
 beforeEach(() => useWorldStore.getState().newWorld())
 
@@ -170,5 +171,88 @@ describe('world.store', () => {
     const msId = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'az', azId }, 5432, 'aws')
     const doc = useWorldStore.getState().doc
     expect(doc.managedServices[msId].provider).toBe('aws')
+  })
+
+  describe('racks', () => {
+    it('updateRack clamps capacity to 4-42 and never below used', () => {
+      const { azId } = buildChain()
+      useWorldStore.getState().addRack(azId)
+      const rackId = Object.keys(useWorldStore.getState().doc.racks)[0]
+
+      useWorldStore.getState().updateRack(rackId, { capacityU: 100 })
+      expect(useWorldStore.getState().doc.racks[rackId].capacityU).toBe(RACK_CAPACITY_MAX)
+
+      useWorldStore.getState().updateRack(rackId, { capacityU: 1 })
+      expect(useWorldStore.getState().doc.racks[rackId].capacityU).toBe(RACK_CAPACITY_MIN)
+
+      // Rack up capacity, occupy 6U (three 2U dedicated servers), then try to shrink below
+      // that usedU — capacity must stay pinned at used, not fall to the bare MIN floor.
+      useWorldStore.getState().updateRack(rackId, { capacityU: 8 })
+      for (let i = 0; i < 3; i++) {
+        const serverId = useWorldStore.getState().addServer(azId, getPreset('dedicated-8')!)
+        useWorldStore.getState().assignServerToRack(serverId, rackId)
+      }
+      expect(rackUsedU(useWorldStore.getState().doc, rackId)).toBe(6)
+
+      useWorldStore.getState().updateRack(rackId, { capacityU: 1 })
+      expect(useWorldStore.getState().doc.racks[rackId].capacityU).toBe(6)
+    })
+
+    it('removeRack sends residents to the free pool in one undo step', () => {
+      const { azId } = buildChain()
+      useWorldStore.getState().addRack(azId)
+      const rackId = Object.keys(useWorldStore.getState().doc.racks)[0]
+      const serverId = useWorldStore.getState().addServer(azId, getPreset('dedicated-8')!)
+      useWorldStore.getState().assignServerToRack(serverId, rackId)
+      expect(useWorldStore.getState().doc.servers[serverId].rack).toEqual({ rackId, unit: 1, heightU: 2 })
+
+      const historyBefore = useWorldStore.getState().history.length
+      useWorldStore.getState().removeRack(rackId)
+      expect(useWorldStore.getState().doc.racks[rackId]).toBeUndefined()
+      expect(useWorldStore.getState().doc.servers[serverId].rack).toBeNull()
+      expect(useWorldStore.getState().history.length).toBe(historyBefore + 1)   // one undo step
+
+      useWorldStore.getState().undo()
+      expect(useWorldStore.getState().doc.racks[rackId]).toBeDefined()
+      expect(useWorldStore.getState().doc.servers[serverId].rack).toEqual({ rackId, unit: 1, heightU: 2 })
+    })
+
+    it('assignServerToRack refuses when the rack is full and clears back to the free pool with null', () => {
+      const { azId } = buildChain()
+      useWorldStore.getState().addRack(azId)
+      const rackId = Object.keys(useWorldStore.getState().doc.racks)[0]
+      useWorldStore.getState().updateRack(rackId, { capacityU: RACK_CAPACITY_MIN })   // 4U — clamp floor
+      const s1 = useWorldStore.getState().addServer(azId, getPreset('dedicated-8')!)
+      const s2 = useWorldStore.getState().addServer(azId, getPreset('dedicated-8')!)
+      const s3 = useWorldStore.getState().addServer(azId, getPreset('dedicated-8')!)
+      useWorldStore.getState().assignServerToRack(s1, rackId)
+      useWorldStore.getState().assignServerToRack(s2, rackId)
+      expect(useWorldStore.getState().doc.servers[s1].rack).toEqual({ rackId, unit: 1, heightU: 2 })
+      expect(useWorldStore.getState().doc.servers[s2].rack).toEqual({ rackId, unit: 3, heightU: 2 })
+
+      useWorldStore.getState().assignServerToRack(s3, rackId)   // rack is full (4U/4U) — refused
+      expect(useWorldStore.getState().doc.servers[s3].rack).toBeNull()
+
+      useWorldStore.getState().assignServerToRack(s1, null)
+      expect(useWorldStore.getState().doc.servers[s1].rack).toBeNull()
+    })
+
+    it('undo restores both racks and server assignments after autoArrangeAz', () => {
+      const { azId } = buildChain()   // buildChain's own server is already free-pool (rack: null)
+      useWorldStore.getState().addServer(azId, getPreset('dedicated-8')!)
+      useWorldStore.getState().addServer(azId, getPreset('dedicated-8')!)
+
+      const historyBefore = useWorldStore.getState().history.length
+      useWorldStore.getState().autoArrangeAz(azId)
+      const doc = useWorldStore.getState().doc
+      expect(Object.keys(doc.racks).length).toBeGreaterThan(0)
+      expect(Object.values(doc.servers).filter(s => s.azId === azId).every(s => s.rack !== null)).toBe(true)
+      expect(useWorldStore.getState().history.length).toBe(historyBefore + 1)   // one undo step
+
+      useWorldStore.getState().undo()
+      const undone = useWorldStore.getState().doc
+      expect(Object.keys(undone.racks).length).toBe(0)
+      expect(Object.values(undone.servers).filter(s => s.azId === azId).every(s => s.rack === null)).toBe(true)
+    })
   })
 })

@@ -57,7 +57,9 @@ export function ServerView(): ReactElement | null {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--color-node-border)', font: '11px var(--font-mono)', color: 'var(--color-text-secondary)' }}>
         <span style={{ color: 'var(--color-text-primary)' }}>{server.label}</span> · {server.kind} · {server.specs.vcpu} vCPU / {gb} GB
-        {' — '}{az?.label ?? '?'} › {server.rack.rackId} › U{server.rack.unit}
+        {/* server.rack is nullable (free pool, Polish 3 T2) — this header still renders for
+            an unracked server (e.g. reached before T4's free-pool tray/rack UI exists). */}
+        {' — '}{az?.label ?? '?'} › {server.rack ? `${server.rack.rackId} › U${server.rack.unit}` : 'unracked'}
       </div>
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <div style={{ flex: 2.6, display: 'flex', minWidth: 0 }}>
