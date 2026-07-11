@@ -81,7 +81,6 @@ if (typeof document !== 'undefined' && !document.getElementById(KIT_STYLE_ID)) {
   .kit-t, .kit-press, .kit-ink { transition: none; }
   .kit-ripple::after { animation: none; opacity: 0; }
   .kit-row:hover { transform: none; box-shadow: none; }
-  .react-flow__edge.animated .react-flow__edge-path { animation: none; }
 }
 :focus-visible {
   outline: 2px solid var(--color-accent);

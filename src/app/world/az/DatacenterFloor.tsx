@@ -233,7 +233,7 @@ export function DatacenterFloor() {
               </g>
             )}
 
-            {/* Flow traces — top 8 by source rps animate (dash speed ∝ rate); blocked flows are
+            {/* Flow traces — top 5 by source rps animate (dash speed ∝ rate); blocked flows are
                 always static red dash + reason (never shimmer a refused path). */}
             {flows.map(f => {
               const key = `${f.source}->${f.target}`

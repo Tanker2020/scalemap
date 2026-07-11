@@ -78,24 +78,6 @@ input, textarea, select {
   outline: none;
 }
 
-/* React Flow overrides — hide default styles */
-.react-flow__attribution { display: none !important; }
-.react-flow__handle {
-  width: 8px !important;
-  height: 8px !important;
-  background: var(--color-accent) !important;
-  border: 2px solid var(--color-node-base) !important;
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-.react-flow__node:hover .react-flow__handle,
-.react-flow__handle.connectingfrom,
-.react-flow__handle.connectingto {
-  opacity: 1 !important;
-}
-.react-flow__node.selected .react-flow__handle {
-  opacity: 0.6;
-}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
