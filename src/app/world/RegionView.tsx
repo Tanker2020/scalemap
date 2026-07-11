@@ -148,7 +148,7 @@ export function RegionView() {
                 onHoverServer={setHoveredServerId}
               />
             ))}
-            <ReplicaRail entries={railEntries} azCount={azs.length} rowsHeight={rowsHeight} hoveredServerId={hoveredServerId} />
+            <ReplicaRail entries={railEntries} azCount={azs.length} rowsHeight={rowsHeight} hoveredServerId={hoveredServerId} flowing={(batch?.regions[regionId]?.rps ?? 0) > 0} />
           </div>
 
           <CrossAzColumn regionId={regionId} />

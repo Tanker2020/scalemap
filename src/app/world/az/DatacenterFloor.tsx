@@ -19,6 +19,7 @@ import { getPreset } from '../../../lib/world/instanceCatalog'
 import { RackCabinet, cabinetHeightPx } from './RackCabinet'
 import { FreePoolPod, POD_HEIGHT_PX } from './FreePoolPod'
 import { InspectorV2 } from '../InspectorV2'
+import { useFloorCamera } from './useFloorCamera'
 import { VIEW_W, VIEW_H, floorOutline, tileOutline, tileCenter, isoBox } from './iso'
 import type { RackId, Server, ServerId } from '../../../lib/world/types'
 import './azFloorStyles'
@@ -142,6 +143,9 @@ export function DatacenterFloor() {
     const ranked = flows
       .filter(f => f.blocked === 0)
       .map(f => ({ key: `${f.source}->${f.target}`, rate: rpsByServer.get(f.source) ?? 0 }))
+      // rate > 0: a 0-rps flow must never occupy an animated slot — pre-simulation the whole
+      // floor sits static (dash speed = rate, D1; user report 2026-07-11 caught idle marching).
+      .filter(f => f.rate > 0)
       .sort((a, b) => b.rate - a.rate)
       .slice(0, TOP_ANIMATED)
     return new Map(ranked.map(r => [r.key, r.rate]))
@@ -159,6 +163,10 @@ export function DatacenterFloor() {
       .slice(0, MAX_ANIMATED_LEDS)
     return new Set(ranked.map(r => r.id))
   }, [azServers, batch])
+
+  // Camera: fit-to-view on mount/plan growth, wheel zoom at the cursor, background drag-pan
+  // (post-Polish-3 fix wave — the floor previously rendered fixed-size with no navigation).
+  const camera = useFloorCamera(VIEW_W, VIEW_H, `${plan.cols}x${plan.rows}`)
 
   if (!azId || !regionId) return null
 
@@ -194,19 +202,28 @@ export function DatacenterFloor() {
     : null
 
   return (
-    <div style={{ width: '100%', height: '100%', overflow: 'auto', position: 'relative', background: 'var(--color-canvas)' }}>
-      <div style={{ position: 'relative', minWidth: VIEW_W, height: VIEW_H + 56, padding: '0 0 56px' }}>
-        <div style={{
-          position: 'relative', minWidth: VIEW_W, height: VIEW_H, borderRadius: 10, overflow: 'hidden',
-          background: 'radial-gradient(ellipse 70% 55% at 50% 66%, #121722 0%, #0b0d11 78%)',
-        }}>
-          <div style={{ position: 'absolute', left: 16, top: 12, font: '10px var(--font-mono)', letterSpacing: '0.15em', color: 'var(--az-hud)', textShadow: '0 0 9px var(--az-hud-dim)', zIndex: 5 }}>
-            ▸ {azLabel.toUpperCase()} · FLOOR
-          </div>
-          <div style={{ position: 'absolute', left: 16, top: 30, font: '8.5px var(--font-mono)', color: 'var(--color-text-muted)', zIndex: 5 }}>
-            {racks.length} rack{racks.length === 1 ? '' : 's'} · {azServers.length} server{azServers.length === 1 ? '' : 's'} · {ingressRps} rps entering
-          </div>
+    <div
+      ref={camera.containerRef}
+      data-testid="floor-viewport"
+      onPointerDown={camera.onPointerDown}
+      onPointerMove={camera.onPointerMove}
+      onPointerUp={camera.onPointerUp}
+      onPointerCancel={camera.onPointerUp}
+      style={{
+        width: '100%', height: '100%', overflow: 'hidden', position: 'relative',
+        background: 'radial-gradient(ellipse 70% 55% at 50% 66%, #121722 0%, #0b0d11 78%)',
+        cursor: camera.panning ? 'grabbing' : 'grab', touchAction: 'none',
+      }}
+    >
+      {/* Screen-space chrome (header, toolbar, inspector) sits OUTSIDE the camera transform. */}
+      <div style={{ position: 'absolute', left: 16, top: 12, font: '10px var(--font-mono)', letterSpacing: '0.15em', color: 'var(--az-hud)', textShadow: '0 0 9px var(--az-hud-dim)', zIndex: 5, pointerEvents: 'none' }}>
+        ▸ {azLabel.toUpperCase()} · FLOOR
+      </div>
+      <div style={{ position: 'absolute', left: 16, top: 30, font: '8.5px var(--font-mono)', color: 'var(--color-text-muted)', zIndex: 5, pointerEvents: 'none' }}>
+        {racks.length} rack{racks.length === 1 ? '' : 's'} · {azServers.length} server{azServers.length === 1 ? '' : 's'} · {ingressRps} rps entering · scroll = zoom · drag = pan
+      </div>
 
+      <div style={camera.cameraStyle}>
           <svg width={VIEW_W} height={VIEW_H} viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} style={{ position: 'absolute', inset: 0 }}>
             <defs>
               <radialGradient id="az-floorglow" cx="50%" cy="50%"><stop offset="0%" stopColor="#7cffe908" /><stop offset="100%" stopColor="transparent" /></radialGradient>
@@ -346,7 +363,8 @@ export function DatacenterFloor() {
           })()}
           {ghostCell && (
             <div
-              style={{ ...lblStyle, left: tileCenter(ghostCell.x, ghostCell.y, plan.cols).x - 20, top: tileCenter(ghostCell.x, ghostCell.y, plan.cols).y + 8, cursor: 'pointer' }}
+              data-no-pan
+              style={{ ...lblStyle, left: tileCenter(ghostCell.x, ghostCell.y, plan.cols).x - 20, top: tileCenter(ghostCell.x, ghostCell.y, plan.cols).y + 8, cursor: 'pointer', pointerEvents: 'auto' }}
               onClick={() => azId && useWorldStore.getState().addRack(azId)}
             >
               + rack
@@ -372,20 +390,20 @@ export function DatacenterFloor() {
               </div>
             )
           })}
-        </div>
-
-        <div style={{ position: 'absolute', right: 16, bottom: 16, display: 'flex', gap: 8, zIndex: 6 }}>
-          <button style={btnStyle} onClick={() => azId && useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)}>+ server</button>
-          <button style={btnStyle} onClick={() => azId && useWorldStore.getState().addRack(azId)}>+ rack</button>
-          <button style={btnStyle} onClick={() => azId && useWorldStore.getState().autoArrangeAz(azId)}>auto-arrange</button>
-        </div>
-
-        <InspectorV2
-          azId={azId}
-          selectedServerId={selectedServerId}
-          onClearSelection={() => setSelectedServerId(null)}
-        />
       </div>
+
+      <div data-no-pan style={{ position: 'absolute', right: 16, bottom: 16, display: 'flex', gap: 8, zIndex: 6 }}>
+        <button style={btnStyle} onClick={() => azId && useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)}>+ server</button>
+        <button style={btnStyle} onClick={() => azId && useWorldStore.getState().addRack(azId)}>+ rack</button>
+        <button style={btnStyle} onClick={() => azId && useWorldStore.getState().autoArrangeAz(azId)}>auto-arrange</button>
+        <button style={btnStyle} aria-label="fit floor to view" onClick={camera.fit}>⌖ fit</button>
+      </div>
+
+      <InspectorV2
+        azId={azId}
+        selectedServerId={selectedServerId}
+        onClearSelection={() => setSelectedServerId(null)}
+      />
     </div>
   )
 }

@@ -35,12 +35,16 @@ export interface ReplicaRailProps {
   azCount: number
   rowsHeight: number
   hoveredServerId: ServerId | null
+  /** Region is carrying live traffic — the rail's march is gated on this (dash speed = rate,
+   *  D1): replication is schematic, but an idle world must render a fully static page
+   *  (user report 2026-07-11 caught the rail marching pre-simulation). */
+  flowing: boolean
 }
 
 const RAIL_W = 40
 const MAX_ANIMATED_RAILS = 1
 
-export function ReplicaRail({ entries, azCount, rowsHeight, hoveredServerId }: ReplicaRailProps): ReactElement | null {
+export function ReplicaRail({ entries, azCount, rowsHeight, hoveredServerId, flowing }: ReplicaRailProps): ReactElement | null {
   const reduced = useReducedMotion()
   if (entries.length === 0) return null
 
@@ -54,7 +58,7 @@ export function ReplicaRail({ entries, azCount, rowsHeight, hoveredServerId }: R
     >
       {entries.map((entry, i) => {
         const active = hoveredServerId === entry.primaryServerId || hoveredServerId === entry.replicaServerId
-        const animated = !reduced && i < MAX_ANIMATED_RAILS
+        const animated = !reduced && flowing && i < MAX_ANIMATED_RAILS
         const y1 = rowY(entry.primaryAzIndex)
         const y2 = rowY(entry.replicaAzIndex)
         const midY = (y1 + y2) / 2

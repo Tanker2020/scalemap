@@ -6,9 +6,10 @@
 // "selected server" pane with a rack selector — `free pool` + every rack in this AZ, an option
 // disabled when the server can't fit (`rackModel.canAssign`), dispatching
 // `assignServerToRack` on change. No other new store surface (T2's rack actions only).
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { useSimulationStore } from '../store/simulation.store'
 import { useWorldStore } from '../store/world.store'
+import { useNavStore } from '../store/nav.store'
 import { canAssign, rackUsedU } from '../../lib/world/rackModel'
 import type { TracedRequest } from '../../lib/worldEngine/types'
 import type { AzId, ServerId } from '../../lib/world/types'
@@ -19,6 +20,12 @@ const OUTCOME_COLOR: Record<TracedRequest['outcome'], string> = {
 }
 
 const FREE_POOL_VALUE = '__free_pool__'
+
+const ACT_BTN: CSSProperties = {
+  font: '10px var(--font-mono)', background: 'var(--color-node-base)',
+  border: '1px solid var(--color-node-border)', borderRadius: 4, padding: '3px 10px',
+  cursor: 'pointer', color: 'var(--color-text-secondary)',
+}
 
 interface Props {
   azId: AzId
@@ -31,6 +38,15 @@ export function InspectorV2({ azId, selectedServerId = null, onClearSelection }:
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const doc = useWorldStore(s => s.doc)
   const assignServerToRack = useWorldStore(s => s.assignServerToRack)
+  // Post-Polish-3 fix wave (user report 2026-07-11: the selected-server card was bare) —
+  // enter/kill reuse the app's existing dispatches byte-for-byte: goServer is the same nav
+  // call the hold-to-enter gesture fires; kill/restore is AzRow's exact setOutage pattern
+  // (disabled while stopped, keyed off healthOverrides), scoped 'server'.
+  const goServer = useNavStore(s => s.goServer)
+  const navRegionId = useNavStore(s => s.regionId)
+  const running = useSimulationStore(s => s.running)
+  const isManuallyDown = useSimulationStore(s => (selectedServerId ? s.healthOverrides[selectedServerId] ?? false : false))
+  const setOutage = useSimulationStore(s => s.setOutage)
 
   useEffect(() => {
     const poll = () => setTraces(useSimulationStore.getState().getTracedRequests({ level: 'az', azId }))
@@ -45,7 +61,7 @@ export function InspectorV2({ azId, selectedServerId = null, onClearSelection }:
   if (traces.length === 0 && !server) return null
 
   return (
-    <div style={{
+    <div data-no-pan style={{
       position: 'absolute', left: 12, bottom: 12, width: 270, maxHeight: 320, overflowY: 'auto',
       background: 'var(--color-surface)', border: '1px solid var(--color-node-border)',
       borderRadius: 8, padding: 10, font: '11px var(--font-mono)', color: 'var(--color-text-primary)',
@@ -70,6 +86,7 @@ export function InspectorV2({ azId, selectedServerId = null, onClearSelection }:
           <div style={{ marginTop: 4, color: 'var(--color-text-primary)' }}>{server.label}</div>
           <div style={{ color: 'var(--color-text-muted)', fontSize: 10, marginTop: 2 }}>
             {server.kind} · {server.specs.vcpu}vCPU / {Math.round(server.specs.ramMb / 1024)}G
+            {' · '}<span style={{ color: 'var(--color-price)' }}>${server.hourlyUsd.toFixed(3)}/hr</span>
           </div>
 
           <label style={{ display: 'block', marginTop: 8, fontSize: 10, color: 'var(--color-text-secondary)' }}>
@@ -98,6 +115,28 @@ export function InspectorV2({ azId, selectedServerId = null, onClearSelection }:
               })}
             </select>
           </label>
+
+          <div style={{ display: 'flex', gap: 6, marginTop: 9 }}>
+            <button
+              style={ACT_BTN}
+              onClick={() => navRegionId && goServer(navRegionId, azId, server.id)}
+            >
+              ⏎ enter
+            </button>
+            <button
+              style={{
+                ...ACT_BTN,
+                color: isManuallyDown ? 'var(--color-success)' : 'var(--color-danger)',
+                opacity: running ? 1 : 0.45,
+                cursor: running ? 'pointer' : 'default',
+              }}
+              disabled={!running}
+              title={running ? undefined : 'start the simulation to break things'}
+              onClick={() => setOutage('server', server.id, !isManuallyDown)}
+            >
+              {isManuallyDown ? '↺ restore' : '⚡ kill'}
+            </button>
+          </div>
         </div>
       )}
 

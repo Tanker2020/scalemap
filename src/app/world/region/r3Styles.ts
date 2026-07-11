@@ -44,7 +44,12 @@ if (typeof document !== 'undefined' && !document.getElementById(R3_STYLE_ID)) {
 .r3-cfgbtn:disabled { opacity: 0.4; cursor: default; }
 
 @keyframes dashflow { to { stroke-dashoffset: -30; } }
-@keyframes marchr { to { background-position: 22px 0; } }
+/* marchx replaced marchr (background-position animation): translating a compositor-layer
+   overlay is GPU-cheap, while background-position repaints every frame — AND marchr's 22px
+   shift never matched the trunk's 16px stripe period, so the loop visibly jerked every cycle
+   (user report 2026-07-11: "the bottom rps bar lags"). The overlay extends 22px left of its
+   track and translates exactly one 22px stripe period per cycle — seamless. */
+@keyframes marchx { to { transform: translateX(22px); } }
 @keyframes dotrun { from { left: -4px; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } to { left: 100%; opacity: 0; } }
 `
   document.head.appendChild(style)

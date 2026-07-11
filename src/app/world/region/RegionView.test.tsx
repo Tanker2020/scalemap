@@ -230,12 +230,22 @@ describe('RegionView (Phase 4 flow page)', () => {
     doc.placements[replica2.id] = replica2
 
     useWorldStore.setState({ doc })
-    const { container } = render(<RegionView />)
+    const { container, rerender } = render(<RegionView />)
 
+    // Idle world (no batch → region rps 0): both curves drawn, NOTHING animated — the rail's
+    // march is gated on live traffic (dash speed = rate, post-Polish-3 fix wave 2026-07-11).
     const railPaths = container.querySelectorAll('path[stroke="var(--r3-amber)"]')
     expect(railPaths.length).toBe(2)   // both cross-AZ pairs are drawn
+    expect(container.querySelectorAll('path[stroke="var(--r3-amber)"][data-animated]').length).toBe(0)
+
+    // With live region traffic: at most MAX_ANIMATED_RAILS (1) carries dashflow.
+    const region = Object.values(doc.regions)[0]
+    const batch = fakeBatch(1000, { [azA.id]: az({ azId: azA.id, rps: 250 }), [azB.id]: az({ azId: azB.id, rps: 250 }) })
+    batch.regions[region.id] = { regionId: region.id, rps: 500, errorRate: 0, p50Ms: 5, healthScore: 100, health: 'healthy', inboundByPopulation: [] }
+    useSimulationStore.setState({ latestBatch: batch })
+    rerender(<RegionView />)
     const animatedPaths = container.querySelectorAll('path[stroke="var(--r3-amber)"][data-animated]')
-    expect(animatedPaths.length).toBe(1)   // but at most MAX_ANIMATED_RAILS (1) carries dashflow
+    expect(animatedPaths.length).toBe(1)
   })
 
   it('egress figure renders in the price color', () => {

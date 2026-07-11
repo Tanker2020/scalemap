@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { InspectorV2 } from './InspectorV2'
 import { useWorldStore } from '../store/world.store'
 import { useSimulationStore } from '../store/simulation.store'
+import { useNavStore } from '../store/nav.store'
 import { getPreset } from '../../lib/world/instanceCatalog'
 
 beforeEach(() => {
@@ -68,5 +69,45 @@ describe('InspectorV2 — selected-server rack selector (Polish 3 T4)', () => {
     render(<InspectorV2 azId={azId} selectedServerId={selected} onClearSelection={() => { cleared = true }} />)
     fireEvent.click(screen.getByLabelText('clear selection'))
     expect(cleared).toBe(true)
+  })
+})
+
+describe('InspectorV2 — selected-server card actions (post-Polish-3 fix wave)', () => {
+  it('renders the hourly price in the price color', () => {
+    const { azId } = seedAz()
+    const selected = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const hourly = useWorldStore.getState().doc.servers[selected].hourlyUsd
+    render(<InspectorV2 azId={azId} selectedServerId={selected} onClearSelection={() => {}} />)
+    const price = screen.getByText(`$${hourly.toFixed(3)}/hr`)
+    expect(price.style.color).toBe('var(--color-price)')
+  })
+
+  it('enter dispatches goServer with the nav region, this az, and the server', () => {
+    const { regionId, azId } = seedAz()
+    const selected = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useNavStore.getState().goAz(regionId, azId)
+    render(<InspectorV2 azId={azId} selectedServerId={selected} onClearSelection={() => {}} />)
+    fireEvent.click(screen.getByText('⏎ enter'))
+    const nav = useNavStore.getState()
+    expect(nav.level).toBe('server')
+    expect(nav.serverId).toBe(selected)
+    expect(nav.azId).toBe(azId)
+  })
+
+  it('kill is disabled while stopped and dispatches setOutage("server", id, true) while running', () => {
+    const { azId } = seedAz()
+    const selected = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<InspectorV2 azId={azId} selectedServerId={selected} onClearSelection={() => {}} />)
+
+    const kill = screen.getByText('⚡ kill') as HTMLButtonElement
+    expect(kill.disabled).toBe(true)
+    expect(kill.title).toBe('start the simulation to break things')
+
+    act(() => { useSimulationStore.setState({ running: true }) })
+    fireEvent.click(screen.getByText('⚡ kill'))
+    expect(useSimulationStore.getState().healthOverrides[selected]).toBe(true)
+    // Now shows restore, which clears the override.
+    fireEvent.click(screen.getByText('↺ restore'))
+    expect(useSimulationStore.getState().healthOverrides[selected] ?? false).toBe(false)
   })
 })

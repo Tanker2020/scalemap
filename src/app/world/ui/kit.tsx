@@ -77,10 +77,21 @@ if (typeof document !== 'undefined' && !document.getElementById(KIT_STYLE_ID)) {
   border-radius: 1px; box-shadow: 0 0 6px var(--kit-accent-dim);
   transition: left 0.2s cubic-bezier(0.3, 0.8, 0.3, 1), width 0.2s cubic-bezier(0.3, 0.8, 0.3, 1);
 }
+/* App-wide button feedback (user report 2026-07-11: "none of the buttons in the entire app
+   have any animations on hover or click"). Every native <button> gets a brightness lift on
+   hover and a press-scale on :active — a global floor beneath .kit-press, which keeps its
+   richer border/glow treatment on top. brightness() works on any background, so no per-family
+   restyling is needed. Buttons styled with inline \`all: unset\` opt out implicitly (inline
+   beats stylesheet) — avoid that reset for anything that should feel pressable. */
+button { transition: transform 0.1s ease, filter 0.12s ease, border-color 0.12s ease, background 0.12s ease, color 0.12s ease; }
+button:hover:not(:disabled) { filter: brightness(1.18); }
+button:active:not(:disabled) { transform: scale(0.96); }
 @media (prefers-reduced-motion: reduce) {
   .kit-t, .kit-press, .kit-ink { transition: none; }
   .kit-ripple::after { animation: none; opacity: 0; }
   .kit-row:hover { transform: none; box-shadow: none; }
+  button { transition: none; }
+  button:active:not(:disabled) { transform: none; }
 }
 :focus-visible {
   outline: 2px solid var(--color-accent);

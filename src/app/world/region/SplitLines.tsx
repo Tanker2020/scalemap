@@ -33,9 +33,11 @@ export function SplitLines({ shares, height }: SplitLinesProps): ReactElement {
   const rowY = (i: number) => ((i + 0.5) * height) / Math.max(1, shares.length)
   const midX = (ORIGIN_X + TARGET_X) / 2
 
-  // Rank by fraction (desc) among the up (non-down) shares only — down AZs never animate.
+  // Rank by fraction (desc) among the up (non-down) shares CARRYING TRAFFIC only — down AZs
+  // never animate, and neither does anything at 0 rps (dash speed = rate, D1: an idle beam
+  // must sit static — user report 2026-07-11 caught the top beam marching pre-simulation).
   const animatedAzIds = new Set(
-    [...shares].filter(s => !s.down).sort((a, b) => b.fraction - a.fraction).slice(0, MAX_ANIMATED_BEAMS).map(s => s.azId),
+    [...shares].filter(s => !s.down && s.rps > 0).sort((a, b) => b.fraction - a.fraction).slice(0, MAX_ANIMATED_BEAMS).map(s => s.azId),
   )
 
   return (

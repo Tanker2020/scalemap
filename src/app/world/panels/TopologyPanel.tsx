@@ -40,8 +40,12 @@ function mean(values: number[]): number {
 }
 
 // Unstyled wrapper so a real <button> (aria-label, onClick) can carry a ChipValue's look
-// without doubling up borders/padding.
-const unstyledButton = { all: 'unset' as const, cursor: 'pointer' }
+// without doubling up borders/padding. Explicit resets, NOT `all: unset` — an inline
+// `all: unset` also wipes the kit stylesheet's global button hover/press feedback.
+const unstyledButton = {
+  background: 'none', border: 'none', padding: 0, margin: 0,
+  font: 'inherit', color: 'inherit', cursor: 'pointer',
+} as const
 
 export function TopologyPanel() {
   const doc = useWorldStore(s => s.doc)

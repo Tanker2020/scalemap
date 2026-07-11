@@ -84,12 +84,17 @@ export function SourcesColumn({ regionId, internetEgressMonthlyUsd }: SourcesCol
       <div style={{ marginTop: 10, borderTop: '1px dashed #1c2430', paddingTop: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ position: 'relative', flex: 1, height: 10, borderRadius: 5, background: '#131a24', overflow: 'hidden' }}>
+            {/* Dash speed = rate (D1) applies to the trunk too: at 0 rps the strip sits static
+                and dim — it must never march while nothing flows. The 22px stripe period matches
+                marchx's 22px translate exactly (see r3Styles.ts) so the loop is seamless. */}
             <div
+              data-testid="trunk-march"
+              data-animated={!reduced && trunkTotal > 0}
               style={{
-                position: 'absolute', inset: 0,
-                background: 'repeating-linear-gradient(90deg, var(--r3-hud) 0 9px, transparent 9px 16px)',
-                opacity: 0.9,
-                ...(reduced ? {} : { animation: 'marchr 0.5s linear infinite' }),
+                position: 'absolute', top: 0, bottom: 0, left: -22, right: 0,
+                background: 'repeating-linear-gradient(90deg, var(--r3-hud) 0 11px, transparent 11px 22px)',
+                opacity: trunkTotal > 0 ? 0.9 : 0.22,
+                ...(!reduced && trunkTotal > 0 ? { animation: 'marchx 0.5s linear infinite' } : {}),
               }}
             />
           </div>

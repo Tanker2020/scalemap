@@ -66,7 +66,11 @@ export function NicBlock({ box, nicMbps, inMbps, outMbps, inboundRps = 0, health
   return (
     <div data-nic style={outerStyle} onClick={onSelect}
       onMouseEnter={() => onHover?.(true)} onMouseLeave={() => onHover?.(false)}>
-      <span style={{ position: 'absolute', top: -14, left: 0, width: '100%', textAlign: 'center', fontSize: 8, color: JACK_TEAL, letterSpacing: '0.06em' }}>
+      {/* whiteSpace nowrap, LEFT-anchored: the label is wider than the jack box — wrapping
+          dropped its second line BEHIND the bezel, and center-anchoring pushed it off the left
+          screen edge (the NIC is the board's leftmost element). Extending rightward over open
+          board space is always safe here. */}
+      <span style={{ position: 'absolute', top: -14, left: 0, whiteSpace: 'nowrap', fontSize: 8, color: JACK_TEAL, letterSpacing: '0.06em' }}>
         eth0 · {nicMbps}M INTAKE
       </span>
 
@@ -113,7 +117,7 @@ export function NicBlock({ box, nicMbps, inMbps, outMbps, inboundRps = 0, health
         }} />
       ))}
 
-      <span style={{ position: 'absolute', bottom: -14, left: 0, width: '100%', textAlign: 'center', fontSize: 8, color: 'var(--color-text-secondary)' }}>
+      <span style={{ position: 'absolute', bottom: -14, left: 0, whiteSpace: 'nowrap', fontSize: 8, color: 'var(--color-text-secondary)' }}>
         ↓{Math.round(inMbps ?? 0)} ↑{Math.round(outMbps ?? 0)} Mb/s
       </span>
     </div>

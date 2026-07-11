@@ -79,7 +79,9 @@ export function FirewallGate({ box, rules, blockedPerSecond, trafficActive, sele
     <div data-firewall className="gw-shield"
       style={{ position: 'absolute', left: box.x, top: box.y, width: box.w, height: box.h, cursor: 'pointer', opacity: dimmed ? 0.45 : 1 }}
       onClick={onSelect}>
-      <span style={{ position: 'absolute', top: -16, left: 0, width: '100%', textAlign: 'center', fontSize: 8, color: AMBER, letterSpacing: '0.08em', textShadow: `0 0 6px ${AMBER}` }}>
+      {/* nowrap + center-anchor — wrapping dropped "· N RULES" onto the shield face (same
+          label-occlusion fix as NicBlock's, user screenshot 2026-07-11). */}
+      <span style={{ position: 'absolute', top: -16, left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap', fontSize: 8, color: AMBER, letterSpacing: '0.08em', textShadow: `0 0 6px ${AMBER}` }}>
         FIREWALL · {rules.length} RULE{rules.length === 1 ? '' : 'S'}
       </span>
       <div style={{

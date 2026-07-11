@@ -1,6 +1,7 @@
 // src/app/world/server/ServerBoard.tsx
 // Fixed-composition stage (D1): scale-to-fit a 1000x560 logical space; PCB grid bg; layer stack
-// TraceLayer (SVG z0) → DOM blocks (z1) → PacketLayer (canvas z2, T5: engine-driven particles).
+// TraceLayer (SVG z0) → PacketLayer (canvas z1, T5: engine-driven particles — under the blocks
+// so dots vanish into a chip's edge rather than crossing its text) → DOM blocks (z2).
 // T4 wires live metrics (useServerDisplayMetrics, D5) into ServiceChip/NicBlock and mounts the
 // substrate instruments at layout.hardware.box (T6, D8: HardwarePlatform's corebank/DIMM/platter
 // redesign — see that file's header). T5 also feeds gateStats.blockedPerSecond into FirewallGate's
@@ -114,7 +115,11 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
           layout={layout} traces={traces} selection={props.selection} onSelect={props.onSelect}
           hoveredBlueprintId={props.hoveredBlueprintId} serverId={serverId} instances={display.instances}
         />
-        {/* z1 DOM blocks */}
+        {/* z1: engine-driven packets — BETWEEN traces and blocks, so dots ride the copper and
+            disappear INTO a chip's edge instead of crawling over its text (user report
+            2026-07-11: packets rendered on top of the chips read as jank). */}
+        <PacketLayer serverId={serverId} layout={layout} />
+        {/* z2 DOM blocks */}
         {layout.stacks.map(st => {
           const stackChips = layout.chips.filter(c => c.stackName === st.stackName)
           const stackDimmed = props.hoveredBlueprintId !== null && !stackChips.some(c => c.blueprintId === props.hoveredBlueprintId)
@@ -144,7 +149,7 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
               key={chip.instanceId} chip={chip} name={bp?.name ?? '?'} color={bp?.color ?? '#888'}
               portsLabel={portsLabel(chip)}
               health={m?.health}
-              connLabel={m ? `${m.activeConnections} conn · p50 ${m.p50Ms.toFixed(1)}ms` : '—'}
+              connLabel={m ? `${Math.round(m.activeConnections).toLocaleString('en-US')} conn · p50 ${m.p50Ms.toFixed(1)}ms` : '—'}
               rps={m?.rps ?? 0}
               selected={selected} hovered={hovered} dimmed={dimmed}
               onSelect={() => props.onSelect({ kind: 'instance', instanceId: chip.instanceId })}
@@ -168,8 +173,6 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
             />
           </div>
         )}
-        {/* z2: engine-driven packets */}
-        <PacketLayer serverId={serverId} layout={layout} />
       </div>
     </div>
   )
