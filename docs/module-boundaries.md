@@ -294,7 +294,7 @@ work in §K — the view-side files below went undocumented until Task 4; backfi
 |---|---|
 | `src/app/world/server/boardLayout.ts` (Task 1, 292 lines) | Pure layout functions, no React: `layoutServerBoard(server, doc, compiled)` computes the fixed-zone `BoardLayout` (nic/gate/chips/stacks/**hardware** boxes at hardcoded logical coordinates — D2) plus `chips[].{inAnchor,outAnchor}`/`anchorFor`/`tracePath` (SVG path strings, nic-endpoints routed through the firewall gate). `serverTraces(serverId, doc, compiled)` collapses `compiled.paths` into one `StaticTrace` per unique `(fromId,toId,protocol)` **from this server's own resident sources**, off-server/managed targets collapsing to `nic:<serverId>` (D3/D6), plus one `nic→chip` inbound trace per resident with a public port. **2026-07-09 (Task 7 — inbound-target-trace enhancement, D7 acceptance story):** a third loop walks `compiled.paths` again for paths whose **target** (not source) is a resident of this server and whose source is off-server, emitting `nic:<serverId>→residentTargetId` carrying that path's *real* verdict/label. This exists because `firewallVerdict()` (engine-side, `worldEngine/networkRuntime.ts`) evaluates a path's firewall check against the **target** server, not the source — so a resident's own firewall denying an inbound dependency was, before this loop, only ever visible as an *outbound*-blocked trace on the calling server's board, never on the board of the server whose firewall is actually the fix point. Keyed the same `${nicId}→${toId}→${protocol}` way as the other two loops (merges into the same `byKey` map, escalating to `blocked` if any underlying path is blocked, same as the outbound loop); intra-server paths are explicitly skipped (`from.serverId === serverId` bails) since the first loop already covers them from the source side. `attributeCores(coreCount, instances)` (also Task 1) does greedy per-vCPU blueprint attribution from live `cpuCoresUsed` — sort instances desc, each claims whole cores then a fraction of the next; a core's `dominantBlueprintId` is null when idle. Consumed by `ServerBoard.tsx`/`TraceLayer.tsx`/`HardwarePlatform.tsx`(via `CoreAttribution` type)/`ServerView.tsx`/`PacketLayer.tsx` (Task 5, reuses `tracePath`/`anchorFor`/`gate` for particle geometry — no boardLayout changes needed). **Task 5 fix wave:** `BoardLayout` gained an additive field, `residentInstanceIds: string[]` — every resident instance id, computed as `residents.map(i => i.id)` **before** the `.slice(0, MAX_BOARD_CHIPS)` that produces `chips`, so unlike `chips` (capped at 12) it's never truncated. This is the attribution source `gateStats.blockedPerSecond` needs (see that row below); `chips.map(c => c.instanceId)` undercounts on any server with more than 12 residents. Unit-tested (`boardLayout.test.ts`) — the Task 7 inbound-target-trace loop is covered by cases asserting a real firewall-deny surfaces on the **target** server's traces with the correct label, and that intra-server paths aren't double-counted between the outbound and inbound-target loops |
 | `src/app/world/server/selection.ts` (Task 3, type-only) | `BoardSelection` discriminated union — every selectable thing on the board (`instance`/`nic`/`firewall`/`rule`/`stack`/`volume`/`hardware`/`core`). Pure types, no logic; unchanged since Task 3 — **Task 6** is the task that actually wired a real `useState` holding a nullable `BoardSelection` (in `ServerView.tsx`) to consume it, no type changes needed |
-| `src/app/world/server/InspectorRail.tsx` (Task 6, editing forms mounted Task 7, ~115 lines) | The HUD inspector rail (replaces T3's empty `<aside>` placeholder): one read-only panel per `BoardSelection` kind, keyed off `selection.kind`. Reads `doc` (`useWorldStore`) + compiled instances (`useCompiledWorld`) + live/scrub-aware metrics (`useServerDisplayMetrics`) — the panel body itself still performs no world-store writes; **Task 7** mounts each panel's matching edit form from `./inspectorForms.tsx` at the bottom of its body (own row below), which is where all writes actually happen. `instance`: blueprint name, runtime type + stack/port-binds (container only), live cpu/mem vs. `cpuLimit`/`memLimitMb` with a `⚠` at ≥90% of the mem limit, p50/active-conn footer, then `<WorkloadForm blueprintId={inst.blueprintId}>` always and `<RuntimeForm placementId={inst.placementId}>` when the placement's runtime is a container. `firewall`/`rule`: rule rows in **array order** (`server.firewall` is evaluated first-match-wins, default-deny — the panel repeats that note verbatim) each `data-testid="fw-rule-row"`, `onClick` drills into `{kind:'rule', ruleId}` (a `rule` selection re-renders the same list with the matching row background-highlighted, not a separate view), then `<FirewallEditor serverId>` (mounted for both `firewall` and `rule` selection kinds, since they share one branch). `stack`: networks/volumes/live container members (filtered from `compiled.instances` by `runtime.stackName`), then `<VolumesEditor serverId stackName={selection.stackName}>`. `volume`: size + consumer blueprints (`doc.blueprints` filtered by `volumeName`) — read-only, no form (volumes are edited from the owning `stack` panel, not the drilled-down `volume` panel). `hardware`/`core`: per-part live readouts (cpu cores+steal / ram used-of-total / disk io%, or one core's utilization) — read-only, no form. `nic`: link speed + live in/out — read-only, no form. Empty selection renders a muted hint (`click any element ... to inspect`). 9-test jsdom suite (`InspectorRail.test.tsx`, 4 read-panel tests from Task 6 + 5 form/edit-lock tests from Task 7) drives the component and the exported forms directly with hand-built `BoardSelection` values / seeded docs (no `ServerView`/`ServerBoard` involved). **2026-07-10 (Polish 1 Task 4 — hybrid instrument restyle):** the `header(title)` helper now renders through kit `SectionHeader` (`label={'▸ INSPECTOR — ' + title}`, default teal glow) instead of a hand-rolled div with the hardcoded `#7CFFE9`/`#14332E` hexes — those two hexes are gone from this file. Body `marginTop` values moved from 6/7px to a flat 8px rhythm across every selection branch. The `firewall`/`rule` branch was restyled into one amber-bordered frame (`1px solid color-mix(in srgb, var(--color-warning) 27%, transparent)` border, `color-mix(in srgb, var(--color-warning) 4%, transparent)` background, per the Global Constraints — no new hexes) wrapping a `▼ evaluated top-down · first match wins ▼` caption, the `fw-rule-row` rows (now showing an order number, `ALLOW`/`DENY` in `--color-success`/`--color-danger`, `:port protocol`, and `from {source}` — same `data-testid`, same `onClick={() => onSelect({kind:'rule', ruleId})}`, same array order), the mounted `<FirewallEditor>`, and a `▼ everything else: DENIED ▼` footer in `--color-danger`. The pre-restyle standalone `first match wins · default deny` caption (which sat above the frame) was DROPPED rather than kept alongside the new in-frame caption — keeping both created two independent DOM nodes each matching `InspectorRail.test.tsx`'s pre-existing `getByText(/first match wins/i)`, which throws on multiple matches (verified empirically: keeping both is a genuine regression, not a hypothetical); dropping the standalone line leaves the in-frame caption as script's only match, so that assertion passes unchanged. Added 1 new test (order numbers + both flow captions + per-row ALLOW/DENY/source content) instead, all 12 green. **2026-07-10 (Polish 2 Task 6 — plain words):** rule rows re-voiced from `ALLOW`/`:port protocol`/`from {source}` into a plain sentence built from `./ruleSentence.ts`'s exported pieces (`ruleSourceWords`/`rulePortPhrase`) — `Let`/`Block` (was `ALLOW`/`DENY`, still `--color-success`/`--color-danger`), a bold `#DBEAFE`-tinted source phrase (`anyone`/`internal traffic`/verbatim CIDR), `reach`/`reaching`, a bold `#DBEAFE`-tinted port phrase (service word + `:port`, or bare `:port`, or `any port`), and a trailing ` udp` only for that protocol — same `data-testid="fw-rule-row"`/ordinal span/row styling/selected-highlight as before. Click behavior is now a **toggle**: not-selected → `onSelect({kind:'rule', ruleId})` (unchanged), already-selected → `onSelect({kind:'firewall'})` (collapses back) — previously every click re-selected the same rule with no way to collapse. `<FirewallEditor>` now mounts **only** when `selection.kind === 'rule'` (was: always, for both `firewall` and `rule` selection) — "clicking a row toggles its edit inputs" (D7). `./inspectorForms.tsx` is untouched; every write dispatch it owns is unchanged. Existing `firewall stack renders order numbers and flow captions` test updated (`'ALLOW'`→`'Let'`, `'DENY'`→`'Block'`, `'from any'`→`'anyone'`; ordinal/caption/DENIED assertions byte-identical); `firewall selection lists rules in order and drills into a rule` needed no change (click from a non-`rule` `{kind:'firewall'}` selection still fires `onSelect({kind:'rule', ruleId:'r2'})`). One new test (`firewall reorder and remove dispatches are unchanged after the re-voicing`) confirms the sentence read view + `FirewallEditor`'s reorder dispatch both fire correctly once a rule is selected — 14 rail tests total, all green |
+| `src/app/world/server/InspectorRail.tsx` (Task 6, editing forms mounted Task 7, ~115 lines) | The HUD inspector rail (replaces T3's empty `<aside>` placeholder): one read-only panel per `BoardSelection` kind, keyed off `selection.kind`. Reads `doc` (`useWorldStore`) + compiled instances (`useCompiledWorld`) + live/scrub-aware metrics (`useServerDisplayMetrics`) — the panel body itself still performs no world-store writes; **Task 7** mounts each panel's matching edit form from `./inspectorForms.tsx` at the bottom of its body (own row below), which is where all writes actually happen. `instance`: blueprint name, runtime type + stack/port-binds (container only), live cpu/mem vs. `cpuLimit`/`memLimitMb` with a `⚠` at ≥90% of the mem limit, p50/active-conn footer, then `<WorkloadForm blueprintId={inst.blueprintId}>` always and `<RuntimeForm placementId={inst.placementId}>` when the placement's runtime is a container. `firewall`/`rule`: rule rows in **array order** (`server.firewall` is evaluated first-match-wins, default-deny — the panel repeats that note verbatim) each `data-testid="fw-rule-row"`, `onClick` drills into `{kind:'rule', ruleId}` (a `rule` selection re-renders the same list with the matching row background-highlighted, not a separate view), then `<FirewallEditor serverId>` (mounted for both `firewall` and `rule` selection kinds, since they share one branch). `stack`: networks/volumes/live container members (filtered from `compiled.instances` by `runtime.stackName`), then `<VolumesEditor serverId stackName={selection.stackName}>`. `volume`: size + consumer blueprints (`doc.blueprints` filtered by `volumeName`) — read-only, no form (volumes are edited from the owning `stack` panel, not the drilled-down `volume` panel). `hardware`/`core`: per-part live readouts (cpu cores+steal / ram used-of-total / disk io%, or one core's utilization) — read-only, no form. `nic`: link speed + live in/out — read-only, no form. Empty selection renders a muted hint (`click any element ... to inspect`). 9-test jsdom suite (`InspectorRail.test.tsx`, 4 read-panel tests from Task 6 + 5 form/edit-lock tests from Task 7) drives the component and the exported forms directly with hand-built `BoardSelection` values / seeded docs (no `ServerView`/`ServerBoard` involved). **2026-07-10 (Polish 1 Task 4 — hybrid instrument restyle):** the `header(title)` helper now renders through kit `SectionHeader` (`label={'▸ INSPECTOR — ' + title}`, default teal glow) instead of a hand-rolled div with the hardcoded `#7CFFE9`/`#14332E` hexes — those two hexes are gone from this file. Body `marginTop` values moved from 6/7px to a flat 8px rhythm across every selection branch. The `firewall`/`rule` branch was restyled into one amber-bordered frame (`1px solid color-mix(in srgb, var(--color-warning) 27%, transparent)` border, `color-mix(in srgb, var(--color-warning) 4%, transparent)` background, per the Global Constraints — no new hexes) wrapping a `▼ evaluated top-down · first match wins ▼` caption, the `fw-rule-row` rows (now showing an order number, `ALLOW`/`DENY` in `--color-success`/`--color-danger`, `:port protocol`, and `from {source}` — same `data-testid`, same `onClick={() => onSelect({kind:'rule', ruleId})}`, same array order), the mounted `<FirewallEditor>`, and a `▼ everything else: DENIED ▼` footer in `--color-danger`. The pre-restyle standalone `first match wins · default deny` caption (which sat above the frame) was DROPPED rather than kept alongside the new in-frame caption — keeping both created two independent DOM nodes each matching `InspectorRail.test.tsx`'s pre-existing `getByText(/first match wins/i)`, which throws on multiple matches (verified empirically: keeping both is a genuine regression, not a hypothetical); dropping the standalone line leaves the in-frame caption as script's only match, so that assertion passes unchanged. Added 1 new test (order numbers + both flow captions + per-row ALLOW/DENY/source content) instead, all 12 green. **2026-07-10 (Polish 2 Task 6 — plain words):** rule rows re-voiced from `ALLOW`/`:port protocol`/`from {source}` into a plain sentence built from `./ruleSentence.ts`'s exported pieces (`ruleSourceWords`/`rulePortPhrase`) — `Let`/`Block` (was `ALLOW`/`DENY`, still `--color-success`/`--color-danger`), a bold `#DBEAFE`-tinted source phrase (`anyone`/`internal traffic`/verbatim CIDR), `reach`/`reaching`, a bold `#DBEAFE`-tinted port phrase (service word + `:port`, or bare `:port`, or `any port`), and a trailing ` udp` only for that protocol — same `data-testid="fw-rule-row"`/ordinal span/row styling/selected-highlight as before. Click behavior is now a **toggle**: not-selected → `onSelect({kind:'rule', ruleId})` (unchanged), already-selected → `onSelect({kind:'firewall'})` (collapses back) — previously every click re-selected the same rule with no way to collapse. `<FirewallEditor>` now mounts **only** when `selection.kind === 'rule'` (was: always, for both `firewall` and `rule` selection) — "clicking a row toggles its edit inputs" (D7). `./inspectorForms.tsx` is untouched; every write dispatch it owns is unchanged. Existing `firewall stack renders order numbers and flow captions` test updated (`'ALLOW'`→`'Let'`, `'DENY'`→`'Block'`, `'from any'`→`'anyone'`; ordinal/caption/DENIED assertions byte-identical); `firewall selection lists rules in order and drills into a rule` needed no change (click from a non-`rule` `{kind:'firewall'}` selection still fires `onSelect({kind:'rule', ruleId:'r2'})`). One new test (`firewall reorder and remove dispatches are unchanged after the re-voicing`) confirms the sentence read view + `FirewallEditor`'s reorder dispatch both fire correctly once a rule is selected — 13 rail tests total, all green |
 | `src/app/world/server/ruleSentence.ts` (Polish 2 Task 6, new, node-env tested) | Pure plain-words rendering of a single `FirewallRule` — the single copy source `InspectorRail.tsx` renders piecewise (tint/bold spans) and this module's own `ruleSentence()` returns as one string for tests/future consumers. `PORT_SERVICE_WORDS` (443 https / 80 http / 5432 postgres / 6379 redis / 22 ssh) feeds `rulePortPhrase()` (`'any port'` for `port==='any'`, else `` `${svc ? svc + ' ' : ''}:${port}` ``); `ruleSourceWords()` maps `'any'→'anyone'`, `'internal'→'internal traffic'`, else the CIDR verbatim. `ruleSentence()` composes `Let/Block {source} reach/reaching {port}{' udp' if protocol==='udp'}` — protocol is voiced ONLY for `udp` (not `tcp`/`any`) so the factory default rule (`allow any any internal`) reads `'Let internal traffic reach any port'` rather than trailing `'... any port any'` (plan decision 11). No React/store import — pure functions, `ruleSentence.test.ts` (4 cases, node env) locks the five canonical strings. Sole consumer: `InspectorRail.tsx` (imports `ruleSourceWords`/`rulePortPhrase`, not `ruleSentence` itself — the rail needs the pieces separately for per-span tinting) |
 | `src/app/world/server/inspectorForms.tsx` (Task 7, ~125 lines) | `WorkloadForm`/`RuntimeForm`/`FirewallEditor`/`VolumesEditor` — the only world-store **write** surface for the server-interior board (everything else in `src/app/world/server/` is read-only). Each form is the sole caller of one `world.store.ts` patch-merge action: `WorkloadForm` → `updateBlueprint(blueprintId, {workload, color})`; `RuntimeForm` → `updatePlacement(placementId, {runtime})` (container-only — a process-runtime placement renders an explanatory string instead of a form; count/role/runtime-type switching is deliberately absent here, that stays in the Placements panel per the D7 boundary); `FirewallEditor` → `updateServer(serverId, {firewall})` (adds/removes/reorders/edits `FirewallRule` rows — reorder is a plain array-swap so first-match-wins semantics fall out of array order, no separate priority field); `VolumesEditor` → `updateServer(serverId, {stacks})` (resizes/adds/removes one stack's `ComposeVolume[]` by rebuilding the full `stacks` array with that one stack replaced). Every form is wrapped in `<fieldset disabled={running}>` (`running` from `useSimulationStore`, D9) with a muted "stop simulation to edit" note when locked — native `fieldset disabled` cascades to every descendant input/select/button, so no per-control disabled prop is threaded manually. A shared `NumberField` (local `useState` for the raw text, commits on blur/Enter) clamps to finite ≥0 and reverts to the last committed value on invalid input **without calling the store** (no update fires for `NaN`/negative/non-numeric text). All patches are plain object literals against the existing patch-merge actions — recompilation is automatic via `useCompiledWorld`'s doc-keyed memo, no direct `compileWorld` call in this file. No new store actions were added (`updateManagedService` does not exist and was not needed — managed services aren't editable from this board). Covered by the 5 new cases in `InspectorRail.test.tsx` (workload → `updateBlueprint`, firewall reorder → exact swapped array, an allow rule added above a deny → asserted against a **recompiled** `compileWorld(doc)` fixture, not the DOM, invalid numeric input → zero calls, all forms disabled while `running`). **2026-07-10 (Polish 1 Task 4 — hybrid instrument restyle):** font sizes bumped from the illegible 6.5px/7px scale to a 10/10.5px scale (the `WORKLOAD`/`LIMITS` captions, the shared `NumberField`'s input, and `FirewallEditor`'s per-rule row all gained explicit sizes); the shared `NumberField`/`FirewallEditor` input and select styling (`inp`/new `sel` consts) moved off hardcoded hexes (`#2A3648`/`#E2E8F0`) onto `--color-node-border`/`--color-text-primary` tokens. `FirewallEditor`'s row gap widened 3→4px; its `action`/`protocol` `<select>`s now use the same token-styled look. Every `aria-label` and dispatch (`updateBlueprint`/`updatePlacement`/`updateServer`) is byte-for-byte unchanged — no test in `InspectorRail.test.tsx`'s "inspector editing forms" describe needed updating |
 | `src/app/world/server/ServerBoard.tsx` (Task 3, live-wired Task 4, packets Task 5, selection/cross-highlight Task 6) | The stage: scale-to-fit via `ResizeObserver`, PCB grid background, layer stack `TraceLayer` (SVG z0) → `StackPlate`/`NicBlock`/`FirewallGate`/`ServiceChip`/**`HardwarePlatform`** (DOM z1) → `PacketLayer` (canvas z2, **Task 5**). **2026-07-09 (Task 4):** calls `useServerDisplayMetrics(serverId)` and derives, every render: `residentBlueprints` (color/name/`ramBaseMb` per resident chip, sourced from `doc.blueprints[bp].workload.ramBaseMb` — feeds `HardwarePlatform`'s at-rest RAM estimate, D5), live `attribution` via `attributeCores(server.specs.vcpu, ...)` fed from `display.instances[id].cpuCoresUsed`, and `memLimits`/`instanceRamMb` (container `runtime.memLimitMb` + live per-instance `ramMb`, for the RAM reservoir's oom warning). Mounts `HardwarePlatform` absolutely-positioned at `layout.hardware.box`; passes live `connLabel`/`health` into each `ServiceChip` and live `inMbps`/`outMbps`/`utilFraction` into `NicBlock`; renders a "● scrubbing" pill (top-right of the outer, unscaled container) when `display.scrubbing`. **2026-07-09 (Task 5):** mounts `<PacketLayer serverId layout>` at the z2 slot, and separately selects `events`/`latestBatch` straight from `useSimulationStore` (bypassing `useServerDisplayMetrics` — events aren't part of the scrub-aware metrics pyramid it wraps) to compute `gateStats.blockedPerSecond(events, serverId, layout.residentInstanceIds, latestBatch?.simMs ?? 0)` each render, passed into `FirewallGate`'s `blockedPerSecond` prop. **Task 5 fix wave:** the third argument was `layout.chips.map(c => c.instanceId)` (capped at `MAX_BOARD_CHIPS`) until this fix; now passes `layout.residentInstanceIds` (untruncated) so blocks on overflow instances (>12 residents) are attributed too. **2026-07-09 (Task 6 — the props were already typed as nullable `BoardSelection`/`BlueprintId` since Task 3, but every call site fed `null`/no-ops until now):** per-chip `dimmed = hoveredBlueprintId !== null && chip.blueprintId !== hoveredBlueprintId`, `hovered = chip.blueprintId === hoveredBlueprintId`, `selected = selection?.kind==='instance' && selection.instanceId===chip.instanceId`, all three passed into `ServiceChip`. Each `StackPlate` gets `dimmed` computed from whether *any* of its own container chips' `blueprintId` matches `hoveredBlueprintId` (not just the plate's own identity — a stack dims only when none of its residents are the hovered blueprint). `NicBlock`/`FirewallGate` now also receive `selected` (true for `kind==='nic'` on `NicBlock`; true for `kind==='firewall'` or `kind==='rule'` on `FirewallGate`) — those two components already declared the prop since Task 3, this task just started feeding it; neither component file itself changed. `TraceLayer` already received `selection`/`hoveredBlueprintId` as props since Task 3 (call site unchanged) but didn't use them until Task 6's change inside `TraceLayer.tsx` itself (see that row) |
@@ -662,6 +662,180 @@ file is NOT dirty and DOES have a path), so baking a pristine-reset into `replac
 would break that caller. The vault's `openExample` is the one `replaceWorld` caller that wants the
 `newWorld`-like pristine state, so it does the three resets explicitly rather than the store
 picking one stance for every `replaceWorld` caller.
+
+---
+
+### Q. Polish 2: command overlays, guided console, motion (`src/app/world/ui/` Tasks 1/3/4/8, `src/app/world/globe/` Task 3, `src/app/world/panels/` Tasks 5/7, `src/app/world/server/ruleSentence.ts` Task 6, `src/app/world/AzCanvas.tsx`/`WorldShell.tsx`/`SimControls.tsx` Task 7, 2026-07-10)
+
+Seven tasks land as one phase: a shared kit motion grammar + a hold-to-enter drill primitive
+(Task 1); in-scene "command overlay" cards for region pins and population markers, portaled
+outside the globe canvas's `aria-hidden` wrapper for accessibility (Tasks 3-4); a world-summary
+strip and a traffic-hero sentence-slider giving the panel dock a "guided console" read (Task 5);
+plain-words re-voicing of topology health and firewall rules (Task 6, already folded into §J/§L —
+see the `InspectorRail.tsx`/`ruleSentence.ts` rows there, not repeated here); and this task's
+app-wide motion APPLICATION pass — tab ink, button-press states, health ripples, AZ-canvas flow
+shimmer (Task 7/8). One governing rule ties Tasks 3-5 together and is worth stating once, in one
+place, rather than per-file: **every relocated or newly-surfaced control (region role toggle,
+outage kill switch, population demand slider, "traffic panel →" jump, remove) reuses an existing
+world/nav/simulation-store dispatch byte-for-byte** — `updateRouting`/`setOutage`/
+`updatePopulation`/`removePopulation`/`setPendingPanelTab`/`goRegion`, all pre-existing. The
+**only** new store surface across the whole phase is `ui.store.ts`'s `sceneOverlay` field (below)
+— no new dispatch was invented to make an overlay or a hero slider work.
+
+**Kit motion grammar (Task 1):** `src/app/world/ui/kit.tsx`'s injected stylesheet (§P's kit.tsx
+row) gained four classes, all inside the existing `@media (prefers-reduced-motion: reduce)`
+block (`kit.test.tsx`'s "kit motion grammar" describe locks both the classes' presence and their
+reduced-motion membership): `.kit-press` (border-color/transform/box-shadow transition, a
+`--kit-accent` hover glow, `scale(0.96)` on `:active` — the button-press feedback every clickable
+surface in Tasks 1-8 uses), `.kit-ripple`/`.kit-ripple::after` (a `currentColor` circle scaling
+1→3.2 and fading over 1.6s, `infinite` — the "this is live" cue for health dots; consumers set
+`color` alongside the class so `currentColor` resolves per-status, never a hardcoded hex), and
+`.kit-ink` (`position: absolute; bottom: 0` by default, `left`/`width` `transition`ing on a
+cubic-bezier — the sliding tab underline). `.kit-t`'s existing `transition: all 0.15s ease`
+(pre-Polish-2) is reused, not reinvented, wherever a hover-only transition suffices.
+
+**Hold-to-enter (Task 1):** `src/app/world/ui/HoldToEnter.tsx` — `holdProgress(nowMs, startMs,
+durationMs=HOLD_DURATION_MS)` (pure 0..1 clamp) and `HoldRing` (a screen-space SVG ring driven by
+a `progressRef` mutated per r3f frame — DOM writes only, never `setState` per frame, the
+established T14/D5 lesson for particle-frequency data). `HOLD_TAP_MS` (250) and
+`isAbortedHold(pressedMs)` classify a released press: shorter than the threshold = a plain tap
+(falls through to the click handler); at or past it but before `HOLD_DURATION_MS` (700) completes
+= an aborted hold, whose synthetic click must be swallowed (spec D1 — early release means no
+navigation, no overlay-close-then-reopen flicker). The ring's SWEEP stays live under
+prefers-reduced-motion (it's functional progress feedback, not decoration); only its glow
+(`drop-shadow`) is trimmed. Sole consumer today: `src/app/world/globe/RegionPins.tsx`'s
+`RegionPin` — `onPointerDown` starts `holdStartRef`, a `useFrame` callback advances
+`holdProgressRef` and calls `goRegion(regionId)` (existing nav dispatch) at completion,
+`onPointerUp`/`onPointerOut` cancel or mark-aborted via a self-expiring `swallowClickUntilRef`
+window so a stale swallow can never eat a later genuine tap. Reusable beyond the globe (region →
+AZ → server hold-drills are a parked follow-up, not built).
+
+**Scene overlays (Tasks 3-4):** `src/app/world/ui/SceneOverlay.tsx` is the shared card shell
+(the mockup's `.ovl`, tokenized) — title/health-or-`dotColor` header dot, children body, footer
+action row, `esc` close button (`kit-press`). **Task 7 addition:** an additive `ripple?: boolean`
+prop — when true the header dot gains `.kit-ripple` and `color: <the dot's own color>` so the
+ripple's `currentColor` resolves correctly; omitted entirely (`undefined`) means no ripple, so
+every pre-Task-7 call site is unaffected. `src/app/world/globe/overlayPortal.ts` exports
+`OverlayPortalContext`, a `RefObject<HTMLDivElement> | null` context — the globe canvas wrapper is
+`aria-hidden` (decorative; `GlobeView.tsx` renders a separate visually-hidden a11y region list as
+the REAL keyboard/screen-reader navigation surface), so an overlay's interactive DOM (buttons,
+sliders) must portal OUTSIDE that wrapper to stay reachable; `GlobeView.tsx` provides the ref
+target (a plain absolutely-positioned div sibling to the canvas), `RegionPins.tsx`/
+`PopulationMarkers.tsx` consume it via `<Html portal={overlayPortal ?? undefined}>`. Content
+components: `src/app/world/ui/overlays/RegionOverlay.tsx` (chips for AZ/server counts, live rps
+via `useRollingNumber`, p50, $/hr; a `Segmented` role toggle that writes `useWorldStore.setState`
+directly — copied verbatim from `TopologyPanel.tsx`'s own no-history-push role toggle, same
+deliberate bypass; a `kill`/`restore` button wired to the existing `setOutage` dispatch, disabled
+while stopped; **Task 7:** passes `ripple={running}` to `SceneOverlay`, `running` already in
+scope for the kill button's `disabled` prop) and `src/app/world/ui/overlays/PopulationOverlay.tsx`
+(a demand slider transcribing `DerivedField`'s commit-on-release discipline locally since the
+overlay needs `step=50`, which `DerivedField` doesn't parameterize; "traffic panel →" calls the
+pre-existing `setPendingPanelTab('traffic')`; "remove" calls the pre-existing
+`removePopulation`). Both overlays read `populationLanding`/`isEntryBlueprint`-adjacent derived
+math from `../derived` (below), never duplicate it. **SpecBar retirement note:** `kit.tsx`'s
+`SpecBar` (§P's kit.tsx row: "ZERO consumers outside `kit.test.tsx`" as of Polish 1) gained its
+first real consumer here — `RegionOverlay`'s capacity bar — so that "built but unwired" flag no
+longer applies; no other `SpecBar` consumer exists yet.
+
+**`ui.store.ts`'s `sceneOverlay` field (Task 3):** `SceneOverlayTarget { kind: 'region' |
+'population'; id: string } | null`, plus `setSceneOverlay`. The single open in-scene overlay
+card — set on pin/marker click, cleared on `esc`, click-away (`onPointerMissed`), or unmount. This
+is the ONE additive store field the whole Polish 2 phase introduces (see the relocated-dispatch
+contract statement above); `themeMode`/`pendingPanelTab` are untouched.
+
+**`pendingPanelTab` becomes reactive (Task 4, `WorldPanel.tsx`):** previously consumed once via a
+mount-only effect (Polish 1 Task 6). `WorldPanel`'s `useState` initializer still reads
+`useUiStore.getState().pendingPanelTab` for the mount-time vault-card path, but the consuming
+`useEffect` now depends on the live `pendingPanelTab` selector (not `[]`) — so
+`PopulationOverlay`'s "traffic panel →" button, which sets `pendingPanelTab` while `WorldPanel` is
+ALREADY mounted, also switches the tab; the effect clears the field via `getState()` (not the
+selector value) so the write itself doesn't re-trigger the effect. One-shot semantics are
+preserved either way — mount-time or live, the field is read once and nulled.
+
+**Guided console (Task 5, `panels/WorldPanel.tsx`/`panels/TrafficPanel.tsx`):** `WorldPanel.tsx`
+gained `WorldSummary` — a read-only strip ABOVE the tab bar, OUTSIDE the `<fieldset
+disabled={running}>` (it must stay legible while the sim runs): at rest it counts the authored doc
+(`{n} region(s) · {n} server(s) · baseline {n} rps`), and once a batch is live it becomes a
+sentence (`Handling {rolling rps} rps from {n} cities across {n} regions`) plus a stats line
+(health label, `$/hr` via `computeWorldCost(...).monthlyUsd / HOURS_PER_MONTH`, rps-weighted mean
+p50). `TrafficPanel.tsx`'s `TrafficSection`+`RoutingSection`'s old baseline-rps slider role was
+dissolved into a new `TrafficHero`: a sentence-slider (`Send {n} requests/sec, routed to the
+{routing-policy Segmented} region.`) with a frontline-capacity hint (`≈ {n} rps per frontline
+replica — comfortable/tight/✗ will shed load`) computed from `frontlineCapacityRps` (below); the
+`autoBaseline` checkbox and an exact-value `NumberField` fold in below, same `updateTraffic`
+dispatch as before Task 5. Population rows became click-to-expand sentence rows (`{label} sends
+{rps} rps → lands on {region}`) instead of always-open `EdgeRow`s; every tuning field inside stays
+the same dispatch it always was.
+
+**`derived.ts` additions (Tasks 4-5):** four new pure exports, same "no store imports, no React"
+discipline as the rest of the file (§P's derived.ts row). `healthWord(cpuFraction, ramFraction):
+'comfortable'|'tight'|'straining'` — worst-of-the-two-pressures banding (<70%/<90%/else),
+consumed by `TopologyPanel.tsx`'s `ServerRow` (Task 6, already in §J) and echoed by the hero's
+capacity hint tone. `POP_LATENCY_KM_PER_MS = 100` + `populationLanding(pop, doc, compiled): {
+regionCatalogId, latencyMs } | null` — a PURE reimplementation of the engine's client→region
+latency convention (`worldEngine/networkRuntime.ts`'s `INTERNET_KM_PER_MS`, "~1ms per 100km
+great-circle") and of `resolveRegion`'s policy-order consumption (`compiled.routing.
+populationRegionOrder[pop.id]?.[0]`) — never imported from `worldEngine` internals (Global
+Constraints); returns `null` when no region resolves or the landing region's `catalogId` has no
+`REGION_GEO` entry. Consumed by `TrafficPanel.tsx`'s population rows and
+`PopulationOverlay.tsx`'s landing hint — one definition, two surfaces. `isEntryBlueprint(bp):
+boolean` — a pure reimplementation of the engine's client-entry predicate (`worldEngine/
+index.ts`'s "has a public port" check), same never-import-from-engine-internals stance.
+`frontlineCapacityRps(doc, compiled): number` — Σ `hostRpsCapacity(host vcpu, blueprint cpuMs)`
+over every placement of an entry blueprint; the compiled world param exists for signature
+symmetry with future instance-count refinements, the sum itself is authored-doc math today.
+Consumed by `TrafficHero`'s capacity hint.
+
+**`costModelV2.ts`'s `HOURS_PER_MONTH` export (Task 5):** `= 730`, hoisted out of what were two
+inline `730` literals (`computeWorldCost`'s `instanceHourly` branch and its per-server rollup) so
+`WorldSummary`'s `$/hr` derivation (`monthlyUsd / HOURS_PER_MONTH`) shares the exact constant the
+cost model itself uses — no risk of a second, silently-different "hours in a month" creeping in
+at a new call site.
+
+**Motion application pass (Task 7 — this task):** the phase's closing pass wires the Task 1
+classes onto every clickable/live-status surface app-wide, rather than adding new primitives.
+`WorldPanel.tsx`'s tab bar: the per-button `borderBottom` underline is REPLACED (not
+supplemented) by a `.kit-ink` span whose `left`/`width`/`top` are measured off the active
+button's `offsetLeft`/`offsetWidth`/`offsetTop + offsetHeight - 2` inside a `useLayoutEffect`
+keyed on the active tab, re-measured on `onMouseEnter` per tab (hover preview) and reset on the
+bar's `onMouseLeave` (`placeInk(tab)`) — `top` is tracked per-tab, not hardcoded to the
+container's bottom, because the 7-tab bar in a 360px dock WRAPS to two rows and a
+bottom-anchored ink would underline the wrong row for every tab in the first row. Every tab's
+click dispatch (`setTab(t.id)`) and the Analysis `ChipValue` are unchanged. `WorldSummary`'s
+health line: the `●` glyph moved out of the health string into its own small (6×6) `span`
+carrying `.kit-ripple` (gated on batch presence — a scrub replay ripples too, matching every
+other `scrubBatch ?? latestBatch` live read in the app) — folding the dot into the sentence
+string would have rippled an oval across the whole phrase instead of a dot, since `.kit-ripple`'s
+`::after` is `inset: 0` on its own box. `EdgeRow` (kit.tsx) gained an additive `ripple?: boolean`
+prop: when true AND `status` is non-null, the status dot gains `.kit-ripple` + `color:
+STATUS_COLOR[status]`; `TopologyPanel.tsx`'s `ServerRow` is the one caller (`ripple={running}`,
+a new plain `useSimulationStore(s => s.running)` read, no dispatch). `Segmented` and
+`PresetCardGrid` (kit.tsx) buttons gained `kit-press` (`PresetCardGrid` appends it to its
+existing `"kit-pcard kit-t"`). Every `smallBtn`/`dangerBtn`-styled `<button>` across
+`TopologyPanel.tsx`/`TrafficPanel.tsx`/`BlueprintPanel.tsx`/`PlacementPanel.tsx`,
+`WorldShell.tsx`'s `hdrBtn` buttons (⚙/New/Open/Save/Save As/dismiss), and `SimControls.tsx`'s
+Simulate/Stop button gained `className="kit-press"` — presentation-only, zero dispatch changes.
+Two deliberate exclusions: `TopologyPanel.tsx`'s `unstyledButton` ChipValue wrapper (`all:
+'unset'`, no border to glow) and any button that already carried `kit-press` from Tasks 3-4
+(`TrafficPanel.tsx`'s "exact value" toggle, every overlay footer button). `AzCanvas.tsx` gained a
+flow shimmer: a `rpsByServer` `Map` (source-server id → Σ resident-instance live rps, built once
+before the edge map — the same per-instance rps sum the chassis-node metrics already compute per
+server, just lifted to cover every server rather than the currently-selected one) feeds each
+edge's new `animated: e.blocked === 0 && (rpsByServer.get(e.source) ?? 0) > 0` — React Flow 12's
+own `animated: true` renders the dashed-flow treatment; a blocked edge NEVER animates regardless
+of its source server's rps (decision: a refused path shouldn't look "flowing"). **Decision 12
+no-op:** the region-level view (`RegionView.tsx`/`CrossAzColumn.tsx`) was evaluated for the same
+shimmer treatment and intentionally skipped — `CrossAzColumn` renders cross-AZ links as plain
+text rows (`{labelA} ⇄ {labelB} {latency}`), not an SVG/path element a dashed-flow animation could
+attach to; the AZ canvas (an actual React Flow edge graph) is the only surface where the
+treatment applies. **Reduced-motion selector, verified not reworded:** T1's stylesheet block
+already carried `.react-flow__edge.animated .react-flow__edge-path { animation: none; }` inside
+the `@media (prefers-reduced-motion: reduce)` query; checked against the installed
+`@xyflow/react@12.10.2` (`node_modules/@xyflow/react/dist/style.css`) — the library's own dashed-
+flow rule is `.react-flow__edge.animated path` and the rendered `<path>` element DOES carry the
+`react-flow__edge-path` class (confirmed in `dist/esm/index.js`'s `BaseEdge`), so the reduced-
+motion override matches AND wins on specificity (three class selectors vs. the base rule's two
+classes + one type selector) regardless of stylesheet load order — no selector fix was needed.
 
 ---
 
