@@ -16,6 +16,7 @@ import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { REGION_GEO } from '../../../lib/world/regionGeo'
 import { latLonToVec3 } from './geo'
+import { HoldRing, holdProgress } from '../ui/HoldToEnter'
 import type { HealthState, EngineEvent, EngineEventKind } from '../../../lib/worldEngine/types'
 import type { RegionId } from '../../../lib/world/types'
 
@@ -78,6 +79,9 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
   const [hovered, setHovered] = useState(false)
   const [labelVisible, setLabelVisible] = useState(true)
   const labelVisibleRef = useRef(true)
+  const holdStartRef = useRef<number | null>(null)
+  const holdFiredRef = useRef(false)
+  const holdProgressRef = useRef(0)
   const position = useMemo(() => latLonToVec3(lat, lon, PIN_ALTITUDE), [lat, lon])
   const color = pinColor(health)
   const down = health === 'down'
@@ -101,15 +105,42 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
     if (!pulsing) { pinRef.current.scale.setScalar(1); return }
     const t = (state.clock.elapsedTime % PULSE_PERIOD_S) / PULSE_PERIOD_S   // 0..1 sawtooth
     pinRef.current.scale.setScalar(1 + 0.35 * Math.sin(t * Math.PI))        // 1 -> 1.35 -> 1
+
+    // Hold-to-enter (Polish 2 D5): drive the ring from performance.now() (pointer handlers
+    // can't read the r3f clock — one coherent timebase, see plan header decision 1).
+    const p = holdProgress(performance.now(), holdStartRef.current)
+    holdProgressRef.current = p
+    if (p >= 1 && holdStartRef.current !== null) {
+      holdStartRef.current = null
+      holdProgressRef.current = 0
+      holdFiredRef.current = true      // swallow the synthetic click that follows pointerup
+      goRegion(regionId)
+    }
   })
 
   return (
     <group ref={groupRef} position={position}>
       <mesh
         ref={pinRef}
-        onClick={e => { e.stopPropagation(); goRegion(regionId) }}
+        onClick={e => {
+          e.stopPropagation()
+          if (holdFiredRef.current) { holdFiredRef.current = false; return }   // hold completed — not a tap
+          goRegion(regionId)
+        }}
+        onPointerDown={e => {
+          e.stopPropagation()
+          ;(e.target as Element | undefined)?.setPointerCapture?.(e.pointerId)
+          holdStartRef.current = performance.now()
+        }}
+        onPointerUp={e => {
+          ;(e.target as Element | undefined)?.releasePointerCapture?.(e.pointerId)
+          holdStartRef.current = null      // released early → cancel (completion already cleared it)
+        }}
         onPointerOver={() => { document.body.style.cursor = 'pointer'; setHovered(true) }}
-        onPointerOut={() => { document.body.style.cursor = 'default'; setHovered(false) }}
+        onPointerOut={() => {
+          document.body.style.cursor = 'default'; setHovered(false)
+          holdStartRef.current = null      // left the pin mid-hold → cancel (mockup pointerleave)
+        }}
       >
         <sphereGeometry args={[PIN_RADIUS, 16, 16]} />
         {/* Self-lit (emissive-only, color=black zeroes the unlit diffuse contribution) — the
@@ -123,6 +154,9 @@ function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
         <sphereGeometry args={[GLOW_RADIUS, 12, 12]} />
         <meshBasicMaterial color={color} transparent opacity={0.28} depthWrite={false} blending={AdditiveBlending} />
       </mesh>
+      <Html center zIndexRange={[50, 40]} style={{ pointerEvents: 'none' }}>
+        <HoldRing progressRef={holdProgressRef} />
+      </Html>
       {/* No distanceFactor: it CSS-scaled the 9px label up ~3x at the default camera distance —
           blurry and globe-covering. A fixed screen-size 10px label reads the same at every zoom.
           Visibility comes from the useFrame horizon test above, not drei's `occlude`. */}
