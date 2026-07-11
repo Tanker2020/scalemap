@@ -149,4 +149,18 @@ describe('RegionView (Phase 4 flow page)', () => {
     expect(screen.getByText('us-east-1b')).toBeInTheDocument()
     expect(screen.getAllByText('—')).toHaveLength(2)
   })
+
+  it('AZ row $/mo renders in the price color', () => {
+    const { azA, azB } = seedRegion()
+    useSimulationStore.setState({
+      latestBatch: fakeBatch(1000, {
+        [azA.id]: az({ azId: azA.id, healthScore: 91, health: 'healthy' }),
+        [azB.id]: az({ azId: azB.id, healthScore: 87, health: 'healthy' }),
+      }),
+    })
+    render(<RegionView />)
+    // vps-medium: 0.036 usd/hr * 730 = 26.28/mo, Math.round -> 26, one server per AZ
+    expect(screen.getAllByText('$26/mo')).toHaveLength(2)
+    for (const el of screen.getAllByText('$26/mo')) expect(el).toHaveStyle({ color: 'var(--color-price)' })
+  })
 })

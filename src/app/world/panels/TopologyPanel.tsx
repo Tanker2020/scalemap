@@ -170,7 +170,7 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
         trailing={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {metrics && <MicroBars cpu={cpuMean} ram={ramFrac} io={metrics.diskIoFraction} />}
-            <span style={{ fontSize: 10, color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontSize: 10, color: 'var(--color-price)', fontVariantNumeric: 'tabular-nums' }}>
               ${server.hourlyUsd}/hr
             </span>
             {az && <button className="kit-press" style={smallBtn} title="Open server view"

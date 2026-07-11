@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { DARK_COLORS, LIGHT_COLORS, CATEGORY_COLORS } from './theme'
 
+describe('price token (Polish 3 T1)', () => {
+  it('both palettes expose a price token and they differ per theme', () => {
+    expect(DARK_COLORS.price).toBe('#6EE7B7')
+    expect(LIGHT_COLORS.price).toBe('#047857')
+    expect(DARK_COLORS.price).not.toBe(LIGHT_COLORS.price)
+  })
+})
+
 function hexToRgb(hex: string): [number, number, number] {
   const h = hex.replace('#', '')
   return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]

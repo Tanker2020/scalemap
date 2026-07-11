@@ -167,7 +167,7 @@ function WorldSummary() {
           <span className={displayBatch ? 'kit-ripple' : undefined} style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor', flexShrink: 0 }} />
           {healthLabel}
         </span>
-        <span>${hourlyUsd.toFixed(2)}/hr</span>
+        <span style={{ color: 'var(--color-price)' }}>${hourlyUsd.toFixed(2)}/hr</span>
         <span>p50 {Math.round(p50)} ms</span>
       </div>
     </div>

@@ -126,7 +126,7 @@ export function AzRow({ azId, regionId, monthlyUsd, onNavigateAz, onNavigateServ
           <>
             {(metrics?.rps ?? 0).toFixed(0)} rps · p50 {(metrics?.p50Ms ?? 0).toFixed(0)}ms<br />
             <span style={{ color: 'var(--color-text-muted)' }}>
-              err {((metrics?.errorRate ?? 0) * 100).toFixed(1)}% · ${Math.round(usd)}/mo
+              err {((metrics?.errorRate ?? 0) * 100).toFixed(1)}% · <span style={{ color: 'var(--color-price)' }}>${Math.round(usd)}/mo</span>
             </span>
           </>
         )}

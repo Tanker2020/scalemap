@@ -34,6 +34,12 @@ describe('RegionOverlay', () => {
     expect(screen.getByText('p50 — ms')).toBeInTheDocument()
   })
 
+  it('the $/hr chip renders in the price color', () => {
+    const { regionId } = seedRegion()
+    render(<RegionOverlay regionId={regionId} onClose={() => {}} />)
+    expect(screen.getByText('$0.07/hr')).toHaveStyle({ color: 'var(--color-price)' })
+  })
+
   it('role segmented dispatches the exact TopologyPanel role patch (no history push)', () => {
     const { regionId } = seedRegion()
     const historyBefore = useWorldStore.getState().history.length

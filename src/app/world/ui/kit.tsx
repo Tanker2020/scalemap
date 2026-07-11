@@ -435,7 +435,7 @@ export function PresetCardGrid({ value, onChange, options }: PresetCardGridProps
             <div style={{ fontSize: 9.5, color: 'var(--color-text-muted)', margin: '2px 0 6px' }}>
               {opt.detail}
             </div>
-            <div style={{ fontSize: 10.5, color: 'var(--color-warning)' }}>
+            <div style={{ fontSize: 10.5, color: 'var(--color-price)' }}>
               {opt.price}
             </div>
           </button>

@@ -73,7 +73,7 @@ export function RegionOverlay({ regionId, onClose }: { regionId: RegionId; onClo
         <ChipValue>{servers.length} server{servers.length === 1 ? '' : 's'}</ChipValue>
         <ChipValue>{metrics ? `~${Math.round(rolledRps)} rps in` : '~— rps in'}</ChipValue>
         <ChipValue>{metrics ? `p50 ${Math.round(metrics.p50Ms)} ms` : 'p50 — ms'}</ChipValue>
-        <ChipValue>${hourly.toFixed(2)}/hr</ChipValue>
+        <ChipValue><span style={{ color: 'var(--color-price)' }}>${hourly.toFixed(2)}/hr</span></ChipValue>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 13px', fontSize: 11 }}>
         <span style={{ color: 'var(--color-text-muted)', fontSize: 10, width: 64, flexShrink: 0 }}>role</span>

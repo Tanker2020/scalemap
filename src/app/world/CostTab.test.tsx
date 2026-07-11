@@ -25,4 +25,26 @@ describe('CostTab', () => {
     expect(screen.getByText('$0.00 /mo')).toBeInTheDocument()
     expect(screen.getByText('no regions yet')).toBeInTheDocument()
   })
+
+  it('the monthly total renders in the price color', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<CostTab />)
+    expect(screen.getByText('$26.28 /mo').style.color).toBe('var(--color-price)')
+  })
+
+  it('per-region, per-AZ, and egress money figures all render in the price color', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<CostTab />)
+    const moneyValues = screen.getAllByText('$26.28')   // by-region row + by-AZ row
+    expect(moneyValues).toHaveLength(2)
+    for (const el of moneyValues) expect(el).toHaveStyle({ color: 'var(--color-price)' })
+
+    expect(screen.getByText('Cross-AZ').nextSibling).toHaveStyle({ color: 'var(--color-price)' })
+    expect(screen.getByText('Cross-region').nextSibling).toHaveStyle({ color: 'var(--color-price)' })
+    expect(screen.getByText('Internet').nextSibling).toHaveStyle({ color: 'var(--color-price)' })
+  })
 })

@@ -16,6 +16,8 @@ export interface ColorTokens {
   warning: string
   accent: string
   onAccent: string   // text/icon color for content rendered ON a saturated accent/danger/warning chip
+  price: string      // dedicated money-value color (Polish 3 D2) — distinct from success so cost
+                      // figures don't read as a status/health signal
 }
 
 export const DARK_COLORS: ColorTokens = {
@@ -36,6 +38,7 @@ export const DARK_COLORS: ColorTokens = {
   warning: '#F59E0B',
   accent: '#4A9EFF',
   onAccent: '#FFFFFF',   // white always reads on these saturated chip backgrounds in both themes
+  price: '#6EE7B7',
 }
 
 export const LIGHT_COLORS: ColorTokens = {
@@ -58,6 +61,7 @@ export const LIGHT_COLORS: ColorTokens = {
   warning: '#B45309',     // darkened from dark-mode's #F59E0B — 5.02:1 on white, passes normal-text AA
   accent: '#3F6DAC',      // matches compute category's light-mode foreground (see CATEGORY_COLORS)
   onAccent: '#FFFFFF',    // white always reads on these saturated chip backgrounds in both themes
+  price: '#047857',       // 6.4:1 on white — normal-text AA
 }
 
 export const CATEGORY_COLORS = {

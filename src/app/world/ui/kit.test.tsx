@@ -148,6 +148,16 @@ describe('PresetCardGrid', () => {
     fireEvent.click(screen.getByText('dedicated-8'))
     expect(onChange).toHaveBeenCalledWith('dedicated-8')
   })
+
+  it('renders the price field in the price color', () => {
+    render(
+      <PresetCardGrid value="vps-medium" onChange={() => {}}
+        options={[
+          { value: 'vps-medium', name: 'vps-medium', detail: '4 vCPU · 8 GB · shared tenancy', price: '$0.036/hr' },
+        ]} />,
+    )
+    expect(screen.getByText('$0.036/hr')).toHaveStyle({ color: 'var(--color-price)' })
+  })
 })
 
 describe('Explainer', () => {

@@ -131,4 +131,20 @@ describe('TopologyPanel — instrument restyle', () => {
     render(<TopologyPanel />)
     expect(screen.queryByText(/comfortable|tight|straining/)).not.toBeInTheDocument()
   })
+
+  it('the hourly price renders in the price color', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<TopologyPanel />)
+    expect(screen.getByText('$0.036/hr')).toHaveStyle({ color: 'var(--color-price)' })
+  })
+
+  it('the preset-card price renders in the price color', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    render(<TopologyPanel />)
+    fireEvent.click(screen.getByLabelText('choose server preset'))     // opens the grid
+    expect(screen.getByText('$0.036/hr')).toHaveStyle({ color: 'var(--color-price)' })
+  })
 })
