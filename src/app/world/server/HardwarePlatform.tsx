@@ -219,7 +219,7 @@ export function HardwarePlatform(props: HardwarePlatformProps): ReactElement {
         <div style={{ color: 'var(--color-text-secondary)' }}>nvme0 · io {Math.round(io * 100)}%</div>
         <div style={{ width: '100%' }}>
           <div style={{ fontSize: 6, color: 'var(--color-text-muted)', display: 'flex', justifyContent: 'space-between' }}>
-            <span>io queue</span><span>depth {queueDepth}</span>
+            <span>io queue</span><span>depth {Math.round(queueDepth)} / {QTICK_COUNT * QUEUE_CONN_PER_TICK}</span>
           </div>
           <div style={{ display: 'flex', gap: 2, marginTop: 3, justifyContent: 'center' }}>
             {ticks.map((t, i) => (
