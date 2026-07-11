@@ -25,7 +25,7 @@ import {
 } from './breakers'
 import { solveFlows, type InstanceFlow, BYTES_PER_REQUEST_EACH_WAY } from './flows'
 import {
-  createFailoverState, setOutage as failoverSetOutage, computeHealth, promoteReplicas,
+  createFailoverState, setOutage as failoverSetOutage, computeHealth, probeInstant, promoteReplicas,
   drainFactor, beginDrain, clearDrain, DEFAULT_HYSTERESIS, type FailoverState,
 } from './failover'
 import {
@@ -43,6 +43,7 @@ const MAX_AZ_PARTICLES = 400                 // az render cap (contracts "≤ cu
 export const MAX_GLOBE_ARCS = 200
 const MAX_SERVER_PARTICLES = 50              // server render cap (contracts: server ≤ 50 traces)
 const REFUSED_EVENT_MIN_GAP_MS = 1000        // ≤1 connection_refused per pathKey per second
+const MIN_HEALTH_SIGNAL_RPS = 0.5            // below this offered rps, errorRate carries no signal
 const DEGRADE_THRESHOLD_MS = 4               // spec decision 9 / Global Constraints
 const DEGRADE_WINDOW_STEPS = 30              // 3s of 100ms steps
 const DEGRADED_STEP_MS = 200
@@ -101,6 +102,10 @@ interface EngineState {
   // contract-drift.md ## PHASE 5, entry logged in Step 7 below).
   popPrevRegion: Map<PopulationId, RegionId>
   checkFailedPrev: Map<string, boolean>
+  // Last step's RAW health signal per scope (failover.ts's probeInstant — manual outage +
+  // error/pressure, never checkFailed). This is what runHealthChecks probes; feeding it the
+  // computed health deadlocked recovery (see probeInstant's doc comment). Engine-internal.
+  probePrev: Map<string, HealthState>
   instanceHealth: Map<InstanceId, HealthState>
   oomRestartAt: Map<InstanceId, number>
   refusedRateLimit: Map<string, number>
@@ -177,6 +182,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
 
   const applyHealth = (scope: 'server' | 'az' | 'region', id: string, inputs: { errorRate: number; cpuPressure: number; checkFailed: boolean; manualDown: boolean }, simMs: number): void => {
     const s = state!
+    s.probePrev.set(id, probeInstant(inputs))
     const before = s.failover.healthByScope.get(id) ?? 'healthy'
     const after = computeHealth(s.failover, id, inputs, simMs, DEFAULT_HYSTERESIS)
     if (after !== before) {
@@ -216,9 +222,15 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const baseline = baselineDemands(doc.traffic, doc.populations, doc.regions)
 
     // ── 2. routing: health checks ──
+    // The probe input is the RAW signal (manual outage now, last step's error/pressure via
+    // probePrev) — never healthOfScope: computeHealth folds checkFailed into its output, so
+    // probing the output self-sustained (a killed region's checks failed forever and it never
+    // recovered after restore — the post-Polish-2 bug).
+    const probeOfScope = (id: string): HealthState =>
+      s.failover.manualOutages.has(id) ? 'down' : (s.probePrev.get(id) ?? 'healthy')
     const scopes = [
-      ...Object.values(doc.regions).map(r => ({ id: r.id, health: healthOfScope(r.id) })),
-      ...Object.values(doc.azs).map(a => ({ id: a.id, health: healthOfScope(a.id) })),
+      ...Object.values(doc.regions).map(r => ({ id: r.id, health: probeOfScope(r.id) })),
+      ...Object.values(doc.azs).map(a => ({ id: a.id, health: probeOfScope(a.id) })),
     ]
     const checkResults = runHealthChecks(s.routing, doc.routing, simMs, scopes)
     const checkFailedById = new Map(checkResults.map(c => [c.id, c.checkFailed]))
@@ -349,12 +361,24 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     for (const f of Object.values(flows)) {
       const inst = compiled.instances[f.instanceId]
       if (!inst) continue
+      // A down instance errors BY DEFINITION — its flows say nothing about whether the scope
+      // has recovered; counting them re-enters the health system's own output as input (the
+      // same deadlock shape as probing checkFailed: dependency traffic kept spraying a down
+      // AZ's instances, err/offered stayed pinned at 1.0, and the AZ could never come back).
+      // Genuine capacity/oom errors on instances that are still up continue to count.
+      if (healthOfInstance(f.instanceId) === 'down') continue
       const agg = serverAgg.get(inst.serverId) ?? { offered: 0, errors: 0 }
       agg.offered += f.offeredRps
       agg.errors += f.errorRps + f.refusedRps
       serverAgg.set(inst.serverId, agg)
     }
-    const rate = (a?: { offered: number; errors: number }): number => (a && a.offered > 0 ? a.errors / a.offered : 0)
+    // Health inputs need a minimum traffic signal: after failover drains a scope, the flow
+    // solver's smoothing leaves an exponentially-decaying residual that never quite reaches
+    // zero — and errors/offered on that vanishing residual stays pinned at 1.0, holding the
+    // scope's instant health at 'down' forever (the region-never-recovers bug's second half).
+    // Below half a request/sec there is no meaningful error signal.
+    const rate = (a?: { offered: number; errors: number }): number =>
+      (a && a.offered > MIN_HEALTH_SIGNAL_RPS ? a.errors / a.offered : 0)
     for (const server of Object.values(doc.servers)) {
       applyHealth('server', server.id, {
         errorRate: rate(serverAgg.get(server.id)),
@@ -368,7 +392,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const offered = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.offered ?? 0), 0)
       const errors = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.errors ?? 0), 0)
       const cpu = srv.reduce((m, v) => Math.max(m, hostResults[v.id]?.cpuPressure ?? 0), 0)
-      applyHealth('az', az.id, { errorRate: offered > 0 ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(az.id) ?? false, manualDown: s.failover.manualOutages.has(az.id) }, simMs)
+      applyHealth('az', az.id, { errorRate: offered > MIN_HEALTH_SIGNAL_RPS ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(az.id) ?? false, manualDown: s.failover.manualOutages.has(az.id) }, simMs)
     }
     for (const region of Object.values(doc.regions)) {
       const azsIn = Object.values(doc.azs).filter(a => a.regionId === region.id)
@@ -376,7 +400,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const offered = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.offered ?? 0), 0)
       const errors = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.errors ?? 0), 0)
       const cpu = srv.reduce((m, v) => Math.max(m, hostResults[v.id]?.cpuPressure ?? 0), 0)
-      applyHealth('region', region.id, { errorRate: offered > 0 ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(region.id) ?? false, manualDown: s.failover.manualOutages.has(region.id) }, simMs)
+      applyHealth('region', region.id, { errorRate: offered > MIN_HEALTH_SIGNAL_RPS ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(region.id) ?? false, manualDown: s.failover.manualOutages.has(region.id) }, simMs)
     }
     const downInstances = Object.values(compiled.instances).filter(i => healthOfInstance(i.id) === 'down').map(i => i.id)
     for (const e of promoteReplicas(s.failover, compiled, doc, downInstances, simMs)) emitEvent(e)
@@ -665,7 +689,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         prevFlows: {}, windowTotals: { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0 },
         lastRoutingSnapshot: { populationRoutes: [] }, popRegion: new Map(), pendingFailover: new Map(),
         popPrevRegion: new Map(),
-        checkFailedPrev: new Map(), instanceHealth: new Map(), oomRestartAt: new Map(), refusedRateLimit: new Map(),
+        checkFailedPrev: new Map(), probePrev: new Map(), instanceHealth: new Map(), oomRestartAt: new Map(), refusedRateLimit: new Map(),
         idSeq: 0, lastBatchMs: -1000, stepCosts: [], degraded: false, rafId: null, lastFrameMs: null,
         renderers: new Map(), rendererSeq: 0,
       }

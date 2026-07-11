@@ -99,6 +99,20 @@ export function setOutage(
   return []
 }
 
+/** The raw signal a health-check probe observes for a scope: manual outage or the scope's own
+ *  error/pressure levels — never `checkFailed`, which is the check system's own OUTPUT.
+ *  runHealthChecks must be fed this, not computeHealth's result: feeding the computed health
+ *  back in deadlocked recovery (down → probe "fails" → checkFailed → instant down → still
+ *  down next step, forever — a restored region never came back). */
+export function probeInstant(inputs: { errorRate: number; cpuPressure: number; manualDown: boolean }): HealthState {
+  if (inputs.manualDown) return 'down'
+  return inputs.errorRate >= DOWN_ERROR_RATE || inputs.cpuPressure >= DOWN_CPU_PRESSURE
+    ? 'down'
+    : inputs.errorRate >= DEGRADED_ERROR_RATE || inputs.cpuPressure >= DEGRADED_CPU_PRESSURE
+      ? 'degraded'
+      : 'healthy'
+}
+
 export function computeHealth(
   state: FailoverState,
   scopeId: string,

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  createFailoverState, setOutage, computeHealth, promoteReplicas, drainFactor,
+  createFailoverState, setOutage, computeHealth, probeInstant, promoteReplicas, drainFactor,
   beginDrain, DEFAULT_HYSTERESIS,
 } from './failover'
 import {
@@ -109,5 +109,21 @@ describe('promoteReplicas', () => {
     const f = replicaFixture()
     const state = createFailoverState()
     expect(promoteReplicas(state, f.compiled, f.doc, [f.replicaInst], 1000)).toEqual([])
+  })
+})
+
+describe('probeInstant', () => {
+  // The health-check probe signal: manual outage + raw error/pressure — NEVER checkFailed,
+  // which is the check system's own output (feeding that back deadlocked recovery).
+  it('reports down for a manual outage regardless of other signals', () => {
+    expect(probeInstant({ errorRate: 0, cpuPressure: 0, manualDown: true })).toBe('down')
+  })
+
+  it('mirrors computeHealth instant thresholds without checkFailed', () => {
+    expect(probeInstant({ errorRate: 0, cpuPressure: 0, manualDown: false })).toBe('healthy')
+    expect(probeInstant({ errorRate: 0.1, cpuPressure: 0, manualDown: false })).toBe('degraded')
+    expect(probeInstant({ errorRate: 0, cpuPressure: 1, manualDown: false })).toBe('degraded')
+    expect(probeInstant({ errorRate: 0.5, cpuPressure: 0, manualDown: false })).toBe('down')
+    expect(probeInstant({ errorRate: 0, cpuPressure: 2, manualDown: false })).toBe('down')
   })
 })

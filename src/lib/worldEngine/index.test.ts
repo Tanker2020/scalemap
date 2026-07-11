@@ -119,6 +119,27 @@ describe('world engine integration', () => {
     sim.engine.stop()
   })
 
+  it('recovers a killed region after the outage is cleared, even once health checks have latched', () => {
+    // Regression (surfaced by the Polish 2 phase gate): runHealthChecks was fed the COMPUTED
+    // health, whose checkFailed input is the check system's own output — once 3 checks failed
+    // (interval 10s x threshold 3), clearing the outage could never reset the counter and the
+    // region stayed down forever. The probe now reads the raw signal (manual outage +
+    // error/pressure), so recovery drains the counter and hysteresis brings the region back.
+    const f = e2eFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(3)
+    sim.engine.setOutage('region', f.r1.id, true)
+    sim.stepFor(32)                                   // past 3 check intervals -> checkFailed latches
+    expect(sim.latest().regions[f.r1.id].health).toBe('down')
+    sim.engine.setOutage('region', f.r1.id, false)
+    sim.stepFor(20)                                   // next due check resets + 5s recovery hysteresis
+    expect(sim.latest().regions[f.r1.id].health).toBe('healthy')
+    // and the geo-routed population comes home once its TTL re-expires
+    const route = sim.latest().world.populationRoutes.find(r => r.populationId === f.pop.id)?.regionId
+    expect(route).toBe(f.r1.id)
+    sim.engine.stop()
+  })
+
   it('OOM-kills the largest consumer under a RAM-starved fixture and restarts it', () => {
     const doc = createWorld()
     doc.traffic.autoBaseline = false

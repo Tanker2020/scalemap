@@ -144,6 +144,11 @@ export function AzCanvas() {
         ? { stroke: 'var(--color-danger)', strokeDasharray: '5 4' }
         : { stroke: 'var(--color-success)' },
       labelStyle: { fill: e.blocked > 0 ? 'var(--color-danger)' : 'var(--color-text-muted)', fontSize: 10, fontFamily: 'var(--font-mono)' },
+      // React Flow's default label background is an opaque WHITE rect — a glaring artifact on
+      // the dark rack (user screenshot 2026-07-11). Match the node surface in both themes.
+      labelBgStyle: { fill: 'var(--color-node-base)', fillOpacity: 0.92, stroke: 'var(--color-node-border)' },
+      labelBgPadding: [4, 2] as [number, number],
+      labelBgBorderRadius: 3,
       // Blocked edges keep their static red dash — never shimmer a refused path.
       animated: e.blocked === 0 && (rpsByServer.get(e.source) ?? 0) > 0,
     }))

@@ -170,12 +170,6 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
         trailing={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {metrics && <MicroBars cpu={cpuMean} ram={ramFrac} io={metrics.diskIoFraction} />}
-            {metrics && (() => {
-              const word = healthWord(cpuMean, ramFrac)
-              const color = word === 'comfortable' ? 'var(--color-success)'
-                : word === 'tight' ? 'var(--color-warning)' : 'var(--color-danger)'
-              return <span style={{ fontSize: 10, color }}>{word}</span>
-            })()}
             <span style={{ fontSize: 10, color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
               ${server.hourlyUsd}/hr
             </span>
@@ -186,11 +180,19 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
         }
       >
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-          <button className="kit-press" style={{ ...smallBtn, border: 'none', padding: 0, background: 'transparent', textAlign: 'left' }} onClick={onToggle}>
+          <button className="kit-press" style={{ ...smallBtn, border: 'none', padding: 0, background: 'transparent', textAlign: 'left', whiteSpace: 'nowrap' }} onClick={onToggle}>
             {expanded ? '▾' : '▸'} {server.label} <span style={{ color: 'var(--color-text-muted)' }}>({server.kind})</span>
           </button>
           <span style={{ fontSize: 9.5, color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
             {server.kind} · {server.specs.vcpu}c/{server.specs.ramMb / 1024}G · {azSuffix}
+            {/* The health word lives on the meta line, not in the trailing — with it there the
+                trailing grew to ~195px and squeezed server names into a three-line wrap. */}
+            {metrics && (() => {
+              const word = healthWord(cpuMean, ramFrac)
+              const color = word === 'comfortable' ? 'var(--color-success)'
+                : word === 'tight' ? 'var(--color-warning)' : 'var(--color-danger)'
+              return <> · <span style={{ fontSize: 10, color }}>{word}</span></>
+            })()}
           </span>
         </div>
         {metrics && (
