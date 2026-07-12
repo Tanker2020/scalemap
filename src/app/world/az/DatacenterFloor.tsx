@@ -420,11 +420,11 @@ export function DatacenterFloor() {
         <button style={btnStyle} aria-label="fit floor to view" onClick={camera.fit}>fit</button>
       </div>
 
-      <InspectorV2
-        azId={azId}
-        selectedServerId={selectedServerId}
-        onClearSelection={() => setSelectedServerId(null)}
-      />
+      {/* Polish 4 T4 (spec D6): InspectorV2 retired its selected-server pane — the dock's
+          faceplate (dock/ServerFaceplate.tsx) now renders that same `selectedServerId`
+          selection instead, so this stays traces-only. Floor selection still drives the
+          highlight below AND the dock (ui.store.selectedServerId, read directly by both). */}
+      <InspectorV2 azId={azId} />
     </div>
   )
 }

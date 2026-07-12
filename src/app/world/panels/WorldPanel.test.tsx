@@ -292,7 +292,7 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
     expect(screen.getByText('No findings in this scope.')).toBeInTheDocument()
   })
 
-  it('az scope: selecting a server (ui.store) narrows further to server scope, four-pill rail', () => {
+  it('az scope: selecting a server (ui.store) narrows further to server scope, four-pill rail, and renders the faceplate WITH "enter board" (T4)', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
     const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
     const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
@@ -305,7 +305,24 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
     act(() => useUiStore.getState().setSelectedServerId(serverId))
 
     expect(screen.getByTestId('scope-pill-server')).toHaveTextContent('db-replica')
-    expect(screen.getByTestId('config-placeholder')).toHaveTextContent('db-replica')
+    // Server scope's REAL Config body (T4: ServerFaceplate, not the generic "coming soon"
+    // placeholder — nothing renders that anymore at any scope). A floor SELECTION (not a real
+    // board navigation) is exactly the case that should show "enter board".
+    expect(screen.getByTestId('server-faceplate')).toHaveTextContent('db-replica')
+    expect(screen.queryByTestId('config-placeholder')).not.toBeInTheDocument()
+    expect(screen.getByTestId('faceplate-enter')).toBeInTheDocument()
+  })
+
+  it('server scope reached via a real board navigation (goServer) renders the faceplate WITHOUT "enter board" (T4)', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useNavStore.getState().goServer(regionId, azId, serverId)
+
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+
+    expect(screen.getByTestId('server-faceplate')).toBeInTheDocument()
+    expect(screen.queryByTestId('faceplate-enter')).not.toBeInTheDocument()
   })
 
   it('server scope Cost tab shows compute cost plus the documented egress caveat', () => {

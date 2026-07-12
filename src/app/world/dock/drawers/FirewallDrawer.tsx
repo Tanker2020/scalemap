@@ -1,0 +1,78 @@
+// src/app/world/dock/drawers/FirewallDrawer.tsx
+// Polish 4 T4 (spec D6): the FIREWALL drawer body — numbered rule sentences built with the
+// board's EXISTING grammar helpers (`server/ruleSentence.ts`'s `ruleSourceWords`/
+// `rulePortPhrase` — imported, not re-derived, per the brief), `Let`/`Block` colored
+// success/danger (InspectorRail.tsx's exact rendering, `#DBEAFE` bold spans included). `+ rule`
+// appends `createServer`'s default rule shape (factories.ts) byte-for-byte via
+// `updateServer(id, { firewall: [...] })` — deep rule editing stays on the board (InspectorRail),
+// this drawer only appends/reads.
+import { type ReactElement } from 'react'
+import { useWorldStore } from '../../../store/world.store'
+import { nextWorldId } from '../../../../lib/world/factories'
+import { ruleSourceWords, rulePortPhrase } from '../../server/ruleSentence'
+import type { Server } from '../../../../lib/world/types'
+
+export function firewallPv(server: Server): string {
+  const allow = server.firewall.filter(r => r.action === 'allow').length
+  const deny = server.firewall.filter(r => r.action === 'deny').length
+  return `${allow} allow · ${deny} deny`
+}
+
+export interface FirewallDrawerProps {
+  server: Server
+  running: boolean
+}
+
+const SENTENCE_ID_COLOR = '#DBEAFE'
+
+export function FirewallDrawer({ server, running }: FirewallDrawerProps): ReactElement {
+  const addRule = () => {
+    // Byte-for-byte the same default rule shape createServer() (factories.ts) gives a fresh
+    // server: allow · any port · any protocol · internal source. `nextWorldId('fw')` is the
+    // SAME id generator factories.ts already exports and uses for this exact purpose.
+    const rule = { id: nextWorldId('fw'), action: 'allow' as const, port: 'any' as const, protocol: 'any' as const, source: 'internal' }
+    useWorldStore.getState().updateServer(server.id, { firewall: [...server.firewall, rule] })
+  }
+
+  return (
+    <div data-testid="firewall-drawer-body">
+      {server.firewall.map((r, i) => (
+        <div
+          key={r.id} data-testid="firewall-drawer-sentence"
+          style={{
+            color: 'var(--color-text-secondary)', background: 'var(--color-canvas)',
+            borderLeft: '2px solid var(--kit-accent-dim)', borderRadius: 5, padding: '6px 9px',
+            margin: '4px 0', lineHeight: 1.6, fontSize: 10,
+          }}
+        >
+          {i + 1} · <b style={{ color: r.action === 'allow' ? 'var(--color-success)' : 'var(--color-danger)' }}>
+            {r.action === 'allow' ? 'Let' : 'Block'}
+          </b>{' '}
+          <b style={{ color: SENTENCE_ID_COLOR }}>{ruleSourceWords(r.source)}</b>{' '}
+          {r.action === 'allow' ? 'reach' : 'reaching'}{' '}
+          <b style={{ color: SENTENCE_ID_COLOR }}>{rulePortPhrase(r)}</b>
+          {r.protocol === 'udp' ? ' udp' : ''}
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: 6, marginTop: 6, alignItems: 'center' }}>
+        <button
+          type="button" className="kit-press" data-testid="firewall-add-rule"
+          style={{
+            font: '10px var(--font-mono)', background: 'var(--color-node-base)',
+            border: '1px solid var(--color-node-border)', borderRadius: 5, padding: '4px 12px',
+            color: 'var(--color-text-secondary)', cursor: running ? 'default' : 'pointer',
+            opacity: running ? 0.35 : 1,
+          }}
+          disabled={running}
+          title={running ? 'stop the simulation to edit' : undefined}
+          onClick={addRule}
+        >
+          + rule
+        </button>
+      </div>
+      <div style={{ fontSize: 9.5, color: 'var(--color-text-muted)', marginTop: 6 }}>
+        edit rules on the board
+      </div>
+    </div>
+  )
+}

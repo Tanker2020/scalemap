@@ -27,3 +27,12 @@ export const INSTANCE_CATALOG: InstancePreset[] = [
 export function getPreset(id: string): InstancePreset | undefined {
   return INSTANCE_CATALOG.find(p => p.id === id)
 }
+
+// Polish 4 T4 (spec D6): the hardware drawer's vCPU/RAM knobs snap across this ladder — every
+// preset of the server's own kind, sorted ascending vcpu-then-ramMb (a fresh array each call, so
+// no caller can mutate a shared reference out from under another).
+export function presetLadder(kind: ServerKind): InstancePreset[] {
+  return INSTANCE_CATALOG
+    .filter(p => p.kind === kind)
+    .sort((a, b) => a.specs.vcpu - b.specs.vcpu || a.specs.ramMb - b.specs.ramMb)
+}

@@ -19,6 +19,7 @@ import { AtlasHeader } from '../dock/AtlasHeader'
 import { RegionConfigTab } from '../dock/RegionConfigTab'
 import { FloorPlanHeader } from '../dock/FloorPlanHeader'
 import { AzConfigTab } from '../dock/AzConfigTab'
+import { ServerFaceplate } from '../dock/ServerFaceplate'
 import { deriveScope, scopeTabs, type DockScope } from '../dock/scope'
 import { scopedEvents, scopedFindings, scopedCost } from '../dock/scopeData'
 import type { WorldDoc, CompileFinding } from '../../../lib/world/types'
@@ -281,15 +282,22 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
             {tab === 'cost' && <CostTab />}
           </>
         ) : (
-          // Region/AZ/server scope (D2): Config is a placeholder for server scope only now
-          // (T4) — out of scope here by design. Region's Config landed in T2 (RegionConfigTab);
-          // AZ's landed this task (T3, AzConfigTab, under the FloorPlanHeader minimap above).
-          // Analysis/Events/Cost are real, wired to this scope's data via T1's scopeData helpers
-          // (computed above) — they are NOT placeholders and nothing later replaces them.
+          // Region/AZ/server scope (D2): every scope's Config now has a real instrument — no
+          // placeholder remains. Region's landed in T2 (RegionConfigTab); AZ's in T3
+          // (AzConfigTab, under the FloorPlanHeader minimap above); server's this task (T4,
+          // ServerFaceplate — the faceplate + drawer spine, under no header since T4 renders
+          // none for server scope). Analysis/Events/Cost are real, wired to this scope's data
+          // via T1's scopeData helpers (computed above) — they are NOT placeholders and nothing
+          // later replaces them.
           <>
             {tab === 'config' && (
               scope.kind === 'region' ? <RegionConfigTab regionId={scope.regionId} />
               : scope.kind === 'az' ? <AzConfigTab azId={scope.azId} />
+              // showEnter = true only when this server scope came from an AZ-level floor
+              // selection (deriveScope's OTHER path into 'server' scope, dock/scope.ts) rather
+              // than a real board navigation — "enter board" is meaningless once you're already
+              // on the board (nav.level === 'server').
+              : scope.kind === 'server' ? <ServerFaceplate serverId={scope.serverId} showEnter={navLevel === 'az'} />
               : <ScopedConfigBody scope={scope} doc={doc} />
             )}
             {tab === 'analysis' && (
