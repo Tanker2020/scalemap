@@ -236,6 +236,47 @@ describe('ServerFaceplate — action row', () => {
     expect(removeBtn).toBeDisabled()
     expect(removeBtn).toHaveAttribute('title', 'stop the simulation to edit')
   })
+
+  // T4 fix wave (finding 3): removing the server whose own board you're standing on
+  // (showEnter === false <=> nav.level === 'server', WorldPanel.tsx's
+  // `showEnter={navLevel === 'az'}`) must not strand nav pointed at a now-deleted serverId —
+  // `nav.up()` (an EXISTING nav.store dispatch, no new store action) should fire alongside the
+  // removal, landing back on this server's AZ.
+  it('"remove…" also navigates up off the board when showEnter is false (reached by standing on the board)', () => {
+    const { regionId, azId, serverId } = seedServer()
+    useNavStore.getState().goServer(regionId, azId, serverId)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    const removeBtn = screen.getByTestId('faceplate-remove')
+    fireEvent.click(removeBtn)
+    fireEvent.click(screen.getByTestId('faceplate-remove'))
+
+    expect(useWorldStore.getState().doc.servers[serverId]).toBeUndefined()
+    const nav = useNavStore.getState()
+    expect(nav.level).toBe('az')
+    expect(nav.regionId).toBe(regionId)
+    expect(nav.azId).toBe(azId)
+    expect(nav.serverId).toBeNull()
+  })
+
+  // Contrast case: showEnter === true means the server scope came from an AZ-floor selection
+  // (still AT az level) — nav never pointed AT the server, so no nav dispatch is needed; only
+  // the lifted ui.store selection (already covered above) is cleared.
+  it('"remove…" does NOT change nav when showEnter is true (reached via AZ-floor selection)', () => {
+    const { regionId, azId, serverId } = seedServer()
+    useNavStore.getState().goAz(regionId, azId)
+    useUiStore.setState({ selectedServerId: serverId })
+    render(<ServerFaceplate serverId={serverId} showEnter />)
+    const removeBtn = screen.getByTestId('faceplate-remove')
+    fireEvent.click(removeBtn)
+    fireEvent.click(screen.getByTestId('faceplate-remove'))
+
+    expect(useWorldStore.getState().doc.servers[serverId]).toBeUndefined()
+    expect(useUiStore.getState().selectedServerId).toBeNull()
+    const nav = useNavStore.getState()
+    expect(nav.level).toBe('az')
+    expect(nav.regionId).toBe(regionId)
+    expect(nav.azId).toBe(azId)
+  })
 })
 
 describe('ServerFaceplate — unknown server', () => {

@@ -69,6 +69,21 @@ describe('HardwareDrawer', () => {
     expect(screen.getByTestId('ram-hint')).toHaveTextContent('headroom for ~')
   })
 
+  it('RAM hint is singular ("1 connection") when the computed headroom rounds to 1 (global-constraints singular-aware-copy law)', () => {
+    const { serverId } = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('api')
+    useWorldStore.getState().addPlacement(bpId, serverId)
+    // vps-medium has 8192 MB RAM; pin resident demand to 8191 MB and per-connection cost to
+    // 1 MB, so headroom = round((8192 - 8191) / 1) = exactly 1.
+    useWorldStore.getState().updateBlueprint(bpId, {
+      workload: { cpuMsPerRequest: 5, ramBaseMb: 8191, ramPerConnMb: 1, diskIoPerRequest: 0 },
+    })
+    const doc = currentDoc()
+    render(<HardwareDrawer server={currentServer(serverId)} doc={doc} compiled={compileWorld(doc)} running={false} />)
+    expect(screen.getByTestId('ram-hint')).toHaveTextContent('headroom for ~1 connection at 1 MB each')
+    expect(screen.getByTestId('ram-hint')).not.toHaveTextContent('1 connections')
+  })
+
   it('moving the vCPU knob commits the target preset\'s FULL set (specs/hourlyUsd/oversubscription/burstable)', () => {
     const { serverId } = seedServer()
     const doc = currentDoc()

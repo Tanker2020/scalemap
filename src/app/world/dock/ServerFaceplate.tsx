@@ -96,6 +96,7 @@ export function ServerFaceplate({ serverId, showEnter }: ServerFaceplateProps): 
   const navRegionId = useNavStore(s => s.regionId)
   const navAzId = useNavStore(s => s.azId)
   const goServer = useNavStore(s => s.goServer)
+  const navUp = useNavStore(s => s.up)
   const setSelectedServerId = useUiStore(s => s.setSelectedServerId)
   const reducedMotion = useReducedMotion() ?? false
   const display = useServerDisplayMetrics(serverId)
@@ -135,6 +136,14 @@ export function ServerFaceplate({ serverId, showEnter }: ServerFaceplateProps): 
     if (!confirmingRemove) { setConfirmingRemove(true); return }
     useWorldStore.getState().removeServer(serverId)
     setSelectedServerId(null)
+    // showEnter === false means this faceplate was reached by standing ON this server's own
+    // board (nav.level === 'server', WorldPanel.tsx's `showEnter={navLevel === 'az'}`) — the
+    // server that just vanished is still nav's serverId, which would otherwise strand the
+    // board/dock on a deleted entity until the user manually backs out. `nav.up()` (existing
+    // dispatch, nav.store.ts) already knows how to leave 'server' level cleanly (-> its own
+    // regionId/azId's AZ). showEnter === true (reached via an AZ-floor selection, still AT az
+    // level) needs no nav change — clearing the selection above is already correct there.
+    if (!showEnter) navUp()
   }
 
   return (

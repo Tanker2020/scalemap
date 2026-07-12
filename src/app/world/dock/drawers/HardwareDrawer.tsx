@@ -72,8 +72,9 @@ export function HardwareDrawer({ server, doc, compiled, running }: HardwareDrawe
 
   const residentMb = residentRamDemandMb(server.id, doc, compiled)
   const ramPerConnMb = firstBlueprint?.workload.ramPerConnMb ?? 0
+  const headroomConns = Math.max(0, Math.round((server.specs.ramMb - residentMb) / ramPerConnMb))
   const ramHintText = ramPerConnMb > 0
-    ? `headroom for ~${Math.max(0, Math.round((server.specs.ramMb - residentMb) / ramPerConnMb)).toLocaleString('en-US')} connections at ${ramPerConnMb} MB each`
+    ? `headroom for ~${headroomConns.toLocaleString('en-US')} connection${headroomConns === 1 ? '' : 's'} at ${ramPerConnMb} MB each`
     : null
 
   const disabled = running || ladder.length === 0

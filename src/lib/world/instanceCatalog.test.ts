@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { INSTANCE_CATALOG, getPreset, presetLadder } from './instanceCatalog'
+import type { ServerKind } from './types'
 
 describe('instance catalog', () => {
   it('has unique ids and positive specs/pricing', () => {
@@ -62,9 +63,9 @@ describe('presetLadder', () => {
   })
 
   it('returns an empty array for a kind with no presets, never throws', () => {
-    // Both real kinds ('vps'/'dedicated') are populated today; this just proves the filter
-    // degrades to [] rather than undefined/throw for a hypothetical unmatched kind.
-    const ladder = INSTANCE_CATALOG.filter(p => p.kind === ('nonexistent' as never))
+    // Both real kinds ('vps'/'dedicated') are populated today; this just proves presetLadder
+    // itself degrades to [] rather than undefined/throw for a hypothetical unmatched kind.
+    const ladder = presetLadder('nonexistent' as ServerKind)
     expect(ladder).toEqual([])
   })
 })
