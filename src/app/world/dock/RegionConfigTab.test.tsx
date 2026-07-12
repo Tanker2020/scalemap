@@ -2,7 +2,7 @@
 // Polish 4 T2 (spec D4): region scope's Config tab — this region's AZ rows + a "+ az" button
 // reusing TopologyPanel's exact `addAz` dispatch, edit-locked while running.
 import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { RegionConfigTab } from './RegionConfigTab'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
@@ -104,5 +104,27 @@ describe('RegionConfigTab', () => {
     const btn = screen.getByText('+ az')
     expect(btn).not.toBeDisabled()
     expect(btn).not.toHaveAttribute('title')
+  })
+
+  // T2 review fix (motion-law violation): spec D3 gives the dock exactly ONE ambient stroke
+  // (the atlas arc, mounted above the tab bar at region scope) — everything else in every dock
+  // is hover-reactive only. EdgeRow's `kit-ripple` class runs a non-hover-gated `animation:
+  // kit-ripple 1.6s ease-out infinite`, so an AZ row must never carry it, even with a healthy
+  // status and the sim running (the two conditions that would have triggered it pre-fix).
+  it('AZ row status dots never carry the ripple animation, even with a healthy status while running (D3: one ambient stroke per dock)', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    render(<RegionConfigTab regionId={regionId} />)
+
+    const batch: MetricsBatch = {
+      simMs: 1000, instances: {}, servers: {},
+      azs: { [azId]: { azId, rps: 42, errorRate: 0, p50Ms: 5, healthScore: 100, health: 'healthy', serverCount: 0, instanceCount: 0 } },
+      regions: {},
+      world: { totalRps: 42, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
+    }
+    act(() => { useSimulationStore.setState({ running: true, latestBatch: batch }) })
+
+    const dot = screen.getByTestId('kit-dot')
+    expect(dot.className).not.toMatch(/kit-ripple/)
   })
 })

@@ -39,7 +39,11 @@ export function RegionConfigTab({ regionId }: RegionConfigTabProps) {
           <EdgeRow
             key={az.id}
             status={metrics?.health ?? null}
-            ripple={running}
+            // No ripple here (T2 review fix): spec D3's motion law gives the dock exactly ONE
+            // ambient stroke — the atlas arc mounted above the tab bar at region scope — and
+            // every other dock element is hover-reactive only. `kit-ripple` animates
+            // continuously (not hover-gated), so passing `running` here would add a second,
+            // per-row ambient motion source alongside the marching atlas. Static color dot only.
             onClick={() => goAz(regionId, az.id)}
           >
             {/* One block (not EdgeRow's separate `trailing` slot) so the rps figure — right-
