@@ -1,0 +1,455 @@
+<title>Scalemap — Polish 4 v1: The Dock Watches Where You Are</title>
+<style>
+  :root {
+    --canvas: #0D0F12; --surface: #0F1117; --hover: #13161E; --node: #161920;
+    --border: #2A2E38; --tb: #1E2128;
+    --t1: #F1F5F9; --t2: #94A3B8; --t3: #64748B;
+    --blue: #5B9CF6; --amber: #E0A552; --teal: #3FC7B8; --violet: #9C8CE0;
+    --danger: #EF4444; --success: #22C55E; --warning: #F59E0B;
+    --hud: #7CFFE9; --hud-dim: #2DD4BF44;
+    --price: #6EE7B7;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { background: var(--canvas); }
+  body { font: 13px/1.6 'JetBrains Mono', ui-monospace, Menlo, monospace; color: var(--t1); padding: 40px 20px 90px; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  h1 { font-size: 21px; }
+  .k { color: var(--hud); text-shadow: 0 0 9px var(--hud-dim); }
+  .sub { color: var(--t2); margin-top: 8px; max-width: 78ch; }
+  .sub b { color: var(--t1); }
+  .lvhead { margin: 64px 0 6px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .lvhead .tag { font-size: 10px; letter-spacing: 0.14em; padding: 3px 9px; border-radius: 4px; border: 1px solid; }
+  .lvhead h2 { font-size: 16px; }
+  .thesis { color: var(--t2); max-width: 82ch; margin: 6px 0 16px; }
+  .thesis b { color: var(--t1); }
+  .stage { background: var(--surface); border: 1px solid var(--tb); border-radius: 10px; padding: 16px; overflow-x: auto; }
+  .caption { font-size: 11px; color: var(--t3); margin-top: 10px; max-width: 88ch; }
+  .caption b { color: var(--t2); }
+  code { background: var(--node); border: 1px solid var(--tb); border-radius: 3px; padding: 0 5px; font-size: 11px; }
+  button { font: inherit; }
+
+  @keyframes dashflow { to { stroke-dashoffset: -30; } }
+  @keyframes blink { 0%, 72% { opacity: 1; } 73%, 84% { opacity: 0.25; } 85%, 100% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+  /* ═══ THE DOCK ═══ */
+  .dockdemo { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+  .dock { width: 372px; background: #101318; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; flex-shrink: 0; }
+
+  /* scope rail — the one new piece of chrome */
+  .scoperail { display: flex; align-items: center; gap: 0; padding: 8px 10px; background: #0c0f14; border-bottom: 1px solid var(--tb); font-size: 10px; }
+  .scopeseg { border: 1px solid transparent; background: none; color: var(--t3); padding: 2px 7px; border-radius: 4px; cursor: pointer; transition: color 0.13s, border-color 0.13s, background 0.13s; white-space: nowrap; }
+  .scopeseg:hover { color: var(--hud); border-color: var(--hud-dim); }
+  .scopeseg.here { color: var(--hud); background: #7cffe910; border-color: var(--hud-dim); text-shadow: 0 0 7px var(--hud-dim); }
+  .scopesep { color: #2a3442; margin: 0 1px; }
+  .scoperail .eye { margin-left: auto; font-size: 9px; color: var(--t3); letter-spacing: 0.08em; }
+  .scoperail .eye b { color: var(--hud); font-weight: 500; }
+
+  .docksum { padding: 9px 12px; border-bottom: 1px solid var(--tb); font-size: 11px; color: var(--t2); }
+  .docksum b { color: var(--t1); }
+  .docksum .price { color: var(--price); }
+  .docksum .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--success); box-shadow: 0 0 5px var(--success); margin-right: 5px; vertical-align: 0; }
+  .docksum .dot.down { background: var(--danger); box-shadow: 0 0 5px var(--danger); }
+
+  .docktabs { display: flex; gap: 2px; padding: 7px 8px 0; border-bottom: 1px solid var(--tb); font-size: 10px; }
+  .docktab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--t3); padding: 4px 9px 6px; cursor: pointer; }
+  .docktab.on { color: var(--t1); border-bottom-color: var(--hud); }
+  .docktab .n { font-size: 8.5px; background: var(--node); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; margin-left: 4px; color: var(--warning); }
+  .dockbody { padding: 12px; font-size: 11px; }
+
+  .secline { font-size: 9px; letter-spacing: 0.14em; color: var(--t3); margin: 12px 0 7px; display: flex; align-items: center; gap: 8px; }
+  .secline::after { content: ''; flex: 1; height: 1px; background: #1c2430; }
+  .secline:first-child { margin-top: 0; }
+
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 5px; }
+  .row:hover { background: var(--hover); }
+  .row .l { color: var(--t2); }
+  .row .v { color: var(--t1); font-variant-numeric: tabular-nums; }
+  .row .v.price { color: var(--price); }
+  .row .v.ok { color: var(--success); }
+  .row .v.warn { color: var(--warning); }
+
+  .sentence { color: var(--t2); background: var(--node); border-left: 2px solid var(--hud-dim); border-radius: 5px; padding: 7px 10px; margin: 4px 0; line-height: 1.7; }
+  .sentence b { color: var(--t1); }
+  .sentence .slot { display: inline-block; background: #7cffe912; border: 1px solid var(--hud-dim); color: var(--hud); border-radius: 4px; padding: 0 7px; cursor: ew-resize; }
+  .sentence .act { color: var(--success); } .sentence .deny { color: var(--danger); }
+
+  .chipline { display: flex; align-items: center; gap: 7px; padding: 5px 8px; border-radius: 5px; }
+  .chipline:hover { background: var(--hover); }
+  .chipline .sw { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+  .chipline .nm { color: var(--t1); }
+  .chipline .meta { color: var(--t3); font-size: 10px; }
+  .chipline .step { margin-left: auto; display: flex; gap: 3px; }
+  .chipline .step button { width: 18px; height: 18px; background: var(--node); border: 1px solid var(--border); border-radius: 4px; color: var(--t2); cursor: pointer; font-size: 10px; line-height: 1; }
+  .chipline .step button:hover { border-color: var(--hud-dim); color: var(--hud); }
+
+  .actrow { display: flex; gap: 6px; margin-top: 12px; }
+  .actrow button { font-size: 10px; background: var(--node); border: 1px solid var(--border); border-radius: 5px; padding: 4px 12px; color: var(--t2); cursor: pointer; transition: border-color 0.13s, color 0.13s, transform 0.1s; }
+  .actrow button:hover { border-color: var(--hud-dim); color: var(--hud); }
+  .actrow button:active { transform: scale(0.96); }
+  .actrow button.danger { color: var(--danger); border-color: #ef444440; }
+  .actrow button.danger:hover { border-color: var(--danger); }
+  .actrow button:disabled { opacity: 0.35; cursor: default; }
+
+  .watchband { background: #2a1f0b66; border: 1px solid #f59e0b3d; color: var(--warning); border-radius: 5px; padding: 5px 10px; font-size: 10px; margin-bottom: 10px; letter-spacing: 0.04em; }
+
+  .identhead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+  .identhead .nm { font-size: 13px; color: var(--t1); }
+  .identhead .kind { font-size: 8.5px; letter-spacing: 0.1em; border: 1px solid; border-radius: 3px; padding: 1px 6px; }
+  .identhead .kind.vps { color: var(--teal); border-color: #3fc7b855; }
+  .identhead .kind.ded { color: var(--blue); border-color: #5b9cf655; }
+  .identhead .price { color: var(--price); font-size: 11px; margin-left: auto; }
+
+  .specknob { margin: 6px 0; }
+  .specknob .lab { display: flex; justify-content: space-between; font-size: 10px; color: var(--t2); }
+  .specknob .lab .v { color: var(--t1); }
+  .specknob .track { position: relative; height: 4px; background: #1a212c; border-radius: 2px; margin-top: 5px; }
+  .specknob .track i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: linear-gradient(90deg, #2dd4bf55, var(--hud)); }
+  .specknob .track b { position: absolute; top: 50%; width: 11px; height: 11px; border-radius: 50%; background: var(--hud); transform: translate(-50%, -50%); box-shadow: 0 0 8px var(--hud-dim); cursor: ew-resize; }
+  .specknob .hint { font-size: 9.5px; color: var(--t3); margin-top: 4px; }
+  .specknob .hint b { color: var(--hud); }
+
+  .ghostnote { font-size: 10px; color: var(--t3); padding: 8px 10px; border: 1px dashed #242c3a; border-radius: 6px; margin-top: 10px; }
+
+  /* switcher buttons above the dock demo */
+  .demoswitch { display: flex; gap: 6px; margin-bottom: 14px; }
+  .demoswitch button { font-size: 10px; background: var(--node); border: 1px solid var(--border); color: var(--t2); border-radius: 5px; padding: 5px 14px; cursor: pointer; }
+  .demoswitch button.on { color: var(--hud); border-color: var(--hud-dim); background: #7cffe90d; }
+  .dockstate { display: none; }
+  .dockstate.on { display: block; }
+
+  .sideexpl { flex: 1; min-width: 280px; font-size: 11.5px; color: var(--t2); line-height: 1.75; }
+  .sideexpl h4 { color: var(--hud); font-size: 10px; letter-spacing: 0.14em; margin: 14px 0 5px; text-shadow: 0 0 8px var(--hud-dim); }
+  .sideexpl h4:first-child { margin-top: 0; }
+  .sideexpl b { color: var(--t1); }
+  .sideexpl li { margin: 3px 0 3px 0; }
+  .sideexpl ul { padding-left: 18px; }
+
+  /* ═══ TIMELINE ═══ */
+  .tl { min-width: 900px; }
+  .tl .narr { background: var(--node); border: 1px solid var(--tb); border-left: 3px solid var(--warning); border-radius: 6px; padding: 8px 12px; font-size: 11px; color: var(--t2); margin-bottom: 14px; }
+  .tl .narr b { color: var(--t1); }
+  .tl .narr .t { color: var(--warning); }
+  .lanes { position: relative; }
+  .lane { display: flex; align-items: center; gap: 10px; height: 44px; }
+  .lane .lbl { width: 92px; flex-shrink: 0; font-size: 10px; color: var(--t2); text-align: right; }
+  .lane .lbl small { display: block; color: var(--t3); font-size: 8.5px; }
+  .lane .track { position: relative; flex: 1; height: 100%; border-left: 1px solid #1c2430; }
+  .lane .track::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: #1a212c; }
+  .lane .band { position: absolute; top: calc(50% - 5px); height: 10px; border-radius: 5px; }
+  .band.ok { background: #22c55e22; border: 1px solid #22c55e3d; }
+  .band.dead { background: #ef444426; border: 1px solid #ef44444d; }
+  .band.strain { background: #f59e0b22; border: 1px solid #f59e0b44; }
+  .ev { position: absolute; top: 50%; transform: translate(-50%, -50%); width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 9px; cursor: pointer; transition: transform 0.12s; z-index: 2; }
+  .ev:hover { transform: translate(-50%, -50%) scale(1.35); }
+  .ev.kill { background: #2a0f0f; border: 1.5px solid var(--danger); color: var(--danger); }
+  .ev.hc { background: #241b07; border: 1.5px solid var(--warning); color: var(--warning); }
+  .ev.shift { background: #0a1f1c; border: 1.5px solid var(--teal); color: var(--teal); }
+  .ev.promote { background: #16121f; border: 1.5px solid var(--violet); color: var(--violet); }
+  .ev .tip { position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); background: #0d1014f2; border: 1px solid var(--border); border-radius: 5px; padding: 4px 9px; font-size: 9.5px; color: var(--t2); white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity 0.13s; }
+  .ev:hover .tip { opacity: 1; }
+  .causal { position: absolute; pointer-events: none; overflow: visible; z-index: 1; }
+  .causal path { fill: none; stroke: #64748b66; stroke-width: 1; stroke-dasharray: 3 4; }
+  .causal polygon { fill: #64748b99; }
+  .taxis { display: flex; margin-left: 102px; justify-content: space-between; font-size: 9px; color: var(--t3); border-top: 1px solid #1c2430; padding-top: 4px; margin-top: 2px; }
+  .tlleg { display: flex; gap: 16px; font-size: 9.5px; color: var(--t3); margin-top: 10px; flex-wrap: wrap; }
+  .tlleg i { display: inline-flex; width: 12px; height: 12px; border-radius: 50%; margin-right: 5px; vertical-align: -2px; }
+
+  /* ═══ GLOBE TRAFFIC ═══ */
+  .globedemo { position: relative; min-width: 900px; height: 360px; border-radius: 10px; overflow: hidden; background: radial-gradient(circle at 50% 120%, #0e1a2e 0%, #090b10 60%); }
+  .globedemo .sphere { position: absolute; left: 50%; top: 78%; width: 560px; height: 560px; transform: translate(-50%, -20%); border-radius: 50%; background: radial-gradient(circle at 42% 30%, #16233a 0%, #0b1220 55%, #070a11 75%); box-shadow: 0 0 60px #3fc7b81a, inset -30px -20px 80px #000; }
+  .globedemo .hudbtn { position: absolute; top: 12px; left: 12px; display: flex; gap: 6px; }
+  .globedemo .hudbtn button { font-size: 10px; background: #10141bee; border: 1px solid var(--border); color: var(--t2); border-radius: 5px; padding: 4px 11px; cursor: pointer; }
+  .globedemo .hudbtn button.mode { color: var(--hud); border-color: var(--hud-dim); background: #7cffe910; box-shadow: 0 0 10px #7cffe91c; }
+  .pin { position: absolute; width: 8px; height: 8px; border-radius: 50%; }
+  .pin.ok { background: var(--success); box-shadow: 0 0 8px var(--success); }
+  .pin.dead { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
+  .pin.dead::after { content: ''; position: absolute; inset: -7px; border-radius: 50%; border: 1.5px solid var(--danger); animation: blink 1.4s steps(1) infinite; opacity: 0.6; }
+  .pinlbl { position: absolute; font-size: 9px; color: #bfd6ff; white-space: nowrap; }
+  .ghostpop { position: absolute; }
+  .ghostpop .x { width: 14px; height: 14px; border: 1.5px dashed var(--hud); border-radius: 50%; position: relative; animation: blink 2s steps(1) infinite; }
+  .ghostpop .x::before, .ghostpop .x::after { content: ''; position: absolute; background: var(--hud); }
+  .ghostpop .x::before { left: 50%; top: -4px; bottom: -4px; width: 1px; transform: translateX(-50%); }
+  .ghostpop .x::after { top: 50%; left: -4px; right: -4px; height: 1px; transform: translateY(-50%); }
+  .ghostcard { position: absolute; background: #0d1014f0; border: 1px solid var(--hud-dim); border-radius: 6px; padding: 7px 11px; font-size: 10px; color: var(--t2); white-space: nowrap; }
+  .ghostcard b { color: var(--t1); }
+  .ghostcard .slot { display: inline-block; background: #7cffe912; border: 1px solid var(--hud-dim); color: var(--hud); border-radius: 4px; padding: 0 7px; cursor: ew-resize; }
+  .ghostcard .price { color: var(--price); }
+  .garc { position: absolute; inset: 0; pointer-events: none; }
+  .garc path { fill: none; stroke: var(--hud); stroke-width: 1.3; stroke-dasharray: 5 7; opacity: 0.7; animation: dashflow 1.1s linear infinite; }
+  .garc path.ghost { stroke: #7cffe966; animation: none; stroke-dasharray: 2 6; }
+
+  .decide { margin-top: 70px; background: linear-gradient(160deg, #101720, #0d1014); border: 1px solid #24303f; border-radius: 10px; padding: 20px 24px; }
+  .decide h2 { font-size: 15px; color: var(--hud); text-shadow: 0 0 9px var(--hud-dim); }
+  .decide ol { margin: 12px 0 0 18px; color: var(--t2); font-size: 12px; line-height: 1.9; }
+  .decide b { color: var(--t1); }
+</style>
+
+<div class="wrap">
+  <h1>Polish 4 · v1 — <span class="k">the dock watches where you are</span></h1>
+  <p class="sub">Four designs from your last feedback: the <b>contextual dock</b> (config/cost/events scoped to the level you're on), the <b>per-server config surface</b> that replaces the bare selected-server card, a <b>failover timeline you can actually read</b>, and <b>traffic placement on the globe</b> that explains itself. Motion budget (≤8 strokes/view) and the price color carry over. No emojis anywhere — that's now app law.</p>
+
+  <!-- ═══════════ 1 · CONTEXTUAL DOCK ═══════════ -->
+  <div class="lvhead"><span class="tag" style="color: var(--hud); border-color: var(--hud-dim);">THE LAW</span><h2>1 · The contextual dock — one rule: scope = where you are + what you selected</h2></div>
+  <p class="thesis"><b>The dock stops being a global wall.</b> A new <b>scope rail</b> sits above the tabs — a breadcrumb of pills. Navigating sets the scope (enter an AZ → the dock is about that AZ); selecting narrows it further (tap a server on the floor → the dock is about that server). Any pill click widens back out; <code>world</code> is always one click. Tabs keep their names but their CONTENT is scoped: Cost is <i>this server's</i> burn, Events are <i>its</i> events, Analysis counts only findings touching it. Click the three buttons to feel the dock follow you.</p>
+  <div class="stage">
+    <div class="demoswitch">
+      <button class="on" onclick="dockstate(this, 'world')">at the globe</button>
+      <button onclick="dockstate(this, 'az')">entered us-east-1b</button>
+      <button onclick="dockstate(this, 'srv')">selected db-replica</button>
+    </div>
+    <div class="dockdemo">
+      <!-- WORLD -->
+      <div class="dock dockstate on" data-state="world">
+        <div class="scoperail">
+          <button class="scopeseg here">world</button>
+          <span class="eye">scope follows you · <b>everything</b></span>
+        </div>
+        <div class="docksum"><span class="dot"></span>Handling <b>1,500 rps</b> from 3 cities · <span class="price">$2.44/hr</span> · p50 6 ms</div>
+        <div class="docktabs">
+          <button class="docktab on">Topology</button><button class="docktab">Blueprints</button><button class="docktab">Traffic</button><button class="docktab">Analysis<span class="n">2</span></button><button class="docktab">Events</button><button class="docktab">Cost</button>
+        </div>
+        <div class="dockbody">
+          <div class="secline">REGIONS — the world tree, as today</div>
+          <div class="row"><span class="l">us-east-1 · N. Virginia</span><span class="v ok">healthy · 980 rps</span></div>
+          <div class="row"><span class="l">eu-west-1 · Ireland</span><span class="v ok">healthy · 520 rps</span></div>
+          <div class="ghostnote">World scope = exactly today's dock. Nothing is lost — the global view is the widest pill, not a separate mode.</div>
+        </div>
+      </div>
+      <!-- AZ -->
+      <div class="dock dockstate" data-state="az">
+        <div class="scoperail">
+          <button class="scopeseg">world</button><span class="scopesep">▸</span>
+          <button class="scopeseg">us-east-1</button><span class="scopesep">▸</span>
+          <button class="scopeseg here">us-east-1b</button>
+          <span class="eye">1 click widens</span>
+        </div>
+        <div class="docksum"><span class="dot"></span><b>us-east-1b</b> · 3 servers · 1 rack · 425 rps in · <span class="price">$352/mo</span></div>
+        <div class="docktabs">
+          <button class="docktab on">Config</button><button class="docktab">Analysis<span class="n">1</span></button><button class="docktab">Events</button><button class="docktab">Cost</button>
+        </div>
+        <div class="dockbody">
+          <div class="secline">SERVERS IN THIS AZ</div>
+          <div class="chipline"><span class="sw" style="background: var(--teal);"></span><span class="nm">web-02</span><span class="meta">vps · comfortable</span><span class="step"><button title="select on floor">◎</button></span></div>
+          <div class="chipline"><span class="sw" style="background: var(--violet);"></span><span class="nm">api-01</span><span class="meta">vps · comfortable</span><span class="step"><button>◎</button></span></div>
+          <div class="chipline"><span class="sw" style="background: var(--amber);"></span><span class="nm">db-replica</span><span class="meta">dedicated · reads only</span><span class="step"><button>◎</button></span></div>
+          <div class="secline">RACKS</div>
+          <div class="row"><span class="l">rack-1</span><span class="v">2/8 U · auto-arrange ready</span></div>
+          <div class="secline">THIS AZ'S COST</div>
+          <div class="row"><span class="l">servers + egress share</span><span class="v price">$0.48/hr · $352/mo</span></div>
+          <div class="actrow"><button>+ server</button><button>+ rack</button><button class="danger">kill AZ</button></div>
+        </div>
+      </div>
+      <!-- SERVER -->
+      <div class="dock dockstate" data-state="srv">
+        <div class="scoperail">
+          <button class="scopeseg">world</button><span class="scopesep">▸</span>
+          <button class="scopeseg">us-east-1</button><span class="scopesep">▸</span>
+          <button class="scopeseg">1b</button><span class="scopesep">▸</span>
+          <button class="scopeseg here">db-replica</button>
+        </div>
+        <div class="docksum"><span class="dot"></span><b>db-replica</b> · dedicated · 8c/32G · <span class="price">$0.34/hr</span></div>
+        <div class="docktabs">
+          <button class="docktab on">Config</button><button class="docktab">Analysis<span class="n">1</span></button><button class="docktab">Events</button><button class="docktab">Cost</button>
+        </div>
+        <div class="dockbody">
+          <div class="secline">EVENTS — THIS SERVER ONLY</div>
+          <div class="row"><span class="l">t=19s replica promoted</span><span class="v" style="color: var(--violet);">⬆</span></div>
+          <div class="row"><span class="l">t=12s primary lost upstream</span><span class="v warn">◷</span></div>
+          <div class="secline">COST — THIS SERVER ONLY</div>
+          <div class="row"><span class="l">compute</span><span class="v price">$0.34/hr</span></div>
+          <div class="row"><span class="l">cross-AZ replication egress</span><span class="v price">$0.02/hr</span></div>
+          <div class="ghostnote">Config tab for a server = the full surface below (section 2). The dock and the floor selection are the SAME state — select there, configure here.</div>
+        </div>
+      </div>
+
+      <div class="sideexpl">
+        <h4>WHY A RAIL, NOT A MODE</h4>
+        The scope rail is the dock's breadcrumb — always visible, always one click back to <b>world</b>. There is no "global vs local mode" to learn: <b>the dock simply watches you</b>. Enter, and it follows. Select, and it narrows. Widen whenever you want.
+        <h4>WHAT EACH TAB MEANS UNDER SCOPE</h4>
+        <ul>
+          <li><b>Config</b> — the focused entity's own controls (replaces Topology below world scope: the world tree IS world-scope config).</li>
+          <li><b>Analysis</b> — findings whose affected entities intersect the scope; the badge count follows.</li>
+          <li><b>Events</b> — filtered to the scope's entity + its children.</li>
+          <li><b>Cost</b> — the scope's own rollup, price-colored, with its egress share.</li>
+          <li><b>Blueprints / Traffic</b> — world-scope only (they are inherently global); at narrower scopes they fold into the rail's world pill rather than showing global data in a local frame.</li>
+        </ul>
+        <h4>ONE STATE, TWO SURFACES</h4>
+        Floor/board selection and dock scope are the <b>same store field</b>. Selecting a pod scopes the dock; scoping via the rail highlights the entity in-scene. Nothing is configured "over there" anymore.
+      </div>
+    </div>
+  </div>
+  <p class="caption"><b>Cheap where it counts:</b> every panel already reads the compiled world + nav focus — this is filtering and per-scope composition, not new stores. The one new store field: <code>dockScope</code> (kept in sync with nav + selection).</p>
+
+  <!-- ═══════════ 2 · SERVER CONFIG SURFACE ═══════════ -->
+  <div class="lvhead"><span class="tag" style="color: var(--amber); border-color: #e0a55255;">THE SURFACE</span><h2>2 · Per-server config — sentences and knobs, not a bare card</h2></div>
+  <p class="thesis"><b>This is the server-scope Config tab</b> (and the same surface the floor's selected-server card becomes). Identity up top, spec knobs with plain-language consequences (the guided-console grammar you liked), firewall as its rule sentences, services as chips with count steppers, rack assignment, and the danger row. While the simulation runs it flips to <b>watching mode</b>: everything readable, nothing editable, kill/restore stays live.</p>
+  <div class="stage">
+    <div class="dockdemo">
+      <div class="dock" style="width: 372px;">
+        <div class="scoperail"><button class="scopeseg">world</button><span class="scopesep">▸</span><button class="scopeseg">us-east-1</button><span class="scopesep">▸</span><button class="scopeseg">1b</button><span class="scopesep">▸</span><button class="scopeseg here">db-replica</button></div>
+        <div class="dockbody">
+          <div class="identhead">
+            <span class="nm">db-replica</span>
+            <span class="kind ded">DEDICATED</span>
+            <span class="price">$0.34/hr</span>
+          </div>
+          <div style="font-size: 10px; color: var(--t3); margin-bottom: 8px;">rack-1 · slot 3 · <span style="color: var(--success);">healthy</span></div>
+
+          <div class="secline">HARDWARE</div>
+          <div class="specknob">
+            <div class="lab"><span>vCPU</span><span class="v">8 cores</span></div>
+            <div class="track"><i style="width: 40%;"></i><b style="left: 40%;"></b></div>
+            <div class="hint">→ sustains <b>~1,600 rps</b> of db at 5 ms/query</div>
+          </div>
+          <div class="specknob">
+            <div class="lab"><span>RAM</span><span class="v">32 GB</span></div>
+            <div class="track"><i style="width: 50%;"></i><b style="left: 50%;"></b></div>
+            <div class="hint">→ headroom for <b>~60,000</b> connections at 0.5 MB each</div>
+          </div>
+
+          <div class="secline">FIREWALL — 2 RULES</div>
+          <div class="sentence">1 · <b class="act">Let</b> internal traffic reach <b>postgres :5432</b></div>
+          <div class="sentence">2 · <b class="deny">Block</b> everyone else, everywhere</div>
+
+          <div class="secline">SERVICES ON THIS SERVER</div>
+          <div class="chipline"><span class="sw" style="background: var(--amber);"></span><span class="nm">db</span><span class="meta">:5432 · replica</span><span class="step"><button>−</button><button>+</button></span></div>
+          <div class="chipline" style="opacity: 0.55;"><span class="sw" style="background: #2a3442;"></span><span class="nm" style="color: var(--t3);">+ mount a blueprint…</span></div>
+
+          <div class="secline">PLACEMENT</div>
+          <div class="row"><span class="l">rack</span><span class="v">rack-1 · 2/8 U ▾</span></div>
+
+          <div class="actrow">
+            <button>enter board ⏎</button>
+            <button class="danger" disabled title="start the simulation to break things">kill</button>
+            <button class="danger">remove…</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="dock" style="width: 372px;">
+        <div class="scoperail"><button class="scopeseg">world</button><span class="scopesep">▸</span><button class="scopeseg">us-east-1</button><span class="scopesep">▸</span><button class="scopeseg">1b</button><span class="scopesep">▸</span><button class="scopeseg here">db-replica</button></div>
+        <div class="dockbody">
+          <div class="watchband">SIMULATION RUNNING — watching. stop to edit.</div>
+          <div class="identhead">
+            <span class="nm">db-replica</span>
+            <span class="kind ded">DEDICATED</span>
+            <span class="price">$0.34/hr</span>
+          </div>
+          <div class="secline">LIVE</div>
+          <div class="row"><span class="l">rps (reads)</span><span class="v">418</span></div>
+          <div class="row"><span class="l">cpu / ram</span><span class="v ok">31% · 42%</span></div>
+          <div class="row"><span class="l">replication lag</span><span class="v warn">1.5 ms behind primary</span></div>
+          <div class="secline">HARDWARE — READ-ONLY WHILE RUNNING</div>
+          <div class="specknob" style="opacity: 0.55;">
+            <div class="lab"><span>vCPU</span><span class="v">8 cores · 31% busy</span></div>
+            <div class="track"><i style="width: 40%;"></i></div>
+          </div>
+          <div class="actrow">
+            <button>enter board ⏎</button>
+            <button class="danger">kill</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sideexpl">
+        <h4>AUTHORING ↔ WATCHING</h4>
+        Left: stopped — everything editable, <b>kill greyed</b> (nothing to break). Right: running — knobs freeze into gauges, the amber band says why, <b>kill lights up</b>. The same surface, two postures. This is the edit-lock you asked for, made visible instead of just disabled.
+        <h4>EVERY NUMBER EXPLAINS ITSELF</h4>
+        Spec knobs carry the consequence line ("8 cores → ~1,600 rps of db") computed from the resident blueprint's workload — the same math the traffic hero already uses. Change the knob, the sentence updates. No more silent specs.
+        <h4>WHERE IT LIVES</h4>
+        One component, two mounts: the dock's server-scope Config tab, AND (condensed: identity + rack + actions) the floor's selected-server card. Same dispatches everywhere — the relocated-dispatch contract holds.
+      </h4></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ 3 · TIMELINE ═══════════ -->
+  <div class="lvhead"><span class="tag" style="color: var(--warning); border-color: #f59e0b55;">READABLE</span><h2>3 · The failover timeline — swimlanes + one sentence of narration</h2></div>
+  <p class="thesis"><b>Today it's a cryptic glyph strip; this is a story.</b> One lane per AZ, colored bands = that AZ's state over time (green fine, amber straining, red dead), labeled event markers with hover explanations, causality arrows connecting kill → detection → shift → promotion, and a <b>narration line</b> that says the latest chain in plain words. Time axis in sim-seconds, window = last 120 s, click any marker to scrub there.</p>
+  <div class="stage">
+    <div class="tl">
+      <div class="narr"><b>What just happened:</b> <span class="t">t=12s</span> you killed <b>us-east-1a</b> → health checks failed 3× (<span class="t">t=15s</span>) → traffic shifted to <b>1b</b> (<span class="t">t=18s</span>) → <b>db-replica promoted</b> (<span class="t">t=19s</span>). Recovery holds until the outage clears.</div>
+      <div class="lanes">
+        <svg class="causal" style="left: 102px; top: 0; width: calc(100% - 102px); height: 88px;">
+          <path d="M 128 22 C 150 22, 150 66, 172 66"/>
+          <path d="M 258 66 C 280 66, 280 22, 302 22" style="display:none"/>
+        </svg>
+        <div class="lane">
+          <div class="lbl">us-east-1a<small>3 srv</small></div>
+          <div class="track">
+            <div class="band ok" style="left: 0; width: 15%;"></div>
+            <div class="band dead" style="left: 15%; width: 85%;"></div>
+            <span class="ev kill" style="left: 15%;">✕<span class="tip">t=12s · you killed this AZ (manual outage)</span></span>
+            <span class="ev hc" style="left: 21%;">♺<span class="tip">t=15s · 3rd health check failed → marked down</span></span>
+          </div>
+        </div>
+        <div class="lane">
+          <div class="lbl">us-east-1b<small>3 srv</small></div>
+          <div class="track">
+            <div class="band ok" style="left: 0; width: 24%;"></div>
+            <div class="band strain" style="left: 24%; width: 40%;"></div>
+            <div class="band ok" style="left: 64%; width: 36%;"></div>
+            <span class="ev shift" style="left: 24%;">⇄<span class="tip">t=18s · DNS TTL expired → 100% of traffic lands here</span></span>
+            <span class="ev promote" style="left: 28%;">⬆<span class="tip">t=19s · db-replica promoted to primary</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="taxis"><span>t=0</span><span>30s</span><span>60s</span><span>90s</span><span>now</span></div>
+      <div class="tlleg">
+        <span><i class="ev kill" style="position: static; transform: none;">✕</i>manual kill</span>
+        <span><i class="ev hc" style="position: static; transform: none;">♺</i>health detection</span>
+        <span><i class="ev shift" style="position: static; transform: none;">⇄</i>traffic shift</span>
+        <span><i class="ev promote" style="position: static; transform: none;">⬆</i>promotion</span>
+        <span style="margin-left: auto;">band color = the AZ's state · click a marker = scrub there</span>
+      </div>
+    </div>
+  </div>
+  <p class="caption"><b>Why this reads:</b> the story runs left→right in real order, the bands make "who was dead when" visible without decoding anything, and the narration line means you never HAVE to read the lanes — it already told you. The dotted causality arrow links an event to its consequence in the other lane. All static except nothing — zero animation needed here; state is history, not flow.</p>
+
+  <!-- ═══════════ 4 · GLOBE TRAFFIC ═══════════ -->
+  <div class="lvhead"><span class="tag" style="color: var(--teal); border-color: #3fc7b855;">INTUITIVE</span><h2>4 · Placing traffic on the globe — a mode that explains itself</h2></div>
+  <p class="thesis"><b>"+ traffic" enters placement mode:</b> the cursor becomes a crosshair ghost that snaps to the nearest known city, a card previews <b>who would send, how much, where it lands and at what latency</b> — before you commit. Click places the population and opens its overlay with the rps slider; a ghost arc previews the route immediately, even with the sim stopped. Esc leaves the mode. No more hunting through the Traffic panel to make load exist.</p>
+  <div class="stage">
+    <div class="globedemo">
+      <div class="hudbtn">
+        <button class="mode">+ traffic — click a city</button>
+        <button>rotation: locked</button>
+        <button>esc = cancel</button>
+      </div>
+      <div class="sphere"></div>
+      <span class="pin ok" style="left: 46%; top: 38%;"></span>
+      <span class="pinlbl" style="left: 47.5%; top: 36%;">us-east-1</span>
+      <span class="pin ok" style="left: 60%; top: 33%;"></span>
+      <span class="pinlbl" style="left: 61.5%; top: 31%;">eu-west-1</span>
+      <div class="ghostpop" style="left: 38%; top: 55%;"><div class="x"></div></div>
+      <div class="ghostcard" style="left: 27%; top: 62%;">
+        <b>São Paulo</b> · would send <span class="slot">500 rps</span><br>
+        → lands on <b>us-east-1</b> · 142 ms · <span class="price">+$0.09/hr egress</span>
+      </div>
+      <svg class="garc" viewBox="0 0 900 360" preserveAspectRatio="none">
+        <path class="ghost" d="M 345 200 C 380 120, 400 110, 416 138"/>
+        <path d="M 540 120 C 500 60, 460 70, 418 136"/>
+      </svg>
+    </div>
+  </div>
+  <p class="caption"><b>The snap is the trick:</b> free-clicking a globe is guesswork; snapping to the nearest real city (the same catalog population labels already use) makes every placement meaningful, and the preview card answers "what will this do" before the click. The solid arc is an existing population's live route; the faint dashed arc is the ghost preview. Placement is authoring → the mode button is edit-locked while the sim runs, like everything else now.</p>
+
+  <!-- ═══════════ DECISION ═══════════ -->
+  <div class="decide">
+    <h2>Round-1 asks — lock these and Polish 4 gets packaged</h2>
+    <ol>
+      <li><b>Contextual dock law</b> — scope rail, dock follows nav + selection, tabs scope their content, Blueprints/Traffic stay world-only: lock it?</li>
+      <li><b>Per-server config surface</b> — identity + consequence-knobs + rule sentences + service chips + watching mode, mounted in both the dock and the floor card: lock it?</li>
+      <li><b>Timeline</b> — swimlanes + bands + narration line + click-to-scrub, replacing the glyph strip: lock it?</li>
+      <li><b>Globe traffic mode</b> — "+ traffic" with city snap + preview card + ghost arc: lock it?</li>
+      <li>All locked → I write the Polish 4 spec + skeleton + runbook, executor per the usual pattern.</li>
+    </ol>
+  </div>
+</div>
+<script>
+  function dockstate(btn, state) {
+    document.querySelectorAll('.demoswitch button').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    document.querySelectorAll('.dockstate').forEach(d => d.classList.toggle('on', d.dataset.state === state));
+  }
+</script>
