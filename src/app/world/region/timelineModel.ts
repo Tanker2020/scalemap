@@ -149,19 +149,23 @@ export function narration(
   return { text: `What just happened: ${segments.join(' → ')}.`, chain }
 }
 
+// Index (within `lanes`) of the lane whose markers contain `eventId`, or -1 if the event isn't
+// assigned to any lane. The one "find an event's lane" lookup shared by this module's own
+// causalLinks AND TimelineV2.tsx's cross-lane arrow-endpoint math, so the two can't drift.
+export function laneIndexOfEvent(lanes: TimelineLane[], eventId: string): number {
+  return lanes.findIndex(l => l.markers.some(m => m.event.id === eventId))
+}
+
 // Consecutive steps of the narrated chain that land in DIFFERENT lanes — the pairs TimelineV2
 // draws a dotted causality arrow between. Lane membership is resolved by exact event id (each
 // scoped event is assigned to exactly one lane in `buildLanes`, so this lookup is unambiguous).
 export function causalLinks(lanes: TimelineLane[], chain: EngineEvent[]): { fromId: string; toId: string }[] {
-  const laneIdOf = (eventId: string): string | null => {
-    const lane = lanes.find(l => l.markers.some(m => m.event.id === eventId))
-    return lane ? lane.azId : null
-  }
   const links: { fromId: string; toId: string }[] = []
   for (let i = 0; i < chain.length - 1; i++) {
-    const from = laneIdOf(chain[i].id)
-    const to = laneIdOf(chain[i + 1].id)
-    if (from && to && from !== to) links.push({ fromId: from, toId: to })
+    const fromIdx = laneIndexOfEvent(lanes, chain[i].id)
+    const toIdx = laneIndexOfEvent(lanes, chain[i + 1].id)
+    if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) continue
+    links.push({ fromId: lanes[fromIdx].azId, toId: lanes[toIdx].azId })
   }
   return links
 }

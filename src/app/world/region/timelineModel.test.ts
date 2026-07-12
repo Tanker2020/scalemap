@@ -6,7 +6,7 @@ import {
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { compileWorld } from '../../../lib/world/compileWorld'
 import {
-  markerClass, buildLanes, narration, causalLinks, TIMELINE_WINDOW_MS,
+  markerClass, buildLanes, narration, causalLinks, laneIndexOfEvent, TIMELINE_WINDOW_MS,
   type TimelineLane,
 } from './timelineModel'
 import type { EngineEvent, AzMetrics, MetricsBatch, ReplayFrame } from '../../../lib/worldEngine/types'
@@ -242,6 +242,24 @@ describe('narration', () => {
     const compiled = compileWorld(doc)
     const events = [evt({ id: 'foreign', kind: 'outage_triggered', simMs: 1000, affected: [azX.id] })]
     expect(narration(regionA.id, doc, compiled, events)).toBeNull()
+  })
+})
+
+describe('laneIndexOfEvent', () => {
+  const lanesFixture = (): TimelineLane[] => [
+    { azId: 'az-a', label: 'a', serverCount: 1, bands: [], markers: [{ event: evt({ id: 'kill', simMs: 1000 }), cls: 'kill' }] },
+    { azId: 'az-b', label: 'b', serverCount: 1, bands: [], markers: [{ event: evt({ id: 'shift', simMs: 2000 }), cls: 'shift' }] },
+  ]
+
+  it('returns the index of the lane whose markers contain the event id', () => {
+    const lanes = lanesFixture()
+    expect(laneIndexOfEvent(lanes, 'kill')).toBe(0)
+    expect(laneIndexOfEvent(lanes, 'shift')).toBe(1)
+  })
+
+  it('returns -1 when no lane holds the event id', () => {
+    const lanes = lanesFixture()
+    expect(laneIndexOfEvent(lanes, 'unassigned')).toBe(-1)
   })
 })
 

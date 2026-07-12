@@ -18,7 +18,7 @@ import type { CSSProperties, ReactElement } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { useCompiledWorld } from '../useCompiledWorld'
-import { buildLanes, narration, causalLinks, TIMELINE_WINDOW_MS, type TimelineLane, type TimelineMarker } from './timelineModel'
+import { buildLanes, narration, causalLinks, laneIndexOfEvent, TIMELINE_WINDOW_MS, type TimelineMarker } from './timelineModel'
 import type { RegionId } from '../../../lib/world/types'
 import type { EngineEvent, HealthState } from '../../../lib/worldEngine/types'
 import './timelineStyles'
@@ -68,10 +68,6 @@ const BAND_BORDER: Record<HealthState, string> = {
 
 const secs = (ms: number) => `${Math.round(ms / 1000)}s`
 
-function laneIndexForEventId(lanes: TimelineLane[], eventId: string): number {
-  return lanes.findIndex(l => l.markers.some(m => m.event.id === eventId))
-}
-
 // Real engines routinely fire two markers at the identical simMs in the same lane (verified
 // live: a replica promotion can land on the SAME tick as the manual kill that caused it, well
 // before the AZ's aggregate health check even confirms down). Dead-on-top markers would render
@@ -110,7 +106,15 @@ export function TimelineV2({ regionId }: TimelineV2Props): ReactElement | null {
   const frames = useSimulationStore.getState().getReplayFrames()
 
   const endMs = batch?.simMs ?? 0
-  const windowStart = Math.max(0, endMs - TIMELINE_WINDOW_MS)
+  // buildLanes' own frame/event-FILTERING window start is clamped to 0 (it must never admit
+  // negative-time frames — sim time doesn't go negative). The VIEW's pct-scale origin is a
+  // different concern: it must stay UNCLAMPED so `pctFor(endMs)` is always exactly 100% (`now`
+  // pinned to the right edge, where the static axis label sits) regardless of run length. For a
+  // run younger than the 120s window this origin is negative, which is exactly what left-pads
+  // the pre-start portion of the track from t=0 (e.g. a 60s-old run: t=0 lands at 50%, t=endMs
+  // at 100%) — the "shorter runs left-pad from t=0" behavior buildLanes' own doc comment
+  // describes as living in the view, not the model.
+  const viewOrigin = endMs - TIMELINE_WINDOW_MS
   const lanes = buildLanes(regionId, doc, compiled, events, frames, endMs)
   if (lanes.length === 0) return null
 
@@ -119,7 +123,7 @@ export function TimelineV2({ regionId }: TimelineV2Props): ReactElement | null {
   const links = chainInfo ? causalLinks(lanes, chain) : []
 
   const pctFor = (simMs: number): number => {
-    const raw = ((simMs - windowStart) / TIMELINE_WINDOW_MS) * 100
+    const raw = ((simMs - viewOrigin) / TIMELINE_WINDOW_MS) * 100
     return Math.min(100, Math.max(0, raw))
   }
 
@@ -150,8 +154,8 @@ export function TimelineV2({ regionId }: TimelineV2Props): ReactElement | null {
     let li = 0
     for (let i = 0; i < chain.length - 1; i++) {
       const a = chain[i]; const b = chain[i + 1]
-      const laneA = laneIndexForEventId(lanes, a.id)
-      const laneB = laneIndexForEventId(lanes, b.id)
+      const laneA = laneIndexOfEvent(lanes, a.id)
+      const laneB = laneIndexOfEvent(lanes, b.id)
       if (laneA < 0 || laneB < 0 || laneA === laneB) continue
       const link = links[li]; li += 1
       const x1 = (pctFor(a.simMs) / 100) * VB_W

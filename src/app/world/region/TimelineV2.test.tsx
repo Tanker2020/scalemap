@@ -156,6 +156,40 @@ describe('TimelineV2', () => {
     expect(killTop).not.toBe(promoteTop)
   })
 
+  // ── axis-origin position assertions (fix for the pre-fix bug where the view's pct-scale
+  // origin was clamped to the SAME `max(0, endMs - TIMELINE_WINDOW_MS)` as buildLanes' frame-
+  // filtering window start — for any run younger than 120s that pinned "now" well short of the
+  // right edge instead of at it). These assert real rendered `left` style, not a tautology, and
+  // fail against the pre-fix clamped origin. ──────────────────────────────────────────────────
+
+  it('an event at simMs === endMs ("now") renders pinned to the right edge', () => {
+    const { region, azA } = seedTwoAzRegion()
+    const events: EngineEvent[] = [
+      { id: 'now-event', simMs: 60_000, kind: 'outage_triggered', severity: 'critical', message: 'killed now', affected: [azA.id] },
+    ]
+    useSimulationStore.setState({ latestBatch: fakeBatch(60_000), events })
+    render(<TimelineV2 regionId={region.id} />)
+    const marker = screen.getByTestId('tl-marker')
+    expect(marker.style.left).toBe('100%')
+  })
+
+  it('for a run younger than the 120s window, t=0 left-pads to the midpoint and "now" still pins to the right edge', () => {
+    // endMs=60_000 is exactly half the 120s window, so with the correct UNCLAMPED origin
+    // (endMs - TIMELINE_WINDOW_MS = -60_000) t=0 lands at exactly 50% and t=endMs at 100%.
+    const { region, azA } = seedTwoAzRegion()
+    const events: EngineEvent[] = [
+      { id: 'at-zero', simMs: 0, kind: 'outage_triggered', severity: 'critical', message: 'killed at start', affected: [azA.id] },
+      { id: 'at-now', simMs: 60_000, kind: 'replica_promoted', severity: 'info', message: 'promoted now', affected: [azA.id] },
+    ]
+    useSimulationStore.setState({ latestBatch: fakeBatch(60_000), events })
+    render(<TimelineV2 regionId={region.id} />)
+    const markers = screen.getAllByTestId('tl-marker')
+    const zeroMarker = markers.find(m => m.getAttribute('data-cls') === 'kill')!
+    const nowMarker = markers.find(m => m.getAttribute('data-cls') === 'promote')!
+    expect(zeroMarker.style.left).toBe('50%')
+    expect(nowMarker.style.left).toBe('100%')
+  })
+
   it('renders the legend and time axis', () => {
     const { region } = seedTwoAzRegion()
     useSimulationStore.setState({ latestBatch: fakeBatch(5000) })
