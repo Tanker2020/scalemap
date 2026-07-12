@@ -210,6 +210,12 @@ export function DatacenterFloor() {
   // independent of internal slat count, so an edge never has to know which server occupies
   // which visible slat.
   const anchorFor = (target: string): { x: number; y: number } | null => {
+    // Flow/ingress endpoints are SERVER ids, but a racked server has no tile of its own —
+    // plan.cabinets is keyed by RACK id and plan.pods only holds the free pool. Resolve a
+    // racked server to its cabinet first, or every line into it silently vanished the moment
+    // auto-arrange/assign moved it off the free pool (user report 2026-07-12).
+    const rackId = doc.servers[target]?.rack?.rackId
+    if (rackId && plan.cabinets[rackId]) target = rackId
     if (plan.cabinets[target]) {
       const c = plan.cabinets[target]
       const h = cabinetHeightPx(rackUsedU(doc, target))
@@ -316,6 +322,7 @@ export function DatacenterFloor() {
     const from = anchorFor(f.source)
     const to = anchorFor(f.target)
     if (!from || !to) continue
+    if (from.x === to.x && from.y === to.y) continue   // same-cabinet pair — no line, no chip
     const text = f.blocked > 0 ? `✕ ${f.reason}` : `${f.total} dep${f.total > 1 ? 's' : ''}`
     const { w, h } = estimateLabelSize(text)
     labelSpecs.push({ id: `dep:${f.source}->${f.target}`, x: (from.x + to.x) / 2 - w / 2, y: (from.y + to.y) / 2 - h / 2, w, h })
@@ -386,6 +393,8 @@ export function DatacenterFloor() {
               const from = anchorFor(f.source)
               const to = anchorFor(f.target)
               if (!from || !to) return null
+              // Both endpoints racked in the same cabinet resolve to one anchor — no line to draw.
+              if (from.x === to.x && from.y === to.y) return null
               const blocked = f.blocked > 0
               const rate = animatedKeys.get(key)
               const animated = !blocked && rate !== undefined

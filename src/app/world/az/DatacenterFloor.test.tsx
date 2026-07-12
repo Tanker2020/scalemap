@@ -263,3 +263,67 @@ describe('DatacenterFloor — internet ingress + label layer (2026-07-12)', () =
     }
   })
 })
+
+describe('DatacenterFloor — lines survive racking (2026-07-12 follow-up)', () => {
+  it('ingress and dep lines re-anchor to the cabinet when auto-arrange racks the servers', () => {
+    const { azId } = seedAz()
+    const world = useWorldStore.getState()
+    const frontId = world.addServer(azId, getPreset('vps-medium')!)
+    const dbId = world.addServer(azId, getPreset('dedicated-8')!)
+    const frontBp = world.addBlueprint('front')
+    world.updateBlueprint(frontBp, {
+      ports: [{ port: 443, protocol: 'tcp', visibility: 'public' }],
+      dependencies: [{ id: 'd1', target: { kind: 'blueprint', blueprintId: (() => {
+        const dbBp = world.addBlueprint('db')
+        useWorldStore.getState().updateBlueprint(dbBp, { ports: [{ port: 5432, protocol: 'tcp', visibility: 'internal' }] })
+        useWorldStore.getState().addPlacement(dbBp, dbId)
+        return dbBp
+      })() }, port: 5432, protocol: 'db', packetTemplateId: null }],
+    })
+    world.addPlacement(frontBp, frontId)
+    const front = useWorldStore.getState().doc.servers[frontId]
+    world.updateServer(frontId, {
+      firewall: [{ id: 'fw-443', action: 'allow', port: 443, protocol: 'tcp', source: 'any' }, ...front.firewall],
+    })
+
+    // Rack BOTH servers into separate racks — the reported repro (auto-arrange packs a 1U vps
+    // and a 2U dedicated into one 8U rack, which would hide the dep line by design; two racks
+    // keeps the cross-cabinet dep line assertable while still exercising the racked resolver).
+    world.addRack(azId)
+    world.addRack(azId)
+    const [rackA, rackB] = Object.values(useWorldStore.getState().doc.racks)
+    world.assignServerToRack(frontId, rackA.id)
+    world.assignServerToRack(dbId, rackB.id)
+    expect(useWorldStore.getState().doc.servers[frontId].rack?.rackId).toBe(rackA.id)
+
+    render(<DatacenterFloor />)
+    // The racked public server keeps its ISP line (this vanished before the fix)…
+    expect(screen.getByTestId(`ingress-${frontId}`)).toBeTruthy()
+    // …and the cross-rack dep flow keeps its trace + chip.
+    expect(screen.getByTestId(`flow-${frontId}->${dbId}`)).toBeTruthy()
+    expect(screen.getByText('1 dep')).toBeTruthy()
+  })
+
+  it('a dep between two servers racked in the SAME cabinet draws no line and no chip', () => {
+    const { azId } = seedAz()
+    const world = useWorldStore.getState()
+    const aId = world.addServer(azId, getPreset('vps-medium')!)
+    const bId = world.addServer(azId, getPreset('vps-medium')!)
+    const apiBp = world.addBlueprint('api')
+    const dbBp = world.addBlueprint('db')
+    world.updateBlueprint(dbBp, { ports: [{ port: 5432, protocol: 'tcp', visibility: 'internal' }] })
+    world.updateBlueprint(apiBp, {
+      dependencies: [{ id: 'd1', target: { kind: 'blueprint', blueprintId: dbBp }, port: 5432, protocol: 'db', packetTemplateId: null }],
+    })
+    world.addPlacement(apiBp, aId)
+    world.addPlacement(dbBp, bId)
+    world.addRack(azId)
+    const rack = Object.values(useWorldStore.getState().doc.racks)[0]
+    world.assignServerToRack(aId, rack.id)
+    world.assignServerToRack(bId, rack.id)
+
+    render(<DatacenterFloor />)
+    expect(screen.queryByTestId(`flow-${aId}->${bId}`)).toBeNull()
+    expect(screen.queryByText('1 dep')).toBeNull()
+  })
+})
