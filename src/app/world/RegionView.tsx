@@ -20,7 +20,7 @@ import { AzRow, type AzRowDbEndpoint } from './region/AzRow'
 import { CrossAzColumn } from './region/CrossAzColumn'
 import { SourcesColumn } from './region/SourcesColumn'
 import { ReplicaRail, type ReplicaRailEntry } from './region/ReplicaRail'
-import { TimelineStrip } from './region/TimelineStrip'
+import { TimelineV2 } from './region/TimelineV2'
 
 const POLICY_LABEL: Record<RoutingPolicyKind, string> = {
   latency: 'latency-based routing', geo: 'geo-based routing',
@@ -156,7 +156,7 @@ export function RegionView() {
       )}
 
       <div ref={timelineRef}>
-        <TimelineStrip regionId={regionId} />
+        <TimelineV2 regionId={regionId} />
       </div>
     </div>
   )

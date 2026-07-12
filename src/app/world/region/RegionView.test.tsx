@@ -1,7 +1,7 @@
 // src/app/world/region/RegionView.test.tsx
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { RegionView } from '../RegionView'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
@@ -69,9 +69,12 @@ describe('RegionView (Phase 4 flow page)', () => {
         [azB.id]: az({ azId: azB.id, healthScore: 87, health: 'healthy' }),
       }),
     })
-    render(<RegionView />)
-    expect(screen.getByText('us-east-1a')).toBeInTheDocument()
-    expect(screen.getByText('us-east-1b')).toBeInTheDocument()
+    const { container } = render(<RegionView />)
+    // TimelineV2 (Polish 4 T6) also renders each AZ's label as its lane label, so a bare
+    // getByText('us-east-1a') is now ambiguous — scope to the AzRow card via its `data-az-row`
+    // marker to assert specifically on the AzRow instance this test is about.
+    expect(within(container.querySelector(`[data-az-row="${azA.id}"]`)!).getByText(azA.label)).toBeInTheDocument()
+    expect(within(container.querySelector(`[data-az-row="${azB.id}"]`)!).getByText(azB.label)).toBeInTheDocument()
     expect(screen.getByText('91')).toBeInTheDocument()
     expect(screen.getByText('87')).toBeInTheDocument()
   })
@@ -117,11 +120,14 @@ describe('RegionView (Phase 4 flow page)', () => {
 
   it('server strip click navigates to server, row click to az', () => {
     const { region, azA, azB, serverA } = seedRegion()
-    render(<RegionView />)
+    const { container } = render(<RegionView />)
     fireEvent.click(screen.getByTitle('web-01'))
     expect(useNavStore.getState()).toMatchObject({ level: 'server', regionId: region.id, azId: azA.id, serverId: serverA.id })
 
-    fireEvent.click(screen.getByText('us-east-1b'))
+    // Scoped to the AzRow card (see the note above) — TimelineV2 renders the same 'us-east-1b'
+    // text as a lane label, which isn't clickable, but would make a bare getByText ambiguous.
+    const azBCard = within(container.querySelector(`[data-az-row="${azB.id}"]`)!)
+    fireEvent.click(azBCard.getByText(azB.label))
     expect(useNavStore.getState()).toMatchObject({ level: 'az', regionId: region.id, azId: azB.id, serverId: null })
   })
 
@@ -143,10 +149,11 @@ describe('RegionView (Phase 4 flow page)', () => {
   })
 
   it('renders static skeleton with no batch', () => {
-    seedRegion()
-    render(<RegionView />)
-    expect(screen.getByText('us-east-1a')).toBeInTheDocument()
-    expect(screen.getByText('us-east-1b')).toBeInTheDocument()
+    const { azA, azB } = seedRegion()
+    const { container } = render(<RegionView />)
+    // Scoped to the AzRow cards — see the ambiguity note on the first test in this file.
+    expect(within(container.querySelector(`[data-az-row="${azA.id}"]`)!).getByText(azA.label)).toBeInTheDocument()
+    expect(within(container.querySelector(`[data-az-row="${azB.id}"]`)!).getByText(azB.label)).toBeInTheDocument()
     expect(screen.getAllByText('—')).toHaveLength(2)
   })
 

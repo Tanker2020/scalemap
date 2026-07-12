@@ -98,9 +98,10 @@ input, textarea, select {
 }
 
 /* One-shot highlight when AlertRibbon's "timeline" link scrolls the failover timeline into
-   view (RegionView / TimelineStrip, Phase 4 T3). The blanket prefers-reduced-motion override
-   above (animation-duration: 0.01ms) already collapses this to a near-instant flash under
-   reduced motion — no separate media query needed here. */
+   view (RegionView / TimelineStrip, Phase 4 T3 — TimelineStrip was replaced by TimelineV2 in
+   Polish 4 T6, same mount point + same scroll/flash wiring). The blanket prefers-reduced-motion
+   override above (animation-duration: 0.01ms) already collapses this to a near-instant flash
+   under reduced motion — no separate media query needed here. */
 .region-timeline-flash {
   animation: region-timeline-flash-kf 1.1s ease-out;
 }

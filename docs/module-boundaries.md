@@ -382,8 +382,8 @@ managed-service provider param plus three Phase-3 server-board hygiene carry-for
 | `src/app/world/region/regionData.ts` (Task 1) | Pure selectors, no React/store reads: `azShares` (per-AZ fraction of region rps; a down AZ's own `rps`/`fraction` are pinned to 0 and excluded from the denominator, so the remaining AZs' shares still sum to ~1 — the "redistribution" `SplitLines`/`AzRow` depict), `ribbonAlert` (most-severe warning/critical event in the trailing 30 sim-seconds scoped to the region, formatted with a `— traffic redistributed to <labels>` suffix for outage/health events and a `· clients still arriving (DNS TTL)` suffix for an unresolved `failover_started`), `regionEvents` (events whose `affected` intersects the region id, its AZ ids, its server ids, its resident **instance** ids — read off `compiled.instances[...].regionId`, not re-derived from placement-id string prefixes — or populations currently routed here per `batch.world.populationRoutes`), `replicationPairs` (stateful blueprints with a primary in one AZ and a replica in a different AZ of the same region, deduped by `(blueprint, fromAz, toAz)`), `crossAzEntries` (one entry per unordered AZ pair sharing either a cross-AZ compiled path or a replication pair, carrying a **local mirrored constant** `CROSS_AZ_HOP_MS = 1.5` — see the Frozen-contract note below, this is NOT an import from `worldEngine/`), `sparklineSeries` (last-n `regions[id].rps` from `ReplayFrame[]`, zero-padded), `dominantBlueprintColor` (highest-instance-count blueprint's signature color on a server). Mirrors `server/boardLayout.ts`'s (§L) "pure hub" shape, but unlike `boardLayout.ts` — which fans out to every other file in `server/` as a single shared computation — **only two of its seven exports are consumed outside `RegionView.tsx`+one component each** (see Blast radius) |
 | `src/app/world/region/AlertRibbon.tsx`, `SplitLines.tsx` (Task 2) | The two genuinely presentational sections: both take only plain data + callbacks as props (`alert`/`onTimelineClick`; `shares`/`height`) and read no store — `RegionView.tsx` computes `alert`/`shares` itself (via `regionData.ts`) and passes the finished values down, the same "compute once, pass down" shape as `server/`'s `TraceLayer`/`ServiceChip` (§L) |
 | `src/app/world/region/AzRow.tsx`, `CrossAzColumn.tsx` (Task 2) | **Not presentational leaves** — despite living alongside `AlertRibbon`/`SplitLines` in the same task, both are self-sufficient scoped views: `RegionView.tsx` passes them only an id (`azId`+`regionId`, or just `regionId`) plus navigation callbacks, and each independently reads `useWorldStore`/`useSimulationStore`/`useCompiledWorld` and calls its own `regionData.ts` selector (`AzRow` → `dominantBlueprintColor` per server strip; `CrossAzColumn` → `crossAzEntries`). `AzRow` additionally imports `computeWorldCost` from `../../../lib/costModelV2` directly to render its own `$<n>/mo` figure — a new, second caller of that function alongside `CostTab.tsx` (§1J), and **uncached**: every `AzRow` in a region calls `computeWorldCost(doc, batch?.world ?? null)` (a whole-`WorldDoc` walk) independently every render, one call per AZ row rather than one call per region — candidate for hoisting into `RegionView.tsx` and threading down if AZ counts grow enough to matter. ➜ RESOLVED Phase 5 Task 7 — `computeWorldCost` is now called once in `RegionView.tsx` and threaded to each `AzRow` as a `monthlyUsd` prop (§N); `AzRow.tsx` no longer imports or calls `computeWorldCost`. `AzRow` also distinguishes a manual outage (`healthOverrides[azId]`, label "outage (manual)") from an organic one (sustained errors/capacity/failed health checks with no operator toggle, label "outage") — fixed one commit after Task 2 landed (`8ec4cc4`) after the first version labelled every down row "manual" regardless of cause |
-| `src/app/world/region/TimelineStrip.tsx` (Task 3) | Same "scoped mini-view" shape as `AzRow`/`CrossAzColumn`, not a passive leaf either: takes only `regionId`, reads `useWorldStore`/`useSimulationStore`/`useCompiledWorld` itself and calls `regionData.ts`'s `regionEvents`. Renders a 120s-window simMs axis of event glyphs (keyed by `EngineEventKind`); click-to-scrub (disabled while `running`) finds the nearest replay frame by `simMs` distance from `getReplayFrames()` and calls `setScrubIndex` — the same nearest-frame-by-distance approach `ScrubberV2` (§1J) uses, reimplemented locally rather than shared |
-| `src/app/world/RegionView.tsx` (Task 2, REWRITTEN) | Composition root, but a **mixed** one, not a uniform "compute everything, pass props down" root like `ServerBoard.tsx` (§L): it centrally computes `shares`/`alert`/`spark` (via `regionData.ts` + a 1s-polling `useEffect` for the sparkline) and feeds the finished values into `SplitLines`/`AlertRibbon`, but merely threads `azId`/`regionId` into `AzRow`/`CrossAzColumn`/`TimelineStrip`, which then independently re-derive their own data (see above — this halves the "single source of truth per render" property `boardLayout.ts` gives `server/`). Preserves the existing Phase-2 region-outage button verbatim (`healthOverrides`/`setOutage('region', …)`). Owns the alert ribbon's "timeline" click-through (`scrollIntoView` + a CSS-class flash on the `TimelineStrip` wrapper div, timed out at 1200ms) |
+| `src/app/world/region/TimelineStrip.tsx` (Task 3) — **DELETED, replaced by `TimelineV2.tsx`/`timelineModel.ts` (Polish 4 Task 6, §X)** | Historical: same "scoped mini-view" shape as `AzRow`/`CrossAzColumn`, not a passive leaf either: took only `regionId`, read `useWorldStore`/`useSimulationStore`/`useCompiledWorld` itself and called `regionData.ts`'s `regionEvents` inline. Rendered a 120s-window simMs axis of event glyphs (keyed by `EngineEventKind`); click-to-scrub (disabled while `running`) found the nearest replay frame by `simMs` distance from `getReplayFrames()` and called `setScrubIndex` — the same nearest-frame-by-distance approach `ScrubberV2` (§1J) uses. That scrub-click logic was carried verbatim into `TimelineV2.tsx`; see §X for the swimlane replacement |
+| `src/app/world/RegionView.tsx` (Task 2, REWRITTEN; mount swapped Polish 4 Task 6, §X) | Composition root, but a **mixed** one, not a uniform "compute everything, pass props down" root like `ServerBoard.tsx` (§L): it centrally computes `shares`/`alert`/`spark` (via `regionData.ts` + a 1s-polling `useEffect` for the sparkline) and feeds the finished values into `SplitLines`/`AlertRibbon`, but merely threads `azId`/`regionId` into `AzRow`/`CrossAzColumn`/`TimelineV2` (§X, formerly `TimelineStrip`), which then independently re-derive their own data (see above — this halves the "single source of truth per render" property `boardLayout.ts` gives `server/`). Preserves the existing Phase-2 region-outage button verbatim (`healthOverrides`/`setOutage('region', …)`). Owns the alert ribbon's "timeline" click-through (`scrollIntoView` + a CSS-class flash on the timeline wrapper div, timed out at 1200ms — same wrapper, now around `TimelineV2`) |
 | `src/lib/world/layoutRacks.ts` (Task 4) | Pure rack-frame layout, the Level-3 analog of `server/boardLayout.ts` (§L): groups `Server`s by `rack.rackId` into `RackFrame`s, re-stacks by `rack.unit` with a collision-safe pass (each server claims `max(its own authored unit, the next free slot)`, so overlapping authored units — e.g. every server defaulting to `unit:1` — never collide), computes blank-unit filler spans (capped `MAX_FILLERS=3` per frame) and a PDU strip position, plus a separate absolute-positioned managed-service column. Deterministic, no React. **Narrower fan-out than the skeleton implies:** only `AzCanvas.tsx` imports the `layoutRacks` function itself (consuming `RackLayout`'s shape structurally/by inference — it never names `RackLayout`/`RackFrame` in an explicit type import); `RackNodes.tsx` imports **only four pixel constants** from this file (`RACK_PAD`/`RAIL_W`/`CHASSIS_W`/`PDU_H`), not the function or either type — its own `RackFrameNodeData`/`RackChassisNodeData` shapes are separately declared and matched to what `AzCanvas.tsx` hand-assembles only by an `as` cast inside `RackNodes.tsx`, not a shared imported type (see Blast radius). Replaces `layoutAzGrid` for the AZ canvas |
 | `src/lib/world/layoutAz.ts`, `src/app/world/WorldServerNode.tsx` — **both DELETED in the same commit (Task 5, `d6eff49`)** | `layoutAzGrid`'s only caller and `WorldServerNode`'s only caller were the same file (`AzCanvas.tsx`), rewired to `layoutRacks`/`RackFrameNode`/`RackChassisNode` in this commit — grep-verified zero remaining importers of either before deletion. `layoutAzGrid`'s grid-position algorithm has no successor (rack framing replaces the whole positioning model); `WorldManagedNode` was moved (not duplicated) into `RackNodes.tsx` in the same commit before the source file was deleted |
 | `src/app/world/RackNodes.tsx` (Task 5) | `RackFrameNode` (non-interactive backdrop — `pointerEvents: 'none'`, mounting rails, `RACK <id> · <azLabel>` caption, blank-unit filler strips, a `PDU · <n>kW` strip) + `RackChassisNode` (LED trio — health/activity-blink/network — drive-bay grid sized `bays = min(8, 2×heightU+2)` with lit bays proportional to `diskIo`, a vent-grill strip, cpu/ram/io micro-bars, a "▲ noisy neighbor" tag, an "✕ N blocked internal path(s)" badge) + `WorldManagedNode` (moved verbatim, dashed-border, unchanged visuals). **`RackNodes.tsx` owns all chassis/frame chrome** — it renders no geometry math of its own, only the `data` object `AzCanvas.tsx` hands it. Notably, `RackFrameNodeData.pduKw` is **not** part of `layoutRacks.ts`'s pure geometry (that module only computes `pduY`, a position) — it's domain data (`Σ resident servers' vcpu × 0.05`) computed by `AzCanvas.tsx` and merged onto the frame node's `data` alongside the geometry, the same geometry/domain-data split `boardLayout.ts`/`ServerBoard.tsx` (§L) established |
@@ -414,9 +414,12 @@ second). `RackNodes.tsx` owns all chassis/frame/managed-node chrome; `AzCanvas.t
 internals. `layoutAz.ts` is gone — nothing outside git history depends on `layoutAzGrid` anymore.
 Unlike `server/`'s uniform "one shared `boardLayout.ts` computation, fed down as props to inert
 leaves" shape (§L), the region page mixes that pattern (`AlertRibbon`/`SplitLines`) with
-self-sufficient scoped views that read stores directly (`AzRow`/`CrossAzColumn`/`TimelineStrip`)
+self-sufficient scoped views that read stores directly (`AzRow`/`CrossAzColumn`/`TimelineV2`)
 — see the file table above; a future contributor extending this page should be deliberate about
-which shape a new section follows, since both currently coexist.
+which shape a new section follows, since both currently coexist. **`TimelineV2` (§X) diverges
+further still**: it's the one `region/` view that reads its data through a dedicated pure model
+file (`timelineModel.ts`) rather than computing inline or calling straight into `regionData.ts`
+— `AzRow`/`CrossAzColumn` remain "self-sufficient scoped view calls `regionData.ts` inline."
 
 **Frozen-contract note:** `regionData.ts`'s `CROSS_AZ_HOP_MS = 1.5` is a **local mirror**, not an
 import, of `worldEngine/networkRuntime.ts:10`'s private (non-exported) `CROSS_AZ_MS` (confirmed at
@@ -440,8 +443,10 @@ two files that reference this module at all are `AzCanvas.tsx` (the function) an
 `AzCanvas.tsx` assembles into `node.data` must be manually kept in sync with those two interfaces;
 extend both additively and keep them in sync by hand. `regionData.ts`'s selector **functions**
 (all seven) fan out across `RegionView.tsx` + `AzRow.tsx` + `CrossAzColumn.tsx` +
-`TimelineStrip.tsx` — one more consumer than the "four region/ components" the draft assumed,
-since Task 3's `TimelineStrip.tsx` also calls in (`regionEvents`). Of its exported **types**
+`timelineModel.ts` — one more consumer than the "four region/ components" the draft assumed,
+since Task 3's `TimelineStrip.tsx` (→ Polish 4 Task 6's `timelineModel.ts`, §X) also calls in
+(`regionEvents`; `TimelineV2.tsx` itself does not call `regionData.ts` directly, only through
+`timelineModel.ts`). Of its exported **types**
 specifically, only `AzShare` (→ `SplitLines.tsx`) and `RibbonAlert` (→ `AlertRibbon.tsx`) are
 imported by name; `ReplicationPair`/`CrossAzEntry` are consumed only structurally, through
 `crossAzEntries()`'s inferred return type (`CrossAzColumn.tsx`) — extend all four additively
@@ -1673,6 +1678,106 @@ live number is `useServerDisplayMetrics`'s existing scrub-or-latest `display` pl
   integration, `data-live`/2.2s pulse, kill-lit-while-running with remove/+ still locked, and a
   scrub-posture case (`running:false`, `latestBatch:null`, `scrubBatch` set) asserting the SAME
   watching output with NO watchband — the literal D7 acceptance case.
+
+### X. Polish 4 Task 6 — failover timeline v2 (`src/app/world/region/`, 2026-07-11)
+
+Independent of §S–§W (the contextual-dock tasks) — spec D8 ("a git chart for your infra"),
+`.superpowers/sdd/task-6-brief.md`. Replaces `TimelineStrip.tsx`'s single-lane glyph strip
+(§M) with per-AZ swimlanes: colored health bands, real-event markers with hover tooltips,
+static dotted causality arrows between a narrated chain's cross-lane steps, a time axis, a
+legend, and (only when a chain exists) a one-sentence narration bar. Same `RegionView.tsx`
+mount point and `AlertRibbon` scroll/flash wiring as before (§M's file-table row for
+`RegionView.tsx` is updated in place, not duplicated here).
+
+- **`src/app/world/region/timelineModel.ts` (new, PURE — no React/store reads)**: the region
+  page's second pure-model file alongside `regionData.ts`, but unlike `regionData.ts` — which
+  every `region/` view calls directly — `TimelineV2.tsx` is `timelineModel.ts`'s ONLY consumer,
+  and `timelineModel.ts` itself calls INTO `regionData.ts`'s `regionEvents` (unchanged) for
+  event scoping rather than duplicating that logic, the same "reuse, don't fork" instruction the
+  task brief gave. Exports `TimelineBand`/`TimelineMarker`/`TimelineLane`/`TIMELINE_WINDOW_MS`
+  (120_000) plus four functions: `markerClass(kind)` (the fixed `EngineEventKind → cls` map —
+  `outage_triggered→kill`, `health_check_failed→hc`, `failover_started`/`failover_completed`/
+  `ttl_lag_expired→shift`, `replica_promoted→promote`, else `other`); `buildLanes(regionId, doc,
+  compiled, events, frames, endMs)` (one lane per AZ in doc iteration order — mirrors
+  `RegionView.tsx`/`AzRow.tsx`'s own unsorted convention; bands merge consecutive in-window
+  frames with equal `batch.azs[azId].health`, closing each band at the next band's start so they
+  render edge-to-edge, with the final band stretched to `endMs`; markers are `regionEvents`-
+  scoped events filtered to the trailing `TIMELINE_WINDOW_MS` and assigned to the lane whose
+  closure — the AZ itself, a server living in it, or a compiled instance resident on it —
+  contains an affected id, falling back to the first lane for region/population-scoped events
+  no AZ closure claims); `narration(regionId, doc, compiled, events)` (assembles a "last kill/
+  detection cluster → subsequent shift → promotion" chain in strict temporal order, returning
+  `null` when there's no kill AND no detection to anchor on — verified against a REAL run, see
+  the concern below); `causalLinks(lanes, chain)` (consecutive chain steps that resolve to
+  different lane `azId`s, by exact event-id lookup — unambiguous since `buildLanes` assigns
+  each scoped event to exactly one lane).
+- **`src/app/world/region/TimelineV2.tsx` (new)**: render-only, reading `useWorldStore` (`doc`
+  only), `useCompiledWorld`, `useSimulationStore` (`scrubBatch ?? latestBatch`/`running`/
+  `events`/`setScrubIndex`, plus an imperative `getReplayFrames()` call **at render time**, not
+  just inside the click handler — bands/markers need the frame history to draw, not only to
+  scrub to it; the component has no second subscription for this, it just re-reads the getter
+  fresh on every render `latestBatch`/`events` already trigger). Click-to-scrub is
+  `TimelineStrip.tsx`'s exact nearest-frame-by-`simMs`-distance logic, carried verbatim
+  (disabled while `running`, same title string). Renders `null` when the region has zero AZs
+  (`buildLanes` returns `[]`) — note this is a NARROWER null-gate than `TimelineStrip.tsx` had
+  (that returned `null` on zero SCOPED EVENTS; this timeline is a health-band "git chart" that's
+  meaningful even with no events at all, so it now only goes away when there's truly nothing to
+  show a lane for). **Overlapping-marker stagger** (found via live verification, not spec'd):
+  two markers can legitimately land at the identical `simMs` in the same lane — verified live,
+  a replica promotion can fire on the SAME engine tick as the manual kill that triggered it,
+  well before the AZ's aggregate health check confirms down — so markers within
+  `CLUSTER_EPSILON_PCT` (1.5% of the window) of an earlier marker in the same lane stagger
+  vertically (alternating above/below center, `STACK_STEP_PX = 9`) instead of rendering
+  dead-on-top with the later one eating every click.
+- **`src/app/world/region/timelineStyles.ts` (new)**: the same injected-stylesheet-once idiom
+  `r3Styles.ts`/`hwStyles.ts`/`azFloorStyles.ts` established, self-contained rather than
+  extending `r3Styles.ts` (a different, older mockup's stylesheet — `r3Styles.ts`'s own header
+  comment ties it to `level-redesign-v5.html`'s `.r3` section, not this task's mock). Exposes
+  theme-aware `--tl-teal`/`--tl-violet` (from `CATEGORY_COLORS.network`/`.messaging`, the same
+  swap-on-light-theme idiom `r3Styles.ts` uses for its own `--r3-teal`) for the shift/promote
+  marker classes, plus the ONE CSS transition D8 guarantee 5 permits: marker hover-scale. No
+  `@keyframes`, no infinite animation — relies on the app's existing blanket
+  `prefers-reduced-motion` override (`src/index.css`, the same precedent its own
+  `.region-timeline-flash` comment documents) rather than a component-level `useReducedMotion()`
+  call, since this is a plain CSS `:hover` transition with no JS-driven animation loop.
+- **Band/marker color tokens**: band tints are `color-mix(in srgb, var(--color-success/warning/
+  danger) N%, transparent)` (13/13/15%, borders 24/27/30%) — this codebase's established way to
+  alpha-blend a `var(--color-*)` token in both themes (`ui/kit.tsx`, `dock/*Styles.ts`,
+  `server/InspectorRail.tsx` all do the same), NOT the mock's literal `#22c55e22` family, which
+  is dark-mode-only. Marker chip fills mix each class's accent into `var(--color-node-base)`
+  (not `transparent`) for an opaque circle that stays legible on a light card — a theme-aware
+  stand-in for the mock's near-black per-class literals, which would look wrong outside a dark
+  scene (D8: this strip is normal region-view chrome, not an instrument-header dark scene).
+- **`src/app/world/RegionView.tsx`**: `<TimelineStrip regionId={regionId} />` → `<TimelineV2
+  regionId={regionId} />` at the identical mount point, inside the same `<div ref={timelineRef}>`
+  the `AlertRibbon` scroll/flash wiring already targets — that wiring is untouched.
+- **`src/index.css`**: `.region-timeline-flash`'s comment updated in place (was "RegionView /
+  TimelineStrip, Phase 4 T3") to note the Task 6 swap — the CSS rule itself is unchanged, still
+  targets the same wrapper div.
+- **Test migration**: `TimelineStrip.test.tsx` is deleted; its scrub-click-nearest-frame and
+  running-disabled-with-title cases are carried into `TimelineV2.test.tsx` (same behavioral
+  intent, new component, new assertions since markers are no longer bare glyph buttons but
+  `data-testid="tl-marker"`/`data-cls` elements). Its other two cases (region-scoping,
+  null-with-no-events) were NOT carried — scoping is now covered at the `timelineModel.test.ts`
+  level (`buildLanes`'s marker-assignment tests), and the null gate changed shape (see above).
+  `RegionView.test.tsx` needed three incidental fixes: `TimelineV2` now renders every AZ's label
+  a second time (as its lane label), so a bare `getByText('us-east-1a')` became ambiguous —
+  those three assertions now scope into the `AzRow` card via its pre-existing `data-az-row`
+  marker (`within(container.querySelector('[data-az-row="..."]'))`) rather than querying the
+  whole document.
+- **Concern (verified live, not a spec gap)**: `narration()`'s fixed `kill → detection → shift →
+  promotion` template only includes a step when it falls AT OR AFTER the previous step's
+  `simMs` — driving the actual app against the "Classic three-tier" example world, a kill +
+  replica-promotion fired on the identical tick (both before the AZ's health-check debounce
+  ever resolved), so the promotion was correctly OMITTED from that run's narration rather than
+  being attributed to a detection that chronologically followed it. This is intentional (never
+  claim a causal order the data doesn't support), but means a real "full four-segment chain" is
+  rarer in practice than the locked mock's illustrative copy suggests. Separately,
+  `failover_started`/`failover_completed`/`ttl_lag_expired` carry population/region ids, never
+  AZ ids (confirmed against `worldEngine/index.ts`), so a "shift" marker almost always lands on
+  `buildLanes`' first-lane fallback rather than the AZ actually receiving the traffic — a
+  documented, data-shape-driven limitation of AZ-level attribution for region/population-scoped
+  events, not a bug in the assignment logic itself.
 
 ---
 
