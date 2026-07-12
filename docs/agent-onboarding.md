@@ -85,7 +85,7 @@ views (all 4 levels    worldEngine.start()     analysis rules        cost model
 |---|---|---|
 | `world.store.ts` | `WorldDoc` + undo/redo history | ALL doc mutations go through its actions, which route through `mutate()` — that is what gives you undo + dirty-marking for free. Never `set({ doc })` directly. |
 | `nav.store.ts` | level + regionId/azId/serverId focus | Deliberately has NO import of world.store. Navigation must never create undo history. |
-| `simulation.store.ts` | running, timeScale, latestBatch, events, scrub state, health overrides | The ONLY file in the app allowed to call the engine facade (`createWorldEngine()` / `worldEngine` singleton). Views read this store, never the engine. |
+| `simulation.store.ts` | running, timeScale, latestBatch, events, scrub state, health overrides, event-log run id/total | The ONLY file in the app allowed to call the engine facade (`createWorldEngine()` / `worldEngine` singleton). Views read this store, never the engine. Its in-memory `events` list is a 500-entry presentation WINDOW, not a history cap: every event is also spilled in 1 Hz batches to the durable SQLite (WAL) event log (`event_log_*` Tauri commands → `<app_data_dir>/events.db`; in-memory map in browser dev), with `eventLogTotal` as the true count. |
 | `file.store.ts` | file path, dirty flag, recent files | — |
 | `ui.store.ts` | themeMode, panel tab, selectedServerId | Dock scope is DERIVED (`dock/scope.ts` `deriveScope`), never stored. |
 

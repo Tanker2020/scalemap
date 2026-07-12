@@ -21,6 +21,19 @@ not guessed from folder structure.
 > mentions of those in the historical sections describe the pre-sweep state. Current-state
 > onboarding lives in `docs/agent-onboarding.md`.
 
+> **2026-07-12 durable event log:** engine events are no longer capped-and-dropped — the store's
+> in-memory list became a 500-entry presentation window and EVERY event now spills in 1 Hz
+> batches to SQLite (WAL) at `<app_data_dir>/events.db`. Touched files: `src-tauri/src/commands.rs`
+> (+`rusqlite` bundled — `LoggedEvent`/`LoggedEventRow`, `open_event_db` WAL+schema,
+> `begin_run_in`/`append_events_in`/`tail_in` pure helpers with cargo tests, `event_log_begin_run`/
+> `event_log_append`/`event_log_tail` commands, one `OnceLock<Mutex<Connection>>`),
+> `src-tauri/src/lib.rs` (handler registration), `src/lib/tauri.ts` (camelCase wrappers +
+> `LoggedEngineEvent`/`LoggedEventRow`), `src/lib/tauriMock.ts` (in-memory map, same command
+> surface), `src/app/store/simulation.store.ts` (module-local pending buffer + 1 Hz flusher +
+> final drain on stop/resetSession; additive state `eventLogRunId`/`eventLogTotal`; engine
+> contract untouched), `src/app/world/EventsTab.tsx` (shows `latest N of TOTAL` + on-disk note).
+> No history-browsing UI yet — `event_log_tail` is the ready-made pagination surface for it.
+
 ---
 
 ## 1. Feature modules (safe to own independently)

@@ -64,6 +64,11 @@ Core systems that exist today:
   actually reachable from the UI) and the LLM endpoint configuration above.
 - **`.scalemap` v2 file persistence** via Tauri commands, with a `localStorage`-backed mock for
   browser-only dev, plus a 30-second dirty-triggered autosave snapshot.
+- **Durable simulation event log** — every engine event of every run is appended to SQLite
+  (WAL) at `<app_data_dir>/events.db` in 1 Hz batches (`event_log_*` commands; in-memory map
+  under `tauriMock` in browser dev). The store's in-memory `events` list is a 500-entry
+  presentation window for the live Events tab, NOT a history cap — `eventLogTotal` carries the
+  true persisted count. Event history is never serialized into `.scalemap`.
 
 There is no `prd.txt` in the repo; this file is the source of truth for scope and architecture.
 **Read `docs/agent-onboarding.md` before writing code** — it holds the hard laws (theme/price/
@@ -197,7 +202,8 @@ src/
 src-tauri/src/
   main.rs, lib.rs
   commands.rs                    # All Tauri commands: save/load diagram, file dialogs, recent
-                                  # files, save/load_llm_settings, llm_chat
+                                  # files, save/load_llm_settings, llm_chat, event_log_*
+                                  # (SQLite WAL event history at <app_data_dir>/events.db)
 ```
 
 ---
@@ -355,7 +361,8 @@ Decisions).
 
 Rust (`src-tauri/Cargo.toml`): `tauri`, `tauri-plugin-opener`, `tauri-plugin-dialog`,
 `serde`/`serde_json`, `chrono`, `reqwest` (`default-features = false`, features `["json",
-"rustls-tls"]` — added in Phase 6 for the `llm_chat` command; no OpenSSL dependency).
+"rustls-tls"]` — added in Phase 6 for the `llm_chat` command; no OpenSSL dependency), `rusqlite`
+(`features = ["bundled"]` — the durable simulation event log, WAL mode, added 2026-07-12).
 
 ---
 

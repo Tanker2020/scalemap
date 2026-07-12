@@ -78,4 +78,40 @@ export const tauriMock = {
     })
     return r.text()
   },
+
+  // Browser-dev event log: same command surface as the Rust SQLite (WAL) log, held in memory
+  // (NOT localStorage — a long run's volume would blow its quota). Semantics mirror
+  // commands.rs: per-run monotonic seq, newest-first tail with an exclusive beforeSeq cursor.
+  async event_log_begin_run(_worldName: string): Promise<number> {
+    const id = mockEventLogNextRun++
+    mockEventLogRuns.set(id, [])
+    return id
+  },
+
+  async event_log_append(runId: number, events: MockLoggedEvent[]): Promise<number> {
+    const list = mockEventLogRuns.get(runId) ?? []
+    mockEventLogRuns.set(runId, list)
+    for (const e of events) list.push({ ...e, seq: list.length + 1 })
+    return list.length
+  },
+
+  async event_log_tail(
+    runId: number, beforeSeq: number | null, limit: number,
+  ): Promise<(MockLoggedEvent & { seq: number })[]> {
+    const list = mockEventLogRuns.get(runId) ?? []
+    const cursor = beforeSeq ?? Number.MAX_SAFE_INTEGER
+    return list.filter(r => r.seq < cursor).slice(-limit).reverse()
+  },
 }
+
+interface MockLoggedEvent {
+  id: string
+  simMs: number
+  kind: string
+  severity: string
+  message: string
+  affected: string[]
+}
+
+const mockEventLogRuns = new Map<number, (MockLoggedEvent & { seq: number })[]>()
+let mockEventLogNextRun = 1

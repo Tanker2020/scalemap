@@ -229,6 +229,285 @@ pub async fn llm_chat(base_url: String, api_key: String, body: String) -> Result
         .map_err(|e| redact(&e.to_string(), &api_key))
 }
 
+// ─── Simulation event log (SQLite, WAL) ──────────────────────────────────────────
+// The frontend keeps only a small in-memory WINDOW of engine events for the live Events tab;
+// EVERY event is durably appended here so long runs never lose history (user decision
+// 2026-07-12: no hard caps — overflow spills to disk). WAL journal mode lets future readers
+// (history browsing, a second window) query concurrently with the 1 Hz batched appends coming
+// from `simulation.store.ts`. One database at `<app_data_dir>/events.db`; one `runs` row per
+// Simulate press; per-run monotonic `seq` for stable pagination.
+
+const EVENT_DB_FILE: &str = "events.db";
+
+/// Wire shape of one engine event, camelCased to match `EngineEvent` in
+/// `src/lib/worldEngine/types.ts` (id/simMs/kind/severity/message/affected).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoggedEvent {
+    pub id: String,
+    pub sim_ms: i64,
+    pub kind: String,
+    pub severity: String,
+    pub message: String,
+    pub affected: Vec<String>,
+}
+
+/// A stored event plus its per-run sequence number (pagination cursor for `event_log_tail`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoggedEventRow {
+    pub seq: i64,
+    pub id: String,
+    pub sim_ms: i64,
+    pub kind: String,
+    pub severity: String,
+    pub message: String,
+    pub affected: Vec<String>,
+}
+
+fn open_event_db(path: &Path) -> Result<rusqlite::Connection, String> {
+    let conn = rusqlite::Connection::open(path)
+        .map_err(|e| format!("could not open event log: {e}"))?;
+    // WAL + NORMAL: the standard desktop-app profile — readers never block on the writer,
+    // and a power loss can only lose the last unsynced batch, never corrupt the file.
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|e| format!("could not enable WAL: {e}"))?;
+    conn.pragma_update(None, "synchronous", "NORMAL")
+        .map_err(|e| format!("could not set synchronous: {e}"))?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT NOT NULL,
+            world_name TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS events (
+            run_id INTEGER NOT NULL REFERENCES runs(id),
+            seq INTEGER NOT NULL,
+            event_id TEXT NOT NULL,
+            sim_ms INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            message TEXT NOT NULL,
+            affected TEXT NOT NULL,
+            PRIMARY KEY (run_id, seq)
+        );
+        CREATE INDEX IF NOT EXISTS idx_events_run_sim ON events(run_id, sim_ms);",
+    )
+    .map_err(|e| format!("could not create event log schema: {e}"))?;
+    Ok(conn)
+}
+
+static EVENT_DB: std::sync::OnceLock<std::sync::Mutex<rusqlite::Connection>> =
+    std::sync::OnceLock::new();
+
+fn event_db(app: &AppHandle) -> Result<&'static std::sync::Mutex<rusqlite::Connection>, String> {
+    if let Some(db) = EVENT_DB.get() {
+        return Ok(db);
+    }
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("could not resolve app data dir: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("could not create app data dir: {e}"))?;
+    let conn = open_event_db(&dir.join(EVENT_DB_FILE))?;
+    let _ = EVENT_DB.set(std::sync::Mutex::new(conn));
+    Ok(EVENT_DB.get().expect("event db just initialized"))
+}
+
+fn begin_run_in(conn: &rusqlite::Connection, world_name: &str) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO runs (started_at, world_name) VALUES (?1, ?2)",
+        rusqlite::params![chrono::Utc::now().to_rfc3339(), world_name],
+    )
+    .map_err(|e| format!("could not begin run: {e}"))?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Appends a batch in one transaction; returns the run's total event count afterwards.
+fn append_events_in(
+    conn: &rusqlite::Connection,
+    run_id: i64,
+    events: &[LoggedEvent],
+) -> Result<i64, String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("could not start event tx: {e}"))?;
+    let mut next_seq: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM events WHERE run_id = ?1",
+            rusqlite::params![run_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("could not read event seq: {e}"))?;
+    {
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO events (run_id, seq, event_id, sim_ms, kind, severity, message, affected)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .map_err(|e| format!("could not prepare event insert: {e}"))?;
+        for e in events {
+            next_seq += 1;
+            let affected = serde_json::to_string(&e.affected).map_err(|e| e.to_string())?;
+            stmt.execute(rusqlite::params![
+                run_id, next_seq, e.id, e.sim_ms, e.kind, e.severity, e.message, affected
+            ])
+            .map_err(|e| format!("could not insert event: {e}"))?;
+        }
+    }
+    tx.commit().map_err(|e| format!("could not commit events: {e}"))?;
+    Ok(next_seq)
+}
+
+/// Newest-first page of a run's events; `before_seq` (exclusive) pages further back.
+fn tail_in(
+    conn: &rusqlite::Connection,
+    run_id: i64,
+    before_seq: Option<i64>,
+    limit: i64,
+) -> Result<Vec<LoggedEventRow>, String> {
+    let cursor = before_seq.unwrap_or(i64::MAX);
+    let mut stmt = conn
+        .prepare(
+            "SELECT seq, event_id, sim_ms, kind, severity, message, affected FROM events
+             WHERE run_id = ?1 AND seq < ?2 ORDER BY seq DESC LIMIT ?3",
+        )
+        .map_err(|e| format!("could not prepare tail query: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![run_id, cursor, limit], |r| {
+            let affected_raw: String = r.get(6)?;
+            Ok(LoggedEventRow {
+                seq: r.get(0)?,
+                id: r.get(1)?,
+                sim_ms: r.get(2)?,
+                kind: r.get(3)?,
+                severity: r.get(4)?,
+                message: r.get(5)?,
+                affected: serde_json::from_str(&affected_raw).unwrap_or_default(),
+            })
+        })
+        .map_err(|e| format!("could not query events: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("could not read event rows: {e}"))?;
+    Ok(rows)
+}
+
+fn lock_event_db(
+    db: &'static std::sync::Mutex<rusqlite::Connection>,
+) -> Result<std::sync::MutexGuard<'static, rusqlite::Connection>, String> {
+    db.lock().map_err(|_| "event log lock poisoned".to_string())
+}
+
+#[tauri::command]
+pub fn event_log_begin_run(app: AppHandle, world_name: String) -> Result<i64, String> {
+    let conn = lock_event_db(event_db(&app)?)?;
+    begin_run_in(&conn, &world_name)
+}
+
+#[tauri::command]
+pub fn event_log_append(
+    app: AppHandle,
+    run_id: i64,
+    events: Vec<LoggedEvent>,
+) -> Result<i64, String> {
+    let conn = lock_event_db(event_db(&app)?)?;
+    append_events_in(&conn, run_id, &events)
+}
+
+#[tauri::command]
+pub fn event_log_tail(
+    app: AppHandle,
+    run_id: i64,
+    before_seq: Option<i64>,
+    limit: i64,
+) -> Result<Vec<LoggedEventRow>, String> {
+    let conn = lock_event_db(event_db(&app)?)?;
+    tail_in(&conn, run_id, before_seq, limit)
+}
+
+#[cfg(test)]
+mod event_log_tests {
+    use super::*;
+
+    fn temp_db() -> (rusqlite::Connection, PathBuf) {
+        // Unique per call — tests run in parallel, and a shared path makes WAL setup race.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "scalemap-eventlog-test-{}-{n}.db",
+            std::process::id(),
+        ));
+        let _ = fs::remove_file(&path);
+        (open_event_db(&path).expect("open temp event db"), path)
+    }
+
+    fn evt(n: i64) -> LoggedEvent {
+        LoggedEvent {
+            id: format!("evt-{n}"),
+            sim_ms: n * 100,
+            kind: "server_down".into(),
+            severity: "critical".into(),
+            message: format!("event {n}"),
+            affected: vec![format!("srv-{n}"), "az-1".into()],
+        }
+    }
+
+    #[test]
+    fn wal_mode_is_active_on_a_file_backed_db() {
+        let (conn, path) = temp_db();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode.to_lowercase(), "wal");
+        drop(conn);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn append_batches_accumulate_with_monotonic_seq_and_running_total() {
+        let (conn, path) = temp_db();
+        let run = begin_run_in(&conn, "three-tier").unwrap();
+        let total1 = append_events_in(&conn, run, &[evt(1), evt(2), evt(3)]).unwrap();
+        assert_eq!(total1, 3);
+        let total2 = append_events_in(&conn, run, &[evt(4), evt(5)]).unwrap();
+        assert_eq!(total2, 5);
+        let all = tail_in(&conn, run, None, 100).unwrap();
+        assert_eq!(all.len(), 5);
+        assert_eq!(all.first().unwrap().seq, 5, "tail is newest-first");
+        assert_eq!(all.last().unwrap().seq, 1);
+        drop(conn);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn tail_paginates_backwards_and_roundtrips_affected_json() {
+        let (conn, path) = temp_db();
+        let run = begin_run_in(&conn, "w").unwrap();
+        append_events_in(&conn, run, &(1..=10).map(evt).collect::<Vec<_>>()).unwrap();
+        let page1 = tail_in(&conn, run, None, 4).unwrap();
+        assert_eq!(page1.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![10, 9, 8, 7]);
+        let page2 = tail_in(&conn, run, Some(7), 4).unwrap();
+        assert_eq!(page2.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![6, 5, 4, 3]);
+        assert_eq!(page2[0].affected, vec!["srv-6".to_string(), "az-1".to_string()]);
+        drop(conn);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn runs_are_isolated_from_each_other() {
+        let (conn, path) = temp_db();
+        let run_a = begin_run_in(&conn, "a").unwrap();
+        let run_b = begin_run_in(&conn, "b").unwrap();
+        append_events_in(&conn, run_a, &[evt(1), evt(2)]).unwrap();
+        let total_b = append_events_in(&conn, run_b, &[evt(9)]).unwrap();
+        assert_eq!(total_b, 1, "run B's seq starts fresh");
+        assert_eq!(tail_in(&conn, run_a, None, 10).unwrap().len(), 2);
+        assert_eq!(tail_in(&conn, run_b, None, 10).unwrap().len(), 1);
+        drop(conn);
+        let _ = fs::remove_file(path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
