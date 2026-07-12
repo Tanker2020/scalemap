@@ -1,189 +1,13 @@
-import {
-  Server, Zap, Box, Circle,
-  GitBranch, Globe, Wifi, Link2, Shield, Lock,
-  Database, Archive, HardDrive,
-  AlignLeft, Radio, Share2, Activity,
-  Layers,
-  Cpu, Package,
-  Layout, Map,
-  type LucideIcon,
-} from 'lucide-react'
-import { CATEGORY_COLORS } from './theme'
-import type { CloudProvider } from './cloudRegistry'
+// Packet-template types (Flyweight) — the surviving slice of the deleted canvas app's node/edge
+// config module (everything else — NODE_CONFIG icon registry, NodeSimConfig, edge configs,
+// workload helpers — was removed 2026-07-12 with zero live consumers; see git history if the
+// old shapes are ever needed). What remains is read by exactly two places today:
+//   - `ScalemapFileV2.packets?: PacketRegistry` (src/lib/serializer.ts) — persisted registry
+//   - `BlueprintDependency.packetTemplateId: number | null` (src/lib/world/types.ts)
+// There is NO authoring UI for packet templates in the world model — the types survive so
+// .scalemap files carrying custom templates stay round-trippable, not because an editor exists.
 
-export type NodeStatus = 'healthy' | 'degraded' | 'down' | 'idle'
-
-export type NodeCategory = keyof typeof CATEGORY_COLORS
-
-export type NodeType =
-  | 'ec2' | 'lambda' | 'container' | 'pod'
-  | 'loadBalancer' | 'apiGateway' | 'cdn' | 'dns' | 'firewall' | 'vpn'
-  | 'dbSql' | 'dbNoSql' | 'objectStorage' | 'fileStorage'
-  | 'queue' | 'eventBus' | 'pubsub' | 'stream'
-  | 'redis' | 'memcached' | 'cdnCache'
-  | 'k8sCluster' | 'ecsCluster' | 'dockerCompose'
-  | 'vpc' | 'subnet' | 'az' | 'region' | 'namespace'
-
-export type EdgeType = 'request' | 'stream' | 'event' | 'dependency'
-
-// Pure network-layer relays: they forward whatever traffic arrives rather than originating it.
-// An edge sourced from one of these must not carry an independently-configured RPS — see
-// canDefineOutboundThroughput's callers in PropertiesPanel.tsx (UI gate) and particleEngine.ts
-// (engine-level snapshot zeroing, defense-in-depth against legacy files/ScaleScript overrides).
-// apiGateway is deliberately excluded: unlike loadBalancer, it's treated as a legitimate
-// internet-facing ingress origin and keeps free-form outbound RPS.
-export const FORWARD_ONLY_NODE_TYPES = new Set<NodeType>(['loadBalancer', 'dns', 'firewall', 'vpn'])
-
-export function canDefineOutboundThroughput(sourceType: NodeType | undefined): boolean {
-  return sourceType === undefined || !FORWARD_ONLY_NODE_TYPES.has(sourceType)
-}
-
-export interface LatencyModel {
-  p50Ms: number
-  p99Ms: number
-}
-
-export interface TrafficOrigin {
-  regionId: string      // must match a WorldRegion.id from regionConfig.ts
-  weight: number        // 0.0–1.0; weights should sum to ~1.0
-  baseLatencyMs: number // auto-filled from WORLD_REGIONS.baseLatencyMs, user-overridable
-}
-
-export interface RetryConfig {
-  maxRetries: number          // 0 disables retries entirely
-  baseDelayMs: number         // delay before the first retry attempt
-  jitter: 'full' | 'equal'   // full: random(0, cap); equal: cap/2 + random(0, cap/2)
-  maxDelayMs?: number         // cap on exponential growth
-}
-
-export interface NodeSlo {
-  maxP90LatencyMs?: number
-  maxErrorRate?: number
-  maxUtilization?: number
-}
-
-export interface NodeSimConfig {
-  maxRps: number
-  maxConcurrency?: number
-  processingMs: number
-  errorRate: number
-  queueCapacity?: number
-  latencyModel?: LatencyModel
-  circuitBreaker?: {
-    errorThreshold: number
-    resetMs: number
-  }
-  connectionPool?: {
-    max: number
-    timeoutMs: number
-  }
-  timeoutMs?: number
-  retryConfig?: RetryConfig
-  lbRouting?: 'round-robin' | 'least-connections'
-  forcedHealthState?: 'auto' | 'healthy' | 'degraded' | 'down'
-  trafficOrigins?: TrafficOrigin[]  // CDN, loadBalancer, apiGateway only
-  coldStart?: {
-    p50Ms: number
-    p99Ms: number
-  }
-  maxWarmInstances?: number
-  autoScale?: {
-    minCapacityRps: number
-    maxCapacityRps: number
-    scaleOutThreshold: number
-    scaleOutDelayMs: number
-    scaleInThreshold: number
-    scaleInCooldownMs: number
-  }
-  selfHealing?: {
-    restartDelayMs: number
-    maxRestarts: number
-    crashLoopBackoffMs: number
-  }
-
-  // ─── Kubernetes / container-orchestration configs ─────────────────────────
-  // k8sPod: per-pod Deployment config with HPA. effectiveMaxRps = replicas × baseCapacityRps,
-  //         further constrained by the enclosing namespace quota and cluster node-pool capacity.
-  k8sPod?: {
-    replicas: number
-    baseCapacityRps: number     // capacity of a SINGLE replica
-    hpa?: {
-      minReplicas: number
-      maxReplicas: number
-      targetCpuUtilization: number  // 0–1, e.g. 0.7
-    }
-  }
-  // k8sNamespace: resource quotas and network policy for a namespace grouping node.
-  k8sNamespace?: {
-    resourceQuotaRps: number    // max combined RPS for all pods in this namespace
-    networkPolicy: 'open' | 'strict'  // strict drops inbound from outside the namespace
-  }
-  // k8sCluster: node-pool limits and service-mesh config for a cluster grouping node.
-  k8sCluster?: {
-    nodePoolCapacityRps: number // max combined RPS for ALL pods in the cluster
-    hasServiceMesh: boolean     // e.g. Istio/Linkerd — adds Envoy sidecar overhead
-    cniLatencyMs: number        // per-hop intra-cluster network overhead
-  }
-
-  // dbConfig: separate read/write capacity limits for database nodes (dbSql, dbNoSql).
-  // Reads are cheap (RAM/cache); writes are expensive (disk, WAL, locking).
-  // SQL nodes also apply a locking penalty to reads when write utilization is high.
-  dbConfig?: {
-    maxReadRps: number      // e.g. dbSql: 5000,  dbNoSql: 20000
-    maxWriteRps: number     // e.g. dbSql: 500,   dbNoSql: 5000
-    readLatencyMs: number   // e.g. dbSql: 2ms,   dbNoSql: 1ms
-    writeLatencyMs: number  // e.g. dbSql: 15ms,  dbNoSql: 5ms
-  }
-
-  // ─── Thread pool (fixed-capacity compute nodes: ec2, container) ───────────────
-  // Requests occupy a thread for their processing duration; when all threads are occupied,
-  // new requests are rejected immediately (503) — no queue, no backlog. User-configured
-  // directly (not derived from maxRps/processingMs) — see computeMaxThreads in particleEngine.ts.
-  maxThreads?: number
-
-  // ─── CAP-theorem modeling (GitHub #12) ─────────────────────────────────────
-  // DB nodes only (dbSql, dbNoSql); undefined = today's single-bucket behavior (unchanged).
-  // When set, the engine models a fixed replica set of 3 and gates read/write availability
-  // on how many replicas remain reachable under active edge partitions (see O1's
-  // isEdgePartitioned in particleEngine/chaos.ts). Scope note: this models consistency-level
-  // config, replication lag, and partition-aware availability only — NOT leader election or
-  // split-brain simulation (explicitly de-scoped; see optimization-issues-spec.md Task O2).
-  consistencyLevel?: 'ONE' | 'QUORUM' | 'ALL'   // ONE: >=1/3 replicas reachable; QUORUM: >=2/3; ALL: 3/3
-  replicationLagMs?: number                      // extra latency applied to reads served by a non-primary replica; undefined = 0 (no lag modeled)
-
-  // ─── Compute resource model (EC2 v1) ─────────────────────────────────────────
-  // When set, the engine derives throughput/concurrency/OOM/latency from physical hardware
-  // (computeProfile) instead of maxRps. Per-request cost (workload) lives on the PACKET
-  // template that generated the request, not here — see BasePacketTemplate.workload. EC2 only
-  // in v1.
-  computeProfile?: ComputeProfile
-}
-
-// ─── Compute resource model (EC2 v1) ───────────────────────────────────────────
-// Physical hardware profile for a compute node. When present on a node's simConfig, the engine
-// derives capacity/latency/OOM from CPU + RAM instead of the abstract maxRps gate. Gated exactly
-// like dbConfig/k8sPod — absent ⇒ legacy maxRps behavior, unchanged.
-export const COMPUTE_IPC = 2.0   // fixed placeholder across all CPU families until a per-family
-                                 // IPC lookup table (Geekbench/SPEC) is built. ~1.5–3.0 is the
-                                 // realistic band for mixed server workloads; 2.0 is defensible.
-
-export interface ComputeProfile {
-  vCpu: number                       // linear compute units (1 vCPU ≈ 1 hardware thread)
-  ramGiB: number
-  architecture: 'x86_64' | 'arm64'   // v1: affects cost only (arm cheaper)
-  cpuFamily: string                  // cosmetic in v1 (IPC fixed at COMPUTE_IPC)
-  baseClockGhz: number
-  blockingIoModel: boolean           // true: thread-per-request (a blocked thread holds a stack);
-                                     // false: async/event-loop (no thread stack per in-flight req)
-  osBaseMemoryMb?: number            // reserved RAM floor; default 512
-  threadStackMb?: number             // per-in-flight thread stack (blocking only); default 1
-  maxThreadsOverride?: number        // optional Tomcat-style artificial pool cap below RAM limit
-  allowMemoryOvercommit?: boolean    // when true, maxThreadsOverride may exceed the memory-safe
-                                     // ceiling instead of being clamped to it -- deliberately
-                                     // models an overcommitted pool that can genuinely OOM under
-                                     // load. Default/absent: today's safe behavior (cap always <=
-                                     // memory-safe ceiling for blocking servers).
-}
+export type PacketProtocol = 'http' | 'event' | 'stream' | 'db'
 
 export type WorkloadTier = 'simple_crud' | 'moderate_logic' | 'heavy_compute' | 'custom'
 
@@ -194,49 +18,13 @@ export interface WorkloadDemand {
   ioBoundFraction: number            // 0..0.99 — fraction of wall time blocked on IO (not CPU)
 }
 
-// Bounds + default per preset tier. 'custom' is unconstrained (any non-negative value).
-export const WORKLOAD_TIER_RANGES: Record<Exclude<WorkloadTier, 'custom'>, { min: number; max: number; default: number }> = {
-  simple_crud:    { min: 0.001, max: 0.01, default: 0.005 }, // ~1M–10M instr — parse, 1 query, serialize
-  moderate_logic: { min: 0.01,  max: 0.1,  default: 0.05  }, // ~10M–100M instr — validation, transforms
-  heavy_compute:  { min: 0.1,   max: 10.0, default: 1.0   }, // ~100M–10B instr — image/crypto/ML inference
-}
-
-// Clamp a raw instruction count into the selected tier's range; 'custom' passes through (>= 0).
-export function resolveWorkloadInstructions(tier: WorkloadTier, raw: number): number {
-  if (tier === 'custom') return Math.max(0, raw)
-  const r = WORKLOAD_TIER_RANGES[tier]
-  return Math.min(r.max, Math.max(r.min, raw))
-}
-
-// User-entered pricing parameters. Rates live in cloudRegistry.ts; this holds only the
-// "things you should know" — the numbers a user must supply for an accurate cost estimate.
-export interface NodeCostConfig {
-  instanceCount?: number       // compute / cache / stream — how many instances/shards
-  instanceRateUsdHr?: number   // $/hr per instance (UI may collect per-minute, store as $/hr)
-  storageTierId?: string       // selects which registry StorageTier rate applies
-  storageGb?: number           // provisioned/stored capacity for storageGbMonth pricing
-  avgRequestKb?: number        // avg inbound request size — reserved for future ingress pricing
-  avgResponseKb?: number       // avg outbound response size — drives dynamic egress bandwidth/cost
-}
-
-// ─── Packet templates (Flyweight) ──────────────────────────────────────────────
-// Users define reusable "kinds of request" centrally; live particles hold only a small
-// integer templateId pointing into the registry. Heavy per-protocol data never touches
-// the hot particle loop. Generic mode ignores templates entirely (avgResponseKb sizing).
-
-export type PacketProtocol = 'http' | 'event' | 'stream' | 'db'
-
 export interface BasePacketTemplate {
   id: number
   name: string
   protocol: PacketProtocol
-  sizeKb: number            // request/packet payload — drives payloadBytes via log-normal
+  sizeKb: number            // request/packet payload size
   colorOverride?: string    // optional particle tint
-  // Per-request compute cost (CPU/memory/IO), consumed by the EC2 compute model when this
-  // template's particle arrives at (or originates an outbound call from) an ec2 node. Optional
-  // so protocol variants that predate this field, or a template a user never touched, still
-  // resolve via DEFAULT_PACKET_WORKLOAD (see defaults.ts) rather than being invalid.
-  workload?: WorkloadDemand
+  workload?: WorkloadDemand // per-request compute cost carried by serialized templates
 }
 
 export interface HttpTemplate extends BasePacketTemplate {
@@ -256,208 +44,23 @@ export interface EventTemplate extends BasePacketTemplate {
 export interface StreamTemplate extends BasePacketTemplate {
   protocol: 'stream'
   streamId: string
-  compressionType: 'none' | 'gzip' | 'snappy'  // scales egress bytes
+  compressionType: 'none' | 'gzip' | 'snappy'
 }
 
 export interface DbTemplate extends BasePacketTemplate {
   protocol: 'db'
   queryType: 'read' | 'write' | 'transaction'
-  isWAL: boolean            // Write-Ahead Logging active — adds write-latency penalty
-  resultSizeKb: number      // DB's response payload — sizes the DB node's egress
+  isWAL: boolean            // Write-Ahead Logging active
+  resultSizeKb: number      // DB's response payload size
 }
 
 export type PacketTemplate = HttpTemplate | EventTemplate | StreamTemplate | DbTemplate
 
-// Distributive Omit so dropping `id` preserves each protocol variant's own fields
-// (a plain Omit<Union, K> collapses to only the keys common to every member).
-export type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
-export type NewPacketTemplate = DistributiveOmit<PacketTemplate, 'id'>
-
 export type PacketMode = 'generic' | 'custom'
 
-// ─── Packet⇄edge transport compatibility ──────────────────────────────────────
-// An edge's `edgeType` is authoritative for transport physics (sync thread-holding vs async
-// fire-and-forget vs stream backpressure). A packet may only travel an edge whose transport it
-// fits. Single source of truth for the engine spawn filter, the distribution UI, and future
-// routing. request carries http + db; event carries event; stream carries stream.
-const EDGE_PROTOCOLS: Record<EdgeType, PacketProtocol[]> = {
-  request:    ['http', 'db'],
-  event:      ['event'],
-  stream:     ['stream'],
-  dependency: [],
-}
-
-export function protocolsForEdgeType(edgeType: EdgeType): PacketProtocol[] {
-  return EDGE_PROTOCOLS[edgeType] ?? []
-}
-
-export function edgeAcceptsProtocol(edgeType: EdgeType, protocol: PacketProtocol): boolean {
-  return EDGE_PROTOCOLS[edgeType]?.includes(protocol) ?? false
-}
-
-// One weighted reference per node; weights need not sum to 100 (normalized at use).
-export interface PacketDistributionEntry { templateId: number; weight: number }
-
-// Serialized form of the central registry — persisted in .scalemap and mirrored into the engine.
+// Serialized form of the template registry — persisted in .scalemap v2's optional `packets` key.
 export interface PacketRegistry {
   mode: PacketMode
   templates: Record<number, PacketTemplate>
   nextId: number
 }
-
-export interface NodeData extends Record<string, unknown> {
-  label: string
-  subtitle: string
-  status: NodeStatus
-  notes: string
-  warnings: string[]
-  simConfig?: Partial<NodeSimConfig>
-  slo?: NodeSlo
-  regionId?: string  // set on 'region' grouping nodes; links to WorldRegion.id
-  provider?: CloudProvider  // cloud provider mapping; undefined ≡ 'generic'
-  cost?: NodeCostConfig     // user-entered pricing parameters
-  packetDistribution?: PacketDistributionEntry[]  // custom-mode traffic profile (entry/source nodes)
-  // True once the user has hand-edited this node's label (inline rename or Properties panel).
-  // Gates provider-driven label sync — vault templates and freshly-dropped nodes ship with a
-  // display label that's neither the generic default nor a real service name (e.g. "App Load
-  // Balancer"), so without this flag resolveProviderLabel's string heuristic mistook them for
-  // user-customized names and silently refused to ever sync the label to the chosen provider.
-  labelCustomized?: boolean
-}
-
-// ─── Per-edge-type configuration ───────────────────────────────────────────────
-
-export interface RequestEdgeConfig {
-  methodDistribution: {
-    GET: number     // weights, need not sum to 100 — normalized at use
-    POST: number
-    PUT: number
-    DELETE: number
-  }
-  timeoutMs: number
-  retryConfig: RetryConfig
-}
-
-export interface StreamEdgeConfig {
-  throughputRate: number              // particles/sec
-  streamType: 'lossful_udp' | 'lossless_tcp'
-  maxConsumerLag: number              // queue-depth threshold before edge enters backpressure
-}
-
-export interface EventEdgeConfig {
-  retryConfig: RetryConfig
-  retryBackoff: 'immediate' | 'linear' | 'exponential'
-  deadLetterRouting: boolean
-  deadLetterTargetId?: string  // node ID of the DLQ (queue/stream) to reroute dead letters to
-}
-
-export interface DependencyEdgeConfig {
-  isCritical: boolean       // if the target is down, does the source degrade?
-  healthPropagation: number // 0.0–1.0 impact on source health score when target is down
-}
-
-export type EdgeConfig = RequestEdgeConfig | StreamEdgeConfig | EventEdgeConfig | DependencyEdgeConfig
-
-export const DEFAULT_REQUEST_EDGE_CONFIG: RequestEdgeConfig = {
-  methodDistribution: { GET: 80, POST: 15, PUT: 4, DELETE: 1 },
-  timeoutMs: 5000,
-  retryConfig: { maxRetries: 0, baseDelayMs: 200, jitter: 'full', maxDelayMs: 2000 },
-}
-
-export const DEFAULT_STREAM_EDGE_CONFIG: StreamEdgeConfig = {
-  throughputRate: 100,
-  streamType: 'lossless_tcp',
-  maxConsumerLag: 500,
-}
-
-export const DEFAULT_EVENT_EDGE_CONFIG: EventEdgeConfig = {
-  retryConfig: { maxRetries: 3, baseDelayMs: 200, jitter: 'full', maxDelayMs: 5000 },
-  retryBackoff: 'exponential',
-  deadLetterRouting: false,
-  deadLetterTargetId: undefined,
-}
-
-export const DEFAULT_DEPENDENCY_EDGE_CONFIG: DependencyEdgeConfig = {
-  isCritical: false,
-  healthPropagation: 0.5,
-}
-
-export function defaultEdgeConfig(edgeType: EdgeType): EdgeConfig {
-  switch (edgeType) {
-    case 'request':    return { ...DEFAULT_REQUEST_EDGE_CONFIG, methodDistribution: { ...DEFAULT_REQUEST_EDGE_CONFIG.methodDistribution }, retryConfig: { ...DEFAULT_REQUEST_EDGE_CONFIG.retryConfig } }
-    case 'stream':     return { ...DEFAULT_STREAM_EDGE_CONFIG }
-    case 'event':      return { ...DEFAULT_EVENT_EDGE_CONFIG, retryConfig: { ...DEFAULT_EVENT_EDGE_CONFIG.retryConfig } }
-    case 'dependency': return { ...DEFAULT_DEPENDENCY_EDGE_CONFIG }
-  }
-}
-
-export interface EdgeData extends Record<string, unknown> {
-  label: string
-  edgeType: EdgeType
-  throughput: number
-  latency: number
-  readPercentage?: number  // 0.0–1.0; writePercentage = 1 − readPercentage (DB edges only)
-  config?: EdgeConfig
-}
-
-export interface NodeConfig {
-  label: string
-  icon: LucideIcon
-  category: NodeCategory
-  isGroup?: boolean
-}
-
-export const NODE_CONFIG: Record<NodeType, NodeConfig> = {
-  // Compute
-  ec2:          { label: 'EC2 / VM',          icon: Server,    category: 'compute' },
-  lambda:       { label: 'Lambda',             icon: Zap,       category: 'compute' },
-  container:    { label: 'Container',          icon: Box,       category: 'compute' },
-  pod:          { label: 'Pod',                icon: Circle,    category: 'compute' },
-  // Network
-  loadBalancer: { label: 'Load Balancer',      icon: GitBranch, category: 'network' },
-  apiGateway:   { label: 'API Gateway',        icon: Globe,     category: 'network' },
-  cdn:          { label: 'CDN',                icon: Wifi,      category: 'network' },
-  dns:          { label: 'DNS',                icon: Link2,     category: 'network' },
-  firewall:     { label: 'Firewall',           icon: Shield,    category: 'network' },
-  vpn:          { label: 'VPN',                icon: Lock,      category: 'network' },
-  // Storage
-  dbSql:        { label: 'Database (SQL)',      icon: Database,  category: 'storage' },
-  dbNoSql:      { label: 'Database (NoSQL)',    icon: Database,  category: 'storage' },
-  objectStorage:{ label: 'Object Storage',     icon: Archive,   category: 'storage' },
-  fileStorage:  { label: 'File Storage',       icon: HardDrive, category: 'storage' },
-  // Messaging
-  queue:        { label: 'Message Queue',      icon: AlignLeft, category: 'messaging' },
-  eventBus:     { label: 'Event Bus',          icon: Radio,     category: 'messaging' },
-  pubsub:       { label: 'Pub/Sub Topic',      icon: Share2,    category: 'messaging' },
-  stream:       { label: 'Stream (Kafka)',      icon: Activity,  category: 'messaging' },
-  // Caching
-  redis:        { label: 'Redis',              icon: Layers,    category: 'caching' },
-  memcached:    { label: 'Memcached',          icon: Layers,    category: 'caching' },
-  cdnCache:     { label: 'CDN Cache',          icon: Wifi,      category: 'caching' },
-  // Orchestration — clusters and compose are grouping containers (capacity boundaries)
-  k8sCluster:   { label: 'K8s Cluster',        icon: Cpu,       category: 'orchestration', isGroup: true },
-  ecsCluster:   { label: 'ECS Cluster',        icon: Cpu,       category: 'orchestration', isGroup: true },
-  dockerCompose:{ label: 'Docker Compose',     icon: Package,   category: 'orchestration', isGroup: true },
-  // Grouping
-  vpc:          { label: 'VPC',                icon: Layout,    category: 'grouping', isGroup: true },
-  subnet:       { label: 'Subnet',             icon: Layout,    category: 'grouping', isGroup: true },
-  az:           { label: 'Availability Zone',  icon: Layout,    category: 'grouping', isGroup: true },
-  region:       { label: 'Region',             icon: Map,       category: 'grouping', isGroup: true },
-  namespace:    { label: 'Namespace',          icon: Layout,    category: 'grouping', isGroup: true },
-}
-
-// Orchestration clusters + namespace + infra containers — visual bounding boxes, not traffic targets.
-export const GROUPING_TYPES = new Set<NodeType>([
-  'vpc', 'subnet', 'az', 'region', 'namespace',
-  'k8sCluster', 'ecsCluster', 'dockerCompose',
-])
-
-export const PALETTE_CATEGORIES: { label: string; category: NodeCategory; types: NodeType[] }[] = [
-  { label: 'Compute',       category: 'compute',       types: ['ec2', 'lambda', 'pod'] },
-  { label: 'Network',       category: 'network',       types: ['loadBalancer', 'apiGateway', 'cdn', 'dns', 'firewall', 'vpn'] },
-  { label: 'Storage',       category: 'storage',       types: ['dbSql', 'dbNoSql', 'objectStorage', 'fileStorage'] },
-  { label: 'Messaging',     category: 'messaging',     types: ['queue', 'eventBus', 'pubsub', 'stream'] },
-  { label: 'Caching',       category: 'caching',       types: ['redis', 'memcached', 'cdnCache'] },
-  { label: 'Orchestration', category: 'orchestration', types: ['k8sCluster', 'ecsCluster', 'dockerCompose'] },
-  { label: 'Grouping',      category: 'grouping',      types: ['vpc', 'subnet', 'az', 'region', 'namespace'] },
-]

@@ -171,7 +171,7 @@ export type ManagedScope =
 export interface ManagedService {
   id: ManagedServiceId
   label: string
-  nodeType: string   // existing NodeType from src/lib/nodeConfig.ts, e.g. 'rds', 's3', 'sqs'
+  nodeType: string   // CLOUD_REGISTRY key from src/lib/cloudRegistry.ts, e.g. 'dbSql', 'objectStorage', 'queue'
   scope: ManagedScope
   provider: 'generic' | 'aws' | 'gcp' | 'azure'
   port: number       // endpoint port, participates in path semantics

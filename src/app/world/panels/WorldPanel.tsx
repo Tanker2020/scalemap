@@ -22,7 +22,7 @@ import { AzConfigTab } from '../dock/AzConfigTab'
 import { ServerFaceplate } from '../dock/ServerFaceplate'
 import { deriveScope, scopeTabs, type DockScope } from '../dock/scope'
 import { scopedEvents, scopedFindings, scopedCost } from '../dock/scopeData'
-import type { WorldDoc, CompileFinding } from '../../../lib/world/types'
+import type { CompileFinding } from '../../../lib/world/types'
 import type { AnalysisFinding } from '../../../lib/analysis/types'
 import type { EngineEvent } from '../../../lib/worldEngine/types'
 
@@ -298,7 +298,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
               // than a real board navigation — "enter board" is meaningless once you're already
               // on the board (nav.level === 'server').
               : scope.kind === 'server' ? <ServerFaceplate serverId={scope.serverId} showEnter={navLevel === 'az'} />
-              : <ScopedConfigBody scope={scope} doc={doc} />
+              : null
             )}
             {tab === 'analysis' && (
               <ScopedAnalysisBody analysis={scopedFindingsResult.analysis} compile={scopedFindingsResult.compile} />
@@ -312,28 +312,11 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
   )
 }
 
-// ─── Non-world Config/Analysis/Events/Cost bodies (Polish 4 T1/T2/T3, spec D2) ───────────────
-// Config is an intentional placeholder for server scope only now (T4) — region scope's Config
-// landed in T2 as RegionConfigTab, AZ scope's landed in T3 as AzConfigTab (both wired in above)
-// instead of this generic body; the `scope.kind === 'region'`/`'az'` branches below are
-// unreachable dead code left in place deliberately (defensive fallback, and it keeps this
-// component's signature stable for server scope without narrowing its type). Analysis/Events/
-// Cost are the real, final-for-this-phase bodies: small, scope-fed siblings of AnalysisTab/
-// EventsTab/CostTab (world-only, self-computing) rather than a prop-ified rework of those three
-// components, which the brief's file list doesn't touch.
-
-function ScopedConfigBody({ scope, doc }: { scope: DockScope; doc: WorldDoc }) {
-  let kindLabel = ''
-  let label = ''
-  if (scope.kind === 'region') { kindLabel = 'region'; label = doc.regions[scope.regionId]?.catalogId ?? scope.regionId }
-  else if (scope.kind === 'az') { kindLabel = 'AZ'; label = doc.azs[scope.azId]?.label ?? scope.azId }
-  else if (scope.kind === 'server') { kindLabel = 'server'; label = doc.servers[scope.serverId]?.label ?? scope.serverId }
-  return (
-    <div data-testid="config-placeholder" style={{ color: 'var(--color-text-muted)', padding: '10px 2px' }}>
-      Config for {kindLabel} <b style={{ color: 'var(--color-text-secondary)' }}>{label}</b> — coming soon.
-    </div>
-  )
-}
+// ─── Non-world Analysis/Events/Cost bodies (Polish 4 T1/T2/T3, spec D2) ──────────────────────
+// Small, scope-fed siblings of AnalysisTab/EventsTab/CostTab (world-only, self-computing).
+// Every non-world scope's Config tab renders a real instrument (RegionConfigTab / AzConfigTab /
+// ServerFaceplate, wired in above) — the old ScopedConfigBody placeholder was unreachable and
+// was removed 2026-07-12.
 
 function scopedSevChipStyle(sev: 'critical' | 'warning' | 'info' | 'error'): CSSProperties {
   return {
