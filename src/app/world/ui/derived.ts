@@ -5,6 +5,8 @@ import type {
 } from '../../../lib/world/types'
 import { reservedRamMb } from '../../../lib/analysis/rules/capacity'
 import { REGION_GEO, greatCircleKm } from '../../../lib/world/regionGeo'
+import { egressMonthlyCost } from '../../../lib/cloudRegistry'
+import { HOURS_PER_MONTH } from '../../../lib/costModelV2'
 
 export function rpsPerCore(cpuMsPerRequest: number): number {
   if (!Number.isFinite(cpuMsPerRequest) || cpuMsPerRequest <= 0) return 0
@@ -89,4 +91,27 @@ export function frontlineCapacityRps(doc: WorldDoc, _compiled: CompiledWorld): n
     sum += hostRpsCapacity(server.specs.vcpu, bp.workload.cpuMsPerRequest)
   }
   return sum
+}
+
+// Pure reimplementation of the engine's BYTES_PER_REQUEST_EACH_WAY (worldEngine/flows.ts) —
+// never imported from worldEngine (Global Constraints' never-import-engine-internals rule; same
+// treatment as POP_LATENCY_KM_PER_MS above).
+export const PLACEMENT_BYTES_EACH_WAY = 2048
+
+// costModelV2.ts's SECONDS_PER_MONTH (the documented ~30.4-day constant used to turn a live
+// bytes/sec rate into a monthly GB figure) and BYTES_PER_GB are module-private there — mirrored
+// here as literals rather than imported, same never-reach-into-a-private-constant treatment as
+// PLACEMENT_BYTES_EACH_WAY. HOURS_PER_MONTH and egressMonthlyCost ARE exported, and used directly.
+const SECONDS_PER_MONTH = 2_630_000
+const BYTES_PER_GB = 1024 ** 3
+
+// What a population placed at `rps` would cost per hour in internet egress — the globe
+// placement-mode preview card's math (D9), computed BEFORE the population exists in the doc (so
+// it can't route through computeWorldCost's live WorldMetrics). ×2 accounts for each-way traffic
+// (PLACEMENT_BYTES_EACH_WAY is already "each way"); the AWS tiered schedule + free allowance
+// come from the existing egressMonthlyCost, not duplicated here.
+export function placementEgressUsdPerHr(rps: number): number {
+  const bytesPerSec = rps * PLACEMENT_BYTES_EACH_WAY * 2
+  const gbMonth = (bytesPerSec * SECONDS_PER_MONTH) / BYTES_PER_GB
+  return egressMonthlyCost('aws', gbMonth) / HOURS_PER_MONTH
 }

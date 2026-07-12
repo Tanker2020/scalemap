@@ -1,7 +1,8 @@
 // Pure routing-table + volume-consistency computation. Static ordering only — live health
 // state and TTL-lagged cutover are the Phase-2 engine's job; it consumes these orders.
 import type {
-  WorldDoc, CompiledRouting, CompileFinding, ServiceInstance, InstanceId, Region,
+  WorldDoc, CompiledRouting, CompileFinding, ServiceInstance, InstanceId, Region, RegionId,
+  ClientPopulation,
 } from './types'
 import { REGION_GEO, greatCircleKm } from './regionGeo'
 import { WORLD_REGIONS } from '../regionConfig'
@@ -12,6 +13,37 @@ function distanceScore(popLat: number, popLon: number, region: Region): number {
   return greatCircleKm(popLat, popLon, geo.lat, geo.lon)
 }
 
+// The per-population region ordering (latency/geo/weighted/priority policies) — extracted from
+// computeRouting (Polish 4 T7, spec D9) so the globe's traffic-placement preview can compute the
+// EXACT landing region for a not-yet-placed population (a city snap), not an estimate. Takes only
+// {lat, lon} so a WorldCity (cityCatalog.ts) — which has no PopulationId — satisfies it too.
+// Behavior-identical to the inline loop this replaced: routing.test.ts's golden orderings still
+// pass unmodified.
+export function regionOrderFor(pop: Pick<ClientPopulation, 'lat' | 'lon'>, doc: WorldDoc): RegionId[] {
+  const regions = Object.values(doc.regions)
+  const scored = regions.map(region => {
+    const km = distanceScore(pop.lat, pop.lon, region)
+    const baseLatency = WORLD_REGIONS.find(w => w.id === region.catalogId)?.baseLatencyMs ?? 0
+    let score: number
+    switch (doc.routing.policy) {
+      case 'geo':      score = km; break
+      case 'latency':  score = km + baseLatency * 10; break
+      case 'weighted': score = -(doc.routing.weights[region.id] ?? 0) * 1e9 + km; break
+      case 'priority': {
+        const idx = doc.routing.priorityOrder.indexOf(region.id)
+        score = (idx === -1 ? 1e6 : idx) * 1e9 + km
+        break
+      }
+    }
+    return { region, score }
+  })
+  scored.sort((a, b) => a.score - b.score)
+  // Stable partition: passive regions to the end (spec D8 active-passive semantics).
+  const active = scored.filter(s => s.region.role === 'active')
+  const passive = scored.filter(s => s.region.role === 'passive')
+  return [...active, ...passive].map(s => s.region.id)
+}
+
 export function computeRouting(
   doc: WorldDoc,
   instances: Record<InstanceId, ServiceInstance>,
@@ -20,27 +52,7 @@ export function computeRouting(
   const populationRegionOrder: CompiledRouting['populationRegionOrder'] = {}
 
   for (const pop of Object.values(doc.populations)) {
-    const scored = regions.map(region => {
-      const km = distanceScore(pop.lat, pop.lon, region)
-      const baseLatency = WORLD_REGIONS.find(w => w.id === region.catalogId)?.baseLatencyMs ?? 0
-      let score: number
-      switch (doc.routing.policy) {
-        case 'geo':      score = km; break
-        case 'latency':  score = km + baseLatency * 10; break
-        case 'weighted': score = -(doc.routing.weights[region.id] ?? 0) * 1e9 + km; break
-        case 'priority': {
-          const idx = doc.routing.priorityOrder.indexOf(region.id)
-          score = (idx === -1 ? 1e6 : idx) * 1e9 + km
-          break
-        }
-      }
-      return { region, score }
-    })
-    scored.sort((a, b) => a.score - b.score)
-    // Stable partition: passive regions to the end (spec D8 active-passive semantics).
-    const active = scored.filter(s => s.region.role === 'active')
-    const passive = scored.filter(s => s.region.role === 'passive')
-    populationRegionOrder[pop.id] = [...active, ...passive].map(s => s.region.id)
+    populationRegionOrder[pop.id] = regionOrderFor(pop, doc)
   }
 
   const regionAzSpread: CompiledRouting['regionAzSpread'] = {}

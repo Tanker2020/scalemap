@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   rpsPerCore, hostRpsCapacity, ramAtConnections, residentRamDemandMb, ttlLagHint, diskIoWord,
-  healthWord, populationLanding, frontlineCapacityRps,
+  healthWord, populationLanding, frontlineCapacityRps, placementEgressUsdPerHr,
+  PLACEMENT_BYTES_EACH_WAY,
 } from './derived'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
@@ -135,5 +136,36 @@ describe('frontlineCapacityRps', () => {
   })
   it('is 0 with no entry placements', () => {
     expect(frontlineCapacityRps(createWorld(), compileWorld(createWorld()))).toBe(0)
+  })
+})
+
+describe('placementEgressUsdPerHr', () => {
+  it('constant matches the engine\'s documented BYTES_PER_REQUEST_EACH_WAY value', () => {
+    expect(PLACEMENT_BYTES_EACH_WAY).toBe(2048)
+  })
+
+  it('is 0 at 0 rps', () => {
+    expect(placementEgressUsdPerHr(0)).toBe(0)
+  })
+
+  it('stays 0 while under AWS\'s 100 GB/month free egress allowance', () => {
+    // 5 rps * 2048 * 2 each-way * 2_630_000 s/month / 1024^3 ≈ 50.16 GB/month < 100 GB free.
+    expect(placementEgressUsdPerHr(5)).toBe(0)
+  })
+
+  it('matches the hand-derived D9 formula at 500 rps (createPopulation\'s default)', () => {
+    // bytesPerSec = 500 * 2048 * 2 = 2,048,000
+    // gbMonth = 2,048,000 * 2,630,000 / 1024^3 = 20,546,875/4096 ≈ 5016.3269 GB/month
+    // billable = 5016.3269 - 100 (aws free tier) ≈ 4916.3269 GB @ $0.09/GB ≈ $442.4694/month
+    // hourly = 442.4694 / 730 ≈ $0.6061/hr
+    expect(placementEgressUsdPerHr(500)).toBeCloseTo(0.6061, 3)
+  })
+
+  it('scales linearly once past the free allowance (no free tier double-counted)', () => {
+    const at1000 = placementEgressUsdPerHr(1000)
+    const at2000 = placementEgressUsdPerHr(2000)
+    // Both comfortably clear the free tier, so doubling rps should ~double the billed egress
+    // (same $/GB tier for both — well under AWS's 10,240 GB tier ceiling at these rps values).
+    expect(at2000 / at1000).toBeCloseTo(2, 1)
   })
 })

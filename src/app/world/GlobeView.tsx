@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
+import { useSimulationStore } from '../store/simulation.store'
 import { useUiStore } from '../store/ui.store'
 import { OverlayPortalContext } from './globe/overlayPortal'
 import { GlobeScene } from './globe/GlobeScene'
@@ -14,8 +15,9 @@ import { GlobeCards } from './GlobeCards'
 import { RegionPins } from './globe/RegionPins'
 import { PopulationMarkers } from './globe/PopulationMarkers'
 import { ArcsLayer } from './globe/ArcsLayer'
+import { TrafficPlacementLayer } from './globe/TrafficPlacementLayer'
 import { webglAvailable } from './globe/webgl'
-import { nextPopulationLabel } from '../../lib/world/populationLabel'
+import { nearestCity } from '../../lib/world/cityCatalog'
 
 const visuallyHidden: CSSProperties = {
   position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden',
@@ -43,12 +45,13 @@ export interface GlobeViewProps {
   placeMode: boolean
   onExitPlaceMode: () => void
   onPopulationPlaced: (id: string) => void
+  onTogglePlaceMode: () => void
 }
 
-export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: GlobeViewProps) {
+export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced, onTogglePlaceMode }: GlobeViewProps) {
   const addPopulation = useWorldStore(s => s.addPopulation)
   const doc = useWorldStore(s => s.doc)
-  const populations = doc.populations
+  const running = useSimulationStore(s => s.running)
   const [rotationLocked, setRotationLocked] = useState(false)
   const sceneOverlay = useUiStore(s => s.sceneOverlay)
   // null! selects React 19's RefObject<HTMLDivElement> overload (matching the context's and
@@ -83,15 +86,18 @@ export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: Gl
   // Place-mode is armed/disarmed by WorldShell (the common ancestor of this component and
   // TrafficPanel) via the placeMode prop; a click on the globe here places a population, then
   // hands control back up so WorldShell can disarm and TrafficPanel can select+focus the new row.
+  // Polish 4 T7 (spec D9): the raw pointer lat/lon SNAPS to the nearest real city
+  // (TrafficPlacementLayer's ghost preview already showed this exact city) — the placed
+  // population's label becomes the city name, not a `pop-N` counter (that counter,
+  // nextPopulationLabel, remains for TrafficPanel's own "+ add").
   const onPlace = (lat: number, lon: number) => {
-    // Phase 6 T9 carry-forward: same shared max-suffix helper TrafficPanel.tsx's "+ add" uses —
-    // this file's previous `pop-${populationCount + 1}` and TrafficPanel's independent
-    // `pop-${populations.length + 1}` counter could reissue the same label after a
-    // remove+re-add from either surface (Phase-5 backlog item).
-    const label = nextPopulationLabel(populations)
-    const id = addPopulation(label, lat, lon)
+    const city = nearestCity(lat, lon)
+    const id = addPopulation(city.name, city.lat, city.lon)
     onExitPlaceMode()
     onPopulationPlaced(id)
+    // Opens the rps slider immediately (D9: "Click places the population and opens its overlay
+    // with the rps slider").
+    useUiStore.getState().setSceneOverlay({ kind: 'population', id })
   }
 
   if (!webglAvailable()) {
@@ -107,30 +113,52 @@ export function GlobeView({ placeMode, onExitPlaceMode, onPopulationPlaced }: Gl
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <OverlayPortalContext.Provider value={overlayPortalRef}>
       <div aria-hidden="true" style={{ width: '100%', height: '100%' }}>
-        <GlobeScene placeMode={placeMode} onPlace={onPlace} autoRotate={!rotationLocked && sceneOverlay == null}>
+        <GlobeScene placeMode={placeMode} onPlace={onPlace} autoRotate={!rotationLocked && sceneOverlay == null && !placeMode}>
           <RegionPins />
           <PopulationMarkers />
           <ArcsLayer />
+          <TrafficPlacementLayer placeMode={placeMode} />
         </GlobeScene>
       </div>
       {/* Overlay portal target — outside the aria-hidden canvas wrapper so overlay controls
           stay in the accessibility tree. pointerEvents none: only the overlay cards
           themselves (which re-enable pointer events) are interactive. */}
       <div ref={overlayPortalRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 10 }} />
-      <button
-        aria-label={rotationLocked ? 'Resume globe rotation' : 'Lock globe rotation'}
-        title={rotationLocked ? 'Resume the globe’s idle spin' : 'Stop the globe’s idle spin'}
-        onClick={() => setRotationLocked(l => !l)}
-        style={{
-          position: 'absolute', top: 12, left: 12,
-          display: 'flex', alignItems: 'center', gap: 6,
-          background: 'var(--color-toolbar)', border: '1px solid var(--color-toolbar-border)',
-          borderRadius: 5, padding: '4px 9px', cursor: 'pointer',
-          font: '10px var(--font-mono)', color: 'var(--color-text-secondary)',
-        }}
-      >
-        {rotationLocked ? 'rotation: locked' : 'rotation: auto'}
-      </button>
+      <div style={{ position: 'absolute', top: 12, left: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <button
+          aria-label={placeMode ? 'Exit traffic placement mode' : 'Place traffic'}
+          aria-pressed={placeMode}
+          title={running ? 'stop the simulation to edit' : undefined}
+          disabled={running}
+          onClick={onTogglePlaceMode}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: 'var(--color-toolbar)',
+            border: placeMode ? '1px solid var(--color-accent)' : '1px solid var(--color-toolbar-border)',
+            borderRadius: 5, padding: '4px 9px', cursor: running ? 'not-allowed' : 'pointer',
+            font: '10px var(--font-mono)', color: placeMode ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+            opacity: running ? 0.5 : 1,
+          }}
+        >
+          {placeMode ? '+ traffic — click a city' : '+ traffic'}
+        </button>
+        <button
+          aria-label={rotationLocked ? 'Resume globe rotation' : 'Lock globe rotation'}
+          title={rotationLocked ? 'Resume the globe’s idle spin' : 'Stop the globe’s idle spin'}
+          onClick={() => setRotationLocked(l => !l)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: 'var(--color-toolbar)', border: '1px solid var(--color-toolbar-border)',
+            borderRadius: 5, padding: '4px 9px', cursor: 'pointer',
+            font: '10px var(--font-mono)', color: 'var(--color-text-secondary)',
+          }}
+        >
+          {rotationLocked ? 'rotation: locked' : 'rotation: auto'}
+        </button>
+        {placeMode && (
+          <span style={{ font: '10px var(--font-mono)', color: 'var(--color-text-muted)' }}>esc = cancel</span>
+        )}
+      </div>
       <RegionA11yList />
       </OverlayPortalContext.Provider>
     </div>

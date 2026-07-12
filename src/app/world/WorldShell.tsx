@@ -74,6 +74,10 @@ export function WorldShell() {
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return
 
       if (e.key === 'Escape') {
+        // Polish 4 T7 (spec D9): Escape disarms an armed placeMode BEFORE it climbs a nav
+        // level — otherwise a globe-level Esc (nav.up() is already a no-op there) would look
+        // like it did nothing, when the actually-visible thing to cancel is the placement mode.
+        if (placeMode) { setPlaceMode(false); return }
         useNavStore.getState().up()
         return
       }
@@ -91,7 +95,11 @@ export function WorldShell() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [])
+  }, [placeMode])
+
+  // Two arms, one state (Polish 4 T7, spec D9): GlobeView's own HUD "+ traffic" button and
+  // WorldPanel's TrafficPanel toggle both flip the SAME placeMode boolean via this one callback.
+  const onTogglePlaceMode = () => setPlaceMode(p => !p)
 
   const view =
     nav.level === 'globe' ? (
@@ -99,6 +107,7 @@ export function WorldShell() {
         placeMode={placeMode}
         onExitPlaceMode={() => setPlaceMode(false)}
         onPopulationPlaced={setSelectedPopulationId}
+        onTogglePlaceMode={onTogglePlaceMode}
       />
     ) :
     nav.level === 'region' ? <RegionView /> :
@@ -152,7 +161,7 @@ export function WorldShell() {
         <WorldPanel
           running={running}
           placeMode={placeMode}
-          onTogglePlaceMode={() => setPlaceMode(p => !p)}
+          onTogglePlaceMode={onTogglePlaceMode}
           selectedPopulationId={selectedPopulationId}
           openSettings={() => setSettingsOpen(true)}
         />
