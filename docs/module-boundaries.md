@@ -914,13 +914,13 @@ pure data/geometry helpers, the same "pure layout, dumb presentational leaves" s
 | File | Role |
 |---|---|
 | `floorLayout.ts` | Pure grid layout (no React/store/pixel math): assigns every rack, free-pool server, and managed service a GRID CELL — `layoutFloor(racks, rackedByRack, freePool, managedIds): FloorPlan`. Grid grows in rings from a 4×4 base (`BASE_GRID=4`, `GROWTH_STEP=2`) as occupant count exceeds capacity; `rackedByRack` is accepted but unused for the grid math itself (only occupant COUNT matters, not contents) — kept as a parameter because every caller already has it in hand for rendering |
-| `floorData.ts` | Pure derivations, no React/store: `aggregateFlows` (a verbatim port of the deleted `AzCanvas.tsx`'s edge-aggregation block — same per-`(fromServer,target)` totals/blocked/first-reason semantics, same same-server-pairs-draw-no-edge rule, now operating on `CompiledWorld` directly since it already carries each instance's `azId`), `ledParams(cpuMean): { lit, color }` (6-LED CPU-threshold language), and `meanUtilization` (T8 addition — shared by `RackCabinet.tsx`/`FreePoolPod.tsx`'s own per-slot cpuMean AND `DatacenterFloor.tsx`'s AZ-wide LED-blink ranking, replacing three independent copies of the same one-liner) |
+| `floorData.ts` | Pure derivations, no React/store: `aggregateFlows` (a verbatim port of the deleted `AzCanvas.tsx`'s edge-aggregation block — same per-`(fromServer,target)` totals/blocked/first-reason semantics, same same-server-pairs-draw-no-edge rule, now operating on `CompiledWorld` directly since it already carries each instance's `azId`), `ledParams(cpuMean): { lit, color }` (6-LED CPU-threshold language), `meanUtilization` (T8 addition — shared by `RackCabinet.tsx`/`FreePoolPod.tsx`'s own per-slot cpuMean AND `DatacenterFloor.tsx`'s AZ-wide LED-blink ranking, replacing three independent copies of the same one-liner), and `serverAccents(doc, compiled): Map<ServerId, string[]>` (Polish 4 T3, §U — a behavior-identical extraction of `DatacenterFloor.tsx`'s pre-T3 inline `accentsByServer` derivation, now shared by `DatacenterFloor.tsx` AND `dock/AzConfigTab.tsx`'s slat ticks) |
 | `iso.ts` | Isometric tile projection + 3-face box geometry (roof cap + two walls sharing edges with a tile's diamond footprint), generalizing the mockup's fixed 2-rack/2-pod illustration to an arbitrary N×N `layoutFloor` grid at a fixed `VIEW_W`/`VIEW_H` (growing the ring shrinks tiles, not the scene — "the camera refits"). No React/store imports |
 | `useHoldTap.ts` | DOM/SVG pointer-event wiring around `ui/HoldToEnter.tsx`'s pure primitives (§Q) — reused, never forked. `RegionPins.tsx` (§Q) is r3f/WebGL and needs a synthetic-click swallow dance around its raycaster; real DOM elements with `setPointerCapture` don't, so tap-vs-hold-vs-abort resolves entirely in `onPointerUp` here. Pointer CAPTURE (not `pointerleave`) still governs "left mid-hold", via `exceedsHoldSlop` distance-from-press-point in `onPointerMove` — the same D1 rule §Q's hold-to-enter established, reapplied rather than reinvented |
 | `azFloorStyles.ts` | The injected-stylesheet-once idiom `region/r3Styles.ts` established, self-contained (pulls its one theme-matched token, teal, from `lib/theme.ts` rather than `ui/kit.tsx`), keyframes namespaced `az-*` so they can't collide with `region/`'s unprefixed copies or `server/`'s `hw-`/`gw-` copies. Every infinite-iteration rule (`.az-trace-animated`, `.az-led-blink`) plus the boot cascade (`.az-newslot.go`, one-shot `forwards`, not `infinite`) is neutralized under `@media (prefers-reduced-motion: reduce)` |
 | `RackCabinet.tsx` | One rack cabinet: 3-face isometric box, hover lift + halo (CSS `transition`, not `animation` — excluded from the motion budget), one `RackSlot` per resident (tap selects, hold drills in via `useHoldTap`). Height grows with occupancy up to `capacityU`. `RackSlot`'s LED blink is now gated on an `animatedLed` prop (T8, see the motion-budget table below) in addition to `lit > 0`/reduced-motion |
 | `FreePoolPod.tsx` | One free-pool (unracked) server: same 3-face box + LED language as a `RackSlot`, one pod = one whole box, no internal slat stack. Same tap/hold interaction, same boot-cascade treatment, same T8 `animatedLed` gating |
-| `DatacenterFloor.tsx` | Composition root: reads `doc`/`compiled`/`batch`/`nav`, runs `layoutFloor`/`aggregateFlows`, renders tiles + one `RackCabinet` per rack + one `FreePoolPod` per unracked server + a small appliance box per in-scope managed service, flow traces, and the toolbar (`+ server`/`+ rack`/`auto-arrange` — Task 2's rack actions). Owns `selectedServerId` and a seen-ids ref driving the boot-cascade animation for newly-added servers (skipped entirely under reduced motion — instant-appear, the D1 functional exception). Computes BOTH of T8's ranked animation sets (`animatedKeys` for traces, `animatedLedIds` for LEDs) here, since both need AZ-wide visibility no single leaf component has |
+| `DatacenterFloor.tsx` | Composition root: reads `doc`/`compiled`/`batch`/`nav`, runs `layoutFloor`/`aggregateFlows`, renders tiles + one `RackCabinet` per rack + one `FreePoolPod` per unracked server + a small appliance box per in-scope managed service, flow traces, and the toolbar (`+ server`/`+ rack`/`auto-arrange` — Task 2's rack actions). Reads `selectedServerId` from `ui.store` (Polish 4 T1, §S — lifted out of local state) and a seen-ids ref driving the boot-cascade animation for newly-added servers (skipped entirely under reduced motion — instant-appear, the D1 functional exception). Computes BOTH of T8's ranked animation sets (`animatedKeys` for traces, `animatedLedIds` for LEDs) here, since both need AZ-wide visibility no single leaf component has. Its `accentsByServer` is now `serverAccents(doc, compiled)` (Polish 4 T3, §U), not an inline `useMemo` body |
 
 **Boundary rules:** `az/*` imports only `lib/` (world types, `rackModel.ts`, `worldEngine/types`
 type-only) and app stores (`useWorldStore`, `useNavStore`, `useSimulationStore`,
@@ -1231,7 +1231,9 @@ rough edge and T1's generic region-scope Config placeholder. Does NOT touch az/s
 - **`src/app/world/dock/RegionConfigTab.tsx`** (new) — region scope's REAL Config tab body
   (`RegionConfigTabProps { regionId: string }`), replacing T1's generic `ScopedConfigBody`
   placeholder for region scope ONLY (az/server still get the placeholder — T3/T4 territory,
-  untouched). One `EdgeRow` per AZ in this region (health dot from `displayBatch.azs[az.id]`,
+  untouched **at the time this task landed; superseded by §U below: az now gets its own real
+  Config body too, `AzConfigTab`, leaving only server on the placeholder**). One `EdgeRow` per AZ
+  in this region (health dot from `displayBatch.azs[az.id]`,
   label, doc-derived server count — always available, unlike the batch-gated rps — singular-aware,
   live rps or `'—'` at rest, right-aligned via `marginLeft: 'auto'` inside EdgeRow's own
   `children` slot rather than its separate `trailing` prop, so the whole row's text is one
@@ -1296,6 +1298,160 @@ rough edge and T1's generic region-scope Config placeholder. Does NOT touch az/s
   catalogId) to `region-config-tab` (RegionConfigTab now owns region scope's Config body) — a
   required update, not an optional migration, since T2 deliberately changes what renders there.
 
+### U. Polish 4 Task 3 — the floor-plan instrument (`src/app/world/dock/`, 2026-07-11)
+
+Builds ON §S/§T's foundation (spec §D3/D5): the dock's signature header + Config body at AZ
+scope — a clickable isometric minimap (a genuine miniature of the same floor, doubling as the
+selection surface) plus rack capacity wells / server slat rows / AZ cost / actions — replacing
+T1's generic AZ-scope `ScopedConfigBody` placeholder. Does NOT touch world/region scope (§T's
+atlas is untouched) or server scope (§T4/faceplate territory) or the engine/`nav.store.ts`/
+`world.store.ts`/`ui.store.ts` (no new store surface this task — the dock keeps reading/writing
+the SAME `ui.store.selectedServerId` §S lifted).
+
+- **`src/app/world/az/floorData.ts`**: gained `serverAccents(doc, compiled): Map<ServerId,
+  string[]>` — a byte-for-byte extraction of `DatacenterFloor.tsx`'s pre-T3 inline
+  `accentsByServer` `useMemo` body (every resident instance's blueprint color, deduped in
+  first-seen order). `DatacenterFloor.tsx` now calls `serverAccents(doc, compiled)` instead of
+  computing it locally — same dependency array (`[compiled.instances, doc.blueprints]`, not
+  `[doc, compiled]`, to keep the memo exactly as fine-grained as before) — so its own faceplate
+  ticks are unchanged (all 7 `DatacenterFloor.test.tsx` cases pass with zero edits, confirming the
+  refactor is behavior-identical). `floorData.test.ts` gained a `serverAccents` describe block
+  (dedup-by-color-index, first-seen order, no-entry-for-a-server-with-no-residents, and a
+  `matches the prior inline derivation` test that runs a copy of the OLD inline logic
+  (`inlineAccentsByServer`) side-by-side against the new export and asserts `toEqual` — the TDD
+  evidence that the move changed nothing observable). The new helper is now shared by THREE
+  consumers: `DatacenterFloor.tsx` (faceplate ticks), `dock/AzConfigTab.tsx` (slat accent ticks) —
+  the two surfaces can no longer independently drift on "what color is this server."
+  `FloorPlanHeader.tsx` does NOT use it (the minimap has no room for per-server ticks at 372×96;
+  it uses `layoutFloor`'s plan only, see below).
+- **`src/app/world/dock/FloorPlanHeader.tsx`** (new) — `FloorPlanHeaderProps { azId: string }`;
+  pure presentational (reads props + `world`/`simulation`/`ui` stores directly, no new store
+  fields). Reuses `az/floorLayout.ts`'s `layoutFloor(racks, rackedByRack, freePool, managedIds)`
+  for the grid-cell PLAN (which rack/pod occupies which cell) — the one piece of layout math the
+  brief said must not be re-derived — but projects that grid into its OWN small dimetric pixel
+  space (`ORIGIN_X/Y`, `FLOOR_W/H` local consts, a `tileCenter`/`cellPoly` pair) rather than
+  reusing `az/iso.ts`'s `tileToScreen`/`isoBox`: `iso.ts`'s functions are calibrated to the big
+  floor's fixed 900×430 viewBox via module-level constants (not parametrized by width/height), so
+  reusing them here would mean rendering at 900×430 and scale-transforming the whole SVG down —
+  more indirection than writing the small 372×96 equivalent directly. This mirrors
+  `floorLayout.ts`'s own header comment, which already draws the PLAN/PROJECTION line as two
+  separate concerns. Each occupant renders as ONE polygon (a diamond, not `iso.ts`'s 3-face
+  roof/front/side box) — matching the locked mock's own flatter `<polygon class="cab">`/
+  `<polygon class="pod">` DOM, which has no room for 3-face detail at this scale.
+  **The minimap IS the selection surface** (D5): a pod click → `setSelectedServerId(podServerId)`
+  directly; a cabinet click → the rack's lowest-`unit` resident (`rackedByRack[rack.id][0]`,
+  already unit-sorted the same way `DatacenterFloor.tsx` sorts it; a no-op on an empty rack, never
+  a crash). The shape containing `ui.store.selectedServerId` gets a `sel` class (hud stroke +
+  glow, `dock/floorPlanStyles.ts`); hover brightens (CSS `:hover`, same file). Headline (top-left,
+  `data-testid="floor-plan-headline"`): `<AZ label uppercased> · N rps in · <price>$/mo</price>` —
+  rps from `batch?.azs[azId]?.rps`, price from `scopeData.ts`'s `scopedCost({kind:'az', ...},
+  doc, batch?.world ?? null)` (the SAME helper `AzConfigTab`'s cost row and `WorldPanel`'s scoped
+  Cost tab read, so the minimap headline can never silently diverge from either). **Dark-scene
+  chrome** (D3's InspectorRail precedent, the SAME carve-out `AtlasHeader.tsx` documents): fixed
+  local hex (`MINIMAP_BG`/`MINIMAP_BORDER`/`TILE_STROKE`/`CAB_FILL`/`CAB_STROKE`/`POD_FILL`/
+  `POD_STROKE`/`LABEL_COLOR`/`HEADLINE_COLOR`), never `var(--color-*)` — the mock's `#11150f`-
+  family palette, permanently dark in both themes.
+- **`src/app/world/dock/AzConfigTab.tsx`** (new) — `AzConfigTabProps { azId: string }`; AZ scope's
+  REAL Config tab body, replacing T1's `ScopedConfigBody` placeholder for AZ scope specifically
+  (server scope still gets the placeholder — T4 territory, untouched). Below the header, every
+  color is `var(--color-*)`/`var(--kit-*)` (the below-header law) — no fixed hex in this file.
+  - **RACKS — capacity wells**: one 34px-wide well per rack (`data-testid="rack-well"`), teal
+    fill height = `rackUsedU(doc, rack.id) / rack.capacityU` (both from `lib/world/rackModel.ts`,
+    not re-derived), a `repeating-linear-gradient` U-notch rung overlay (an inline decorative
+    `<div>`, not a CSS `::after` — inline React styles can't express pseudo-elements, and this is
+    a one-off per-well overlay, not a reusable rule worth a stylesheet class), caption
+    `<label>` / `<used>/<capacity>U`. A dashed ghost well (`data-testid="rack-well-ghost"`,
+    `.dockfp-rackwell-ghost` for its hover-only opacity lift) dispatches `addRack(azId)` — the
+    SAME call `DatacenterFloor.tsx`'s own ghost-rack click makes — and is HIDDEN while running,
+    the same precedent as the floor's own ghost rack. The hatched `azsec` section rail (mock's
+    `.azsec::after` `repeating-linear-gradient` industrial stripe) is a small file-local
+    `SectionRail` component, tokenized (`var(--color-node-border)`), not `ui/kit.tsx`'s
+    `SectionHeader` (which renders a plain fading gradient line, a visually different pattern —
+    kept file-local rather than added to the shared kit since D5 requires this specific hatched
+    texture, not the kit's default one, and no other dock surface needs it yet).
+  - **SERVERS — tap = select on floor**: one slat row per server (`data-testid="dock-slat"`,
+    `.dockfp-slat` for the hover `translateX(4px)` + teal-border shunt), racked first (rack order,
+    then unit within rack — the SAME `rackedByRack` grouping/sort `DatacenterFloor.tsx` and
+    `FloorPlanHeader.tsx` both build locally) then free pool. Health LED color from
+    `batch?.servers[id]?.health` (success/warning/danger, the same `HEALTH_COLOR` mapping
+    `region/AzRow.tsx` already uses). Accent ticks from `serverAccents` (above). Meta text:
+    `<kind> · <healthWord(cpuMean, ramFraction)>` (`ui/derived.ts`'s existing `healthWord`) while
+    a batch is live, plain `<kind>` at rest. Click → `setSelectedServerId(server.id)` — no
+    navigation; per the brief's ambiguity resolution, selecting a server here immediately narrows
+    `deriveScope` to server scope, which flips `WorldPanel` away from `AzConfigTab` to the server
+    placeholder (T4 territory) — `AzConfigTab` does not try to stay mounted after a selection.
+    **Rendered as a `<div role="button" tabIndex={0}>`, NOT a `<button>`** — a bug found live
+    (Playwright against a running `npm run dev`, not caught by any jsdom test, since every
+    `AzConfigTab.test.tsx` case renders the component standalone): `WorldPanel.tsx` wraps its
+    entire non-world tab body in `<fieldset disabled={running}>`, which the HTML spec cascades
+    onto EVERY descendant form control regardless of that control's own `disabled` prop — a real
+    `<button>` slat would go silently unclickable for the entire duration of any simulation run,
+    breaking "tap = select on floor" exactly when the floor is most interesting to watch. Fixed by
+    following `RegionConfigTab.tsx`'s own documented precedent (its `EdgeRow`-as-plain-`<div>`
+    choice, for the identical reason) rather than inventing a new pattern. Two regression tests
+    (`AzConfigTab.test.tsx`) render `<AzConfigTab>` inside a REAL `<fieldset disabled>` (not
+    standalone) specifically to catch a future regression back to `<button>`.
+  - **Motion budget (D3, the dock's own — INDEPENDENT of the floor's own `MAX_ANIMATED_LEDS=3`
+    budget documented in §R)**: exactly ONE slat's LED may blink — the single busiest server by
+    live mean `coreUtilization` (`meanUtilization`, `floorData.ts`), running only, never
+    reduced-motion. Computed as a plain linear scan (`busiestServerId`, not a reuse of the floor's
+    own ranking helper, since that one returns a whole ranked SET sized by `MAX_ANIMATED_LEDS`
+    and this dock needs a single winner) capped at budget 1 by construction — every slat carries
+    `data-blinking="true"|"false"` specifically so a test can assert the budget without reading
+    computed CSS/animation state. The blink keyframe itself (`dockfp-blink`, `.dockfp-led-blink`)
+    lives in the new shared `dock/floorPlanStyles.ts` (see below), reduced-motion-neutralized
+    there too as a second guard.
+  - **THIS AZ'S COST**: one row, `computeWorldCost(doc, batch?.world ?? null).byAz` (found by
+    `azId`, `HOURS_PER_MONTH` for the `/hr` figure) — price-colored (`var(--color-price)`),
+    `$X.XX/hr · $Y/mo`.
+  - **Action row**: `+ server` — `DatacenterFloor.tsx`'s toolbar's EXACT dispatch/preset
+    (`addServer(azId, getPreset('vps-medium')!)`); `auto-arrange` — the SAME `autoArrangeAz(azId)`
+    call — both real `<button disabled={running}>`s, correctly ALSO redundantly disabled by
+    WorldPanel's ambient fieldset (harmless: they're authoring controls that are SUPPOSED to be
+    locked while running, same polarity as the fieldset). `kill AZ` — `region/AzRow.tsx`'s EXACT
+    kill/restore pair (`setOutage('az', azId, !isManuallyDown)`, `isManuallyDown` from
+    `simulation.store`'s `healthOverrides[azId]`), labeled `kill AZ` / `↺ restore` (the `↺` glyph
+    from the Global Constraints' approved list, swapped in for `AzRow.tsx`'s own `✓ restore` since
+    `✓` isn't on that list). **`kill AZ` hit the SAME fieldset bug as the slat rows above, but with
+    the OPPOSITE, more severe consequence**: it's a run-ONLY control (must be clickable exactly
+    while `running`, disabled while stopped) — the precise inverse of `<fieldset
+    disabled={running}>`'s own polarity, so nesting it as a real `<button disabled={!running}>`
+    made it permanently unclickable at the one moment it's supposed to work, confirmed live before
+    the fix. Fixed the same way as the slats: a `<div role="button" tabIndex={running?0:-1}
+    aria-disabled={!running}>` whose click/keydown handlers self-guard on `running` (nothing here
+    can rely on the browser's native disabled-click suppression, since there's no native
+    `disabled` attribute to suppress with). Two regression tests mirror the slat rows' pattern —
+    one asserts `aria-disabled`/click-is-a-no-op while stopped (standalone), one renders inside a
+    REAL `<fieldset disabled>` while running and asserts the click still dispatches `setOutage`.
+    Edit-locks per D2 read `aria-disabled`/title, not the native `disabled` attribute, for this one
+    control — `stop the simulation to edit` (the two real buttons) / `start the simulation to
+    break things` (`kill AZ`) — all three relocated-dispatch, byte-identical to their origin call
+    sites, no new/parallel mutation path. **Lesson for T4 (the faceplate, which also has a run-only
+    `kill`/`↺ restore` action per D6, similarly nested inside this same fieldset): give it the
+    identical `<div role="button">` treatment from the start, not a `<button>` first.**
+- **`src/app/world/dock/floorPlanStyles.ts`** (new) — the injected-stylesheet-once idiom
+  `ui/kit.tsx`/`az/azFloorStyles.ts` already established (inline React styles can't express
+  `:hover`/keyframes), shared by BOTH new components above (`dockfp-cab`/`dockfp-pod` hover +
+  `sel` ring for the minimap, `dockfp-slat` hover shunt + `dockfp-led-blink` keyframe +
+  `dockfp-rackwell-ghost` hover for the Config tab) — namespaced `dockfp-*` so it can't collide
+  with `ui/kit.tsx`'s `kit-*` or `az/azFloorStyles.ts`'s `az-*` copies. Every rule is neutralized
+  under `@media (prefers-reduced-motion: reduce)`.
+- **`src/app/world/panels/WorldPanel.tsx`**: `{scope.kind === 'az' && <FloorPlanHeader
+  azId={scope.azId} />}` renders in the same header slot as `AtlasHeader` (mutually exclusive —
+  world/region get the atlas, az gets the floor plan, server gets nothing yet). The Config-tab
+  branch now checks `scope.kind === 'region'` (→ `RegionConfigTab`) then `scope.kind === 'az'`
+  (→ `AzConfigTab`) before falling through to `ScopedConfigBody` (server only, now the sole
+  placeholder consumer — its `scope.kind === 'region'`/`'az'` branches are unreachable dead code,
+  kept deliberately so the component's shared signature/type stays untouched for server scope,
+  which T4 still calls as-is).
+- **`src/app/world/panels/WorldPanel.test.tsx`**: the T1 `'az/server scope render no atlas header
+  at all'` test split into two (az scope now DOES render an instrument header — `floor-plan-
+  header`, just not `atlas-header`; server scope still renders neither, T4 territory), plus a new
+  `'az scope narrows the tab bar...lands on the floor-plan Config'` test mirroring T2's region-
+  scope equivalent (asserts `floor-plan-header` + `az-config-tab` render and `config-placeholder`
+  does not) — both required updates, not optional migrations, since T3 deliberately changes what
+  renders at az scope.
+
 ---
 
 ## 2. Shared "hub" files (everyone touches these — high conflict risk)
@@ -1310,7 +1466,7 @@ in-flight changes.
 | `src/lib/nodeConfig.ts` (~380 lines) | `NODE_CONFIG` registry — every node type's icon/category/label | **31 files import it** — the single largest fan-in in the repo (fan-in unaffected by Task 17: `nodeConfig.ts` is a survivor, its historical fan-in included legacy files that are now gone, so the *current* count is lower than 31 — worth re-verifying with `grep -rln "from '.*nodeConfig'" src` next time this file is touched rather than trusting the stale number). `NodeSimConfig` gained two append-only optional fields (`consistencyLevel`, `replicationLagMs`, GitHub #12). **2026-07-05:** added `FORWARD_ONLY_NODE_TYPES` (`loadBalancer`/`dns`/`firewall`/`vpn`) and `canDefineOutboundThroughput(sourceType)`, consumed by the now-deleted `PropertiesPanel.tsx`/`particleEngine.ts` (§A/§B) — these two exports and the header comments referencing `particleEngine.ts` (lines ~31/141/148) are dead code/dangling-but-historical comments post-Task-17, left in place deliberately rather than edited (same "porting provenance" reasoning as `worldEngine/breakers.ts`, §B) since `nodeConfig.ts` wasn't itself on Task 17's deletion or modify list. |
 | `src/lib/theme.ts` (120 lines) | `ColorTokens`/`DARK_COLORS`/`LIGHT_COLORS`/`CATEGORY_COLORS`/`FONT_*`/`SPACING`/`MOTION` — small file, but touched by any node/edge visual change. Only the 16 `ColorTokens` keys (`canvas`, `canvasDots`, `nodeBase`, `nodeBorder`, `surface`, `surfaceHover`, `toolbar`, `toolbarBorder`, `textPrimary`, `textSecondary`, `textMuted`, `danger`, `success`, `successText`, `warning`, `accent`) are exposed as `--color-*` CSS custom properties by `App.tsx`'s `useThemeBootstrap` and mirrored in `src/index.css`'s static `:root` fallback. `CATEGORY_COLORS` (messaging/network/storage/etc per-category accents) is **not** exposed to CSS — only consumed directly in `.tsx` via inline styles (`BaseNode.tsx`/`GroupNode.tsx`, both deleted 2026-07-08, §A). **2026-07-02 bug-fix sweep migrated every remaining panel CSS module** (SimConfigPanel, PacketEditor, EventLogPanel, ReportsPanel, PropertiesPanel, MetricGraphOverlay, RequestInspector, DiagnosticsPanel, PlaybackScrubber, MetricsDrawer, CostTracker, HomeScreen, ContextMenu, NodePalette, StatusBar, BaseNode/GroupNode leftover fallbacks, Canvas.module.css, edges.module.css — ~545 hardcoded hex values total) to `var(--color-*)`/`color-mix()` — **historical note: every file in that list except `HomeScreen` was deleted 2026-07-08 (Phase 2 Task 17, §A/§B/§D/§E/§F/§H/§I)**; kept here as a record of the token-migration effort, not as a current file inventory. `theme.ts` itself, `HomeScreen.module.css`, and `src/app/world/`'s CSS are the surfaces that still matter today. | `HomeScreen.tsx`, `src/app/world/**` |
 | `src/index.css` | `:root` holds a **static copy of `DARK_COLORS`/`FONT_*`/`SPACING`/`MOTION`** (closes a first-paint FOUC gap — every `var(--color-*)` reference would otherwise be undefined until `App.tsx`'s `useThemeBootstrap` `useEffect` runs post-first-paint). This is a values-only fallback, not a second source of truth — if `theme.ts`'s `DARK_COLORS`/`FONT_*`/`SPACING`/`MOTION` change, update this block to match (nothing enforces the two staying in sync) | Every CSS module transitively (first paint only — overridden by the bootstrap effect on mount) |
-| `src/app/store/ui.store.ts` | **Trimmed 2026-07-08 (Phase 2 Task 17) to `themeMode: 'dark' \| 'light'` + `setThemeMode` only** — every other field (`activeTool`, `leftSidebarOpen`/`rightSidebarOpen`/`rightTab`, `selectedNodeId`/`selectedEdgeId`, `gridEnabled`, `connectSourceId`, `contextMenu`, `simConfigOpen`/`simConfigPanelNodeId`, `dockOpen`/`dockTab`, `packetEditorOpen`, `highlightedNodeIds`) was read only by the legacy canvas/simulation/sidebar/toolbar/dock UI deleted the same task (§A/§B/§D/§E/§F/§H/§I) — grep-verified zero remaining readers before trimming. Drives the runtime CSS custom-property bootstrap in `App.tsx` that every panel's CSS module reads via `var(--color-*)`; persisted to `localStorage` (`scalemap-theme-mode`). `App.tsx` is now the **only** file reading this store (`themeMode`, to bootstrap the CSS vars) — there is currently no UI control to call `setThemeMode` (the old toggle lived in the deleted `Toolbar.tsx`); a future task should add one to `WorldShell.tsx`'s header. If a future phase wants a "focus this node" pulse, a floating-panel-open registry, etc., re-add the specific field then rather than resurrecting the old multi-concern shape. **2026-07-10 (Polish 1 Task 6 — examples vault, §P):** gained a SECOND, unrelated field — `pendingPanelTab: PanelTab \| null` (initial `null`) + `setPendingPanelTab` — additive, `themeMode`'s contract untouched. `PanelTab` (`'topology'\|'blueprints'\|'placements'\|'traffic'\|'analysis'\|'events'\|'cost'`) is exported from here now, not from `WorldPanel.tsx` (view→store type import). One-shot signal: `HomeScreen.tsx`'s `openExample` sets it to `'analysis'` only for the teaching vault card, `WorldPanel.tsx` reads it once in a `useState` initializer and clears it in a mount effect. **2026-07-11 (Polish 4 Task 1 — contextual dock, §S):** gained a THIRD, unrelated field — `selectedServerId: ServerId \| null` (initial `null`) + `setSelectedServerId` — the AZ floor's (`az/DatacenterFloor.tsx`) selection, lifted out of local `useState` so the dock's derived scope (`app/world/dock/scope.ts`) and the floor's own highlight read the SAME value; cleared by one shared `WorldShell.tsx` effect on any `nav.level`/`nav.azId` change, not by the floor itself anymore. `PanelTab` gained an 8th member, `'config'` (the non-world scopes' shared entity-config tab id) | `App.tsx` (`themeMode`), `HomeScreen.tsx` + `WorldPanel.tsx` (`pendingPanelTab`), `DatacenterFloor.tsx` + `WorldShell.tsx` + `WorldPanel.tsx` + `dock/ScopeRail.tsx` (`selectedServerId`) |
+| `src/app/store/ui.store.ts` | **Trimmed 2026-07-08 (Phase 2 Task 17) to `themeMode: 'dark' \| 'light'` + `setThemeMode` only** — every other field (`activeTool`, `leftSidebarOpen`/`rightSidebarOpen`/`rightTab`, `selectedNodeId`/`selectedEdgeId`, `gridEnabled`, `connectSourceId`, `contextMenu`, `simConfigOpen`/`simConfigPanelNodeId`, `dockOpen`/`dockTab`, `packetEditorOpen`, `highlightedNodeIds`) was read only by the legacy canvas/simulation/sidebar/toolbar/dock UI deleted the same task (§A/§B/§D/§E/§F/§H/§I) — grep-verified zero remaining readers before trimming. Drives the runtime CSS custom-property bootstrap in `App.tsx` that every panel's CSS module reads via `var(--color-*)`; persisted to `localStorage` (`scalemap-theme-mode`). `App.tsx` is now the **only** file reading this store (`themeMode`, to bootstrap the CSS vars) — there is currently no UI control to call `setThemeMode` (the old toggle lived in the deleted `Toolbar.tsx`); a future task should add one to `WorldShell.tsx`'s header. If a future phase wants a "focus this node" pulse, a floating-panel-open registry, etc., re-add the specific field then rather than resurrecting the old multi-concern shape. **2026-07-10 (Polish 1 Task 6 — examples vault, §P):** gained a SECOND, unrelated field — `pendingPanelTab: PanelTab \| null` (initial `null`) + `setPendingPanelTab` — additive, `themeMode`'s contract untouched. `PanelTab` (`'topology'\|'blueprints'\|'placements'\|'traffic'\|'analysis'\|'events'\|'cost'`) is exported from here now, not from `WorldPanel.tsx` (view→store type import). One-shot signal: `HomeScreen.tsx`'s `openExample` sets it to `'analysis'` only for the teaching vault card, `WorldPanel.tsx` reads it once in a `useState` initializer and clears it in a mount effect. **2026-07-11 (Polish 4 Task 1 — contextual dock, §S):** gained a THIRD, unrelated field — `selectedServerId: ServerId \| null` (initial `null`) + `setSelectedServerId` — the AZ floor's (`az/DatacenterFloor.tsx`) selection, lifted out of local `useState` so the dock's derived scope (`app/world/dock/scope.ts`) and the floor's own highlight read the SAME value; cleared by one shared `WorldShell.tsx` effect on any `nav.level`/`nav.azId` change, not by the floor itself anymore. `PanelTab` gained an 8th member, `'config'` (the non-world scopes' shared entity-config tab id). **2026-07-11 (Polish 4 Task 3 — the floor-plan instrument, §U):** two more `selectedServerId` readers/writers — `dock/FloorPlanHeader.tsx` (the minimap IS the selection surface: a cab/pod click writes it, the `sel`-class shape reads it) and `dock/AzConfigTab.tsx` (a slat click writes it, a matching row gets a selected border) — no field/shape change, purely additive fan-in | `App.tsx` (`themeMode`), `HomeScreen.tsx` + `WorldPanel.tsx` (`pendingPanelTab`), `DatacenterFloor.tsx` + `WorldShell.tsx` + `WorldPanel.tsx` + `dock/ScopeRail.tsx` + `dock/FloorPlanHeader.tsx` + `dock/AzConfigTab.tsx` (`selectedServerId`) |
 | `src/app/store/simulation.store.ts` | **The only simulation store since 2026-07-08 (Phase 2 Task 17 deleted its legacy sibling, `simulationLegacy.store.ts`, §K).** Rewritten in Task 12 as the v2 world-engine store — `MetricsBatch`/`EngineEvent`/render-scope shape from `worldEngine/types.ts`. Consumers: `SimControls.tsx`, `EventsTab.tsx`, `WorldShell.tsx`, `GlobeView.tsx`/`RegionView.tsx`, `AzCanvas.tsx`, `ScrubberV2.tsx`, `InspectorV2.tsx`, `CostTab.tsx` (§J) | `src/app/world/**` (see §J's per-file Task 13/15/16 notes) |
 
 **Convention to adopt:** when adding a new node type, only add to `NODE_CONFIG` (one new key) — don't reorder existing keys or reformat the file. Same for `NODE_SIM_DEFAULTS`. Append-only registries plus small, frequent PRs are what actually reduce conflicts here — restructuring these files is the thing to schedule as its own solo PR.

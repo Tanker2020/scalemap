@@ -17,6 +17,8 @@ import { ChipValue } from '../ui/kit'
 import { ScopeRail } from '../dock/ScopeRail'
 import { AtlasHeader } from '../dock/AtlasHeader'
 import { RegionConfigTab } from '../dock/RegionConfigTab'
+import { FloorPlanHeader } from '../dock/FloorPlanHeader'
+import { AzConfigTab } from '../dock/AzConfigTab'
 import { deriveScope, scopeTabs, type DockScope } from '../dock/scope'
 import { scopedEvents, scopedFindings, scopedCost } from '../dock/scopeData'
 import type { WorldDoc, CompileFinding } from '../../../lib/world/types'
@@ -231,11 +233,13 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
       <ScopeRail scope={scope} />
       {/* Atlas instrument (Polish 4 T2, spec D3/D4): world scope's signature header — ABSORBS the
           pre-T2 WorldSummary strip (deleted below); region scope rides the same constellation,
-          scoped (this region's dot ringed, headline narrowed to the region). az/server scope get
-          no atlas — their own instrument headers (floor plan / faceplate) are T3/T4 territory. */}
+          scoped (this region's dot ringed, headline narrowed to the region). az scope gets the
+          floor-plan instrument's clickable minimap (T3); server scope's faceplate is T4
+          territory — no header renders there yet. */}
       {(scope.kind === 'world' || scope.kind === 'region') && (
         <AtlasHeader regionId={scope.kind === 'region' ? scope.regionId : null} />
       )}
+      {scope.kind === 'az' && <FloorPlanHeader azId={scope.azId} />}
       <div ref={barRef} onMouseLeave={() => placeInk(tab)}
         style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap', position: 'relative' }}>
         {tabs.map(t => (
@@ -277,16 +281,16 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
             {tab === 'cost' && <CostTab />}
           </>
         ) : (
-          // Region/AZ/server scope (D2): Config is a placeholder for AZ (T3)/server (T4), each
-          // to replace with their own instrument body — out of scope here by design. Region's
-          // Config landed this task (T2): RegionConfigTab, not the generic placeholder. Analysis/
-          // Events/Cost are real, wired to this scope's data via T1's scopeData helpers (computed
-          // above) — they are NOT placeholders and nothing later replaces them.
+          // Region/AZ/server scope (D2): Config is a placeholder for server scope only now
+          // (T4) — out of scope here by design. Region's Config landed in T2 (RegionConfigTab);
+          // AZ's landed this task (T3, AzConfigTab, under the FloorPlanHeader minimap above).
+          // Analysis/Events/Cost are real, wired to this scope's data via T1's scopeData helpers
+          // (computed above) — they are NOT placeholders and nothing later replaces them.
           <>
             {tab === 'config' && (
-              scope.kind === 'region'
-                ? <RegionConfigTab regionId={scope.regionId} />
-                : <ScopedConfigBody scope={scope} doc={doc} />
+              scope.kind === 'region' ? <RegionConfigTab regionId={scope.regionId} />
+              : scope.kind === 'az' ? <AzConfigTab azId={scope.azId} />
+              : <ScopedConfigBody scope={scope} doc={doc} />
             )}
             {tab === 'analysis' && (
               <ScopedAnalysisBody analysis={scopedFindingsResult.analysis} compile={scopedFindingsResult.compile} />
@@ -300,15 +304,15 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
   )
 }
 
-// ─── Non-world Config/Analysis/Events/Cost bodies (Polish 4 T1/T2, spec D2) ──────────────────
-// Config is an intentional placeholder for AZ (T3)/server (T4) scope only now — region scope's
-// Config landed in T2 as RegionConfigTab (dock/RegionConfigTab.tsx, wired in above) instead of
-// this generic body; the `scope.kind === 'region'` branch below is unreachable dead code left in
-// place deliberately (defensive fallback, and it keeps this component's signature stable for
-// AZ/server without narrowing its type). Analysis/Events/Cost are the real, final-for-this-phase
-// bodies: small, scope-fed siblings of AnalysisTab/EventsTab/CostTab (world-only, self-computing)
-// rather than a prop-ified rework of those three components, which the brief's file list doesn't
-// touch.
+// ─── Non-world Config/Analysis/Events/Cost bodies (Polish 4 T1/T2/T3, spec D2) ───────────────
+// Config is an intentional placeholder for server scope only now (T4) — region scope's Config
+// landed in T2 as RegionConfigTab, AZ scope's landed in T3 as AzConfigTab (both wired in above)
+// instead of this generic body; the `scope.kind === 'region'`/`'az'` branches below are
+// unreachable dead code left in place deliberately (defensive fallback, and it keeps this
+// component's signature stable for server scope without narrowing its type). Analysis/Events/
+// Cost are the real, final-for-this-phase bodies: small, scope-fed siblings of AnalysisTab/
+// EventsTab/CostTab (world-only, self-computing) rather than a prop-ified rework of those three
+// components, which the brief's file list doesn't touch.
 
 function ScopedConfigBody({ scope, doc }: { scope: DockScope; doc: WorldDoc }) {
   let kindLabel = ''

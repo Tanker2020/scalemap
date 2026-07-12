@@ -112,12 +112,23 @@ describe('WorldPanel atlas header (Polish 4 T2)', () => {
     expect(screen.getByTestId('atlas-headline')).toHaveTextContent('us-east-1')
   })
 
-  it('az/server scope render no atlas header at all (T3/T4 territory)', () => {
+  it('az scope renders the floor-plan minimap, not the atlas (own instrument, T3)', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
     const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
     useNavStore.getState().goAz(regionId, azId)
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
     expect(screen.queryByTestId('atlas-header')).not.toBeInTheDocument()
+    expect(screen.getByTestId('floor-plan-header')).toBeInTheDocument()
+  })
+
+  it('server scope renders no instrument header at all (T4 territory)', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useNavStore.getState().goServer(regionId, azId, serverId)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    expect(screen.queryByTestId('atlas-header')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('floor-plan-header')).not.toBeInTheDocument()
   })
 })
 
@@ -232,6 +243,23 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
     // RegionConfigTab, not the generic "coming soon" placeholder — that stays az/server-only)
     // should render.
     expect(screen.getByTestId('region-config-tab')).toBeInTheDocument()
+    expect(screen.queryByTestId('config-placeholder')).not.toBeInTheDocument()
+  })
+
+  it('az scope narrows the tab bar to Config/Analysis/Events/Cost and lands on the floor-plan Config (T3)', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useNavStore.getState().goAz(regionId, azId)
+
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+
+    expect(screen.getByText('Config')).toBeInTheDocument()
+    expect(screen.queryByText('Topology')).not.toBeInTheDocument()
+    expect(screen.queryByText('Blueprints')).not.toBeInTheDocument()
+    // AZ scope's REAL Config body (T3: FloorPlanHeader + AzConfigTab, not the generic
+    // "coming soon" placeholder — that stays server-only now).
+    expect(screen.getByTestId('floor-plan-header')).toBeInTheDocument()
+    expect(screen.getByTestId('az-config-tab')).toBeInTheDocument()
     expect(screen.queryByTestId('config-placeholder')).not.toBeInTheDocument()
   })
 

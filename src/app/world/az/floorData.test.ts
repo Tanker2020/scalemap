@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { aggregateFlows, ledParams } from './floorData'
+import { aggregateFlows, ledParams, serverAccents } from './floorData'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
 } from '../../../lib/world/factories'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { compileWorld } from '../../../lib/world/compileWorld'
-import type { PlacementRuntime } from '../../../lib/world/types'
+import type { CompiledWorld, PlacementRuntime, ServerId, WorldDoc } from '../../../lib/world/types'
 
 // Mirrors network.test.ts's `twoServerWorld` fixture shape (compileWorld.test.ts / network.test.ts
 // precedent) — 3 servers in one AZ + 1 in a second AZ, for cross-AZ-skip coverage.
@@ -115,5 +115,71 @@ describe('ledParams', () => {
   it('clamps lit between 0 and 6', () => {
     expect(ledParams(-1).lit).toBe(0)
     expect(ledParams(1).lit).toBe(6)
+  })
+})
+
+// Polish 4 T3: `serverAccents` is a pure-function extraction of DatacenterFloor.tsx's pre-T3
+// inline `accentsByServer` useMemo (verbatim body, just lifted out) — the `inlineAccentsByServer`
+// helper below is that ORIGINAL inline derivation, copied byte-for-byte, kept here only to prove
+// the extraction changed nothing observable.
+function inlineAccentsByServer(doc: WorldDoc, compiled: CompiledWorld): Map<ServerId, string[]> {
+  const m = new Map<ServerId, string[]>()
+  for (const inst of Object.values(compiled.instances)) {
+    const color = doc.blueprints[inst.blueprintId]?.color
+    if (!color) continue
+    const list = m.get(inst.serverId) ?? []
+    if (!list.includes(color)) list.push(color)
+    m.set(inst.serverId, list)
+  }
+  return m
+}
+
+describe('serverAccents', () => {
+  it('collects each resident blueprint color once, in first-seen order', () => {
+    const { doc, web } = seedWorld()
+    const api = createBlueprint('api', 0)      // BLUEPRINT_COLORS[0]
+    const cache = createBlueprint('cache', 1)  // BLUEPRINT_COLORS[1]
+    Object.assign(doc.blueprints, { [api.id]: api, [cache.id]: cache })
+    const plApi = createPlacement(api.id, web.id)
+    const plCache = createPlacement(cache.id, web.id)
+    Object.assign(doc.placements, { [plApi.id]: plApi, [plCache.id]: plCache })
+
+    const compiled = compileWorld(doc)
+    const accents = serverAccents(doc, compiled)
+    expect(accents.get(web.id)).toEqual([api.color, cache.color])
+  })
+
+  it('dedupes when two blueprints on the same server share a color index', () => {
+    const { doc, web } = seedWorld()
+    const api = createBlueprint('api', 0)
+    const worker = createBlueprint('worker', 0)   // same colorIndex -> same color as `api`
+    Object.assign(doc.blueprints, { [api.id]: api, [worker.id]: worker })
+    const plApi = createPlacement(api.id, web.id)
+    const plWorker = createPlacement(worker.id, web.id)
+    Object.assign(doc.placements, { [plApi.id]: plApi, [plWorker.id]: plWorker })
+
+    const compiled = compileWorld(doc)
+    expect(serverAccents(doc, compiled).get(web.id)).toEqual([api.color])
+  })
+
+  it('gives a server with no resident instances no map entry', () => {
+    const { doc, db } = seedWorld()
+    const compiled = compileWorld(doc)
+    expect(serverAccents(doc, compiled).has(db.id)).toBe(false)
+  })
+
+  it('matches the prior inline derivation for a multi-server, multi-blueprint fixture', () => {
+    const { doc, web, db } = seedWorld()
+    const api = createBlueprint('api', 0)
+    const pg = createBlueprint('pg', 2)
+    pg.ports = [{ port: 5432, protocol: 'tcp', visibility: 'internal' }]
+    api.dependencies = [{ id: 'dep-1', target: { kind: 'blueprint', blueprintId: pg.id }, port: 5432, protocol: 'db', packetTemplateId: null }]
+    Object.assign(doc.blueprints, { [api.id]: api, [pg.id]: pg })
+    const plApi = createPlacement(api.id, web.id)
+    const plPg = createPlacement(pg.id, db.id)
+    Object.assign(doc.placements, { [plApi.id]: plApi, [plPg.id]: plPg })
+
+    const compiled = compileWorld(doc)
+    expect(serverAccents(doc, compiled)).toEqual(inlineAccentsByServer(doc, compiled))
   })
 })

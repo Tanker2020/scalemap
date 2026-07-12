@@ -1,0 +1,263 @@
+// @vitest-environment jsdom
+// Polish 4 T3 (spec D3/D5): AZ scope's Config tab — rack capacity wells, slat rows, this AZ's
+// cost, and the relocated floor-toolbar actions (`+ server`/`auto-arrange`/`kill AZ`).
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { render, screen, fireEvent, act } from '@testing-library/react'
+
+// Same precedent as az/DatacenterFloor.test.tsx / dock/AtlasHeader.test.tsx — mock the hook
+// directly rather than stubbing matchMedia (framer-motion's reduced-motion listener only
+// initializes once per test-module lifetime).
+const { mockUseReducedMotion } = vi.hoisted(() => ({ mockUseReducedMotion: vi.fn(() => false) }))
+vi.mock('framer-motion', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('framer-motion')>()
+  return { ...actual, useReducedMotion: mockUseReducedMotion }
+})
+
+import { AzConfigTab } from './AzConfigTab'
+import { useWorldStore } from '../../store/world.store'
+import { useUiStore } from '../../store/ui.store'
+import { useSimulationStore } from '../../store/simulation.store'
+import { getPreset } from '../../../lib/world/instanceCatalog'
+import type { MetricsBatch, ServerMetrics } from '../../../lib/worldEngine/types'
+
+beforeEach(() => {
+  useWorldStore.getState().newWorld()
+  useUiStore.setState({ selectedServerId: null })
+  useSimulationStore.getState().resetSession()
+  mockUseReducedMotion.mockReturnValue(false)
+})
+
+function seedAz() {
+  const regionId = useWorldStore.getState().addRegion('us-east-1')
+  const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+  return { regionId, azId }
+}
+
+const emptyServer: ServerMetrics = {
+  serverId: '', coreUtilization: [0], stealFraction: 0, burstCredits: null,
+  ramByInstance: [], ramUsedMb: 0, ramTotalMb: 1024, nicInMbps: 0, nicOutMbps: 0,
+  diskIoFraction: 0, health: 'healthy',
+}
+
+function makeBatch(servers: Record<string, Partial<ServerMetrics>>): MetricsBatch {
+  const serverRecord: MetricsBatch['servers'] = {}
+  for (const [id, patch] of Object.entries(servers)) serverRecord[id] = { ...emptyServer, serverId: id, ...patch }
+  return {
+    simMs: 1000, instances: {}, servers: serverRecord, azs: {}, regions: {},
+    world: { totalRps: 0, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
+  }
+}
+
+describe('AzConfigTab', () => {
+  it('renders one rack-well per rack with a used/capacity caption', () => {
+    const { azId } = seedAz()
+    useWorldStore.getState().addRack(azId)
+    const server = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const rack = Object.values(useWorldStore.getState().doc.racks)[0]
+    useWorldStore.getState().assignServerToRack(server, rack.id)
+
+    render(<AzConfigTab azId={azId} />)
+    const wells = screen.getAllByTestId('rack-well')
+    expect(wells).toHaveLength(1)
+    expect(wells[0].parentElement).toHaveTextContent(`${rack.label}`)
+    expect(wells[0].parentElement).toHaveTextContent(`1/${rack.capacityU}U`)
+  })
+
+  it('shows the "+ rack" ghost well while stopped, hides it while running', () => {
+    const { azId } = seedAz()
+    render(<AzConfigTab azId={azId} />)
+    expect(screen.getByTestId('rack-well-ghost')).toBeTruthy()
+
+    act(() => { useSimulationStore.setState({ running: true }) })
+    render(<AzConfigTab azId={azId} />)
+    expect(screen.queryByTestId('rack-well-ghost')).toBeNull()
+  })
+
+  it('"+ rack" ghost dispatches addRack byte-for-byte', () => {
+    const { azId } = seedAz()
+    render(<AzConfigTab azId={azId} />)
+    fireEvent.click(screen.getByTestId('rack-well-ghost'))
+    expect(Object.values(useWorldStore.getState().doc.racks)).toHaveLength(1)
+  })
+
+  it('renders one dock-slat per server, racked first then free pool', () => {
+    const { azId } = seedAz()
+    useWorldStore.getState().addRack(azId)
+    const rack = Object.values(useWorldStore.getState().doc.racks)[0]
+    const racked = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useWorldStore.getState().assignServerToRack(racked, rack.id)
+    const free = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+
+    render(<AzConfigTab azId={azId} />)
+    const slats = screen.getAllByTestId('dock-slat')
+    expect(slats).toHaveLength(2)
+    expect(slats[0]).toHaveTextContent(useWorldStore.getState().doc.servers[racked].label)
+    expect(slats[1]).toHaveTextContent(useWorldStore.getState().doc.servers[free].label)
+  })
+
+  it('slat meta shows plain kind at rest, "kind · healthWord" while a batch is live', () => {
+    const { azId } = seedAz()
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<AzConfigTab azId={azId} />)
+    expect(screen.getByTestId('dock-slat')).toHaveTextContent('vps')
+    expect(screen.getByTestId('dock-slat')).not.toHaveTextContent('comfortable')
+
+    const batch = makeBatch({ [serverId]: { coreUtilization: [0.1], ramUsedMb: 100, ramTotalMb: 1024, health: 'healthy' } })
+    act(() => { useSimulationStore.setState({ latestBatch: batch }) })
+    render(<AzConfigTab azId={azId} />)
+    const slats = screen.getAllByTestId('dock-slat')
+    expect(slats[slats.length - 1]).toHaveTextContent('vps · comfortable')
+  })
+
+  it('clicking a slat selects that server', () => {
+    const { azId } = seedAz()
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<AzConfigTab azId={azId} />)
+    fireEvent.click(screen.getByTestId('dock-slat'))
+    expect(useUiStore.getState().selectedServerId).toBe(serverId)
+  })
+
+  it('slat selection survives being nested in an ambient `<fieldset disabled>` (WorldPanel.tsx\'s real wrapper while running) — a native <button> would be silently unclickable here', () => {
+    const { azId } = seedAz()
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(
+      <fieldset disabled>
+        <AzConfigTab azId={azId} />
+      </fieldset>,
+    )
+    fireEvent.click(screen.getByTestId('dock-slat'))
+    expect(useUiStore.getState().selectedServerId).toBe(serverId)
+  })
+
+  it('at most ONE slat blinks (D3 motion budget) — the busiest server by live mean CPU, running only', () => {
+    const { azId } = seedAz()
+    const a = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const b = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const batch = makeBatch({
+      [a]: { coreUtilization: [0.9] },
+      [b]: { coreUtilization: [0.2] },
+    })
+    act(() => { useSimulationStore.setState({ latestBatch: batch, running: true }) })
+    render(<AzConfigTab azId={azId} />)
+
+    const slats = screen.getAllByTestId('dock-slat')
+    const blinking = slats.filter(s => s.getAttribute('data-blinking') === 'true')
+    expect(blinking).toHaveLength(1)
+    expect(blinking[0]).toHaveTextContent(useWorldStore.getState().doc.servers[a].label)
+  })
+
+  it('no slat blinks while stopped, even with a live-looking batch present (scrub)', () => {
+    const { azId } = seedAz()
+    const a = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const batch = makeBatch({ [a]: { coreUtilization: [0.95] } })
+    act(() => { useSimulationStore.setState({ latestBatch: batch, running: false }) })
+    render(<AzConfigTab azId={azId} />)
+    expect(screen.getAllByTestId('dock-slat').some(s => s.getAttribute('data-blinking') === 'true')).toBe(false)
+  })
+
+  it('no slat blinks under reduced motion, even while running', () => {
+    mockUseReducedMotion.mockReturnValue(true)
+    const { azId } = seedAz()
+    const a = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const batch = makeBatch({ [a]: { coreUtilization: [0.95] } })
+    act(() => { useSimulationStore.setState({ latestBatch: batch, running: true }) })
+    render(<AzConfigTab azId={azId} />)
+    expect(screen.getAllByTestId('dock-slat').some(s => s.getAttribute('data-blinking') === 'true')).toBe(false)
+  })
+
+  it('renders blueprint accent ticks matching serverAccents', () => {
+    const { azId } = seedAz()
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const bpId = useWorldStore.getState().addBlueprint('api')
+    useWorldStore.getState().addPlacement(bpId, serverId)
+    render(<AzConfigTab azId={azId} />)
+    const slat = screen.getByTestId('dock-slat')
+    // one small <i> tick per accent color — assert at least one rendered inside the slat.
+    expect(slat.querySelector('i')).toBeTruthy()
+  })
+
+  it('shows this AZ\'s cost, price-colored, $/hr and $/mo', () => {
+    const { azId } = seedAz()
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<AzConfigTab azId={azId} />)
+    const row = screen.getByText(/servers \+ egress share/i).parentElement!
+    expect(row).toHaveTextContent('/hr')
+    expect(row).toHaveTextContent('/mo')
+  })
+
+  it('"+ server" dispatches addServer with the floor toolbar\'s exact vps-medium preset', () => {
+    const { azId } = seedAz()
+    render(<AzConfigTab azId={azId} />)
+    fireEvent.click(screen.getByText('+ server'))
+    const servers = Object.values(useWorldStore.getState().doc.servers)
+    expect(servers).toHaveLength(1)
+    expect(servers[0].catalogId).toBe(getPreset('vps-medium')!.id)
+  })
+
+  it('"+ server" and "auto-arrange" are edit-locked while running', () => {
+    const { azId } = seedAz()
+    act(() => { useSimulationStore.setState({ running: true }) })
+    render(<AzConfigTab azId={azId} />)
+    const addBtn = screen.getByText('+ server')
+    const arrangeBtn = screen.getByText('auto-arrange')
+    expect(addBtn).toBeDisabled()
+    expect(addBtn).toHaveAttribute('title', 'stop the simulation to edit')
+    expect(arrangeBtn).toBeDisabled()
+    expect(arrangeBtn).toHaveAttribute('title', 'stop the simulation to edit')
+  })
+
+  it('"auto-arrange" dispatches autoArrangeAz', () => {
+    const { azId } = seedAz()
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<AzConfigTab azId={azId} />)
+    fireEvent.click(screen.getByText('auto-arrange'))
+    expect(Object.values(useWorldStore.getState().doc.racks)).toHaveLength(1)
+  })
+
+  it('"kill AZ" is disabled while stopped, with the standard run-only title', () => {
+    const { azId } = seedAz()
+    render(<AzConfigTab azId={azId} />)
+    const btn = screen.getByText('kill AZ')
+    // A plain <div role="button">, not a native <button> — it must stay clickable-by-the-DOM
+    // even while WorldPanel.tsx's ambient `<fieldset disabled={running}>` is active (which is
+    // exactly what run-only "kill AZ" needs: clickable precisely when running, i.e. when a real
+    // <button> sibling would be fieldset-disabled) — so disabledness is `aria-disabled`, not the
+    // native `disabled` attribute `toBeDisabled()` checks.
+    expect(btn).toHaveAttribute('aria-disabled', 'true')
+    expect(btn).toHaveAttribute('title', 'start the simulation to break things')
+    fireEvent.click(btn)
+    expect(useSimulationStore.getState().healthOverrides[azId]).toBeUndefined()
+  })
+
+  it('"kill AZ" survives being nested in an ambient `<fieldset disabled>` (WorldPanel.tsx\'s real wrapper) — a native <button> would not', () => {
+    const { azId } = seedAz()
+    act(() => { useSimulationStore.setState({ running: true }) })
+    render(
+      <fieldset disabled>
+        <AzConfigTab azId={azId} />
+      </fieldset>,
+    )
+    fireEvent.click(screen.getByText('kill AZ'))
+    expect(useSimulationStore.getState().healthOverrides[azId]).toBe(true)
+  })
+
+  it('"kill AZ" dispatches setOutage(\'az\', azId, true) while running, then inverts to "↺ restore"', () => {
+    const { azId } = seedAz()
+    act(() => { useSimulationStore.setState({ running: true }) })
+    render(<AzConfigTab azId={azId} />)
+    fireEvent.click(screen.getByText('kill AZ'))
+    expect(useSimulationStore.getState().healthOverrides[azId]).toBe(true)
+
+    render(<AzConfigTab azId={azId} />)
+    const restoreBtns = screen.getAllByText('↺ restore')
+    expect(restoreBtns.length).toBeGreaterThan(0)
+    fireEvent.click(restoreBtns[restoreBtns.length - 1])
+    expect(useSimulationStore.getState().healthOverrides[azId]).toBe(false)
+  })
+
+  it('shows an empty state when the AZ has no servers yet', () => {
+    const { azId } = seedAz()
+    render(<AzConfigTab azId={azId} />)
+    expect(screen.getByTestId('az-config-tab')).toHaveTextContent(/no servers/i)
+  })
+})

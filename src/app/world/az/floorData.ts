@@ -5,8 +5,13 @@
 // relocated out of the React Flow component into a testable pure function operating on
 // `CompiledWorld` (which already carries each `ServiceInstance.azId`, so no separate `servers`
 // list is needed to test AZ membership the way AzCanvas's `inAz` Set did). `ledParams` is the
-// six-LED CPU-threshold language RackCabinet/FreePoolPod both render. No React/store imports.
-import type { AzId, CompiledWorld, ManagedServiceId, ServerId } from '../../../lib/world/types'
+// six-LED CPU-threshold language RackCabinet/FreePoolPod both render. `serverAccents` (Polish 4
+// T3) is a behavior-identical extraction of DatacenterFloor.tsx's formerly-inline
+// `accentsByServer` useMemo — every resident-blueprint signature color per server, deduped,
+// insertion order preserved — now shared by DatacenterFloor's faceplate ticks AND the dock's
+// FloorPlanHeader/AzConfigTab (spec D5), so the two surfaces can never drift on "what color is
+// this server." No React/store imports.
+import type { AzId, CompiledWorld, ManagedServiceId, ServerId, WorldDoc } from '../../../lib/world/types'
 
 export interface FlowEdge {
   source: ServerId
@@ -68,4 +73,21 @@ export function ledParams(cpuMean: number): LedParams {
 export function meanUtilization(values?: number[]): number {
   if (!values || values.length === 0) return 0
   return values.reduce((a, b) => a + b, 0) / values.length
+}
+
+// Per-server identity (Polish 4 T3 extraction — verbatim from DatacenterFloor.tsx's pre-T3
+// inline `accentsByServer` useMemo, user request 2026-07-11: "each server should have its own
+// visual"): every resident instance's blueprint color, deduped in first-seen order. A server
+// hosting no colored blueprint (or none at all) simply has no entry — callers read via
+// `.get(id) ?? []`, matching every existing consumer's fallback.
+export function serverAccents(doc: WorldDoc, compiled: CompiledWorld): Map<ServerId, string[]> {
+  const m = new Map<ServerId, string[]>()
+  for (const inst of Object.values(compiled.instances)) {
+    const color = doc.blueprints[inst.blueprintId]?.color
+    if (!color) continue
+    const list = m.get(inst.serverId) ?? []
+    if (!list.includes(color)) list.push(color)
+    m.set(inst.serverId, list)
+  }
+  return m
 }

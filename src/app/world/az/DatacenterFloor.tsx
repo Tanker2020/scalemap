@@ -17,7 +17,7 @@ import { useSimulationStore } from '../../store/simulation.store'
 import { useUiStore } from '../../store/ui.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { layoutFloor } from './floorLayout'
-import { aggregateFlows, meanUtilization } from './floorData'
+import { aggregateFlows, meanUtilization, serverAccents } from './floorData'
 import { rackUsedU } from '../../../lib/world/rackModel'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { RackCabinet, cabinetHeightPx } from './RackCabinet'
@@ -175,18 +175,10 @@ export function DatacenterFloor() {
 
   // Per-server identity (user request 2026-07-11): each server's resident blueprints' signature
   // colors, rendered as faceplate ticks by RackSlot/FreePoolPod so no two servers hosting
-  // different services look alike.
-  const accentsByServer = useMemo(() => {
-    const m = new Map<ServerId, string[]>()
-    for (const inst of Object.values(compiled.instances)) {
-      const color = doc.blueprints[inst.blueprintId]?.color
-      if (!color) continue
-      const list = m.get(inst.serverId) ?? []
-      if (!list.includes(color)) list.push(color)
-      m.set(inst.serverId, list)
-    }
-    return m
-  }, [compiled.instances, doc.blueprints])
+  // different services look alike. Extracted to `serverAccents` (Polish 4 T3, floorData.ts) — a
+  // behavior-identical pure-function move, now also consumed by the dock's FloorPlanHeader/
+  // AzConfigTab (spec D5) so the floor and the dock never disagree on a server's color ticks.
+  const accentsByServer = useMemo(() => serverAccents(doc, compiled), [compiled.instances, doc.blueprints])
 
   // Camera: fit-to-view on mount/plan growth, wheel zoom at the cursor, background drag-pan
   // (post-Polish-3 fix wave — the floor previously rendered fixed-size with no navigation).
