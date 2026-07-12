@@ -19,7 +19,9 @@ export const FIT_MARGIN = 0.94
 // which reuses this hook since 2026-07-12) passes its own selector — pointerdown on anything
 // matching never starts a pan; pointer capture would otherwise retarget the release (and the
 // synthetic click) to the viewport and swallow the element's own tap/hold/click gesture.
-const INTERACTIVE_SEL =
+// Exported so DatacenterFloor's background-click deselect agrees byte-for-byte with the camera
+// about what counts as "background".
+export const INTERACTIVE_SEL =
   'g[data-testid^="rack-slot"], g[data-testid^="free-pod"], .az-ghost, button, select, a, input, [data-no-pan]'
 
 export function clampScale(s: number): number {

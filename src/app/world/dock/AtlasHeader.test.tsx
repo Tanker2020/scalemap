@@ -100,6 +100,18 @@ describe('AtlasHeader — world scope (regionId=null)', () => {
     expect(screen.getAllByTestId('atlas-region-dot')).toHaveLength(2)
   })
 
+  // Regression (user report 2026-07-12): São Paulo projected under the headline caption, so
+  // its arc read as "a dashed line to nowhere." Geography must stay inside the MAP band —
+  // above the caption's ~20px strip at the bottom of the 92px card.
+  it('a southern-hemisphere population dot projects clear of the caption band', () => {
+    seedRegion('us-east-1', 'us-east-1a')
+    useWorldStore.getState().addPopulation('São Paulo', -23.5, -46.6)
+    render(<AtlasHeader regionId={null} />)
+    const dot = screen.getByTestId('atlas-population-dot')
+    expect(Number(dot.getAttribute('cy'))).toBeLessThanOrEqual(72)
+    expect(Number(dot.getAttribute('r'))).toBeGreaterThanOrEqual(2.5)
+  })
+
   it('at rest (no batch) region dots render the healthy/success color', () => {
     seedRegion('us-east-1', 'us-east-1a')
     render(<AtlasHeader regionId={null} />)

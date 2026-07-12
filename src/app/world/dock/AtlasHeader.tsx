@@ -48,6 +48,11 @@ const HUD = 'var(--kit-accent)'
 
 const W = 372
 const H = 92
+// The headline overlay owns the bottom ~20px of the card, so GEOGRAPHY projects into the band
+// above it (user report 2026-07-12: São Paulo's population dot projected to y≈67 — directly
+// under the caption text + its black text-shadow — so its traffic arc read as "a dashed line
+// to nowhere"). Graticule stays full-bleed; it's decorative chrome, not geography.
+const MAP_H = H - 20
 // Six static graticule paths (D4): 3 latitude curves + 3 longitude curves, matching the locked
 // mock's `.grid` group verbatim (decorative — not derived from projectLatLon).
 const GRATICULE_PATHS = [
@@ -182,8 +187,8 @@ export function AtlasHeader({ regionId }: AtlasHeaderProps): ReactElement {
         </g>
         <g>
           {topArcs.map((c, i) => {
-            const from = projectLatLon(c.from.lat, c.from.lon, W, H)
-            const to = projectLatLon(c.to.lat, c.to.lon, W, H)
+            const from = projectLatLon(c.from.lat, c.from.lon, W, MAP_H)
+            const to = projectLatLon(c.to.lat, c.to.lon, W, MAP_H)
             const isTop = i === 0
             const animated = isTop && animateGate
             return (
@@ -198,13 +203,15 @@ export function AtlasHeader({ regionId }: AtlasHeaderProps): ReactElement {
         </g>
         <g>
           {populations.map(p => {
-            const pt = projectLatLon(p.lat, p.lon, W, H)
-            return <circle key={p.id} cx={pt.x} cy={pt.y} r={2} fill={HUD} opacity={0.7} />
+            const pt = projectLatLon(p.lat, p.lon, W, MAP_H)
+            // r/opacity sized to read as an arc ENDPOINT, not dust — an arc must visibly
+            // terminate at a city or the whole constellation looks broken.
+            return <circle key={p.id} data-testid="atlas-population-dot" cx={pt.x} cy={pt.y} r={2.5} fill={HUD} opacity={0.9} />
           })}
         </g>
         <g>
           {regions.map(({ region, geo }) => {
-            const pt = projectLatLon(geo.lat, geo.lon, W, H)
+            const pt = projectLatLon(geo.lat, geo.lon, W, MAP_H)
             const health = regionHealth(region.id, displayBatch, doc)
             const color = pinColor(health)
             const ringed = regionId === region.id

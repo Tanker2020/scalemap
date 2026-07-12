@@ -24,7 +24,7 @@ import { getPreset } from '../../../lib/world/instanceCatalog'
 import { RackCabinet, cabinetHeightPx } from './RackCabinet'
 import { FreePoolPod, POD_HEIGHT_PX } from './FreePoolPod'
 import { InspectorV2 } from '../InspectorV2'
-import { useFloorCamera } from './useFloorCamera'
+import { useFloorCamera, INTERACTIVE_SEL } from './useFloorCamera'
 import { VIEW_W, VIEW_H, floorOutline, tileOutline, tileCenter, isoBox, type IsoBox } from './iso'
 import type { RackId, Server, ServerId } from '../../../lib/world/types'
 import './azFloorStyles'
@@ -76,6 +76,9 @@ export function DatacenterFloor() {
 
   const [newIds, setNewIds] = useState<ReadonlySet<ServerId>>(new Set())
   const seenIdsRef = useRef<Set<ServerId> | null>(null)
+  // A press that started on empty floor (candidate for click-to-deselect; null when the press
+  // began on anything interactive). Cleared on release/cancel.
+  const bgPressRef = useRef<{ x: number; y: number } | null>(null)
 
   const azServers = useMemo(
     () => Object.values(doc.servers).filter(s => s.azId === azId),
@@ -341,10 +344,27 @@ export function DatacenterFloor() {
     <div
       ref={camera.containerRef}
       data-testid="floor-viewport"
-      onPointerDown={camera.onPointerDown}
+      // Background press = potential pan AND potential deselect: if the pointer goes down on
+      // empty floor (nothing INTERACTIVE_SEL matches) and comes up within the slop radius —
+      // i.e. it never became a drag — clear the floor selection so the dock widens back to AZ
+      // scope (user report 2026-07-12: "once I click a server I can't view the rack level
+      // config again" — the scope-rail AZ pill already did this, but click-empty-floor is the
+      // gesture everyone actually tries first).
+      onPointerDown={(e) => {
+        bgPressRef.current = e.button !== 0 || (e.target as Element).closest?.(INTERACTIVE_SEL)
+          ? null : { x: e.clientX, y: e.clientY }
+        camera.onPointerDown(e)
+      }}
       onPointerMove={camera.onPointerMove}
-      onPointerUp={camera.onPointerUp}
-      onPointerCancel={camera.onPointerUp}
+      onPointerUp={(e) => {
+        const press = bgPressRef.current
+        bgPressRef.current = null
+        if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5 && selectedServerId) {
+          setSelectedServerId(null)
+        }
+        camera.onPointerUp(e)
+      }}
+      onPointerCancel={(e) => { bgPressRef.current = null; camera.onPointerUp(e) }}
       style={{
         width: '100%', height: '100%', overflow: 'hidden', position: 'relative',
         background: 'radial-gradient(ellipse 70% 55% at 50% 66%, #121722 0%, #0b0d11 78%)',

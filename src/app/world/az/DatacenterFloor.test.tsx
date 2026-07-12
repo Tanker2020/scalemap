@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { DatacenterFloor } from './DatacenterFloor'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore } from '../../store/simulation.store'
+import { useUiStore } from '../../store/ui.store'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import type { MetricsBatch, InstanceMetrics, ServerMetrics } from '../../../lib/worldEngine/types'
 
@@ -325,5 +326,42 @@ describe('DatacenterFloor — lines survive racking (2026-07-12 follow-up)', () 
     render(<DatacenterFloor />)
     expect(screen.queryByTestId(`flow-${aId}->${bId}`)).toBeNull()
     expect(screen.queryByText('1 dep')).toBeNull()
+  })
+
+  // Background click-to-deselect (user report 2026-07-12: "once I click a server I can't view
+  // the rack level config again") — a press on empty floor that never becomes a drag clears
+  // the selection so the dock widens back to AZ scope; a pan must NOT.
+  it('clicking empty floor background clears the server selection', () => {
+    const { azId } = seedAz()
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useUiStore.getState().setSelectedServerId(serverId)
+    render(<DatacenterFloor />)
+    const viewport = screen.getByTestId('floor-viewport')
+    fireEvent.pointerDown(viewport, { clientX: 50, clientY: 50, button: 0, pointerId: 1 })
+    fireEvent.pointerUp(viewport, { clientX: 51, clientY: 52, pointerId: 1 })
+    expect(useUiStore.getState().selectedServerId).toBeNull()
+  })
+
+  it('a background drag (pan) does NOT clear the selection', () => {
+    const { azId } = seedAz()
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useUiStore.getState().setSelectedServerId(serverId)
+    render(<DatacenterFloor />)
+    const viewport = screen.getByTestId('floor-viewport')
+    fireEvent.pointerDown(viewport, { clientX: 50, clientY: 50, button: 0, pointerId: 1 })
+    fireEvent.pointerMove(viewport, { clientX: 90, clientY: 75, pointerId: 1 })
+    fireEvent.pointerUp(viewport, { clientX: 120, clientY: 90, pointerId: 1 })
+    expect(useUiStore.getState().selectedServerId).toBe(serverId)
+  })
+
+  it('a press starting on a server pod never clears the selection', () => {
+    const { azId } = seedAz()
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useUiStore.getState().setSelectedServerId(serverId)
+    render(<DatacenterFloor />)
+    const pod = screen.getByTestId(`free-pod-${serverId}`)
+    fireEvent.pointerDown(pod, { clientX: 200, clientY: 200, button: 0, pointerId: 1 })
+    fireEvent.pointerUp(pod, { clientX: 200, clientY: 200, pointerId: 1 })
+    expect(useUiStore.getState().selectedServerId).toBe(serverId)
   })
 })
