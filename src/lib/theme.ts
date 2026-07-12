@@ -106,8 +106,8 @@ export const CATEGORY_COLORS = {
   },
 } as const
 
-export const FONT_DISPLAY = "'Space Grotesk', sans-serif"
-export const FONT_BODY = "'Inter', sans-serif"
+// JetBrains Mono is the app's only typeface (design-system law). The Inter/Space Grotesk
+// display/body tokens were removed 2026-07-12 — bundled but with zero consumers.
 export const FONT_MONO = "'JetBrains Mono', monospace"
 
 export const SPACING = {

@@ -1,11 +1,5 @@
 import { useEffect } from 'react'
-import { DARK_COLORS, LIGHT_COLORS, FONT_DISPLAY, FONT_BODY, FONT_MONO, SPACING, MOTION } from './lib/theme'
-import '@fontsource/space-grotesk/400.css'
-import '@fontsource/space-grotesk/500.css'
-import '@fontsource/space-grotesk/600.css'
-import '@fontsource/inter/400.css'
-import '@fontsource/inter/500.css'
-import '@fontsource/inter/600.css'
+import { DARK_COLORS, LIGHT_COLORS, FONT_MONO, SPACING, MOTION } from './lib/theme'
 import '@fontsource/jetbrains-mono/400.css'
 import '@fontsource/jetbrains-mono/500.css'
 import '@fontsource/jetbrains-mono/600.css'
@@ -29,8 +23,6 @@ function useThemeBootstrap() {
       const kebab = key.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`)
       root.setProperty(`--color-${kebab}`, value)
     }
-    root.setProperty('--font-display', FONT_DISPLAY)
-    root.setProperty('--font-body', FONT_BODY)
     root.setProperty('--font-mono', FONT_MONO)
     for (const [key, value] of Object.entries(SPACING)) {
       root.setProperty(`--space-${key.replace('space', '')}`, `${value}px`)
