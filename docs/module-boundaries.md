@@ -34,6 +34,14 @@ not guessed from folder structure.
 > contract untouched), `src/app/world/EventsTab.tsx` (shows `latest N of TOTAL` + on-disk note).
 > No history-browsing UI yet — `event_log_tail` is the ready-made pagination surface for it.
 
+> **2026-07-12 fix wave:** `AtlasHeader.tsx` projects geography into `MAP_H = H - 20` (the band
+> above the headline caption — São Paulo's dot used to hide under the caption text, making its
+> arc read as broken) and population dots are r=2.5/opacity-0.9 with
+> `data-testid="atlas-population-dot"`. `DatacenterFloor.tsx` clears `selectedServerId` on an
+> empty-floor left-click that never becomes a drag (<5px slop), widening the dock back to AZ
+> scope; `useFloorCamera.ts` now exports `INTERACTIVE_SEL` so floor deselect and camera pan
+> agree on what "background" means.
+
 ---
 
 ## 1. Feature modules (safe to own independently)
