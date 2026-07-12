@@ -1159,11 +1159,21 @@ scope (same references, same computed values), so the Analysis tab-bar badge and
 `SignatureHeader` summary read the same numbers they always did. Non-world scope renders four new
 file-local (not exported, not in their own files — small enough to keep beside their one caller,
 same judgment call `WorldSummary` itself already made) components: `ScopedConfigBody` (the
-brief's placeholder — T2/T3/T4 replace this per scope — **T2 (§T) has now landed: `WorldPanel.tsx`
+brief's placeholder — T2/T3/T4 replace this per scope — **T2 (§T) landed first: `WorldPanel.tsx`
 calls `RegionConfigTab` instead of `ScopedConfigBody` for region scope specifically, leaving
 `ScopedConfigBody`'s `scope.kind === 'region'` branch unreachable dead code, kept deliberately so
-the component's shared signature/type stays untouched for AZ/server, which T3/T4 still call
-as-is**), `ScopedAnalysisBody`/`ScopedEventsBody`/
+the component's shared signature/type stays untouched for AZ/server, which T3/T4 still called
+as-is at the time. **T8 status (final): T3 (§U) and T4 (§V) have SINCE landed their own AZ/server
+Config instruments (`AzConfigTab`/`ServerFaceplate`), so ALL THREE of `ScopedConfigBody`'s
+`region`/`az`/`server` branches are now unreachable — `WorldPanel.tsx`'s ternary chain
+(`scope.kind === 'region' ? … : scope.kind === 'az' ? … : scope.kind === 'server' ? … :
+<ScopedConfigBody>`) exhausts `DockScope`'s 3-member non-world union before ever falling through
+to it. T8's sweep audited this deliberately (spec brief's own "narrow it only if trivially safe,
+else document why it stays" instruction) and chose to LEAVE it as a defensive fallback rather
+than delete the function or narrow its prop type: it costs nothing at runtime (never called),
+keeps a "coming soon" render path alive for free if a future `DockScope` variant is ever added
+without an instrument yet built for it, and deleting it would be a pure risk/no-reward edit this
+late in the phase.**), `ScopedAnalysisBody`/`ScopedEventsBody`/
 `ScopedCostBody` (real, wired to the scopeData helpers above — nothing later replaces these
 three, they're final for this phase, not placeholders).
 
@@ -1415,9 +1425,13 @@ the SAME `ui.store.selectedServerId` §S lifted).
     computed CSS/animation state. The blink keyframe itself (`dockfp-blink`, `.dockfp-led-blink`)
     lives in the new shared `dock/floorPlanStyles.ts` (see below), reduced-motion-neutralized
     there too as a second guard.
-  - **THIS AZ'S COST**: one row, `computeWorldCost(doc, batch?.world ?? null).byAz` (found by
-    `azId`, `HOURS_PER_MONTH` for the `/hr` figure) — price-colored (`var(--color-price)`),
-    `$X.XX/hr · $Y/mo`.
+  - **THIS AZ'S COST**: one row, `scopeData.ts`'s `scopedCost({kind:'az', regionId: az?.regionId
+    ?? '', azId}, doc, batch?.world ?? null)` — price-colored (`var(--color-price)`),
+    `$X.XX/hr · $Y/mo`. **T8 fix**: this originally re-derived `computeWorldCost(doc,
+    batch?.world ?? null).byAz` inline instead of calling `scopedCost` — the same helper
+    `FloorPlanHeader`'s minimap headline already reads (this doc previously claimed AzConfigTab
+    "reads the SAME helper," which was false until this fix) — now both dedupe through one call
+    site.
   - **Action row**: `+ server` — `DatacenterFloor.tsx`'s toolbar's EXACT dispatch/preset
     (`addServer(azId, getPreset('vps-medium')!)`); `auto-arrange` — the SAME `autoArrangeAz(azId)`
     call — both real `<button disabled={running}>`s, correctly ALSO redundantly disabled by
@@ -1656,7 +1670,16 @@ live number is `useServerDisplayMetrics`'s existing scrub-or-latest `display` pl
   **RATIFIED documented deviation** from the locked mock's `418 allowed/s · 0 blocked` +
   `— carrying all traffic` sentence suffix (`task-5-brief.md`): the frozen `MetricsBatch`
   contract carries no per-rule or blocked-connection counter, and the engine is frozen (§K), so
-  there is nothing real to re-voice the body with.
+  there is nothing real to re-voice the body with. **T8-documented accepted asymmetry**: `+ rule`
+  is `disabled={running}` (T4's original edit-lock), not `disabled={watching}` — so during a
+  STOPPED scrub replay (`running` false, `watching` true via `display.scrubbing`), `+ rule` stays
+  CLICKABLE while HARDWARE's knobs and SERVICES' mount control are gone/hidden for the same
+  posture. This is defensible, not a bug: the edit-lock law's intent is "authoring is safe
+  whenever the engine isn't live," and a stopped scrub replay is exactly that — no engine is
+  running to contradict a rule you add. HARDWARE/SERVICES hide their controls for a DIFFERENT
+  reason (D7 replaces their body with a live-metrics READ that has no editable control to show at
+  all while watching, scrub or run alike), not because scrub-authoring itself is unsafe. No test
+  asserts either polarity; left as-is per the brief's carry-forward note.
 - **`drawers/ServicesDrawer.tsx`**: `servicesPv` grew an optional third arg (`{name, p50Ms} |
   null`) → `"<name> · p50 <X> ms"`. `ServicesDrawerProps` gained `compiled: CompiledWorld`
   (new, required — HardwareDrawer's own existing pattern) + `liveInstances?:
@@ -1787,6 +1810,151 @@ mount point and `AlertRibbon` scroll/flash wiring as before (§M's file-table ro
   `buildLanes`' first-lane fallback rather than the AZ actually receiving the traffic — a
   documented, data-shape-driven limitation of AZ-level attribution for region/population-scoped
   events, not a bug in the assignment logic itself.
+
+### Y. Polish 4 Task 8 — sweep + gate (`docs/superpowers/specs/2026-07-11-polish4-contextual-dock-design.md` D3/D10/D11/D12, 2026-07-12)
+
+The phase's closing task: cross-cutting audits over everything §S-§X (+TA) built, a handful of
+carry-forward Minor fixes, and this reconciliation pass. No engine/store changes (Global
+Constraints honored — `git status --short src/lib/worldEngine/` clean, zero new store actions).
+
+**The `dock/` module, consolidated.** `src/app/world/dock/` is now the home for every scope-aware
+dock surface built across T1-T5: `scope.ts` + `scopeData.ts` (pure — see §S for the full API),
+`ScopeRail.tsx` (§S), `AtlasHeader.tsx` + `RegionConfigTab.tsx` (§T, world/region),
+`FloorPlanHeader.tsx` + `AzConfigTab.tsx` (§U, az), `ServerFaceplate.tsx` + `drawers/{Hardware,
+Firewall,Services,Placement}Drawer.tsx` (§V/§W, server) — plus three colocated stylesheet
+modules (`faceplateStyles.ts`/`floorPlanStyles.ts`, the injected-once idiom `ui/kit.tsx`
+established) and no others. **Import boundary rule (explicit, was previously only implicit
+across §S's per-file prose): `scope.ts`/`scopeData.ts` may be imported by `WorldPanel.tsx` (the
+scope-deriving hub) and by the dock instrument components listed above — nothing under
+`region/`/`az/`/`server/`/`globe/`/`panels/` reaches into them.** Both files stay React/store-free
+by construction (type-only imports of `WorldLevel`/`PanelTab` excepted) specifically so they stay
+importable from anywhere in the dock without dragging a store dependency into a pure derivation —
+new dock work should extend `scopeData.ts`'s existing helpers (`scopeEntityIds`/`scopedEvents`/
+`scopedFindings`/`scopedCost`) rather than re-deriving a scope filter inline (see the
+`AzConfigTab` fix below for what re-deriving instead of reusing costs).
+
+**InspectorV2 selected-server-pane retirement (§V, Task 4) — confirmed final at T8.**
+`InspectorV2.tsx` is AZ-scoped only now: its props shrank to `{ azId: AzId }`, it renders ONLY
+the traced-request list (poll + hop-table expansion), and its Polish-3-T4-era selected-server
+rack-selector/enter/kill card is gone — those three dispatches (`assignServerToRack`/`goServer`/
+`setOutage('server', …)`) now live on `dock/PlacementDrawer.tsx`/`dock/ServerFaceplate.tsx`
+respectively, reached via the SAME `ui.store.selectedServerId` the floor's minimap/slats write
+(§S/§U). No further InspectorV2 changes landed after §V; T8's audit re-confirmed zero remaining
+selected-server references in the file.
+
+**TimelineStrip → TimelineV2 (§X, Task 6) — confirmed final at T8.** `TimelineStrip.tsx` is
+deleted; `region/TimelineV2.tsx` + the new pure `region/timelineModel.ts` are the permanent
+replacement (per-AZ swimlanes, health bands, real-event markers, causality arrows, narration bar,
+ZERO ambient animation — ratified motion budget, see below). Mount point and `AlertRibbon`
+scroll/flash wiring unchanged from `TimelineStrip`'s. See §X for the full file-by-file account;
+nothing further changed here at T8 beyond the motion-inventory entry below.
+
+**`routing.ts`'s `regionOrderFor` extraction (§X, Task 7) — confirmed final at T8.** A
+byte-identical refactor (`routing.test.ts` unmodified, `regionOrderFor.test.ts` proves parity
+across all four policies) that gave the compiler a second, pre-compile consumer:
+`globe/TrafficPlacementLayer.tsx`'s placement-mode preview card calls `regionOrderFor` directly
+on a not-yet-placed `WorldCity` to compute the exact landing region before any population exists
+in the doc. T8 cleaned up the one cosmetic leftover in its test file — see the Minors table below.
+
+#### Motion-inventory additions (the T8 sweep, dock/timeline/globe)
+
+Mirrors the Polish-3 T8 sweep's own inventory table (above, "Motion budget (spec D1)") — same
+method: every `animation:`/`animate`/`<animate>` occurrence under `dock/`, `region/TimelineV2.tsx`
++ `timelineModel.ts`, and `globe/TrafficPlacementLayer.tsx` was inventoried and checked against
+D3's "exactly ONE ambient stroke per dock, at rest only the ratified exceptions" rule.
+
+| Element | Gate | Budget | Reduced motion |
+|---|---|---|---|
+| Atlas top arc (`AtlasHeader.tsx`, `dashflow 1.2s`) | `running && topRps > 0 && !reduced` | 1 (top-ranked route only; ≤2 more render static) | class/style omitted entirely when `reduced` |
+| Floor-plan LED (`AzConfigTab.tsx`, `dockfp-blink 2.4s`, class in `floorPlanStyles.ts`) | `running && !reducedMotion`, single busiest server by mean CPU | 1 (hard cap, not a ranked-N-of-M set like the floor's own `MAX_ANIMATED_LEDS=3`, §U/§R — this is the DOCK's independent, smaller budget) | component-level gate (`busiestServerId` returns `null`) AND a `@media (prefers-reduced-motion: reduce)` CSS neutralizer — belt-and-suspenders, same pattern `azFloorStyles.ts`/`hwStyles.ts`/`gateStyles.ts` use |
+| Faceplate pulse (`ServerFaceplate.tsx`, `dockfp-vitals-breathe`, class in `faceplateStyles.ts`) | always mounted; rate only changes | **RATIFIED bounded exception to the static-at-rest law** — 3.6s idle / 2.2s watching (`animationDuration` inline override) | class omitted (`reducedMotion ? undefined : 'dockfp-vitals-pulse'`) + CSS `@media` neutralizer, both verified by a T8-added test (`reduced motion disables the pulse animation even while running/watching`) |
+| Place-mode ghost ring blink (`globe/TrafficPlacementLayer.tsx`, `GhostRing`, visibility-toggle `blink 2s steps(1)`) | `placeMode` only (component returns `null` otherwise) | **RATIFIED bounded exception** — an authoring-mode affordance, "like a text caret" per the file's own comment | `useReducedMotion()` → mesh stays permanently visible (no toggle) instead of blinking |
+| Timeline v2 (`region/TimelineV2.tsx` + `timelineModel.ts` + `timelineStyles.ts`) | n/a | **ZERO animation** — `timelineStyles.ts`'s own header comment: "No keyframes, no infinite animation" | the ONE permitted motion (marker hover-`scale(1.35)`) is a plain CSS transition, collapsed to 0.01ms by the app's existing blanket `prefers-reduced-motion` rule in `src/index.css` |
+| Ghost great-circle arc (`globe/TrafficPlacementLayer.tsx`, `GhostArc`) | n/a | static dashed line, rebuilt only on city/landing change — explicitly NOT per-frame dash-flow (unlike `ArcsLayer.tsx`'s live traffic arcs) | n/a (never animates) |
+
+**`jsdom` has no `getAnimations()` implementation** (verified: `Element.prototype.getAnimations`
+is `undefined` under this repo's jsdom 29.1.1 — a real API gap, not a config issue), so — matching
+every prior motion-law test in this codebase (T2's/TA's regression tests, T5's pulse test) — the
+above is locked by class-name/`data-*`-attribute assertions instead (e.g. `dot.className).not
+.toMatch(/kit-ripple/)`, `vitals-pulse`'s `data-live`/`style.animationDuration`), not a live
+Web-Animations-API read; the table above is the accompanying static/code-read audit.
+
+**TopologyPanel `ripple={running}` — adjudicated (world-scope AZ-list rows) — FIXED to static.**
+`panels/TopologyPanel.tsx`'s `ServerRow` (world scope's Topology tab, ~line 213) passed
+`ripple={running}` into every server row's `EdgeRow`, the exact same always-on
+`kit-ripple 1.6s ease-out infinite` pattern T2 already removed from `dock/RegionConfigTab.tsx`'s
+AZ rows (§T, commit `485ea33`) for violating D3's one-ambient-stroke-per-dock law — a running sim
+with N healthy servers showed N simultaneous ripples alongside the atlas's own marching top arc.
+This predates Polish 4 (TopologyPanel's `wtree` reskin is §T-adjacent styling-only work, but the
+`ripple` prop itself is older, Phase-2-era), so T2's own carry-forward note explicitly deferred
+its adjudication to this task rather than silently leaving it. **Verdict: made static**, for
+consistency with the RegionConfigTab precedent and because TopologyPanel IS the world-scope
+dock's Config-adjacent body (D3's "today's seven tabs" row) — same one-ambient-stroke law
+applies. `ripple={running}` (and the now-unused `running` local it depended on) was deleted; no
+pre-existing test asserted the ripple (verified via grep before the fix), so nothing needed
+migrating, and one regression test was added mirroring T2's own (`server row status dots never
+carry the ripple animation, even with a healthy status while running`).
+
+#### Other T8 audit results
+
+- **Emoji scan** (`grep -rnP '[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]' src/`): every Polish-4 hit
+  is a sanctioned glyph (`region/TimelineV2.tsx`'s `GLYPH` map — `✕ ♺ ⇄ ⬆ ●` — is drawn EXACTLY
+  from D11's approved list, by design, §X). One pre-existing, out-of-phase hit survives:
+  `app/world/ui/kit.tsx`'s `Segmented` component test (`kit.test.tsx`, Polish 3 Task 1, commit
+  `fb060fb3` — before this branch existed) passes literal `'⚡ latency'`/`'🌍 geo'` as ARBITRARY
+  fixture label text proving the generic component doesn't special-case string content; it never
+  renders in the real app (`TrafficPanel.tsx`'s actual routing-policy labels are plain
+  `'latency'`/`'geo'`/`'weighted'`/`'priority'`, no glyphs). Left as out-of-scope (Polish 3, test
+  fixture only, not a Polish-4 surface) rather than edited.
+- **Price-token audit** (every `$`/`toFixed`/`/hr`/`/mo` in `dock/`, `region/TimelineV2.tsx`,
+  `globe/TrafficPlacementLayer.tsx`): PASS, all price-colored — `AtlasHeader.tsx` (world/region
+  headline), `FloorPlanHeader.tsx` (az headline), `AzConfigTab.tsx` (cost row), `ServerFaceplate
+  .tsx` (plate price), `TrafficPlacementLayer.tsx` (egress line). No misses found.
+- **Singular/plural audit**: PASS — every new count-driven string already ternary-guards its
+  plural (`RegionConfigTab.tsx`'s `N server{N===1?'':'s'}`, `AtlasHeader.tsx`'s city/cities,
+  `HardwareDrawer.tsx`'s connection/connections, `ServicesDrawer.tsx`'s single-placement branch
+  that never falls through to its bare-plural `"N services"` string at N=1). `TimelineV2.tsx`'s
+  `{lane.serverCount} srv` is intentionally unpluralized (an abbreviation, not a natural-English
+  plural noun) — matches the brief's own listed-correct example.
+- **Light-theme audit** (every NEW below-header surface, headers exempt per D3): found and fixed
+  TWO real hardcoded-hex misses (neither previously caught because neither had a light-theme-
+  specific test): (1) `dock/drawers/FirewallDrawer.tsx`'s rule-sentence id spans copied
+  InspectorRail's exact `#DBEAFE` verbatim, calibrated for InspectorRail's OWN always-dark scene
+  background — but this drawer body sits on the theme-flipping `var(--color-canvas)`, so in light
+  theme the pastel-blue text read at ~1.1:1 contrast (functionally invisible) against the
+  near-white light canvas. Swapped to `var(--kit-accent)` (the SAME theme-aware id/hud token
+  every other dock surface already uses), with a regression test locking the token. (2)
+  `globe/TrafficPlacementLayer.tsx`'s Html preview card `<span>{PREVIEW_RPS} rps</span>` used the
+  same raw `HUD_TEAL` hex its WebGL ring/arc materials legitimately need (three.js `Color` can't
+  parse a CSS custom property — that WebGL usage is correctly unchanged, matching the globe's
+  established `RegionPins.tsx`/`ArcsLayer.tsx` fixed-hex-for-scene-geometry precedent), even
+  though the card ITSELF already used `var(--color-*)` tokens for every other span — an
+  inconsistency, not a deliberate scene-chrome choice. Swapped that one DOM span to
+  `var(--kit-teal)` (same dark-theme value, WCAG-checked light swap already defined in `ui/kit
+  .tsx`). This file has no jsdom test (WebGL, live-smoke-gated per its own header comment), so no
+  test to add. Everything else audited (dock/'s remaining hardcoded hex — `AtlasHeader.tsx`'s
+  `ATLAS_*`/`FloorPlanHeader.tsx`'s `MINIMAP_*`/`ServerFaceplate.tsx`'s `PLATE_*`/`KIND_CHIP_*` —
+  is confined to the three documented instrument-header scenes, D3's carve-out, verified by
+  reading each component's returned JSX for containment) was already token-correct.
+
+#### Carry-forward Minors resolved
+
+| Minor (source task) | Resolution |
+|---|---|
+| `dock/AzConfigTab.tsx` recomputes `computeWorldCost().byAz` inline instead of `scopedCost` (T3); doc claimed otherwise (T3) | **Fixed**: now calls `scopeData.ts`'s `scopedCost({kind:'az',…})`, the SAME helper `FloorPlanHeader.tsx` already used — dedupes the two call sites. The doc's pre-existing "reads the SAME helper" claims (§U, ~1362 and ~1418) are now both true; the ~1418 entry's wording corrected in place |
+| `dock/drawers/HardwareDrawer.tsx` computes `firstInstance`/RAM-hint BEFORE the `if(live) return` early return (T5) | **Fixed**: `if (live)` is now the FIRST statement in the component; `ladder`/`index`/`commit`/`firstInstance`/`firstBlueprint`/`vcpuHintText`/`residentMb`/`ramHintText`/`disabled` all moved below it (authoring-only, never read by the live branch) |
+| No test for `reducedMotion===true && watching===true` on the vitals pulse (T5) | **Fixed**: `ServerFaceplate.test.tsx` gained `reduced motion disables the pulse animation even while running/watching` |
+| `lib/world/regionOrderFor.test.ts`'s `void euwest` lint-silencer (T7) | **Fixed**: the test's destructure no longer pulls `euwest` at all (it was never read besides the silencer) |
+| No `WorldShell.test.tsx` — T1's selection-clear effect and T7's Escape-disarm priority both untested at that level (T1+T7) | **Fixed**: new `src/app/world/WorldShell.test.tsx`, 4 tests — two for the selection-clear effect (AZ change; level change), two for Escape priority (armed → disarms, `nav.up()` NOT called, verified via a spy; unarmed → falls through to `nav.up()` as before). Arms place-mode via `TrafficPanel`'s own "+ place on globe" toggle (`GlobeView`'s HUD button doesn't render in jsdom — no WebGL, `GlobeCards` fallback) |
+| Dead `ScopedConfigBody` region branch (T2) | **Left as-is, documented** — see the updated §T passage above (now covers the T8-final state: all three non-world branches are dead, not just region, and why it stays) |
+| Top-arc opacity 0.7 vs mock 0.65 (T2) | **Left as-is** — cosmetic, no functional/legibility impact, not touched |
+| FW `+ rule` stays enabled during scrub-only watching (T5) | **Left as-is, documented** — see the updated §W passage above |
+
+#### Gate
+
+Full suite green (868/868 — 861 baseline + 7 new: `TopologyPanel.test.tsx` +1, `FirewallDrawer
+.test.tsx` +1, `ServerFaceplate.test.tsx` +1, `WorldShell.test.tsx` +4), `npx tsc --noEmit` clean,
+`npm run build` green. Zero diffs under `src/lib/worldEngine/`; zero new store actions.
 
 ---
 

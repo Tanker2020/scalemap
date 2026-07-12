@@ -37,6 +37,10 @@ const ARC_SEGMENTS = 48
 const BLINK_PERIOD_S = 2   // spec D9's ratified place-mode ghost blink
 const PREVIEW_RPS = 500    // createPopulation's real default (factories.ts) — the card previews
                             // exactly what the click will place, not a made-up number.
+// WebGL material color (meshBasicMaterial/LineDashedMaterial can't consume a CSS custom
+// property — three.js Color parses real hex only), matching the globe's established
+// hardcoded-hex-for-scene-geometry precedent (RegionPins.tsx/ArcsLayer.tsx). Equal to kit.tsx's
+// own KIT_TEAL dark-theme value by design.
 const HUD_TEAL = '#2DD4BF'
 
 // Blinks visibility on a fixed 2s period (steps, not a fade — matches the mockup's
@@ -140,7 +144,13 @@ export function TrafficPlacementLayer({ placeMode }: TrafficPlacementLayerProps)
               {hasLanding && landingGeo && landingRegion ? (
                 <>
                   <b style={{ color: 'var(--color-text-primary)' }}>{city.name}</b> · would send{' '}
-                  <span style={{ color: HUD_TEAL }}>{PREVIEW_RPS} rps</span>
+                  {/* T8 light-theme audit fix: this Html-overlay card is a token-driven DOM
+                      surface (unlike the globe's WebGL geometry above/RegionPins' fixed-hex
+                      scene labels) — it already uses var(--color-*) for every other span, so
+                      the "rps" figure gets the theme-aware kit-teal token (same dark-theme
+                      value as HUD_TEAL) instead of a literal hex that read low-contrast on a
+                      light card. */}
+                  <span style={{ color: 'var(--kit-teal)' }}>{PREVIEW_RPS} rps</span>
                   <br />
                   → lands on <b style={{ color: 'var(--color-text-primary)' }}>{landingRegion.catalogId}</b> ·{' '}
                   {Math.round(greatCircleKm(city.lat, city.lon, landingGeo.lat, landingGeo.lon) / POP_LATENCY_KM_PER_MS)} ms ·{' '}

@@ -361,6 +361,20 @@ describe('ServerFaceplate — watching mode (T5, spec D7)', () => {
     expect(pulses[1].style.animationDuration).toBe('2.2s')
   })
 
+  // T8 fix (T5 carry-forward Minor): reduced-motion must hard-disable the pulse regardless of
+  // watching posture — the guard is reducedMotion-independent-of-watching by construction
+  // (`className={reducedMotion ? undefined : 'dockfp-vitals-pulse'}`), but no test exercised
+  // BOTH true at once until now.
+  it('reduced motion disables the pulse animation even while running/watching', () => {
+    mockUseReducedMotion.mockReturnValue(true)
+    const { serverId } = seedServer()
+    act(() => { useSimulationStore.setState({ running: true }) })
+    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    const pulse = screen.getByTestId('vitals-pulse')
+    expect(pulse).toHaveAttribute('data-live', 'true')
+    expect(pulse.className).toBe('')
+  })
+
   it('kill lights up (enabled, active styling) while running — remove… and +-controls stay locked', () => {
     const { serverId } = seedServerWithService()
     act(() => { useSimulationStore.setState({ running: true } ) })

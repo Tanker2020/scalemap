@@ -126,8 +126,11 @@ src/
                                     # RegionPins, PopulationMarkers, ArcsLayer engine-driven
                                     # traffic arcs) or GlobeCards fallback when WebGL is
                                     # unavailable
-      RegionView.tsx, region/       # Level 2: cross-AZ traffic columns, timeline strip, rack
-                                    # chassis (SplitLines, AzRow, CrossAzColumn)
+      RegionView.tsx, region/       # Level 2: cross-AZ traffic columns, failover timeline v2
+                                    # (swimlanes/bands/causality arrows — TimelineV2.tsx +
+                                    # timelineModel.ts, Polish 4 T6; replaced the old single-lane
+                                    # TimelineStrip.tsx, deleted), rack chassis (SplitLines,
+                                    # AzRow, CrossAzColumn)
       az/                           # Level 3: DOM/SVG isometric datacenter floor (DatacenterFloor
                                     # — WorldShell.tsx renders it directly, no separate top-level
                                     # AzView.tsx — RackCabinet, FreePoolPod, floorLayout, floorData)
@@ -137,8 +140,22 @@ src/
                                     # chips, HardwarePlatform, PacketLayer, InspectorRail
       SettingsModal.tsx             # ⚙ modal — Appearance (theme toggle) + AI Review (LLM
                                     # endpoint config)
-      panels/                       # WorldPanel dock tabs: Topology, Blueprints, Placements,
-                                    # Traffic, Analysis (+ AiReviewSection), Events, Cost
+      dock/                        # The contextual dock (Polish 4, right-hand WorldPanel body):
+                                    # scope.ts/scopeData.ts derive a world|region|az|server
+                                    # DockScope from nav + a lifted ui.store.selectedServerId
+                                    # (pure, no React/store imports — read only by WorldPanel.tsx
+                                    # and the instrument components below); ScopeRail (the "here"
+                                    # pill rail, identical at every scope); one signature
+                                    # instrument per scope — AtlasHeader (world+region
+                                    # constellation), FloorPlanHeader (az minimap,
+                                    # AzConfigTab), ServerFaceplate (+ drawers/: Hardware/
+                                    # Firewall/Services/Placement, one open at a time)
+      panels/                       # WorldPanel dock tabs — world scope only: Topology,
+                                    # Blueprints, Placements, Traffic, Analysis
+                                    # (+ AiReviewSection), Events, Cost. Region/AZ/server scope
+                                    # show a narrower Config/Analysis/Events/Cost set instead,
+                                    # with Config rendered by dock/'s instrument components above
+                                    # (see docs/module-boundaries.md §S-§V)
       fileOps.ts, Breadcrumb.tsx, SimControls.tsx, EventsTab.tsx, useCompiledWorld.ts
   lib/
     world/                        # Pure document model + compiler — the schema of .scalemap v2

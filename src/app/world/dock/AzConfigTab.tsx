@@ -14,7 +14,7 @@ import { rackUsedU } from '../../../lib/world/rackModel'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { serverAccents, meanUtilization } from '../az/floorData'
 import { healthWord } from '../ui/derived'
-import { computeWorldCost, HOURS_PER_MONTH } from '../../../lib/costModelV2'
+import { scopedCost } from './scopeData'
 import type { RackId, Server, ServerId } from '../../../lib/world/types'
 import type { HealthState } from '../../../lib/worldEngine/types'
 import './floorPlanStyles'
@@ -107,11 +107,12 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
     return best?.id ?? null
   }, [azServers, batch, running, reducedMotion])
 
-  const azCost = useMemo(() => {
-    const cost = computeWorldCost(doc, batch?.world ?? null)
-    const monthlyUsd = cost.byAz.find(a => a.azId === azId)?.monthlyUsd ?? 0
-    return { monthlyUsd, hourlyUsd: monthlyUsd / HOURS_PER_MONTH }
-  }, [doc, batch, azId])
+  // T8 fix (T3 carry-forward Minor): reads the SAME `scopedCost` helper FloorPlanHeader already
+  // uses for this AZ's headline, instead of re-deriving `computeWorldCost().byAz` inline —
+  // dedupes the two call sites and makes module-boundaries.md's "reads the SAME helper" claim
+  // true. `regionId` is only read by scopedCost's server branch, so `az?.regionId ?? ''` is safe
+  // here too (FloorPlanHeader's own precedent, scopeData.ts's az branch never touches it).
+  const azCost = scopedCost({ kind: 'az', regionId: az?.regionId ?? '', azId }, doc, batch?.world ?? null)
 
   // "+ rack" ghost (D5): hidden while running, same precedent as the floor's own ghost rack
   // (DatacenterFloor.tsx's `{ghostCell && !running && (...)}`).

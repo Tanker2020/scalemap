@@ -2,10 +2,18 @@
 // Polish 4 T4 (spec D6): the FIREWALL drawer body — numbered rule sentences built with the
 // board's EXISTING grammar helpers (`server/ruleSentence.ts`'s `ruleSourceWords`/
 // `rulePortPhrase` — imported, not re-derived, per the brief), `Let`/`Block` colored
-// success/danger (InspectorRail.tsx's exact rendering, `#DBEAFE` bold spans included). `+ rule`
-// appends `createServer`'s default rule shape (factories.ts) byte-for-byte via
-// `updateServer(id, { firewall: [...] })` — deep rule editing stays on the board (InspectorRail),
-// this drawer only appends/reads.
+// success/danger. `+ rule` appends `createServer`'s default rule shape (factories.ts)
+// byte-for-byte via `updateServer(id, { firewall: [...] })` — deep rule editing stays on the
+// board (InspectorRail), this drawer only appends/reads.
+//
+// T8 motion/theme audit fix: the source/port id spans originally copied InspectorRail.tsx's
+// exact hardcoded `#DBEAFE` (a light pastel blue calibrated for InspectorRail's OWN
+// always-dark scene background — see InspectorRail.tsx's "hardcoded dark scene ... regardless
+// of app theme" comment). This drawer's body is below-header dock chrome, not a scene — it
+// already sits on `var(--color-canvas)`, which flips to near-white in light theme, so the
+// literal hex read as near-invisible light-on-light text there. Swapped to `var(--kit-accent)`,
+// the SAME theme-aware id/hud accent every other dock surface already uses (AtlasHeader's ring,
+// ScopeRail's "here" pill) — legible in both themes, per D3/D11.
 //
 // Polish 4 T5 (spec D7): the BODY sentences are unchanged while watching — the frozen metrics
 // contract carries no per-rule or blocked-connection counter to re-voice them with, and the
@@ -31,7 +39,7 @@ export interface FirewallDrawerProps {
   running: boolean
 }
 
-const SENTENCE_ID_COLOR = '#DBEAFE'
+const SENTENCE_ID_COLOR = 'var(--kit-accent)'
 
 export function FirewallDrawer({ server, running }: FirewallDrawerProps): ReactElement {
   const addRule = () => {

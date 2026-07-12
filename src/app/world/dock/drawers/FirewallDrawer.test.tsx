@@ -77,4 +77,19 @@ describe('FirewallDrawer', () => {
     render(<FirewallDrawer server={currentServer(serverId)} running={false} />)
     expect(screen.getByText('edit rules on the board')).toBeTruthy()
   })
+
+  // T8 light-theme audit fix: the source/port id spans previously hardcoded InspectorRail's
+  // dark-scene-only `#DBEAFE`, which reads as near-invisible light-on-light text once this
+  // drawer's own `var(--color-canvas)` background flips to near-white in light theme. Locks the
+  // token swap so it can't regress back to a literal hex.
+  it('sentence id spans (source/port phrases) use the theme-aware --kit-accent token, not a hardcoded hex', () => {
+    const serverId = seedServer()
+    render(<FirewallDrawer server={currentServer(serverId)} running={false} />)
+    const row = screen.getByTestId('firewall-drawer-sentence')
+    const idSpans = Array.from(row.querySelectorAll('b')).filter(b => b.textContent !== 'Let' && b.textContent !== 'Block')
+    expect(idSpans.length).toBeGreaterThan(0)
+    for (const span of idSpans) {
+      expect((span as HTMLElement).style.color).toBe('var(--kit-accent)')
+    }
+  })
 })

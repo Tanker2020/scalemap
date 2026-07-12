@@ -38,7 +38,7 @@ describe('regionOrderFor / computeRouting parity', () => {
   })
 
   it('matches computeRouting order when a region is passive (partition still applied)', () => {
-    const { doc, useast, euwest } = threeRegionWorld()
+    const { doc, useast } = threeRegionWorld()
     doc.regions[useast.id] = { ...useast, role: 'passive' }
     const nyc = createPopulation('NYC users', 40.7, -74.0)
     doc.populations[nyc.id] = nyc
@@ -48,7 +48,6 @@ describe('regionOrderFor / computeRouting parity', () => {
       const { populationRegionOrder } = computeRouting(doc, {})
       expect(regionOrderFor(nyc, doc)).toEqual(populationRegionOrder[nyc.id])
     }
-    void euwest
   })
 
   it('accepts a bare {lat, lon} (e.g. a WorldCity) — not just a real ClientPopulation', () => {

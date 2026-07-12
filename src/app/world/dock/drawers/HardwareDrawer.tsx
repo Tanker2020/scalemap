@@ -80,37 +80,10 @@ function frozenFill(pct: number): CSSProperties {
 }
 
 export function HardwareDrawer({ server, doc, compiled, running, live }: HardwareDrawerProps): ReactElement {
-  const ladder = presetLadder(server.kind)
-  const index = currentLadderIndex(server, ladder)
-
-  const commit = (nextIndex: number) => {
-    const p = ladder[nextIndex]
-    if (!p) return
-    useWorldStore.getState().updateServer(server.id, {
-      catalogId: p.id, specs: { ...p.specs }, hourlyUsd: p.hourlyUsd,
-      oversubscriptionRatio: p.oversubscriptionRatio, burstable: p.burstable,
-    })
-  }
-
-  // Consequence hints (guided-console grammar, D6): both read the server's FIRST resident
-  // blueprint (by compiled instance) — the same "pick one representative workload" convention
-  // the brief specifies for the vCPU hint, carried to RAM's per-connection size too.
-  const firstInstance = Object.values(compiled.instances).find(i => i.serverId === server.id)
-  const firstBlueprint = firstInstance ? doc.blueprints[firstInstance.blueprintId] : null
-
-  const vcpuHintText = firstBlueprint
-    ? `sustains ~${Math.round(hostRpsCapacity(server.specs.vcpu, firstBlueprint.workload.cpuMsPerRequest)).toLocaleString('en-US')} rps of ${firstBlueprint.name} at ${firstBlueprint.workload.cpuMsPerRequest} ms/query`
-    : null
-
-  const residentMb = residentRamDemandMb(server.id, doc, compiled)
-  const ramPerConnMb = firstBlueprint?.workload.ramPerConnMb ?? 0
-  const headroomConns = Math.max(0, Math.round((server.specs.ramMb - residentMb) / ramPerConnMb))
-  const ramHintText = ramPerConnMb > 0
-    ? `headroom for ~${headroomConns.toLocaleString('en-US')} connection${headroomConns === 1 ? '' : 's'} at ${ramPerConnMb} MB each`
-    : null
-
-  const disabled = running || ladder.length === 0
-
+  // T8 fix (T5 carry-forward Minor): the live (watching) branch never reads the ladder/knob/
+  // consequence-hint computations below — they're authoring-only. Checking `live` FIRST means a
+  // watching render (the common case while running, or scrubbing) does none of that work; it
+  // used to be computed unconditionally above this branch and simply discarded.
   if (live) {
     const cpuPct = Math.round(Math.min(1, Math.max(0, live.cpuFraction)) * 100)
     const ramPct = Math.round(Math.min(1, Math.max(0, live.ramFraction)) * 100)
@@ -143,6 +116,37 @@ export function HardwareDrawer({ server, doc, compiled, running, live }: Hardwar
       </div>
     )
   }
+
+  const ladder = presetLadder(server.kind)
+  const index = currentLadderIndex(server, ladder)
+
+  const commit = (nextIndex: number) => {
+    const p = ladder[nextIndex]
+    if (!p) return
+    useWorldStore.getState().updateServer(server.id, {
+      catalogId: p.id, specs: { ...p.specs }, hourlyUsd: p.hourlyUsd,
+      oversubscriptionRatio: p.oversubscriptionRatio, burstable: p.burstable,
+    })
+  }
+
+  // Consequence hints (guided-console grammar, D6): both read the server's FIRST resident
+  // blueprint (by compiled instance) — the same "pick one representative workload" convention
+  // the brief specifies for the vCPU hint, carried to RAM's per-connection size too.
+  const firstInstance = Object.values(compiled.instances).find(i => i.serverId === server.id)
+  const firstBlueprint = firstInstance ? doc.blueprints[firstInstance.blueprintId] : null
+
+  const vcpuHintText = firstBlueprint
+    ? `sustains ~${Math.round(hostRpsCapacity(server.specs.vcpu, firstBlueprint.workload.cpuMsPerRequest)).toLocaleString('en-US')} rps of ${firstBlueprint.name} at ${firstBlueprint.workload.cpuMsPerRequest} ms/query`
+    : null
+
+  const residentMb = residentRamDemandMb(server.id, doc, compiled)
+  const ramPerConnMb = firstBlueprint?.workload.ramPerConnMb ?? 0
+  const headroomConns = Math.max(0, Math.round((server.specs.ramMb - residentMb) / ramPerConnMb))
+  const ramHintText = ramPerConnMb > 0
+    ? `headroom for ~${headroomConns.toLocaleString('en-US')} connection${headroomConns === 1 ? '' : 's'} at ${ramPerConnMb} MB each`
+    : null
+
+  const disabled = running || ladder.length === 0
 
   return (
     <div data-testid="hardware-drawer-body">

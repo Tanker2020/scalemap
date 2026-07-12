@@ -147,4 +147,20 @@ describe('TopologyPanel — instrument restyle', () => {
     fireEvent.click(screen.getByLabelText('choose server preset'))     // opens the grid
     expect(screen.getByText('$0.036/hr')).toHaveStyle({ color: 'var(--color-price)' })
   })
+
+  // T8 motion audit (spec D3, one-ambient-stroke-per-dock): server rows must never carry the
+  // ripple animation, even with a healthy status while running — same law, same fix already
+  // applied to RegionConfigTab's AZ rows in T2 (485ea33). TopologyPanel is the world-scope
+  // Config tab body; its one permitted ambient stroke is the atlas's marching top arc, not a
+  // per-row ripple on every healthy server.
+  it('server row status dots never carry the ripple animation, even with a healthy status while running (D3: one ambient stroke per dock)', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useSimulationStore.setState({ running: true, latestBatch: serverBatch(serverId, regionId) })
+    render(<TopologyPanel />)
+    const dot = screen.getByTestId('kit-dot')
+    expect(dot.className).not.toMatch(/kit-ripple/)
+    useSimulationStore.setState({ running: false, latestBatch: null })
+  })
 })

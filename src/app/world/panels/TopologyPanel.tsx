@@ -192,7 +192,6 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
   const doc = useWorldStore(s => s.doc)
   const az = doc.azs[server.azId]
   const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
-  const running = useSimulationStore(s => s.running)
   const metrics = displayBatch?.servers[server.id]
 
   const upd = (patch: Partial<Server>) => store.updateServer(server.id, patch)
@@ -210,7 +209,12 @@ function ServerRow({ server, expanded, onToggle }: { server: Server; expanded: b
       <EdgeRow
         status={health}
         edgeColor={edgeColor}
-        ripple={running}
+        // No ripple here (T8 motion audit, spec D3): the dock gets exactly ONE ambient stroke
+        // per scope — at world scope that's the atlas's marching top arc — and every other
+        // element (including this server row's health dot) is hover-reactive only.
+        // `kit-ripple` animates continuously, not hover-gated, so a running sim with N healthy
+        // servers previously showed N simultaneous ripples alongside the atlas arc. This
+        // mirrors the same fix already applied to RegionConfigTab's AZ rows in T2 (485ea33).
         trailing={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {metrics && <MicroBars cpu={cpuMean} ram={ramFrac} io={metrics.diskIoFraction} />}
