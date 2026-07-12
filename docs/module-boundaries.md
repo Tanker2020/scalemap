@@ -1034,6 +1034,114 @@ surfaced through `az/DatacenterFloor.tsx`'s toolbar and `InspectorV2.tsx`'s new 
 
 ---
 
+### S. Polish 4 Task 1 — contextual dock foundation (`src/app/world/dock/`, 2026-07-11)
+
+The first task of Polish 4 (spec `docs/superpowers/specs/2026-07-11-polish4-contextual-dock-design.md`,
+§D1/D2): the right-hand dock now scopes itself to nav + a lifted floor selection instead of
+always showing the full world tree. This task built the **foundation** only — the derived scope
+model, the selection lift, the shared scope rail, and the dock shell's tab-set switch — not the
+three per-scope instrument bodies (atlas/floor-plan/faceplate), which are Tasks 2-4.
+
+**New module: `src/app/world/dock/`** — mirrors `region/`'s and `az/`'s existing "one folder per
+level-specific concern" pattern, but this one is cross-level (it's read by `WorldPanel.tsx`
+regardless of which level the user is on). Everyone building a Polish-4 dock surface (T2's
+`AtlasHeader`/`RegionConfigTab`, T3's `FloorPlanHeader`/`AzConfigTab`, T4's `ServerFaceplate`/
+drawers) lands their new files here too — this is now the module boundary for "dock scope"
+work, separate from `region/`/`az/`/`server/`'s existing "per-level view" boundaries.
+
+- `scope.ts` — **pure, no React, no store imports** (only type-only imports of `WorldLevel`
+  from `nav.store.ts` and `PanelTab` from `ui.store.ts`, both erased at build time — the file's
+  RUNTIME footprint stays zero-dependency, which is what keeps it node-env testable). Exports
+  `DockScope` (the `'world' | 'region' | 'az' | 'server'` discriminated union, verbatim from the
+  brief), `NavSnapshot`, `deriveScope(nav, selectedServerId, doc)` (D1's ladder: server nav level
+  wins outright; az level + a selection that still exists AND belongs to this az narrows to
+  server; az level alone; region level; else world — stale/foreign selections are silently
+  ignored, never crashed on), and `scopeTabs(scope)` (world → the 7 existing tab ids; anything
+  narrower → `['config','analysis','events','cost']`, a fresh array each call).
+- `scopeData.ts` — also pure, same import discipline. `scopeEntityIds(scope, doc, compiled)`
+  returns the scope's entity closure as a `Set<string>`, or **`null` at world scope as an
+  explicit "no filter, everything" sentinel** — a deliberate, documented deviation from the
+  brief's literal `Set<string>` signature (its own comment described the null-sentinel
+  behavior the type didn't allow; the brief's ambiguity-resolution notes explicitly sanctioned
+  picking a representation and documenting it). The closure is literally D2's wording — region →
+  its AZs/servers/instances; az → itself + its servers + their instances; server → itself + its
+  instances — and deliberately does NOT walk managed-service/blueprint/population ids into the
+  closure even though a few `AnalysisFinding`/`CompileFinding.affected` arrays carry those bare;
+  a finding whose only affected id is e.g. a managed-service id won't surface at any narrow scope
+  yet (documented gap, matches the brief's literal wording rather than inventing broader scope).
+  `scopedEvents` delegates region scope to the EXISTING `region/regionData.ts`'s `regionEvents`
+  byte-for-byte (per the brief's explicit "do not fork its logic" instruction) and generalizes
+  the same "affected intersects the closure" shape for az/server via `scopeEntityIds`.
+  `scopedFindings`/`scopedCost` follow the same world-is-a-pass-through, narrower-is-a-real-filter
+  shape; `scopedCost`'s server branch is the one hardcoded case (`hourlyUsd = server.hourlyUsd`,
+  `egressNote = 'egress is attributed at the AZ level'`) per the brief's ambiguity resolution —
+  region/AZ read `computeWorldCost().byRegion`/`byAz` (`egressNote: null`, since that function has
+  no per-region/per-az egress breakdown to begin with, only a world total).
+- `ScopeRail.tsx` — the one component (not pure — reads `world`/`nav`/`ui` stores directly and
+  dispatches their EXISTING actions, same relocated-dispatch discipline as every other Polish-3/4
+  restyle) shared identically by all three future instruments. `data-testid="scope-rail"`,
+  `aria-label="dock scope"`; pills carry `data-testid="scope-pill-<world|region|az|server>"`. The
+  lit "here" pill (the mock's `.scopeseg.here`) rides `--kit-accent`/`--kit-accent-dim`
+  (`ui/kit.tsx`'s already-injected, already-theme-aware token pair — dark value `#7CFFE9`/
+  `#2DD4BF44` is a byte-for-byte match for the mock's locked `--hud`/`--hud-dim`, with a
+  WCAG-checked light-mode swap already defined) rather than a new hardcoded hex — this is why
+  `WorldPanel.tsx` (which already imports `ui/kit.tsx` for `ChipValue`) doesn't need a new style
+  injection for the rail to render correctly in both themes. Az-pill click implements D1's exact
+  conditional: `nav.level === 'az'` → `setSelectedServerId(null)` (widen without navigating,
+  covers the case where scope narrowed to 'server' purely via a floor selection); otherwise →
+  `goAz(regionId, azId)` (a real climb-up, covers the case where nav is literally on the server
+  board). Live-verified via the running app (Playwright against `npm run dev`): selecting a floor
+  pod narrows the rail to 4 pills WITHOUT touching the header `Breadcrumb` or `nav.level`, and the
+  same `ui.store.selectedServerId` drives both the rail AND the pre-existing `InspectorV2`
+  "selected server" card simultaneously — the "select there, configure here" unification works
+  end-to-end, not just in jsdom.
+
+**`src/app/store/ui.store.ts`** gained exactly what D1/the brief specified — `selectedServerId:
+ServerId | null` (initial `null`) + `setSelectedServerId` — and `PanelTab` gained `'config'`. See
+the updated hub-file entry below (§2) for the full field list.
+
+**`src/app/world/az/DatacenterFloor.tsx`**: the local `selectedServerId` `useState` (previously
+reset on its own `azId`-keyed `useEffect`) is now `useUiStore(s => s.selectedServerId)` +
+`useUiStore(s => s.setSelectedServerId)` — no other prop threading to `RackCabinet`/
+`FreePoolPod`/`InspectorV2` changed. The old local clearing effect was DELETED, not kept
+alongside the new one: it was already a same-mount no-op even before this task (this component
+remounts on any `azId` change anyway, via `WorldShell.tsx`'s `viewKey`-keyed `AnimatePresence`,
+so a fresh `useState(null)` already covered it) and now that the state is a shared store field
+that survives remounts, the responsibility for clearing it correctly moved to...
+
+**`src/app/world/WorldShell.tsx`**: gained one `useEffect(() => { useUiStore.getState()
+.setSelectedServerId(null) }, [nav.level, nav.azId])`, alongside the existing place-mode-disarm
+effect. This is the ONLY place a selection gets cleared now — covering every nav transition in
+or out of an AZ (entering a different AZ, drilling into a server board, climbing back out,
+jumping to a different region), not just the AZ-local case the old effect covered. Without it, a
+stale selection from a previously-visited AZ could silently revive itself (and narrow the dock's
+scope) on a later return visit to that same AZ, since store state — unlike component state —
+doesn't reset on remount.
+
+**`src/app/world/panels/WorldPanel.tsx`** (already a de-facto hub — every authoring panel/tab
+component is a descendant): derives `scope` via `deriveScope` (selective `useNavStore(s => s.X)`
+primitive subscriptions + `useUiStore(s => s.selectedServerId)`, memoized), renders `<ScopeRail
+scope={scope} />` as the dock's first child (above the existing `WorldSummary` strip — left
+UNCONDITIONALLY rendered at every scope for this task; Task 2's brief explicitly owns replacing
+it with `AtlasHeader`, so a narrow-scope dock temporarily still shows world-wide "handling N rps"
+copy above the scope-correct tab body — a known, intentionally-deferred rough edge, not an
+oversight), and switches the tab-bar's id set via `scopeTabs(scope)`. Tab persistence (D2): a
+`useLayoutEffect` keyed on `scope` alone (mirrors this file's own `placeInk` `useLayoutEffect`
+precedent, and `DatacenterFloor.tsx`'s `currentIdsKey`-only-dependency precedent) resets `tab` to
+the new scope's first id only when the current one doesn't exist there. World scope's rendering
+path (all 7 tabs, `TopologyPanel`/`BlueprintPanel`/`PlacementPanel`/`TrafficPanel`/`AnalysisTab`/
+`EventsTab`/`CostTab`, the per-tab `SignatureHeader` switch) is **byte-identical in behavior** to
+pre-Task-1 — `scopedFindings`/`scopedEvents`/`scopedCost` are provable pass-throughs at world
+scope (same references, same computed values), so the Analysis tab-bar badge and every world-tab
+`SignatureHeader` summary read the same numbers they always did. Non-world scope renders four new
+file-local (not exported, not in their own files — small enough to keep beside their one caller,
+same judgment call `WorldSummary` itself already made) components: `ScopedConfigBody` (the
+brief's placeholder — T2/T3/T4 replace this per scope), `ScopedAnalysisBody`/`ScopedEventsBody`/
+`ScopedCostBody` (real, wired to the scopeData helpers above — nothing later replaces these
+three, they're final for this phase, not placeholders).
+
+---
+
 ## 2. Shared "hub" files (everyone touches these — high conflict risk)
 
 These aren't feature modules; they're registries other code plugs into. The fix
@@ -1046,7 +1154,7 @@ in-flight changes.
 | `src/lib/nodeConfig.ts` (~380 lines) | `NODE_CONFIG` registry — every node type's icon/category/label | **31 files import it** — the single largest fan-in in the repo (fan-in unaffected by Task 17: `nodeConfig.ts` is a survivor, its historical fan-in included legacy files that are now gone, so the *current* count is lower than 31 — worth re-verifying with `grep -rln "from '.*nodeConfig'" src` next time this file is touched rather than trusting the stale number). `NodeSimConfig` gained two append-only optional fields (`consistencyLevel`, `replicationLagMs`, GitHub #12). **2026-07-05:** added `FORWARD_ONLY_NODE_TYPES` (`loadBalancer`/`dns`/`firewall`/`vpn`) and `canDefineOutboundThroughput(sourceType)`, consumed by the now-deleted `PropertiesPanel.tsx`/`particleEngine.ts` (§A/§B) — these two exports and the header comments referencing `particleEngine.ts` (lines ~31/141/148) are dead code/dangling-but-historical comments post-Task-17, left in place deliberately rather than edited (same "porting provenance" reasoning as `worldEngine/breakers.ts`, §B) since `nodeConfig.ts` wasn't itself on Task 17's deletion or modify list. |
 | `src/lib/theme.ts` (120 lines) | `ColorTokens`/`DARK_COLORS`/`LIGHT_COLORS`/`CATEGORY_COLORS`/`FONT_*`/`SPACING`/`MOTION` — small file, but touched by any node/edge visual change. Only the 16 `ColorTokens` keys (`canvas`, `canvasDots`, `nodeBase`, `nodeBorder`, `surface`, `surfaceHover`, `toolbar`, `toolbarBorder`, `textPrimary`, `textSecondary`, `textMuted`, `danger`, `success`, `successText`, `warning`, `accent`) are exposed as `--color-*` CSS custom properties by `App.tsx`'s `useThemeBootstrap` and mirrored in `src/index.css`'s static `:root` fallback. `CATEGORY_COLORS` (messaging/network/storage/etc per-category accents) is **not** exposed to CSS — only consumed directly in `.tsx` via inline styles (`BaseNode.tsx`/`GroupNode.tsx`, both deleted 2026-07-08, §A). **2026-07-02 bug-fix sweep migrated every remaining panel CSS module** (SimConfigPanel, PacketEditor, EventLogPanel, ReportsPanel, PropertiesPanel, MetricGraphOverlay, RequestInspector, DiagnosticsPanel, PlaybackScrubber, MetricsDrawer, CostTracker, HomeScreen, ContextMenu, NodePalette, StatusBar, BaseNode/GroupNode leftover fallbacks, Canvas.module.css, edges.module.css — ~545 hardcoded hex values total) to `var(--color-*)`/`color-mix()` — **historical note: every file in that list except `HomeScreen` was deleted 2026-07-08 (Phase 2 Task 17, §A/§B/§D/§E/§F/§H/§I)**; kept here as a record of the token-migration effort, not as a current file inventory. `theme.ts` itself, `HomeScreen.module.css`, and `src/app/world/`'s CSS are the surfaces that still matter today. | `HomeScreen.tsx`, `src/app/world/**` |
 | `src/index.css` | `:root` holds a **static copy of `DARK_COLORS`/`FONT_*`/`SPACING`/`MOTION`** (closes a first-paint FOUC gap — every `var(--color-*)` reference would otherwise be undefined until `App.tsx`'s `useThemeBootstrap` `useEffect` runs post-first-paint). This is a values-only fallback, not a second source of truth — if `theme.ts`'s `DARK_COLORS`/`FONT_*`/`SPACING`/`MOTION` change, update this block to match (nothing enforces the two staying in sync) | Every CSS module transitively (first paint only — overridden by the bootstrap effect on mount) |
-| `src/app/store/ui.store.ts` | **Trimmed 2026-07-08 (Phase 2 Task 17) to `themeMode: 'dark' \| 'light'` + `setThemeMode` only** — every other field (`activeTool`, `leftSidebarOpen`/`rightSidebarOpen`/`rightTab`, `selectedNodeId`/`selectedEdgeId`, `gridEnabled`, `connectSourceId`, `contextMenu`, `simConfigOpen`/`simConfigPanelNodeId`, `dockOpen`/`dockTab`, `packetEditorOpen`, `highlightedNodeIds`) was read only by the legacy canvas/simulation/sidebar/toolbar/dock UI deleted the same task (§A/§B/§D/§E/§F/§H/§I) — grep-verified zero remaining readers before trimming. Drives the runtime CSS custom-property bootstrap in `App.tsx` that every panel's CSS module reads via `var(--color-*)`; persisted to `localStorage` (`scalemap-theme-mode`). `App.tsx` is now the **only** file reading this store (`themeMode`, to bootstrap the CSS vars) — there is currently no UI control to call `setThemeMode` (the old toggle lived in the deleted `Toolbar.tsx`); a future task should add one to `WorldShell.tsx`'s header. If a future phase wants a "focus this node" pulse, a floating-panel-open registry, etc., re-add the specific field then rather than resurrecting the old multi-concern shape. **2026-07-10 (Polish 1 Task 6 — examples vault, §P):** gained a SECOND, unrelated field — `pendingPanelTab: PanelTab \| null` (initial `null`) + `setPendingPanelTab` — additive, `themeMode`'s contract untouched. `PanelTab` (`'topology'\|'blueprints'\|'placements'\|'traffic'\|'analysis'\|'events'\|'cost'`) is exported from here now, not from `WorldPanel.tsx` (view→store type import). One-shot signal: `HomeScreen.tsx`'s `openExample` sets it to `'analysis'` only for the teaching vault card, `WorldPanel.tsx` reads it once in a `useState` initializer and clears it in a mount effect | `App.tsx` (`themeMode`), `HomeScreen.tsx` + `WorldPanel.tsx` (`pendingPanelTab`) |
+| `src/app/store/ui.store.ts` | **Trimmed 2026-07-08 (Phase 2 Task 17) to `themeMode: 'dark' \| 'light'` + `setThemeMode` only** — every other field (`activeTool`, `leftSidebarOpen`/`rightSidebarOpen`/`rightTab`, `selectedNodeId`/`selectedEdgeId`, `gridEnabled`, `connectSourceId`, `contextMenu`, `simConfigOpen`/`simConfigPanelNodeId`, `dockOpen`/`dockTab`, `packetEditorOpen`, `highlightedNodeIds`) was read only by the legacy canvas/simulation/sidebar/toolbar/dock UI deleted the same task (§A/§B/§D/§E/§F/§H/§I) — grep-verified zero remaining readers before trimming. Drives the runtime CSS custom-property bootstrap in `App.tsx` that every panel's CSS module reads via `var(--color-*)`; persisted to `localStorage` (`scalemap-theme-mode`). `App.tsx` is now the **only** file reading this store (`themeMode`, to bootstrap the CSS vars) — there is currently no UI control to call `setThemeMode` (the old toggle lived in the deleted `Toolbar.tsx`); a future task should add one to `WorldShell.tsx`'s header. If a future phase wants a "focus this node" pulse, a floating-panel-open registry, etc., re-add the specific field then rather than resurrecting the old multi-concern shape. **2026-07-10 (Polish 1 Task 6 — examples vault, §P):** gained a SECOND, unrelated field — `pendingPanelTab: PanelTab \| null` (initial `null`) + `setPendingPanelTab` — additive, `themeMode`'s contract untouched. `PanelTab` (`'topology'\|'blueprints'\|'placements'\|'traffic'\|'analysis'\|'events'\|'cost'`) is exported from here now, not from `WorldPanel.tsx` (view→store type import). One-shot signal: `HomeScreen.tsx`'s `openExample` sets it to `'analysis'` only for the teaching vault card, `WorldPanel.tsx` reads it once in a `useState` initializer and clears it in a mount effect. **2026-07-11 (Polish 4 Task 1 — contextual dock, §S):** gained a THIRD, unrelated field — `selectedServerId: ServerId \| null` (initial `null`) + `setSelectedServerId` — the AZ floor's (`az/DatacenterFloor.tsx`) selection, lifted out of local `useState` so the dock's derived scope (`app/world/dock/scope.ts`) and the floor's own highlight read the SAME value; cleared by one shared `WorldShell.tsx` effect on any `nav.level`/`nav.azId` change, not by the floor itself anymore. `PanelTab` gained an 8th member, `'config'` (the non-world scopes' shared entity-config tab id) | `App.tsx` (`themeMode`), `HomeScreen.tsx` + `WorldPanel.tsx` (`pendingPanelTab`), `DatacenterFloor.tsx` + `WorldShell.tsx` + `WorldPanel.tsx` + `dock/ScopeRail.tsx` (`selectedServerId`) |
 | `src/app/store/simulation.store.ts` | **The only simulation store since 2026-07-08 (Phase 2 Task 17 deleted its legacy sibling, `simulationLegacy.store.ts`, §K).** Rewritten in Task 12 as the v2 world-engine store — `MetricsBatch`/`EngineEvent`/render-scope shape from `worldEngine/types.ts`. Consumers: `SimControls.tsx`, `EventsTab.tsx`, `WorldShell.tsx`, `GlobeView.tsx`/`RegionView.tsx`, `AzCanvas.tsx`, `ScrubberV2.tsx`, `InspectorV2.tsx`, `CostTab.tsx` (§J) | `src/app/world/**` (see §J's per-file Task 13/15/16 notes) |
 
 **Convention to adopt:** when adding a new node type, only add to `NODE_CONFIG` (one new key) — don't reorder existing keys or reformat the file. Same for `NODE_SIM_DEFAULTS`. Append-only registries plus small, frequent PRs are what actually reduce conflicts here — restructuring these files is the thing to schedule as its own solo PR.

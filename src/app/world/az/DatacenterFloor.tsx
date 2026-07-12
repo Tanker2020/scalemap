@@ -4,13 +4,17 @@
 // runs `layoutFloor`/`aggregateFlows` (both pure, `floorLayout.ts`/`floorData.ts`), and renders
 // tiles + one `RackCabinet` per rack + one `FreePoolPod` per unracked server + a small appliance
 // box per in-scope managed service, flow traces between them, and the toolbar (`+ server`/
-// `+ rack`/`auto-arrange`, T2's rack actions). Owns `selectedServerId` (tap-to-select) and a
-// seen-ids ref driving the boot-cascade animation for newly-added servers.
+// `+ rack`/`auto-arrange`, T2's rack actions). `selectedServerId` (tap-to-select) is Polish 4
+// T1-lifted into `ui.store` (spec D1) — "floor selection and dock scope are the SAME state";
+// this component reads/writes the shared field instead of owning local state, so WorldPanel's
+// scope derivation sees the same selection live. Also owns a seen-ids ref driving the
+// boot-cascade animation for newly-added servers.
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore } from '../../store/simulation.store'
+import { useUiStore } from '../../store/ui.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { layoutFloor } from './floorLayout'
 import { aggregateFlows, meanUtilization } from './floorData'
@@ -63,8 +67,11 @@ export function DatacenterFloor() {
   const { regionId, azId, goServer } = useNavStore()
   const reducedMotion = useReducedMotion() ?? false
 
-  const [selectedServerId, setSelectedServerId] = useState<ServerId | null>(null)
-  useEffect(() => { setSelectedServerId(null) }, [azId])
+  // Lifted to ui.store (Polish 4 T1, spec D1) — WorldShell.tsx now owns clearing this on any
+  // nav.level/nav.azId change (one shared effect covering every nav path in and out of the
+  // floor, superseding this component's old azId-keyed local reset).
+  const selectedServerId = useUiStore(s => s.selectedServerId)
+  const setSelectedServerId = useUiStore(s => s.setSelectedServerId)
 
   const [newIds, setNewIds] = useState<ReadonlySet<ServerId>>(new Set())
   const seenIdsRef = useRef<Set<ServerId> | null>(null)

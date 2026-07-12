@@ -9,9 +9,15 @@
 // 2026-07-10 (Polish 2 Task 3): gained `sceneOverlay` — the single open in-scene overlay card
 // (region pin or population marker tap), read by the globe layers and cleared on Escape/
 // click-away/unmount. Additive; nothing above touched.
+// 2026-07-11 (Polish 4 Task 1, spec D1): gained `selectedServerId` + `setSelectedServerId` —
+// LIFTS the AZ floor's (`DatacenterFloor.tsx`) formerly-local `selectedServerId` useState into
+// shared state, so "floor selection and dock scope are the SAME state: select there, configure
+// here." `PanelTab` gained `'config'` (the non-world scopes' shared entity-config tab; see
+// `app/world/dock/scope.ts`'s `scopeTabs`). Nothing else changed.
 import { create } from 'zustand'
+import type { ServerId } from '../../lib/world/types'
 
-export type PanelTab = 'topology' | 'blueprints' | 'placements' | 'traffic' | 'analysis' | 'events' | 'cost'
+export type PanelTab = 'topology' | 'blueprints' | 'placements' | 'traffic' | 'analysis' | 'events' | 'cost' | 'config'
 
 export interface SceneOverlayTarget { kind: 'region' | 'population'; id: string }
 
@@ -22,6 +28,8 @@ interface UiStore {
   setPendingPanelTab: (tab: PanelTab | null) => void
   sceneOverlay: SceneOverlayTarget | null
   setSceneOverlay: (o: SceneOverlayTarget | null) => void
+  selectedServerId: ServerId | null
+  setSelectedServerId: (id: ServerId | null) => void
 }
 
 export const useUiStore = create<UiStore>((set) => ({
@@ -34,4 +42,6 @@ export const useUiStore = create<UiStore>((set) => ({
   setPendingPanelTab: (tab) => set({ pendingPanelTab: tab }),
   sceneOverlay: null,
   setSceneOverlay: (o) => set({ sceneOverlay: o }),
+  selectedServerId: null,
+  setSelectedServerId: (id) => set({ selectedServerId: id }),
 }))

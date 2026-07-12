@@ -3,12 +3,21 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, within } from '@testing-library/react'
 import { WorldPanel } from './WorldPanel'
 import { useWorldStore } from '../../store/world.store'
+import { useNavStore } from '../../store/nav.store'
 import { useUiStore } from '../../store/ui.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import type { MetricsBatch } from '../../../lib/worldEngine/types'
 
-beforeEach(() => useWorldStore.getState().newWorld())
+beforeEach(() => {
+  useWorldStore.getState().newWorld()
+  // Additive reset (Polish 4 T1): WorldPanel now also reads nav + the lifted floor selection to
+  // derive scope. Every pre-existing test below implicitly assumes world scope (globe level,
+  // no selection) — this keeps that assumption true regardless of test order, without changing
+  // a single existing assertion.
+  useNavStore.setState({ level: 'globe', regionId: null, azId: null, serverId: null })
+  useUiStore.setState({ selectedServerId: null })
+})
 
 describe('WorldPanel findings tab', () => {
   it('shows the stateful-without-volume finding for a stateful blueprint with no volume', () => {
@@ -156,5 +165,96 @@ describe('WorldPanel signature headers (Polish 3 T7)', () => {
     // cascade only for form controls — but the header must not be a fieldset descendant at all
     // per the brief ("never grays a header out"). Assert it sits outside any fieldset.
     expect(header.closest('fieldset')).toBeNull()
+  })
+})
+
+describe('WorldPanel scope (Polish 4 T1)', () => {
+  it('always renders the scope rail, even at world scope', () => {
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    expect(screen.getByTestId('scope-rail')).toBeInTheDocument()
+    expect(screen.getByTestId('scope-pill-world')).toBeInTheDocument()
+  })
+
+  it('world scope keeps all seven existing tabs', () => {
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    for (const label of ['Topology', 'Blueprints', 'Placements', 'Traffic', 'Analysis', 'Events', 'Cost']) {
+      expect(screen.getByText(label)).toBeInTheDocument()
+    }
+    expect(screen.queryByText('Config')).not.toBeInTheDocument()
+  })
+
+  it('region scope narrows the tab bar to Config/Analysis/Events/Cost and lands on Config', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useNavStore.getState().goRegion(regionId)
+
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+
+    expect(screen.getByText('Config')).toBeInTheDocument()
+    expect(screen.queryByText('Topology')).not.toBeInTheDocument()
+    expect(screen.queryByText('Blueprints')).not.toBeInTheDocument()
+    expect(screen.queryByText('Placements')).not.toBeInTheDocument()
+    expect(screen.queryByText('Traffic')).not.toBeInTheDocument()
+    // Tab persistence (D2): the world default ('topology') doesn't exist at region scope, so it
+    // falls back to the new scope's first tab, Config — its placeholder body should render.
+    expect(screen.getByTestId('config-placeholder')).toHaveTextContent('region')
+    expect(screen.getByTestId('config-placeholder')).toHaveTextContent('us-east-1')
+  })
+
+  it('keeps a tab id shared across scopes (Analysis) instead of resetting to Config on a scope change', () => {
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    fireEvent.click(screen.getByText('Analysis'))
+    expect(screen.getByText('No findings — the compiled world is clean.')).toBeInTheDocument()
+
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    act(() => useNavStore.getState().goRegion(regionId))
+
+    // Still on Analysis (valid at region scope too) — must NOT have been bounced to Config.
+    expect(screen.queryByTestId('config-placeholder')).not.toBeInTheDocument()
+    expect(screen.getByText('No findings in this scope.')).toBeInTheDocument()
+  })
+
+  it('the Analysis badge reflects the SCOPED count, not the world total', () => {
+    const regionA = useWorldStore.getState().addRegion('us-east-1')
+    const azA = useWorldStore.getState().addAz(regionA, 'us-east-1a')
+    const serverA = useWorldStore.getState().addServer(azA, getPreset('vps-medium')!)
+    const bp = useWorldStore.getState().addBlueprint('api')
+    useWorldStore.getState().updateBlueprint(bp, { stateful: true, volumeName: null })
+    useWorldStore.getState().addPlacement(bp, serverA)
+    const regionB = useWorldStore.getState().addRegion('eu-west-1')   // clean — no findings
+
+    useNavStore.getState().goRegion(regionB)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+
+    fireEvent.click(screen.getByText('Analysis'))
+    expect(screen.getByText('No findings in this scope.')).toBeInTheDocument()
+  })
+
+  it('az scope: selecting a server (ui.store) narrows further to server scope, four-pill rail', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useWorldStore.getState().updateServer(serverId, { label: 'db-replica' })
+    useNavStore.getState().goAz(regionId, azId)
+
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    expect(screen.queryByTestId('scope-pill-server')).not.toBeInTheDocument()
+
+    act(() => useUiStore.getState().setSelectedServerId(serverId))
+
+    expect(screen.getByTestId('scope-pill-server')).toHaveTextContent('db-replica')
+    expect(screen.getByTestId('config-placeholder')).toHaveTextContent('db-replica')
+  })
+
+  it('server scope Cost tab shows compute cost plus the documented egress caveat', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useNavStore.getState().goServer(regionId, azId, serverId)
+
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    fireEvent.click(screen.getByText('Cost'))
+
+    expect(screen.getByTestId('scoped-cost')).toBeInTheDocument()
+    expect(screen.getByText('egress is attributed at the AZ level')).toBeInTheDocument()
   })
 })

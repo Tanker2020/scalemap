@@ -7,6 +7,7 @@ import { useNavStore } from '../store/nav.store'
 import { useFileStore } from '../store/file.store'
 import { useWorldStore } from '../store/world.store'
 import { useSimulationStore } from '../store/simulation.store'
+import { useUiStore } from '../store/ui.store'
 import { Breadcrumb } from './Breadcrumb'
 import { SimControls } from './SimControls'
 import { ScrubberV2 } from './ScrubberV2'
@@ -44,6 +45,17 @@ export function WorldShell() {
   useEffect(() => {
     if (nav.level !== 'globe' && placeMode) setPlaceMode(false)
   }, [nav.level, placeMode])
+
+  // Selection lifecycle (Polish 4 Task 1, spec D1): the floor's tap-to-select now lives in
+  // ui.store (lifted off DatacenterFloor's own local state) so "select there, configure here"
+  // — the dock's scope narrows off the SAME field. That means it no longer auto-resets on
+  // remount, so this is the one place that clears it on ANY nav.level/nav.azId change (entering
+  // a different AZ, drilling into a server board, climbing back out, jumping to a different
+  // region entirely) — without it, a stale selection from a previously-visited AZ could revive
+  // itself (and silently narrow the dock's scope) on a later return visit to that same AZ.
+  useEffect(() => {
+    useUiStore.getState().setSelectedServerId(null)
+  }, [nav.level, nav.azId])
 
   useEffect(() => {
     if (!import.meta.env.DEV) return
