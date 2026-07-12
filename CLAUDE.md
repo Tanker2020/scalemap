@@ -66,6 +66,8 @@ Core systems that exist today:
   browser-only dev, plus a 30-second dirty-triggered autosave snapshot.
 
 There is no `prd.txt` in the repo; this file is the source of truth for scope and architecture.
+**Read `docs/agent-onboarding.md` before writing code** — it holds the hard laws (theme/price/
+emoji/motion/edit-lock rules), design philosophy, verification bar, and the accumulated gotchas.
 `docs/module-boundaries.md` is the detailed, file-by-file companion — more current than the prose
 above for any specific file's history.
 
@@ -183,9 +185,10 @@ src/
                                    # request client
     costModelV2.ts, cloudRegistry.ts, regionConfig.ts
     serializer.ts                 # .scalemap v2 (de)serialization
-    nodeConfig.ts                 # NODE_CONFIG icon/category registry (no live consumer in the
-                                   # world-model UI today) + surviving packet-template types
-                                   # (PacketTemplate/PacketMode/PacketRegistry)
+    nodeConfig.ts                 # Packet-template types only (PacketTemplate/PacketMode/
+                                   # PacketRegistry) — the canvas-era NODE_CONFIG icon registry
+                                   # and node/edge sim-config types were removed 2026-07-12
+                                   # (zero live consumers)
     theme.ts                      # DARK_COLORS/LIGHT_COLORS/CATEGORY_COLORS/FONT — the
                                    # --color-* token source for both themes
     tauri.ts / tauriMock.ts       # Tauri command wrappers + browser-dev localStorage/fetch
@@ -347,7 +350,7 @@ Decisions).
 | `three` | The WebGL scene graph underlying the globe (night-earth sphere, atmosphere shader, arc geometry) |
 | `zustand` | State management — one store per domain (`nav`/`world`/`simulation`/`file`/`ui`) |
 | `framer-motion` | Panel/globe/board animations; every animated component also checks `useReducedMotion()` |
-| `lucide-react` | Icons — today's only live consumer is `HomeScreen.tsx`; `nodeConfig.ts`'s `NODE_CONFIG` icon registry has no consumer in the world-model UI (see Key Architecture Decisions) |
+| `lucide-react` | Icons — today's only live consumer is `HomeScreen.tsx` |
 | `vitest` / `@testing-library/react` | Test harness — extensively used (see Known Issues / Roadmap) |
 
 Rust (`src-tauri/Cargo.toml`): `tauri`, `tauri-plugin-opener`, `tauri-plugin-dialog`,
@@ -365,8 +368,8 @@ Test coverage is now extensive (`lib/analysis`'s rule files, `lib/worldEngine`'s
 I/O commands + the LLM settings/chat commands); revisit modularization only if it becomes hard
 to navigate.
 
-This file, `docs/module-boundaries.md`, and the six phase-completion summaries in
-`.superpowers/sdd/progress.md` are the current architectural record. The rebuild's scope is
+This file, `docs/agent-onboarding.md`, `docs/module-boundaries.md`, and the phase-completion
+summaries in `.superpowers/sdd/progress.md` are the current architectural record. The rebuild's scope is
 complete as of Phase 6; the following is intentionally parked, not partially built or in
 progress — do not assume any of it exists:
 
