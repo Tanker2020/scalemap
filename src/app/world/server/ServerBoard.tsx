@@ -10,7 +10,7 @@
 // FirewallGate's allow-slat edge-dot gate (D6/D7 physical-jack + shield redesign). T6 adds two
 // more resident-walk derivations of the same shape (`queueDepth`, `instanceRps`) for the
 // substrate's queue ticks and TraceLayer's flowing-dash overlay.
-import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import { useMemo, useState, type ReactElement } from 'react'
 import type { BoardLayout, StaticTrace } from './boardLayout'
 import type { BlueprintId, ServerId } from '../../../lib/world/types'
 import type { BoardSelection } from './selection'
@@ -25,8 +25,14 @@ import { StackPlate } from './StackPlate'
 import { HardwarePlatform } from './HardwarePlatform'
 import { PacketLayer } from './PacketLayer'
 import { blockedPerSecond } from './gateStats'
+import { useFloorCamera } from '../az/useFloorCamera'
 
 const PCB_GRID = '#101620'
+
+// Pointerdown on any of these never starts a camera pan (see useFloorCamera's own comment):
+// the board blocks ([data-chip]/[data-nic]/[data-firewall]/[data-stack]), TraceLayer's
+// clickable stroke paths, and native controls keep their clicks.
+const BOARD_INTERACTIVE_SEL = '[data-chip], [data-nic], [data-firewall], [data-stack], path, button, select, a, input, [data-no-pan]'
 
 export interface ServerBoardProps {
   serverId: ServerId
@@ -42,8 +48,12 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
   const { serverId, layout, traces } = props
   const doc = useWorldStore(s => s.doc)
   const server = doc.servers[serverId]
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [scale, setScale] = useState(1)
+  // Camera (user request 2026-07-12: "the view within the server needs to be movable — zoom,
+  // move around"): the floor's fit/zoom-at-cursor/drag-pan camera, verbatim, with a
+  // board-specific interactive exclusion list. Replaces the old fit-only ResizeObserver scale.
+  const camera = useFloorCamera(layout.stageW, layout.stageH, `${layout.stageW}x${layout.stageH}`, BOARD_INTERACTIVE_SEL)
+  const running = useSimulationStore(s => s.running)
+  const [mountingService, setMountingService] = useState(false)
   const display = useServerDisplayMetrics(serverId)
   const events = useSimulationStore(s => s.events)
   const latestBatch = useSimulationStore(s => s.latestBatch)
@@ -71,16 +81,6 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
     [layout.residentInstanceIds, display.instances],
   )
 
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const fit = () => setScale(Math.min(el.clientWidth / layout.stageW, el.clientHeight / layout.stageH) || 1)
-    fit()
-    const ro = new ResizeObserver(fit)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [layout.stageW, layout.stageH])
-
   const portsLabel = (chip: (typeof layout.chips)[number]): string => {
     const pl = doc.placements[chip.placementId]
     if (pl?.runtime.type === 'container' && pl.runtime.portMappings.length) {
@@ -100,14 +100,42 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
     [layout.chips],
   )
 
+  const blueprints = Object.values(doc.blueprints)
+
   return (
-    <div ref={containerRef} style={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', background: 'radial-gradient(ellipse at 40% 35%, #0C1018 0%, #07090D 70%)' }}>
+    <div
+      ref={camera.containerRef}
+      data-testid="board-viewport"
+      onPointerDown={camera.onPointerDown}
+      onPointerMove={camera.onPointerMove}
+      onPointerUp={camera.onPointerUp}
+      onPointerCancel={camera.onPointerUp}
+      style={{
+        position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden',
+        background: 'radial-gradient(ellipse at 40% 35%, #0C1018 0%, #07090D 70%)',
+        cursor: camera.panning ? 'grabbing' : 'grab', touchAction: 'none',
+      }}
+    >
       {display.scrubbing && (
         <div style={{ position: 'absolute', right: 10, top: 10, zIndex: 3, padding: '3px 8px', borderRadius: 10, border: '1px solid var(--color-warning)', background: '#2A1F0Bcc', color: 'var(--color-warning)', font: '9px var(--font-mono)', letterSpacing: '0.06em' }}>
           ● scrubbing
         </div>
       )}
-      <div style={{ position: 'absolute', left: 0, top: 0, width: layout.stageW, height: layout.stageH, transformOrigin: '0 0', transform: `scale(${scale})` }}>
+      {/* Screen-space chrome: camera hint + fit, outside the transform (floor precedent). */}
+      <div style={{ position: 'absolute', left: 12, bottom: 12, zIndex: 3, font: '8.5px var(--font-mono)', color: 'var(--color-text-muted)', pointerEvents: 'none' }}>
+        scroll = zoom · drag = pan
+      </div>
+      <button
+        data-no-pan aria-label="fit board to view" onClick={camera.fit}
+        style={{
+          position: 'absolute', right: 12, bottom: 12, zIndex: 3,
+          font: '10px var(--font-mono)', background: '#10141bee', border: '1px solid var(--color-node-border)',
+          color: 'var(--color-text-secondary)', borderRadius: 5, padding: '4px 12px', cursor: 'pointer',
+        }}
+      >
+        fit
+      </button>
+      <div style={camera.cameraStyle}>
         {/* PCB grid */}
         <div style={{ position: 'absolute', inset: 0, backgroundImage: `linear-gradient(${PCB_GRID} 1px,transparent 1px),linear-gradient(90deg,${PCB_GRID} 1px,transparent 1px)`, backgroundSize: '26px 26px', opacity: 0.5 }} />
         {/* z0 traces */}
@@ -157,6 +185,47 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
             />
           )
         })}
+        {/* "+ service" ghost chip (user request 2026-07-12: "where is the ability to add new
+            services within the server") — authoring only; the dock's SERVICES drawer keeps its
+            own "+ mount a blueprint…" line, this is the same addPlacement dispatch surfaced on
+            the board itself, in the next process-column slot. */}
+        {!running && (mountingService ? (
+          <select
+            data-no-pan aria-label="mount a blueprint" autoFocus defaultValue=""
+            style={{
+              position: 'absolute', left: layout.ghostChip.x, top: layout.ghostChip.y + layout.ghostChip.h / 2 - 13,
+              width: layout.ghostChip.w + 46, background: 'var(--color-node-base)',
+              border: '1px solid var(--color-node-border)', borderRadius: 4, padding: '4px 6px',
+              font: '10.5px var(--font-mono)', color: 'var(--color-text-primary)', zIndex: 3,
+            }}
+            onChange={e => {
+              if (!e.target.value) return
+              useWorldStore.getState().addPlacement(e.target.value, serverId)
+              setMountingService(false)
+            }}
+            onBlur={() => setMountingService(false)}
+          >
+            <option value="" disabled>choose a blueprint…</option>
+            {blueprints.map(bp => <option key={bp.id} value={bp.id}>{bp.name}</option>)}
+          </select>
+        ) : (
+          <button
+            data-no-pan data-testid="board-add-service"
+            disabled={blueprints.length === 0}
+            title={blueprints.length === 0 ? 'create a blueprint first (world scope › Blueprints)' : 'mount a blueprint on this server'}
+            onClick={() => setMountingService(true)}
+            style={{
+              position: 'absolute', left: layout.ghostChip.x, top: layout.ghostChip.y,
+              width: layout.ghostChip.w, height: layout.ghostChip.h,
+              background: 'none', border: '1px dashed #2a3140', borderRadius: 6,
+              color: 'var(--color-text-muted)', font: '10px var(--font-mono)',
+              cursor: blueprints.length === 0 ? 'default' : 'pointer',
+              opacity: blueprints.length === 0 ? 0.5 : 1,
+            }}
+          >
+            + service
+          </button>
+        ))}
         {layout.overflowCount > 0 && (
           <div style={{ position: 'absolute', left: 250, bottom: 8, color: 'var(--color-text-muted)', font: '9px var(--font-mono)' }}>
             +{layout.overflowCount} more instance{layout.overflowCount > 1 ? 's' : ''}
@@ -164,7 +233,7 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
         )}
         {/* Substrate instruments (D8): core bank, DIMM sticks, platter, queue-depth — right rail */}
         {server && (
-          <div style={{ position: 'absolute', left: layout.hardware.box.x, top: layout.hardware.box.y, width: layout.hardware.box.w, height: layout.hardware.box.h }}>
+          <div data-no-pan style={{ position: 'absolute', left: layout.hardware.box.x, top: layout.hardware.box.y, width: layout.hardware.box.w, height: layout.hardware.box.h }}>
             <HardwarePlatform
               server={server} metrics={display.server} residentInstances={residentInstances}
               blueprints={doc.blueprints} hoveredBlueprintId={props.hoveredBlueprintId}

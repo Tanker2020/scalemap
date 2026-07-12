@@ -212,3 +212,54 @@ describe('DatacenterFloor', () => {
     expect(flow.getAttribute('data-animated')).toBe('false')
   })
 })
+
+describe('DatacenterFloor — internet ingress + label layer (2026-07-12)', () => {
+  it('renders the ISP box with a teal edge to an open public server and a red edge to a firewalled one', () => {
+    const { azId } = seedAz()
+    const world = useWorldStore.getState()
+    const openId = world.addServer(azId, getPreset('vps-medium')!)
+    const shutId = world.addServer(azId, getPreset('vps-medium')!)
+    const bpId = world.addBlueprint('front')
+    world.updateBlueprint(bpId, { ports: [{ port: 443, protocol: 'tcp', visibility: 'public' }] })
+    world.addPlacement(bpId, openId)
+    world.addPlacement(bpId, shutId)
+    // openId gets a real front door; shutId keeps createServer's internal-only default.
+    const open = useWorldStore.getState().doc.servers[openId]
+    world.updateServer(openId, {
+      firewall: [{ id: 'fw-443', action: 'allow', port: 443, protocol: 'tcp', source: 'any' }, ...open.firewall],
+    })
+
+    render(<DatacenterFloor />)
+    expect(screen.getByTestId('inet-box')).toBeTruthy()
+    expect(screen.getByText('INTERNET')).toBeTruthy()
+    const allowed = screen.getByTestId(`ingress-${openId}`)
+    const blocked = screen.getByTestId(`ingress-${shutId}`)
+    expect(allowed.getAttribute('stroke')).toBe('var(--az-hud)')
+    expect(allowed.getAttribute('data-animated')).toBe('false')   // static at 0 rps
+    expect(blocked.getAttribute('stroke')).toBe('var(--color-danger)')
+    expect(screen.getByText('✕ firewall')).toBeTruthy()
+  })
+
+  it('pod labels are floor-layer divs that never overlap each other', () => {
+    const { azId } = seedAz()
+    const world = useWorldStore.getState()
+    world.addServer(azId, getPreset('vps-medium')!)
+    world.addServer(azId, getPreset('vps-medium')!)
+    world.addServer(azId, getPreset('dedicated-8')!)
+
+    render(<DatacenterFloor />)
+    const labels = screen.getAllByTestId('pod-label')
+    expect(labels).toHaveLength(3)
+    const rects = labels.map(el => ({
+      x: parseFloat(el.style.left), y: parseFloat(el.style.top),
+      w: parseFloat(el.style.width), h: 12,
+    }))
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        const a = rects[i], b = rects[j]
+        const overlap = a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+        expect(overlap).toBe(false)
+      }
+    }
+  })
+})

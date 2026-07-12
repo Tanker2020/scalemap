@@ -66,13 +66,18 @@ export function useHoldTap(onTap: () => void, onHoldComplete: () => void): UseHo
       if (startRef.current !== null && start && exceedsHoldSlop(e.clientX - start.x, e.clientY - start.y)) {
         startRef.current = null   // deliberate drag-off — cancel the hold (D1)
         slopCancelledRef.current = true
-        stopLoop()
+        progressRef.current = 0   // HoldRing keeps painting progressRef after the loop stops —
+        stopLoop()                // an un-zeroed cancel leaves the ring frozen mid-sweep
       }
     },
     onPointerUp: (e) => {
       ;(e.target as Element)?.releasePointerCapture?.(e.pointerId)
       const start = startRef.current
       startRef.current = null
+      // Every release path must zero the ring, not just stop the loop: HoldRing's own rAF
+      // keeps applying progressRef to the stroke, so a stale partial value = a ring stuck at
+      // its last sweep forever (user report 2026-07-12: "pops up and stays").
+      progressRef.current = 0
       stopLoop()
       // Hold already completed via the rAF loop above (which nulls startRef itself) — nothing
       // left to do. Otherwise: a slop-cancelled drag-off never taps; a short press taps; a long
@@ -87,6 +92,7 @@ export function useHoldTap(onTap: () => void, onHoldComplete: () => void): UseHo
       // Defensive fallback only — under real pointer capture this won't fire mid-hold, but it's
       // free insurance for pointerdown sequences that never actually captured (e.g. jsdom).
       startRef.current = null
+      progressRef.current = 0
       stopLoop()
     },
   }

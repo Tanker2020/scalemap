@@ -1,11 +1,12 @@
 // src/app/world/server/ServerBoard.test.tsx
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, beforeAll } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { ServerBoard } from './ServerBoard'
 import { ServerView } from '../ServerView'
 import { layoutServerBoard, serverTraces, MAX_BOARD_CHIPS } from './boardLayout'
 import { useWorldStore } from '../../store/world.store'
+import { useSimulationStore } from '../../store/simulation.store'
 import { useNavStore } from '../../store/nav.store'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
@@ -127,5 +128,38 @@ describe('ServerBoard (static stage)', () => {
     expect(screen.getAllByText(/vCPU/).length).toBeGreaterThan(0)
     expect(screen.getByText(/A1/)).toBeInTheDocument()
     expect(screen.getByText(/U7/)).toBeInTheDocument()
+  })
+})
+
+describe('ServerBoard — "+ service" ghost chip (2026-07-12)', () => {
+  beforeEach(() => {
+    useWorldStore.getState().newWorld()
+    useSimulationStore.getState().resetSession()
+  })
+
+  it('mounts a placement through the inline blueprint picker while stopped', () => {
+    const { doc, server } = seed((d) => {
+      const bp = createBlueprint('api', 0)
+      d.blueprints[bp.id] = bp
+    })
+    renderBoard(doc, server.id)
+    fireEvent.click(screen.getByTestId('board-add-service'))
+    const select = screen.getByLabelText('mount a blueprint') as HTMLSelectElement
+    const bpId = Object.keys(doc.blueprints)[0]
+    fireEvent.change(select, { target: { value: bpId } })
+    const placements = Object.values(useWorldStore.getState().doc.placements)
+    expect(placements).toHaveLength(1)
+    expect(placements[0]).toMatchObject({ blueprintId: bpId, serverId: server.id })
+  })
+
+  it('is disabled with no blueprints and hidden while the simulation runs', () => {
+    const { doc, server } = seed(() => {})
+    const { unmount } = (() => { renderBoard(doc, server.id); return { unmount: () => {} } })()
+    const ghost = screen.getByTestId('board-add-service') as HTMLButtonElement
+    expect(ghost.disabled).toBe(true)
+    expect(ghost.title).toContain('create a blueprint first')
+    unmount()
+    act(() => { useSimulationStore.setState({ running: true }) })
+    expect(screen.queryByTestId('board-add-service')).toBeNull()
   })
 })

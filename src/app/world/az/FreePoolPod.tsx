@@ -110,13 +110,9 @@ export function FreePoolPod({
           style={blinking ? { animationDuration: '2.9s' } : undefined}
         />
       </g>
-      <text
-        data-testid="pod-label"
-        x={frontMidX} y={frontBottomY + 12} textAnchor="middle"
-        fontSize={8} fill="var(--color-text-secondary)" style={{ font: '8px var(--font-mono)', pointerEvents: 'none' }}
-      >
-        {server.label}
-      </text>
+      {/* The pod's name label moved to DatacenterFloor's deconflicted DOM label layer
+          (labelLayout.ts, 2026-07-12) — anchored above the roof so it can never lie across a
+          neighboring box the way the old below-the-front SVG text could. */}
       <g transform={`translate(${led.x - 12},${led.y - 12})`}>
         <HoldRing progressRef={progressRef} size={24} />
       </g>

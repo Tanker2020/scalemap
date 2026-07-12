@@ -15,6 +15,10 @@ export const CAMERA_MIN_SCALE = 0.45
 export const CAMERA_MAX_SCALE = 2.5
 export const FIT_MARGIN = 0.94
 
+// Default = the datacenter floor's interactive set. ServerBoard (the level-4 circuit board,
+// which reuses this hook since 2026-07-12) passes its own selector — pointerdown on anything
+// matching never starts a pan; pointer capture would otherwise retarget the release (and the
+// synthetic click) to the viewport and swallow the element's own tap/hold/click gesture.
 const INTERACTIVE_SEL =
   'g[data-testid^="rack-slot"], g[data-testid^="free-pod"], .az-ghost, button, select, a, input, [data-no-pan]'
 
@@ -48,7 +52,7 @@ export interface FloorCamera {
   onPointerUp: (e: ReactPointerEvent<HTMLDivElement>) => void
 }
 
-export function useFloorCamera(contentW: number, contentH: number, refitKey: string): FloorCamera {
+export function useFloorCamera(contentW: number, contentH: number, refitKey: string, interactiveSel: string = INTERACTIVE_SEL): FloorCamera {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [cam, setCam] = useState<CameraState>({ scale: 1, tx: 0, ty: 0 })
   const [panning, setPanning] = useState(false)
@@ -88,12 +92,12 @@ export function useFloorCamera(contentW: number, contentH: number, refitKey: str
 
   const onPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
-    if ((e.target as Element).closest?.(INTERACTIVE_SEL)) return
+    if ((e.target as Element).closest?.(interactiveSel)) return
     panRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY }
     e.currentTarget.setPointerCapture?.(e.pointerId)
     setPanning(true)
     touchedRef.current = true
-  }, [])
+  }, [interactiveSel])
 
   const onPointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     const p = panRef.current

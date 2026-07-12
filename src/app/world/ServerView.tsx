@@ -60,6 +60,7 @@ export function ServerView(): ReactElement | null {
         {/* server.rack is nullable (free pool, Polish 3 T2) — this header still renders for
             an unracked server (e.g. reached before T4's free-pool tray/rack UI exists). */}
         {' — '}{az?.label ?? '?'} › {server.rack ? `${server.rack.rackId} › U${server.rack.unit}` : 'unracked'}
+        <span style={{ float: 'right', color: 'var(--color-text-muted)', fontSize: 9 }}>scroll = zoom · drag = pan</span>
       </div>
       {/* D8/T6: InspectorRail re-housed from a permanent-width flex sidebar to a docked overlay
           (position:absolute inside this wrapper — see InspectorRail.tsx's own comment) so the

@@ -36,6 +36,9 @@ export interface BoardLayout {
   nic: { box: Box; anchor: Anchor }
   gate: { box: Box; inAnchor: Anchor; outAnchor: Anchor }
   chips: ChipLayout[]           // ALL chips: process chips AND container chips (capped at MAX_BOARD_CHIPS)
+  // Authoring affordance (2026-07-12): where ServerBoard renders the dashed "+ service" ghost
+  // chip — the next slot in the process column (centered when the column is empty).
+  ghostChip: Box
   residentInstanceIds: string[] // UNTRUNCATED: every resident instance id, incl. overflow past MAX_BOARD_CHIPS
   overflowCount: number         // instances beyond MAX_BOARD_CHIPS
   stacks: StackLayout[]
@@ -101,6 +104,15 @@ export function layoutServerBoard(server: Server, doc: WorldDoc, compiled: Compi
     const box = { x: PROC_X, y: procStartY + k * (CHIP_H + CHIP_GAP), w: CHIP_W, h: CHIP_H }
     chips.push(chipFor(i, box, null))
   })
+  // "+ service" ghost: the next process slot (itself centered when the column is empty),
+  // clamped on-stage for chip-heavy boards.
+  const ghostChip: Box = {
+    x: PROC_X,
+    y: procInsts.length === 0
+      ? (STAGE_H - CHIP_H) / 2
+      : Math.min(procStartY + procInsts.length * (CHIP_H + CHIP_GAP), STAGE_H - CHIP_H - 12),
+    w: CHIP_W, h: CHIP_H,
+  }
 
   // Stack plates: every server.stacks entry renders (author feedback); container chips seat inside.
   const stacks: StackLayout[] = []
@@ -162,7 +174,7 @@ export function layoutServerBoard(server: Server, doc: WorldDoc, compiled: Compi
   }
 
   return {
-    stageW: STAGE_W, stageH: STAGE_H, nic, gate, chips, residentInstanceIds, overflowCount, stacks,
+    stageW: STAGE_W, stageH: STAGE_H, nic, gate, chips, ghostChip, residentInstanceIds, overflowCount, stacks,
     hardware, anchorFor, tracePath,
   }
 }

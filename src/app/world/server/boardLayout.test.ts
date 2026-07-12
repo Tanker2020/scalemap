@@ -289,3 +289,26 @@ describe('attributeCores', () => {
     expect(r.every(c => c.shares.length === 0)).toBe(true)
   })
 })
+
+describe('layoutServerBoard — ghost "+ service" slot (2026-07-12)', () => {
+  it('sits in the next process-column slot below the last process chip', () => {
+    const { doc, server } = base()
+    addProcess(doc, 'api', server.id, 0)
+    addProcess(doc, 'web', server.id, 1)
+    const layout = layoutServerBoard(server, doc, compileWorld(doc))
+    const procChips = layout.chips.filter(c => c.stackName === null)
+    const last = procChips[procChips.length - 1]
+    expect(layout.ghostChip.x).toBe(last.box.x)
+    expect(layout.ghostChip.y).toBe(last.box.y + last.box.h + 16)   // CHIP_GAP
+    expect(layout.ghostChip.w).toBe(last.box.w)
+  })
+
+  it('centers in the empty process column and stays on-stage for chip-heavy boards', () => {
+    const { doc, server } = base()
+    const empty = layoutServerBoard(server, doc, compileWorld(doc))
+    expect(empty.ghostChip.y).toBe((empty.stageH - empty.ghostChip.h) / 2)
+    for (let i = 0; i < 14; i++) addProcess(doc, `svc${i}`, server.id, i)
+    const heavy = layoutServerBoard(server, doc, compileWorld(doc))
+    expect(heavy.ghostChip.y + heavy.ghostChip.h).toBeLessThanOrEqual(heavy.stageH)
+  })
+})

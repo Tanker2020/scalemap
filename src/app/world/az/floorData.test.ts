@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { aggregateFlows, ledParams, serverAccents } from './floorData'
+import { aggregateFlows, internetIngress, ledParams, serverAccents } from './floorData'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
 } from '../../../lib/world/factories'
@@ -181,5 +181,46 @@ describe('serverAccents', () => {
 
     const compiled = compileWorld(doc)
     expect(serverAccents(doc, compiled)).toEqual(inlineAccentsByServer(doc, compiled))
+  })
+})
+
+describe('internetIngress (ISP box edges, 2026-07-12)', () => {
+  function publicWorld() {
+    const seeded = seedWorld()
+    const { doc, web, db } = seeded
+    const front = createBlueprint('front', 0)
+    front.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+    const pg = createBlueprint('pg', 1)
+    pg.ports = [{ port: 5432, protocol: 'tcp', visibility: 'internal' }]
+    Object.assign(doc.blueprints, { [front.id]: front, [pg.id]: pg })
+    const plFront = createPlacement(front.id, web.id)
+    const plPg = createPlacement(pg.id, db.id)
+    Object.assign(doc.placements, { [plFront.id]: plFront, [plPg.id]: plPg })
+    return { ...seeded, front }
+  }
+
+  it('an open public port yields an allowed edge; internal-only servers get none', () => {
+    const { doc, az, web } = publicWorld()
+    web.firewall = [{ id: 'fw-443', action: 'allow', port: 443, protocol: 'tcp', source: 'any' }, ...web.firewall]
+    const edges = internetIngress(doc, compileWorld(doc), az.id)
+    expect(edges).toEqual([{ serverId: web.id, allowed: true, port: 443 }])
+  })
+
+  it('a public blueprint behind the default internal-only firewall is blocked (matches entry-unreachable)', () => {
+    const { doc, az, web } = publicWorld()
+    // createServer default: allow any · internal — internet (source any) falls through to deny.
+    const edges = internetIngress(doc, compileWorld(doc), az.id)
+    expect(edges).toEqual([{ serverId: web.id, allowed: false, port: 443 }])
+  })
+
+  it('scopes to the AZ and dedupes multiple public instances on one server', () => {
+    const { doc, az, web, otherAzServer, front } = publicWorld()
+    web.firewall = [{ id: 'fw-443', action: 'allow', port: 443, protocol: 'tcp', source: 'any' }, ...web.firewall]
+    // second public placement on the SAME server + one in the other AZ
+    const plDup = createPlacement(front.id, web.id)
+    const plOther = createPlacement(front.id, otherAzServer.id)
+    Object.assign(doc.placements, { [plDup.id]: plDup, [plOther.id]: plOther })
+    const edges = internetIngress(doc, compileWorld(doc), az.id)
+    expect(edges).toEqual([{ serverId: web.id, allowed: true, port: 443 }])
   })
 })

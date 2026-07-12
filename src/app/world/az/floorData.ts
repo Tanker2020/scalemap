@@ -91,3 +91,43 @@ export function serverAccents(doc: WorldDoc, compiled: CompiledWorld): Map<Serve
   }
   return m
 }
+
+export interface IngressEdge {
+  serverId: ServerId
+  /** true = the public port's first-match firewall rule is allow·source-any (traffic gets in);
+   *  false = a public blueprint lives here but the front door is firewalled shut. */
+  allowed: boolean
+  port: number
+}
+
+// Internet-ingress edges for the floor's ISP box (user request 2026-07-12: "how do I see which
+// server is receiving traffic from outside"). One edge per AZ server hosting an instance of a
+// public-port blueprint. Reachability replicates the analysis rules' entry convention
+// (rules/network.ts `openToAny`: first port+tcp match must be allow with source 'any' —
+// world/network.ts's evaluateFirewall ignores `source`, so it can't be reused here), keeping
+// the floor and the entry-unreachable finding in agreement about what "reachable" means.
+export function internetIngress(doc: WorldDoc, compiled: CompiledWorld, azId: AzId): IngressEdge[] {
+  const firstMatchOpen = (serverId: ServerId, port: number): boolean => {
+    for (const r of doc.servers[serverId]?.firewall ?? []) {
+      const portOk = r.port === 'any' || r.port === port
+      const protoOk = r.protocol === 'any' || r.protocol === 'tcp'
+      if (portOk && protoOk) return r.action === 'allow' && r.source === 'any'
+    }
+    return false   // default deny
+  }
+
+  const byServer = new Map<ServerId, IngressEdge>()
+  for (const inst of Object.values(compiled.instances)) {
+    if (inst.azId !== azId) continue
+    const publicPorts = (doc.blueprints[inst.blueprintId]?.ports ?? []).filter(p => p.visibility === 'public')
+    for (const p of publicPorts) {
+      const allowed = firstMatchOpen(inst.serverId, p.port)
+      const existing = byServer.get(inst.serverId)
+      // A server with several public ports counts as reachable if ANY of them is open.
+      if (!existing || (allowed && !existing.allowed)) {
+        byServer.set(inst.serverId, { serverId: inst.serverId, allowed, port: p.port })
+      }
+    }
+  }
+  return [...byServer.values()]
+}

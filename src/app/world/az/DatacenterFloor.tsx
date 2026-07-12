@@ -17,14 +17,15 @@ import { useSimulationStore } from '../../store/simulation.store'
 import { useUiStore } from '../../store/ui.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { layoutFloor } from './floorLayout'
-import { aggregateFlows, meanUtilization, serverAccents } from './floorData'
+import { aggregateFlows, internetIngress, meanUtilization, serverAccents } from './floorData'
+import { placeLabels, estimateLabelSize, type LabelSpec, type Rect } from './labelLayout'
 import { rackUsedU } from '../../../lib/world/rackModel'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { RackCabinet, cabinetHeightPx } from './RackCabinet'
 import { FreePoolPod, POD_HEIGHT_PX } from './FreePoolPod'
 import { InspectorV2 } from '../InspectorV2'
 import { useFloorCamera } from './useFloorCamera'
-import { VIEW_W, VIEW_H, floorOutline, tileOutline, tileCenter, isoBox } from './iso'
+import { VIEW_W, VIEW_H, floorOutline, tileOutline, tileCenter, isoBox, type IsoBox } from './iso'
 import type { RackId, Server, ServerId } from '../../../lib/world/types'
 import './azFloorStyles'
 
@@ -134,6 +135,14 @@ export function DatacenterFloor() {
     [compiled, azId, managedHere],
   )
 
+  // Internet ingress (user request 2026-07-12: "which server is receiving traffic from
+  // outside?"): one edge per server hosting a public-port blueprint, drawn from the ISP box
+  // (below) — allowed = teal line, firewalled-shut = the same red blocked treatment dep flows use.
+  const ingress = useMemo(
+    () => (azId ? internetIngress(doc, compiled, azId) : []),
+    [doc, compiled, azId],
+  )
+
   // Motion budget (spec D1, tightened 8→5 in the T8 sweep — see TOP_ANIMATED's comment above):
   // only the top-N permitted flows BY SOURCE-SERVER RPS animate; blocked flows are always static
   // (red dash + reason label), regardless of rank.
@@ -149,16 +158,23 @@ export function DatacenterFloor() {
   }, [azServers, compiled.instances, batch])
 
   const animatedKeys = useMemo(() => {
-    const ranked = flows
-      .filter(f => f.blocked === 0)
-      .map(f => ({ key: `${f.source}->${f.target}`, rate: rpsByServer.get(f.source) ?? 0 }))
+    const ranked = [
+      ...flows
+        .filter(f => f.blocked === 0)
+        .map(f => ({ key: `${f.source}->${f.target}`, rate: rpsByServer.get(f.source) ?? 0 })),
+      // Ingress lines compete for the SAME TOP_ANIMATED budget as dep flows — one ranking,
+      // one cap (D1); an entry server carrying traffic is usually exactly what should march.
+      ...ingress
+        .filter(e => e.allowed)
+        .map(e => ({ key: `inet->${e.serverId}`, rate: rpsByServer.get(e.serverId) ?? 0 })),
+    ]
       // rate > 0: a 0-rps flow must never occupy an animated slot — pre-simulation the whole
       // floor sits static (dash speed = rate, D1; user report 2026-07-11 caught idle marching).
       .filter(f => f.rate > 0)
       .sort((a, b) => b.rate - a.rate)
       .slice(0, TOP_ANIMATED)
     return new Map(ranked.map(r => [r.key, r.rate]))
-  }, [flows, rpsByServer])
+  }, [flows, ingress, rpsByServer])
   const maxAnimatedRate = Math.max(1, ...animatedKeys.values())
 
   // Motion budget (D1, T8 sweep): rank every AZ server (racked or free-pool) by live cpuMean and
@@ -216,6 +232,103 @@ export function DatacenterFloor() {
   const ghostCell = racks.length + freePool.length < plan.tiles.length
     ? plan.tiles[racks.length + freePool.length]
     : null
+
+  // ISP uplink cabinet (user requests 2026-07-12: "which server receives traffic from
+  // outside" + "make the isp a custom object that looks pretty darn realistic"): a hand-rolled
+  // mini isometric box — same 2:1 dimetric ratio as the tiles — fixed at the floor's empty
+  // bottom-left corner, OUTSIDE the diamond, so outside traffic visibly enters the room from
+  // off the floor. Front face carries a PWR/LINK/ACT status-LED row and an RJ45-ish uplink
+  // port; a whip antenna tops the roof; a dashed street-feed line enters from screen-left.
+  // Content coordinates (inside the camera transform), so it pans/zooms with the scene.
+  const ISP = (() => {
+    const bw = 30, bh = 15, hp = 36
+    const fl = { x: 96, y: VIEW_H - 52 }   // front-left floor corner
+    const roofSW = { x: fl.x, y: fl.y - hp }
+    const roofSE = { x: roofSW.x + bw, y: roofSW.y + bh }
+    const roofNE = { x: roofSE.x + bw, y: roofSE.y - bh }
+    const roofNW = { x: roofSW.x + bw, y: roofSW.y - bh }
+    const floorSE = { x: roofSE.x, y: roofSE.y + hp }
+    const floorNE = { x: roofNE.x, y: roofNE.y + hp }
+    const pts = (arr: { x: number; y: number }[]) => arr.map(pt => `${pt.x},${pt.y}`).join(' ')
+    return {
+      roofSW, roofSE, roofNE, roofNW, floorSE, floorNE, fl,
+      front: pts([roofSW, roofSE, floorSE, fl]),
+      side: pts([roofSE, roofNE, floorNE, floorSE]),
+      top: pts([roofSW, roofSE, roofNE, roofNW]),
+      anchor: { x: roofNE.x - 2, y: (roofNE.y + floorNE.y) / 2 },
+      bounds: { x: fl.x - 6, y: roofNW.y - 32, w: bw * 2 + 12, h: hp + bh + 32 + 18 },
+    }
+  })()
+  const inetAnchor = ISP.anchor
+  const showInet = azServers.length > 0
+
+  // ── Floating labels (user report 2026-07-12: names/badges overlapped boxes and each other):
+  // every floating label anchors ABOVE its box's roofline, then labelLayout.ts pushes it
+  // further up until it clears every box and every earlier label. Spec order = priority
+  // (racks, pods, managed, section badge, dep/ingress chips — later entries yield). ──
+  const boxRect = (box: IsoBox): Rect => ({
+    x: box.roofSW.x, y: box.roofNW.y, w: box.roofNE.x - box.roofSW.x, h: box.floorSE.y - box.roofNW.y,
+  })
+  const obstacles: Rect[] = []
+  const labelSpecs: LabelSpec[] = []
+  for (const rack of racks) {
+    const cell = plan.cabinets[rack.id]
+    if (!cell) continue
+    const box = isoBox(cell.x, cell.y, plan.cols, cabinetHeightPx(rackUsedU(doc, rack.id)))
+    obstacles.push(boxRect(box))
+    const { w, h } = estimateLabelSize(`${rack.label} · ${rackUsedU(doc, rack.id)}/${rack.capacityU}U`)
+    labelSpecs.push({ id: `rack:${rack.id}`, x: tileCenter(cell.x, cell.y, plan.cols).x - w / 2, y: box.roofNW.y - h - 6, w, h })
+  }
+  for (const server of freePool) {
+    const cell = plan.pods[server.id]
+    if (!cell) continue
+    const box = isoBox(cell.x, cell.y, plan.cols, POD_HEIGHT_PX, 0.52)
+    obstacles.push(boxRect(box))
+    const { w, h } = estimateLabelSize(server.label, 'text')
+    labelSpecs.push({ id: `pod:${server.id}`, x: tileCenter(cell.x, cell.y, plan.cols).x - w / 2, y: box.roofNW.y - h - 5, w, h })
+  }
+  for (const m of managed) {
+    const cell = plan.appliances[m.id]
+    if (!cell) continue
+    const box = isoBox(cell.x, cell.y, plan.cols, APPLIANCE_HEIGHT_PX, 0.5)
+    obstacles.push(boxRect(box))
+    const { w, h } = estimateLabelSize(`${m.label} · ${m.nodeType}`)
+    labelSpecs.push({ id: `managed:${m.id}`, x: tileCenter(cell.x, cell.y, plan.cols).x - w / 2, y: box.roofNW.y - h - 6, w, h })
+  }
+  if (freePool.length > 0) {
+    // Section badge anchors above the topmost pod; deconfliction stacks it over that pod's
+    // own name label instead of letting it lie across a neighbor's face.
+    const topPod = freePool.reduce((best, s) => {
+      const c = plan.pods[s.id]
+      const b = plan.pods[best.id]
+      if (!c || !b) return best
+      return isoBox(c.x, c.y, plan.cols, POD_HEIGHT_PX, 0.52).roofNW.y <
+        isoBox(b.x, b.y, plan.cols, POD_HEIGHT_PX, 0.52).roofNW.y ? s : best
+    }, freePool[0])
+    const cell = plan.pods[topPod.id]
+    if (cell) {
+      const box = isoBox(cell.x, cell.y, plan.cols, POD_HEIGHT_PX, 0.52)
+      const { w, h } = estimateLabelSize('FREE POOL · unracked')
+      labelSpecs.push({ id: 'section:free-pool', x: tileCenter(cell.x, cell.y, plan.cols).x - w / 2, y: box.roofNW.y - h - 6, w, h })
+    }
+  }
+  for (const f of flows) {
+    const from = anchorFor(f.source)
+    const to = anchorFor(f.target)
+    if (!from || !to) continue
+    const text = f.blocked > 0 ? `✕ ${f.reason}` : `${f.total} dep${f.total > 1 ? 's' : ''}`
+    const { w, h } = estimateLabelSize(text)
+    labelSpecs.push({ id: `dep:${f.source}->${f.target}`, x: (from.x + to.x) / 2 - w / 2, y: (from.y + to.y) / 2 - h / 2, w, h })
+  }
+  for (const e of ingress) {
+    if (e.allowed) continue   // allowed ingress: the line + ISP box ARE the label; only blocked warns
+    const to = anchorFor(e.serverId)
+    if (!to) continue
+    const { w, h } = estimateLabelSize('✕ firewall')
+    labelSpecs.push({ id: `inetlbl:${e.serverId}`, x: (inetAnchor.x + to.x) / 2 - w / 2, y: (inetAnchor.y + to.y) / 2 - h / 2, w, h })
+  }
+  if (showInet) obstacles.push(ISP.bounds)
+  const placedLabels = placeLabels(labelSpecs, obstacles)
 
   return (
     <div
@@ -295,6 +408,68 @@ export function DatacenterFloor() {
               )
             })}
 
+            {/* Internet ingress: ISP cabinet → every public-entry server (allowed = teal,
+                marching under the same TOP_ANIMATED budget when carrying rps; firewalled-shut =
+                the blocked red treatment). Drawn with the flows so lines pass UNDER the boxes. */}
+            {showInet && (
+              <g data-testid="inet-box">
+                {/* street feed entering from off-floor (screen-left) */}
+                <path
+                  d={`M-40,${ISP.fl.y - 10} L${ISP.fl.x - 14},${ISP.fl.y - 10} L${ISP.fl.x + 2},${ISP.fl.y - 18}`}
+                  fill="none" stroke="var(--color-text-muted)" strokeDasharray="3 5" opacity={0.5}
+                />
+                {/* cabinet faces (the floor's own gradients — it is a real appliance in the room's light) */}
+                <polygon points={ISP.front} fill="url(#az-rackfront)" stroke="#3a4556" />
+                <polygon points={ISP.side} fill="url(#az-rackside)" stroke="#2c3644" />
+                <polygon points={ISP.top} fill="url(#az-racktop)" stroke="#3a4556" />
+                {/* roofline accent — hud teal marks it as the network's mouth */}
+                <line x1={ISP.roofSW.x} y1={ISP.roofSW.y} x2={ISP.roofSE.x} y2={ISP.roofSE.y} stroke="var(--az-hud)" strokeWidth={1.6} opacity={0.85} />
+                {/* whip antenna */}
+                <line x1={ISP.roofNW.x} y1={ISP.roofNW.y} x2={ISP.roofNW.x} y2={ISP.roofNW.y - 16} stroke="#4a5668" strokeWidth={1.2} />
+                <circle cx={ISP.roofNW.x} cy={ISP.roofNW.y - 18} r={2} fill="var(--az-hud)" opacity={0.9} />
+                {/* status LEDs: PWR always · LINK when any entry is open · ACT when rps flows */}
+                <circle cx={ISP.fl.x + 7} cy={ISP.fl.y - 26} r={1.7} fill="var(--color-success)" />
+                <circle cx={ISP.fl.x + 14} cy={ISP.fl.y - 22.5} r={1.7}
+                  fill={ingress.some(e => e.allowed) ? 'var(--az-hud)' : '#2a3442'} />
+                <circle cx={ISP.fl.x + 21} cy={ISP.fl.y - 19} r={1.7}
+                  fill={ingressRps > 0 ? 'var(--color-warning)' : '#2a3442'} />
+                {/* RJ45-ish uplink port with a gold pin line */}
+                <rect x={ISP.fl.x + 8} y={ISP.fl.y - 14} width={12} height={9} rx={1} fill="#0b0e13" stroke="#3a4556" strokeWidth={0.8} />
+                <line x1={ISP.fl.x + 10} y1={ISP.fl.y - 11.5} x2={ISP.fl.x + 18} y2={ISP.fl.y - 11.5} stroke="#c9a227" strokeWidth={1.4} opacity={0.9} />
+                <text x={ISP.roofSW.x - 2} y={ISP.roofNW.y - 24} fill="var(--az-hud)" style={{ font: '10px var(--font-mono)', letterSpacing: '0.14em', pointerEvents: 'none' }}>
+                  INTERNET
+                </text>
+                <text x={ISP.roofSW.x - 2} y={ISP.floorSE.y + 14} fill="var(--color-text-muted)" style={{ font: '8px var(--font-mono)', pointerEvents: 'none' }}>
+                  {ingress.length > 0 ? `isp uplink · ${ingressRps.toLocaleString('en-US')} rps in` : 'isp uplink · no public entry'}
+                </text>
+              </g>
+            )}
+            {showInet && ingress.map(e => {
+              const to = anchorFor(e.serverId)
+              if (!to) return null
+              const key = `inet->${e.serverId}`
+              const rate = animatedKeys.get(key)
+              const animated = e.allowed && rate !== undefined
+              const dur = animated ? (0.5 + (1 - (rate as number) / maxAnimatedRate) * 1.1).toFixed(2) : undefined
+              // One elbow: run along the floor from the box, then up to the server's anchor.
+              const d = `M${inetAnchor.x},${inetAnchor.y} L${(inetAnchor.x + to.x) / 2},${inetAnchor.y} L${to.x},${to.y}`
+              return (
+                <path
+                  key={key}
+                  data-testid={`ingress-${e.serverId}`}
+                  data-animated={animated ? 'true' : 'false'}
+                  d={d}
+                  fill="none"
+                  stroke={e.allowed ? 'var(--az-hud)' : 'var(--color-danger)'}
+                  strokeWidth={e.allowed ? 1.8 : 2}
+                  strokeDasharray={e.allowed ? '7 8' : '5 4'}
+                  className={animated ? 'az-trace-animated' : undefined}
+                  style={animated ? { animationDuration: `${dur}s` } : undefined}
+                  opacity={e.allowed ? 0.7 : 0.85}
+                />
+              )
+            })}
+
             {racks.map(rack => {
               const cell = plan.cabinets[rack.id]
               if (!cell) return null
@@ -348,33 +523,49 @@ export function DatacenterFloor() {
           </svg>
 
           {/* Label layer — plain positioned divs as SVG siblings (mockup's own `.iso3 .lbl`
-              shape); raw px matches the SVG's own unscaled viewBox 1:1. */}
+              shape); raw px matches the SVG's own unscaled viewBox 1:1. Positions come from
+              `placedLabels` (labelLayout.ts) — anchored above each roof, pushed up until clear
+              of every box and every earlier label (user report 2026-07-12). */}
           {racks.map(rack => {
-            const cell = plan.cabinets[rack.id]
-            if (!cell) return null
+            const r = placedLabels.get(`rack:${rack.id}`)
+            if (!r) return null
             const used = rackUsedU(doc, rack.id)
-            const h = cabinetHeightPx(used)
-            const box = isoBox(cell.x, cell.y, plan.cols, h)
             return (
-              <div key={rack.id} style={{ ...lblStyle, left: box.roofSW.x - 18, top: box.roofSW.y - 20 }}>
+              <div key={rack.id} style={{ ...lblStyle, left: r.x, top: r.y }}>
                 {rack.label} <small style={{ color: 'var(--color-text-muted)' }}>· {used}/{rack.capacityU}U</small>
               </div>
             )
           })}
-          {managed.map(m => {
-            const cell = plan.appliances[m.id]
-            if (!cell) return null
-            const c = tileCenter(cell.x, cell.y, plan.cols)
+          {freePool.map(server => {
+            const r = placedLabels.get(`pod:${server.id}`)
+            if (!r) return null
             return (
-              <div key={m.id} style={{ ...lblStyle, left: c.x - 20, top: c.y + 16, color: 'var(--az-teal)', borderColor: '#3fc7b83a' }}>
+              <div
+                key={server.id} data-testid="pod-label"
+                style={{
+                  position: 'absolute', left: r.x, top: r.y, width: r.w, textAlign: 'center',
+                  font: '8px var(--font-mono)', color: 'var(--color-text-secondary)',
+                  pointerEvents: 'none', whiteSpace: 'nowrap',
+                }}
+              >
+                {server.label}
+              </div>
+            )
+          })}
+          {managed.map(m => {
+            const r = placedLabels.get(`managed:${m.id}`)
+            if (!r) return null
+            return (
+              <div key={m.id} style={{ ...lblStyle, left: r.x, top: r.y, color: 'var(--az-teal)', borderColor: '#3fc7b83a' }}>
                 {m.label} <small>· {m.nodeType}</small>
               </div>
             )
           })}
-          {freePool.length > 0 && (() => {
-            const c = tileCenter(plan.pods[freePool[0].id].x, plan.pods[freePool[0].id].y, plan.cols)
+          {(() => {
+            const r = placedLabels.get('section:free-pool')
+            if (!r) return null
             return (
-              <div style={{ ...lblStyle, left: c.x - 10, top: c.y + 30, color: 'var(--az-teal)', borderColor: '#3fc7b83a' }}>
+              <div style={{ ...lblStyle, left: r.x, top: r.y, color: 'var(--az-teal)', borderColor: '#3fc7b83a' }}>
                 FREE POOL <small>· unracked</small>
               </div>
             )
@@ -390,21 +581,28 @@ export function DatacenterFloor() {
           )}
           {flows.map(f => {
             const key = `${f.source}->${f.target}`
-            const from = anchorFor(f.source)
-            const to = anchorFor(f.target)
-            if (!from || !to) return null
-            const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 }
+            const r = placedLabels.get(`dep:${key}`)
+            if (!r) return null
             const blocked = f.blocked > 0
             return (
               <div
                 key={`lbl-${key}`}
                 style={{
-                  ...lblStyle, left: mid.x - 14, top: mid.y - 10,
+                  ...lblStyle, left: r.x, top: r.y,
                   color: blocked ? 'var(--color-danger)' : 'var(--az-hud)',
                   borderColor: blocked ? undefined : '#2dd4bf3a',
                 }}
               >
                 {blocked ? `✕ ${f.reason}` : `${f.total} dep${f.total > 1 ? 's' : ''}`}
+              </div>
+            )
+          })}
+          {ingress.filter(e => !e.allowed).map(e => {
+            const r = placedLabels.get(`inetlbl:${e.serverId}`)
+            if (!r) return null
+            return (
+              <div key={`inetlbl-${e.serverId}`} style={{ ...lblStyle, left: r.x, top: r.y, color: 'var(--color-danger)' }}>
+                ✕ firewall
               </div>
             )
           })}
