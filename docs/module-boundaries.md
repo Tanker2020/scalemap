@@ -1133,7 +1133,8 @@ scope={scope} />` as the dock's first child (above the existing `WorldSummary` s
 UNCONDITIONALLY rendered at every scope for this task; Task 2's brief explicitly owns replacing
 it with `AtlasHeader`, so a narrow-scope dock temporarily still shows world-wide "handling N rps"
 copy above the scope-correct tab body — a known, intentionally-deferred rough edge, not an
-oversight), and switches the tab-bar's id set via `scopeTabs(scope)`. Tab persistence (D2): a
+oversight — **superseded by §T below: `WorldSummary` no longer exists, `AtlasHeader` now renders
+at both world AND region scope**), and switches the tab-bar's id set via `scopeTabs(scope)`. Tab persistence (D2): a
 `useLayoutEffect` keyed on `scope` alone (mirrors this file's own `placeInk` `useLayoutEffect`
 precedent, and `DatacenterFloor.tsx`'s `currentIdsKey`-only-dependency precedent) resets `tab` to
 the new scope's first id only when the current one doesn't exist there. World scope's rendering
@@ -1144,9 +1145,156 @@ scope (same references, same computed values), so the Analysis tab-bar badge and
 `SignatureHeader` summary read the same numbers they always did. Non-world scope renders four new
 file-local (not exported, not in their own files — small enough to keep beside their one caller,
 same judgment call `WorldSummary` itself already made) components: `ScopedConfigBody` (the
-brief's placeholder — T2/T3/T4 replace this per scope), `ScopedAnalysisBody`/`ScopedEventsBody`/
+brief's placeholder — T2/T3/T4 replace this per scope — **T2 (§T) has now landed: `WorldPanel.tsx`
+calls `RegionConfigTab` instead of `ScopedConfigBody` for region scope specifically, leaving
+`ScopedConfigBody`'s `scope.kind === 'region'` branch unreachable dead code, kept deliberately so
+the component's shared signature/type stays untouched for AZ/server, which T3/T4 still call
+as-is**), `ScopedAnalysisBody`/`ScopedEventsBody`/
 `ScopedCostBody` (real, wired to the scopeData helpers above — nothing later replaces these
 three, they're final for this phase, not placeholders).
+
+### T. Polish 4 Task 2 — the atlas instrument (`src/app/world/dock/`, 2026-07-11)
+
+Builds ON §S's foundation (spec §D3/D4): the dock's signature header at world + region scope — a
+live constellation SVG (graticule, region dots, population dots, ≤3 traffic arcs) plus a
+two-posture headline — replacing T1's temporary "WorldSummary stays unconditionally rendered"
+rough edge and T1's generic region-scope Config placeholder. Does NOT touch az/server scope
+(the floor-plan/faceplate headers are T3/T4 territory) or the engine/`nav.store.ts`/
+`world.store.ts`/`ui.store.ts`.
+
+- **`src/app/world/dock/AtlasHeader.tsx`** (new) — `AtlasHeaderProps { regionId: string | null }`
+  (`null` = world scope); pure presentational (reads props + `world`/`simulation` stores +
+  `useCompiledWorld()` directly, no new store fields). Exports `projectLatLon(lat, lon, w, h)`
+  standalone (equirectangular, lon −180..180→0..w, **lat 75..−60→0..h** — the datacenter-metro
+  band, not the full globe — both clamped) so its math is TDD'd independent of rendering.
+  **Dark-scene chrome** (D3's InspectorRail precedent, third instance after ScopeRail's rail
+  background and InspectorRail itself): `ATLAS_BG`/`ATLAS_BORDER`/`GRATICULE_STROKE`/
+  `LABEL_COLOR`/`HEADLINE_MUTED`/`HEADLINE_STRONG` are fixed local hex (DARK_COLORS' own values/
+  the locked mock's literals — e.g. `HEADLINE_MUTED = '#94A3B8'` IS `DARK_COLORS.textSecondary`,
+  not a new invented color), never `var(--color-*)`, with the same InspectorRail-precedent
+  reasoning: `var(--color-text-secondary)` would degrade to a mid-gray calibrated for a WHITE
+  card in light theme, illegible against this permanently-dark backdrop. **One documented
+  exception**: the region-scope ring and the traffic arcs both use `HUD = 'var(--kit-accent)'`
+  (theme-aware, NOT fixed) per the T2 brief's explicit ambiguity resolution ("reuse the
+  ScopeRail/theme hud color token") — they denote "hud/live," the same semantic ScopeRail's "here"
+  pill and the tab-bar ink already carry, so they deliberately ride that already-WCAG-checked
+  pair instead of a 7th hardcoded hex.
+  - **Region dot health**: reuses `pinColor(health)` — exported from `globe/RegionPins.tsx`, NOT
+    re-derived — for the fixed-hex fill (so the atlas's health colors are byte-identical to the
+    globe's pin colors in both scenes). The "region whose every AZ is manually killed reads as
+    down" aggregation (`RegionPins.tsx`'s `RegionPin`-local view-side rule, the globe's "red-out
+    law") is DUPLICATED as a small local `regionHealth()` helper rather than imported — RegionPins
+    only exports `pinColor`/`isPulsing` as standalone functions, that aggregation is inlined in a
+    component-local selector there, and duplicating ~4 lines with a citing comment follows
+    `ui/derived.ts`'s own established "cite, don't cross-import engine/view-adjacent math"
+    precedent rather than adding a new cross-module (`dock/` → `globe/`, beyond the already-taken
+    `pinColor` import) coupling for logic that isn't exported anyway. `displayBatch` null (never
+    run) → every region dot renders `pinColor('healthy')` (success/green) per the brief's explicit
+    "authored-but-not-running worlds show success dots" rule.
+  - **Arcs**: population→landing-region quadratic paths, capped at 3, ranked by rps descending.
+    Landing/ranking source is `displayBatch` presence (`scrubBatch ?? latestBatch` — the SAME
+    discriminator every other dock/panel surface already uses for "rest vs has-data," e.g. the
+    deleted WorldSummary's own `!displayBatch` branch) — NOT the literal `running` flag, since a
+    stopped-but-scrubbed replay still has real route data to show. At rest (`populationLanding`
+    branch), routes rank by `pop.peakRps` (no live rps exists yet); baseline synthetic
+    `populationRoutes` entries (id `baseline:<regionId>`, no `doc.populations` entry — see
+    `worldEngine/index.ts`'s baseline-demand loop) are skipped, matching the fact that they have
+    no population marker anywhere in the app (including the globe) to draw an arc FROM. The
+    MOTION gate is separate and literal-`running`-based (idle-static law): `data-arc-live`
+    (`"true"`/`"false"` string, always present) marks the top-ranked arc for its opacity tier
+    (0.7 vs the other two's 0.35) REGARDLESS of running state; `data-animated` (`"true"`/`"false"`
+    string, always present, exposed specifically so tests never have to read computed CSS) is
+    `true` only on the top arc AND only when `running && topRps > 0 && !useReducedMotion()` —
+    verified test-side that a scrubbed-but-stopped batch still ranks a top arc but never animates
+    it.
+  - **Headline**: world scope's copy is REUSED verbatim from the deleted `WorldSummary`'s two
+    postures for region/server/city COUNTS and the `$/hr`/rolling-rps MATH (`useRollingNumber`,
+    `scopedCost({kind:'world'}, doc, world)` — literally T1's `scopeData.ts` helper, not
+    `computeWorldCost` re-called inline, so the world Cost tab and the atlas headline can never
+    silently diverge) — **but the RUNNING posture's exact SENTENCE changed** per D4/the mock:
+    dropped `across N regions` and the old secondary line's health-label/p50 (health now
+    communicated visually via the constellation's dot colors, not text); p50 is never appended
+    (the brief's "append p50 only if it fits" judgment call — the mock's own example line is
+    already close to the dock's ~336px width with rps+cities+price alone, so this implementation
+    always omits it rather than building a fragile text-measurement heuristic). Region scope is
+    ONE formula (not two postures) — `<catalogId> · N rps · $X/hr` — that degrades gracefully at
+    rest for free: rps naturally reads `0` (no batch), and `$/hr` still resolves via
+    `scopedCost({kind:'region', regionId}, doc, world ?? null)` because `computeWorldCost` sums
+    server `hourlyUsd` unconditionally — only its egress term needs a live `world` metrics object.
+    A single `useRollingNumber` call handles BOTH scope's rps figure (fed whichever raw value is
+    scope-relevant via a ternary computed BEFORE the hook call) — calling the hook itself from
+    inside an `if (regionId === null)` branch would violate React's rules-of-hooks the instant a
+    mounted instance's `regionId` prop flips between renders (WorldPanel never remounts
+    `AtlasHeader` on a world↔region scope change — same component type, same JSX slot).
+  - `data-testid="atlas-header"` (root), `atlas-region-dot` (per dot, per the brief verbatim),
+    `atlas-headline`.
+- **`src/app/world/dock/RegionConfigTab.tsx`** (new) — region scope's REAL Config tab body
+  (`RegionConfigTabProps { regionId: string }`), replacing T1's generic `ScopedConfigBody`
+  placeholder for region scope ONLY (az/server still get the placeholder — T3/T4 territory,
+  untouched). One `EdgeRow` per AZ in this region (health dot from `displayBatch.azs[az.id]`,
+  label, doc-derived server count — always available, unlike the batch-gated rps — singular-aware,
+  live rps or `'—'` at rest, right-aligned via `marginLeft: 'auto'` inside EdgeRow's own
+  `children` slot rather than its separate `trailing` prop, so the whole row's text is one
+  testable block and a click anywhere in it still bubbles to EdgeRow's onClick); row click →
+  `goAz(regionId, az.id)` (nav-only, never edit-locked — edit-locking is for MUTATIONS, and EdgeRow
+  renders a plain `<div>`, which a `<fieldset disabled>` doesn't touch anyway, unlike a `<button>`).
+  `+ az` button reuses `world.store.ts`'s `addAz` AND `TopologyPanel.tsx`'s exact auto-suffix
+  label convention (`${catalogId}${String.fromCharCode(97 + azs.length)}`) byte-for-byte —
+  duplicated as a one-line expression (not imported — `nextAzLabel` is a `TopologyPanel`-local
+  closure, not exported) rather than refactored into a shared helper, matching the relocated-
+  dispatch contract's "reuse the dispatch, not necessarily the call site" reading. Explicitly
+  `disabled={running}` + `title="stop the simulation to edit"` on the button itself (not relying
+  solely on `WorldPanel.tsx`'s ambient `<fieldset disabled={running}>`, which this component sits
+  inside in production but NOT in its own standalone test) — same self-sufficient-correctness
+  precedent as `AzRow.tsx`'s/`DatacenterFloor.tsx`'s own `+ server`/`+ rack` buttons.
+  `data-testid="region-config-tab"` (root), `region-config-az-row` (per row).
+- **`src/app/world/panels/WorldPanel.tsx`**: `WorldSummary` (the Polish-2-era read strip, §Q/§R)
+  is DELETED outright — not hidden, not kept as dead code — its `data-testid="world-summary"` no
+  longer exists anywhere. `<AtlasHeader regionId={scope.kind === 'region' ? scope.regionId :
+  null} />` renders in its exact old slot (above the tab bar, OUTSIDE the `<fieldset
+  disabled={running}>` — a read surface, must stay legible while running) at BOTH world and
+  region scope (a single conditional, `scope.kind === 'world' || scope.kind === 'region'`) — az/
+  server scope render no atlas at all. The Config-tab branch now checks `scope.kind === 'region'`
+  first (→ `RegionConfigTab`) before falling through to `ScopedConfigBody` (az/server, unchanged).
+  `useRollingNumber`/`computeWorldCost`/`HOURS_PER_MONTH` imports were removed (their only
+  consumer, `WorldSummary`, is gone) — `AtlasHeader.tsx` now owns that math instead.
+- **`src/app/world/panels/TopologyPanel.tsx`** — the `wtree` reskin (D4/mock): each region row's
+  full 1px box border became a 2px LEFT border (`WTREE_BORDER = 'var(--color-node-border)'` at
+  rest — a THEME-AWARE token, deliberately, since TopologyPanel is dock BODY content, below the
+  atlas header, where the dark-scene-chrome carve-out does NOT apply — brightening to
+  `var(--kit-accent)` on hover). Hover state is a plain local `useState<string|null>` +
+  `onMouseEnter`/`onMouseLeave` (same idiom this file already uses for
+  `presetGridOpenAz`/`expandedServer`) rather than a new injected stylesheet class, since inline
+  `style` objects can't express `:hover` and this task's brief didn't list `ui/kit.tsx` as a file
+  to touch — zero other files touched for this reskin. Added a live rps figure (hud-colored,
+  batch-gated — omitted entirely at rest, matching `ServerRow`'s existing "no fake numbers at
+  rest" convention below it in the same file) to the region `SectionHeader`'s `trailing`, and a
+  new meta line (`N AZ(s) · M server(s) · $X.XX/hr`, doc-derived so it's always shown, price via
+  `computeWorldCost(doc, world).byRegion` — the SAME primitive every other cost readout uses, no
+  new math) below it. **STYLING ONLY**: `regionAzs`/`regionAzIds` are computed once per region row
+  and the pre-existing AZ `.map()` now reuses `regionAzs` instead of re-filtering
+  `doc.azs`/`doc.servers` a second time (a pure simplification, not a behavior change) — every
+  other dispatch (`addRegion`/`removeRegion`/`addAz`/`removeAz`/`addServer`/role-`select`/
+  firewall/stack editors) is byte-for-byte untouched, confirmed by all 11 pre-existing
+  `TopologyPanel.test.tsx` cases passing with zero edits. **Test-collision note**: the new
+  region-row `$X.XX/hr` meta line uses `.toFixed(2)` specifically (not raw `hourlyUsd`) so a
+  single-server region's rollup (e.g. `$0.036` → `"$0.04/hr"`) can never collide with
+  `ServerRow`'s own unrounded `${server.hourlyUsd}/hr` (`"$0.036/hr"`, 3 decimals) — but it CAN,
+  by design, collide with `AtlasHeader`'s own `.toFixed(2)`-rounded world `$/hr` for a
+  trivially-small world (both legitimately render `"$0.04/hr"` simultaneously, since
+  `WorldPanel.tsx` mounts `AtlasHeader` unconditionally alongside whichever tab is active); the
+  migrated `WorldPanel.test.tsx` price assertion (below) scopes its query to
+  `within(screen.getByTestId('atlas-headline'))` rather than a blind `screen.getByText` for
+  exactly this reason.
+- **`src/app/world/panels/WorldPanel.test.tsx`**: the two `WorldSummary`-describe-block tests
+  migrated into a new `'WorldPanel atlas header (Polish 4 T2)'` describe block, same behavioral
+  intent (same two-posture number derivations) against `atlas-headline`/`atlas-header` instead of
+  `world-summary`, plus a new explicit assertion that `world-summary` no longer exists anywhere
+  (WorldSummary was absorbed, not duplicated) and two new scope-boundary assertions (region scope
+  DOES render `atlas-header`; az scope does NOT). The pre-existing T1 `'region scope narrows the
+  tab bar...'` test's Config-tab assertion was updated from `config-placeholder` (region text/
+  catalogId) to `region-config-tab` (RegionConfigTab now owns region scope's Config body) — a
+  required update, not an optional migration, since T2 deliberately changes what renders there.
 
 ---
 

@@ -13,12 +13,20 @@ import type { Region, Server } from '../../../lib/world/types'
 import { SectionHeader, EdgeRow, ChipValue, MicroBars, PresetCardGrid, type EdgeRowStatus } from '../ui/kit'
 import { field, smallBtn, dangerBtn, row } from './panelStyles'
 import { healthWord } from '../ui/derived'
+import { computeWorldCost, HOURS_PER_MONTH } from '../../../lib/costModelV2'
 
 const HEALTH_COLOR: Record<'healthy' | 'degraded' | 'down', string> = {
   healthy: 'var(--color-success)',
   degraded: 'var(--color-warning)',
   down: 'var(--color-danger)',
 }
+
+// `wtree` reskin (Polish 4 T2, spec D4 / mock `.wtree .region`): region rows trade their old
+// full boxed-card border for a 2px left-border "tree" treatment, hud-colored on hover — styling
+// only, every dispatch below is untouched (see the file-header docstring). `var(--color-*)`
+// throughout (TopologyPanel is dock BODY, not an instrument header — the D3 dark-scene-chrome
+// carve-out is header-only, e.g. AtlasHeader's own graticule).
+const WTREE_BORDER = 'var(--color-node-border)'
 
 // '▸ US-EAST-1 · N. VIRGINIA' — catalogId uppercased + the parenthesized metro from the
 // WORLD_REGIONS label uppercased (fallback to the raw label, uppercased, when no parens).
@@ -55,8 +63,16 @@ export function TopologyPanel() {
   const [presetByAz, setPresetByAz] = useState<Record<string, string>>({})
   const [presetGridOpenAz, setPresetGridOpenAz] = useState<string | null>(null)
   const [expandedServer, setExpandedServer] = useState<string | null>(null)
+  // wtree hover (styling only): inline styles can't express `:hover`, so the left-border's hud
+  // brighten-on-hover is JS-tracked state, same idiom this file already uses for
+  // presetGridOpenAz/expandedServer — no new shared stylesheet, no other file touched.
+  const [hoveredRegion, setHoveredRegion] = useState<string | null>(null)
 
   const available = WORLD_REGIONS.filter(w => !Object.values(doc.regions).some(r => r.catalogId === w.id))
+  // Region cost rollup (D4's "meta line with price") — computed once for the whole panel, not
+  // per-region-row, and reuses the SAME computeWorldCost/HOURS_PER_MONTH primitives every other
+  // $/hr readout in the app already uses (no new cost math).
+  const worldCost = computeWorldCost(doc, displayBatch?.world ?? null)
 
   const nextAzLabel = (catalogId: string, regionId: string) => {
     const count = Object.values(doc.azs).filter(a => a.regionId === regionId).length
@@ -77,12 +93,31 @@ export function TopologyPanel() {
 
       {Object.values(doc.regions).map(region => {
         const regionHealth = displayBatch?.regions[region.id]?.health ?? null
+        const regionAzs = Object.values(doc.azs).filter(a => a.regionId === region.id)
+        const regionAzIds = new Set(regionAzs.map(a => a.id))
+        const regionServerCount = Object.values(doc.servers).filter(sv => regionAzIds.has(sv.azId)).length
+        const regionHourlyUsd = (worldCost.byRegion.find(r => r.regionId === region.id)?.monthlyUsd ?? 0) / HOURS_PER_MONTH
+        const liveRps = displayBatch?.regions[region.id]?.rps
         return (
-          <div key={region.id} style={{ border: '1px solid var(--color-node-border)', borderRadius: 6, padding: 8, marginTop: 8 }}>
+          <div key={region.id}
+            onMouseEnter={() => setHoveredRegion(region.id)}
+            onMouseLeave={() => setHoveredRegion(cur => cur === region.id ? null : cur)}
+            style={{
+              borderLeft: `2px solid ${hoveredRegion === region.id ? 'var(--kit-accent)' : WTREE_BORDER}`,
+              transition: 'border-color 0.15s ease',
+              borderRadius: 3, padding: '6px 6px 6px 9px', margin: '8px 0',
+            }}>
             <SectionHeader
               label={regionSectLabel(region)}
               trailing={
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {/* rps right-aligned in hud (D4's wtree treatment) — batch-gated, matching
+                      this file's own "no fake numbers at rest" convention (ServerRow below). */}
+                  {liveRps !== undefined && (
+                    <span style={{ color: 'var(--kit-accent)', fontSize: 10, fontVariantNumeric: 'tabular-nums' }}>
+                      {Math.round(liveRps)} rps
+                    </span>
+                  )}
                   <span style={{
                     fontSize: 9, fontVariantNumeric: 'tabular-nums',
                     color: regionHealth ? HEALTH_COLOR[regionHealth] : 'var(--color-text-muted)',
@@ -102,9 +137,14 @@ export function TopologyPanel() {
                 </div>
               }
             />
+            {/* wtree meta line (D4): AZ/server counts + price — doc-derived, always shown
+                (unlike the batch-gated rps above, these don't need a live metrics batch). */}
+            <div style={{ fontSize: 9.5, color: 'var(--color-text-muted)', margin: '1px 0 6px 2px' }}>
+              {regionAzs.length} AZ{regionAzs.length === 1 ? '' : 's'} · {regionServerCount} server{regionServerCount === 1 ? '' : 's'} · <span style={{ color: 'var(--color-price)' }}>${regionHourlyUsd.toFixed(2)}/hr</span>
+            </div>
             <button className="kit-press" style={smallBtn} onClick={() => store.addAz(region.id, nextAzLabel(region.catalogId, region.id))}>+ AZ</button>
 
-            {Object.values(doc.azs).filter(a => a.regionId === region.id).map(az => {
+            {regionAzs.map(az => {
               const selectedPreset = presetByAz[az.id] ?? 'vps-medium'
               const gridOpen = presetGridOpenAz === az.id
               return (

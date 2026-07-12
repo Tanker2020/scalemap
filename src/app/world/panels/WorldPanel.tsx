@@ -14,9 +14,9 @@ import { EventsTab } from '../EventsTab'
 import { CostTab } from '../CostTab'
 import { panel, sectionLabel } from './panelStyles'
 import { ChipValue } from '../ui/kit'
-import { useRollingNumber } from '../ui/motion'
-import { computeWorldCost, HOURS_PER_MONTH } from '../../../lib/costModelV2'
 import { ScopeRail } from '../dock/ScopeRail'
+import { AtlasHeader } from '../dock/AtlasHeader'
+import { RegionConfigTab } from '../dock/RegionConfigTab'
 import { deriveScope, scopeTabs, type DockScope } from '../dock/scope'
 import { scopedEvents, scopedFindings, scopedCost } from '../dock/scopeData'
 import type { WorldDoc, CompileFinding } from '../../../lib/world/types'
@@ -229,7 +229,13 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
   return (
     <aside style={panel}>
       <ScopeRail scope={scope} />
-      <WorldSummary />
+      {/* Atlas instrument (Polish 4 T2, spec D3/D4): world scope's signature header — ABSORBS the
+          pre-T2 WorldSummary strip (deleted below); region scope rides the same constellation,
+          scoped (this region's dot ringed, headline narrowed to the region). az/server scope get
+          no atlas — their own instrument headers (floor plan / faceplate) are T3/T4 territory. */}
+      {(scope.kind === 'world' || scope.kind === 'region') && (
+        <AtlasHeader regionId={scope.kind === 'region' ? scope.regionId : null} />
+      )}
       <div ref={barRef} onMouseLeave={() => placeInk(tab)}
         style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap', position: 'relative' }}>
         {tabs.map(t => (
@@ -271,12 +277,17 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
             {tab === 'cost' && <CostTab />}
           </>
         ) : (
-          // Region/AZ/server scope (D2): Config is a placeholder T2 (region)/T3 (az)/T4
-          // (server) each replace with their own instrument body — out of scope here by design.
-          // Analysis/Events/Cost are real, wired to this scope's data via T1's scopeData
-          // helpers (computed above) — they are NOT placeholders and nothing later replaces them.
+          // Region/AZ/server scope (D2): Config is a placeholder for AZ (T3)/server (T4), each
+          // to replace with their own instrument body — out of scope here by design. Region's
+          // Config landed this task (T2): RegionConfigTab, not the generic placeholder. Analysis/
+          // Events/Cost are real, wired to this scope's data via T1's scopeData helpers (computed
+          // above) — they are NOT placeholders and nothing later replaces them.
           <>
-            {tab === 'config' && <ScopedConfigBody scope={scope} doc={doc} />}
+            {tab === 'config' && (
+              scope.kind === 'region'
+                ? <RegionConfigTab regionId={scope.regionId} />
+                : <ScopedConfigBody scope={scope} doc={doc} />
+            )}
             {tab === 'analysis' && (
               <ScopedAnalysisBody analysis={scopedFindingsResult.analysis} compile={scopedFindingsResult.compile} />
             )}
@@ -289,76 +300,15 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
   )
 }
 
-// World summary strip (Polish 2 D5): a read surface above the tab bar, OUTSIDE the
-// fieldset — it must not gray out while the sim is running. At rest (no metrics batch yet)
-// it shows the authored doc's counts; once metrics are flowing it becomes the live sentence
-// (rolling rps, health dot, $/hr, p50).
-function WorldSummary() {
-  const doc = useWorldStore(s => s.doc)
-  const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
-  const rolledRps = useRollingNumber(displayBatch?.world.totalRps ?? 0)
-
-  const regionCount = Object.keys(doc.regions).length
-  const serverCount = Object.keys(doc.servers).length
-  const cityCount = Object.keys(doc.populations).length
-
-  const box: CSSProperties = {
-    border: '1px solid var(--color-node-border)', borderRadius: 7, padding: '11px 13px',
-    background: 'linear-gradient(180deg, var(--color-surface-hover), var(--color-node-base))',
-    marginBottom: 8,
-  }
-
-  if (!displayBatch) {
-    return (
-      <div style={box} data-testid="world-summary">
-        <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
-          {regionCount} region{regionCount === 1 ? '' : 's'} · {serverCount} server{serverCount === 1 ? '' : 's'} · baseline {doc.traffic.baselineTotalRps.toLocaleString('en-US')} rps
-        </div>
-      </div>
-    )
-  }
-
-  const regions = Object.values(displayBatch.regions)
-  const downCount = regions.filter(r => r.health === 'down').length
-  const degradedCount = regions.filter(r => r.health === 'degraded').length
-  // The dot glyph moved out of this string into its own .kit-ripple span (Polish 2 T7) — a
-  // ripple radiating from an inline text run spanning "N regions down" would paint an oval
-  // over the words, not a dot; the dot needs its own small, roughly-square box.
-  const healthLabel = downCount > 0
-    ? `${downCount} region${downCount === 1 ? '' : 's'} down`
-    : degradedCount > 0
-      ? `${degradedCount} region${degradedCount === 1 ? '' : 's'} degraded`
-      : 'all healthy'
-  const healthColor = downCount > 0 ? 'var(--color-danger)' : degradedCount > 0 ? 'var(--color-warning)' : 'var(--color-success)'
-  // Decision 9: WorldMetrics exposes no latency — rps-weighted mean of region p50Ms.
-  const totalRps = regions.reduce((s, r) => s + r.rps, 0)
-  const p50 = totalRps > 0 ? regions.reduce((s, r) => s + r.p50Ms * r.rps, 0) / totalRps : 0
-  const hourlyUsd = computeWorldCost(doc, displayBatch.world).monthlyUsd / HOURS_PER_MONTH
-
-  return (
-    <div style={box} data-testid="world-summary">
-      <div style={{ fontSize: 12.5 }}>
-        Handling <b style={{ color: 'var(--kit-accent)', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{Math.round(rolledRps).toLocaleString('en-US')} rps</b>
-        {' '}from {cityCount} {cityCount === 1 ? 'city' : 'cities'} across {regionCount} region{regionCount === 1 ? '' : 's'}
-      </div>
-      <div style={{ fontSize: 10.5, color: 'var(--color-text-muted)', marginTop: 3, display: 'flex', gap: 10, flexWrap: 'wrap', fontVariantNumeric: 'tabular-nums', alignItems: 'center' }}>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: healthColor }}>
-          <span className={displayBatch ? 'kit-ripple' : undefined} style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor', flexShrink: 0 }} />
-          {healthLabel}
-        </span>
-        <span style={{ color: 'var(--color-price)' }}>${hourlyUsd.toFixed(2)}/hr</span>
-        <span>p50 {Math.round(p50)} ms</span>
-      </div>
-    </div>
-  )
-}
-
-// ─── Non-world Config/Analysis/Events/Cost bodies (Polish 4 T1, spec D2) ─────────────────────
-// Config is an intentional placeholder — T2/T3/T4 replace it per scope with the real atlas/
-// floor-plan/faceplate instrument body (see the brief: "do NOT build the atlas/floor/faceplate
-// now"). Analysis/Events/Cost are the real, final-for-this-phase bodies: small, scope-fed
-// siblings of AnalysisTab/EventsTab/CostTab (world-only, self-computing) rather than a prop-ified
-// rework of those three components, which the brief's file list doesn't touch.
+// ─── Non-world Config/Analysis/Events/Cost bodies (Polish 4 T1/T2, spec D2) ──────────────────
+// Config is an intentional placeholder for AZ (T3)/server (T4) scope only now — region scope's
+// Config landed in T2 as RegionConfigTab (dock/RegionConfigTab.tsx, wired in above) instead of
+// this generic body; the `scope.kind === 'region'` branch below is unreachable dead code left in
+// place deliberately (defensive fallback, and it keeps this component's signature stable for
+// AZ/server without narrowing its type). Analysis/Events/Cost are the real, final-for-this-phase
+// bodies: small, scope-fed siblings of AnalysisTab/EventsTab/CostTab (world-only, self-computing)
+// rather than a prop-ified rework of those three components, which the brief's file list doesn't
+// touch.
 
 function ScopedConfigBody({ scope, doc }: { scope: DockScope; doc: WorldDoc }) {
   let kindLabel = ''

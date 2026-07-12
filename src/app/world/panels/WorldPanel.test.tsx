@@ -58,22 +58,35 @@ describe('WorldPanel findings tab', () => {
     expect(useUiStore.getState().pendingPanelTab).toBeNull()                  // one-shot consumed
   })
 
-  it('world summary at rest counts the authored doc', () => {
-    const regionId = useWorldStore.getState().addRegion('us-east-1')
-    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
-    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
-    expect(screen.getByText(/1 region · 1 server · baseline 1,000 rps/)).toBeInTheDocument()
-  })
-
   it('tab ink slides — clicking a tab still switches content with the ink element present', () => {
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
     fireEvent.click(screen.getByText('Traffic'))
     expect(screen.getByLabelText('autoBaseline')).toBeInTheDocument()
     expect(document.querySelector('.kit-ink')).not.toBeNull()
   })
+})
 
-  it('the world summary $/hr renders in the price color', () => {
+// Migrated from the pre-Polish-4-T2 "WorldSummary" describe block (Polish 4 T2, spec D4): the
+// atlas headline ABSORBS the old WorldSummary strip — same behavioral intent (same two postures,
+// same number derivations), new home (AtlasHeader, mounted above the tab bar via WorldPanel).
+// The old `data-testid="world-summary"` element no longer exists anywhere (WorldSummary itself
+// was deleted, not just hidden) — asserted explicitly below alongside the migrated assertions.
+describe('WorldPanel atlas header (Polish 4 T2)', () => {
+  it('the old world-summary testid is gone — WorldSummary was absorbed, not duplicated', () => {
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    expect(screen.queryByTestId('world-summary')).not.toBeInTheDocument()
+    expect(screen.getByTestId('atlas-header')).toBeInTheDocument()
+  })
+
+  it('atlas headline at rest counts the authored doc (same copy as the old world summary)', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    expect(screen.getByTestId('atlas-headline')).toHaveTextContent(/1 region · 1 server · baseline 1,000 rps/)
+  })
+
+  it('the atlas headline $/hr renders in the price color while running', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
     const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
     useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
@@ -83,8 +96,28 @@ describe('WorldPanel findings tab', () => {
     }
     useSimulationStore.setState({ latestBatch: batch })
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
-    expect(screen.getByText('$0.04/hr')).toHaveStyle({ color: 'var(--color-price)' })
+    // Scoped to the atlas headline specifically (not a blind screen.getByText): the default
+    // Topology tab's own wtree meta line legitimately shows the SAME rounded $/hr for this
+    // single-region/single-server world, so an unscoped query would find two matches.
+    const headline = screen.getByTestId('atlas-headline')
+    expect(within(headline).getByText('$0.04/hr')).toHaveStyle({ color: 'var(--color-price)' })
     useSimulationStore.setState({ latestBatch: null })
+  })
+
+  it('region scope shows a scoped atlas headline above the four tabs', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useNavStore.getState().goRegion(regionId)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    expect(screen.getByTestId('atlas-header')).toBeInTheDocument()
+    expect(screen.getByTestId('atlas-headline')).toHaveTextContent('us-east-1')
+  })
+
+  it('az/server scope render no atlas header at all (T3/T4 territory)', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useNavStore.getState().goAz(regionId, azId)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    expect(screen.queryByTestId('atlas-header')).not.toBeInTheDocument()
   })
 })
 
@@ -195,9 +228,11 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
     expect(screen.queryByText('Placements')).not.toBeInTheDocument()
     expect(screen.queryByText('Traffic')).not.toBeInTheDocument()
     // Tab persistence (D2): the world default ('topology') doesn't exist at region scope, so it
-    // falls back to the new scope's first tab, Config — its placeholder body should render.
-    expect(screen.getByTestId('config-placeholder')).toHaveTextContent('region')
-    expect(screen.getByTestId('config-placeholder')).toHaveTextContent('us-east-1')
+    // falls back to the new scope's first tab, Config — region scope's REAL Config body (T2:
+    // RegionConfigTab, not the generic "coming soon" placeholder — that stays az/server-only)
+    // should render.
+    expect(screen.getByTestId('region-config-tab')).toBeInTheDocument()
+    expect(screen.queryByTestId('config-placeholder')).not.toBeInTheDocument()
   })
 
   it('keeps a tab id shared across scopes (Analysis) instead of resetting to Config on a scope change', () => {
