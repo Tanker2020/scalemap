@@ -1598,6 +1598,82 @@ call site.
   renders nothing with no traced requests (its "no selection" framing dropped along with the
   props).
 
+### W. Polish 4 Task 5 — watching mode, the spine re-voices (`src/app/world/dock/`, 2026-07-11)
+
+Builds ON §V (spec D7): "the shape never changes — only its temperature." §V's faceplate +
+four drawers stay ONE component tree with a `running`-branch, never a fork — this task adds the
+branch T4 left seams for. No engine/`nav.store.ts`/`world.store.ts`/`ui.store.ts` changes; every
+live number is `useServerDisplayMetrics`'s existing scrub-or-latest `display` plus
+`compiled.instances` filtered by `serverId` — nothing new published by `simulation.store.ts`.
+
+- **`ServerFaceplate.tsx`**: gained one derived boolean, `watching = running ||
+  display.scrubbing` — the D7 "watching posture" gate for the drawer pv/body re-voicing AND the
+  vitals pulse's 2.2s quickening + new `data-live` attribute. Deliberately NOT `display.server !==
+  null` (which would also read true after a plain Stop, since `simulation.store.ts`'s `stop()`
+  leaves `latestBatch` populated with the run's last frame until the next `start()`/
+  `resetSession()` — that would strand the drawers in watching mode after the user has already
+  stopped and gone back to authoring). The amber **watchband** (`data-testid="watchband"`, "SIMULATION
+  RUNNING — drawers are gauges now.") and `kill`'s enablement stay gated on `running` ALONE, not
+  `watching` — the text is literally a claim about the sim being live, and `kill` calls
+  `setOutage` against a live engine; both would be misleading/inert during a stopped scrub replay.
+  Also computes `serverRps` (Σ `InstanceMetrics.rps` over `compiled.instances` filtered by this
+  `serverId`) ONCE and shares it between HARDWARE's live rps row and FIREWALL's pv — no duplicate
+  derivation. `svcLive` (first compiled instance's blueprint name + p50Ms, or `null` at rest/no
+  instances) feeds `servicesPv`'s new optional third arg. `hardwarePv`/`firewallPv`'s watching-mode
+  return values get wrapped in a `var(--color-success)` `<span>` HERE (not inside the drawer
+  files) — the pv builders stay plain string functions, color is a call-site decision.
+- **`drawers/HardwareDrawer.tsx`**: `hardwarePv` grew an optional second arg
+  (`{cpuPct, ramPct} | null`) → `"<cpu>% cpu · <ram>% ram"` when supplied, unchanged `"<vcpu>c ·
+  <ramGb>G"` otherwise (existing 1-arg call sites/tests untouched). `HardwareDrawerProps` gained
+  `live?: HardwareLive | null` (`cpuFraction`/`ramFraction`/`rps`/`ramUsedMb`/`ramTotalMb` — all
+  straight off `ServerMetrics`, no invented field). When `live` is set, the body branches to TWO
+  live rows (`rps`, `ram` as `"<used> / <total> GB"`) above two FROZEN knob replacements
+  (`data-testid="hw-frozen-vcpu"`/`"hw-frozen-ram"`, `opacity: 0.55`, `title="locked while
+  running"`, a static track+fill div at the LIVE cpu/ram percentage) — **no `<input type="range">`
+  renders at all** in this branch, not just a CSS-hidden thumb: the edit-lock law's
+  `disabled={running}` alone would NOT have covered a stopped-but-scrubbing read (running is
+  false there), so the interactive control has to be absent, not merely disabled, to stay
+  non-editable during scrub. The ladder/hint/commit code above the branch point is unchanged and
+  simply unused when `live` is set.
+- **`drawers/FirewallDrawer.tsx`**: `firewallPv` grew an optional second arg (`liveAllowedRps:
+  number | null`) → `"≈<N> req/s allowed"` (N = the shared `serverRps`, `!= null`-checked so 0
+  rps still re-voices instead of falling through to the authoring string). **The component body
+  is UNTOUCHED** — D7 explicitly keeps the rule sentences unchanged while watching; this is a
+  **RATIFIED documented deviation** from the locked mock's `418 allowed/s · 0 blocked` +
+  `— carrying all traffic` sentence suffix (`task-5-brief.md`): the frozen `MetricsBatch`
+  contract carries no per-rule or blocked-connection counter, and the engine is frozen (§K), so
+  there is nothing real to re-voice the body with.
+- **`drawers/ServicesDrawer.tsx`**: `servicesPv` grew an optional third arg (`{name, p50Ms} |
+  null`) → `"<name> · p50 <X> ms"`. `ServicesDrawerProps` gained `compiled: CompiledWorld`
+  (new, required — HardwareDrawer's own existing pattern) + `liveInstances?:
+  Record<InstanceId, InstanceMetrics> | null`. When `liveInstances` is set, the body branches
+  from per-PLACEMENT chip lines to one row per compiled INSTANCE (`data-testid=
+  "service-live-row"`) — a placement with `count > 1` fans out to several instances, each with
+  its own `InstanceMetrics`, so this is a different cardinality than the authoring chip list, not
+  just a recolor — `"<blueprint name> :<port>"` + `"<health> · <rps> rps"` colored by the
+  existing shared `server/healthColor.ts`'s `HEALTH_COLOR` map (success/warning/danger — a
+  superset of D7's literal "success/danger," not a new color scheme). Zero instances renders the
+  same `"No services mounted here yet."` string the authoring branch already used.
+- **`drawers/PlacementDrawer.tsx`**: **untouched** — D7 explicitly keeps this pv/body unchanged;
+  the rack `<select>` was already `disabled={running}`-locked by T4's edit-lock, which already
+  covers the running case D7 cares about here (no scrub-specific gap the way HARDWARE's knobs
+  had, since PLACEMENT never renders a "live" visual to begin with).
+- **Vitals pulse** (`ServerFaceplate.tsx`): same `dockfp-vitals-pulse` CSS class from
+  `faceplateStyles.ts` (§V) — T5 does NOT add a second animation or class. `watching` just adds
+  an inline `animationDuration: '2.2s'` override (falls back to the class's 3.6s idle rate when
+  `undefined`) plus `data-live="true"/"false"`, keeping D3's "same ambient stroke, rate is the
+  signal" rule literally true (one keyframe, two durations, browser recalculates in place on
+  the same DOM node rather than remounting — no restart-jump at the loop wrap).
+- **Test migration/additions**: `HardwareDrawer.test.tsx`/`FirewallDrawer.test.tsx`/
+  `ServicesDrawer.test.tsx` each gained a `pv`-re-voice case plus (Hardware/Services only, since
+  Firewall's body is unchanged) a watching-posture body case; `ServicesDrawer.test.tsx`'s
+  pre-existing calls all gained the new required `compiled` prop (`compileWorld(doc)`, same
+  pattern `HardwareDrawer.test.tsx` already used). `ServerFaceplate.test.tsx` gained a "watching
+  mode (T5, spec D7)" describe block: watchband running-only, HW/FW/SVC pv re-voice + drawer body
+  integration, `data-live`/2.2s pulse, kill-lit-while-running with remove/+ still locked, and a
+  scrub-posture case (`running:false`, `latestBatch:null`, `scrubBatch` set) asserting the SAME
+  watching output with NO watchband — the literal D7 acceptance case.
+
 ---
 
 ## 2. Shared "hub" files (everyone touches these — high conflict risk)
@@ -1613,7 +1689,7 @@ in-flight changes.
 | `src/lib/theme.ts` (120 lines) | `ColorTokens`/`DARK_COLORS`/`LIGHT_COLORS`/`CATEGORY_COLORS`/`FONT_*`/`SPACING`/`MOTION` — small file, but touched by any node/edge visual change. Only the 16 `ColorTokens` keys (`canvas`, `canvasDots`, `nodeBase`, `nodeBorder`, `surface`, `surfaceHover`, `toolbar`, `toolbarBorder`, `textPrimary`, `textSecondary`, `textMuted`, `danger`, `success`, `successText`, `warning`, `accent`) are exposed as `--color-*` CSS custom properties by `App.tsx`'s `useThemeBootstrap` and mirrored in `src/index.css`'s static `:root` fallback. `CATEGORY_COLORS` (messaging/network/storage/etc per-category accents) is **not** exposed to CSS — only consumed directly in `.tsx` via inline styles (`BaseNode.tsx`/`GroupNode.tsx`, both deleted 2026-07-08, §A). **2026-07-02 bug-fix sweep migrated every remaining panel CSS module** (SimConfigPanel, PacketEditor, EventLogPanel, ReportsPanel, PropertiesPanel, MetricGraphOverlay, RequestInspector, DiagnosticsPanel, PlaybackScrubber, MetricsDrawer, CostTracker, HomeScreen, ContextMenu, NodePalette, StatusBar, BaseNode/GroupNode leftover fallbacks, Canvas.module.css, edges.module.css — ~545 hardcoded hex values total) to `var(--color-*)`/`color-mix()` — **historical note: every file in that list except `HomeScreen` was deleted 2026-07-08 (Phase 2 Task 17, §A/§B/§D/§E/§F/§H/§I)**; kept here as a record of the token-migration effort, not as a current file inventory. `theme.ts` itself, `HomeScreen.module.css`, and `src/app/world/`'s CSS are the surfaces that still matter today. | `HomeScreen.tsx`, `src/app/world/**` |
 | `src/index.css` | `:root` holds a **static copy of `DARK_COLORS`/`FONT_*`/`SPACING`/`MOTION`** (closes a first-paint FOUC gap — every `var(--color-*)` reference would otherwise be undefined until `App.tsx`'s `useThemeBootstrap` `useEffect` runs post-first-paint). This is a values-only fallback, not a second source of truth — if `theme.ts`'s `DARK_COLORS`/`FONT_*`/`SPACING`/`MOTION` change, update this block to match (nothing enforces the two staying in sync) | Every CSS module transitively (first paint only — overridden by the bootstrap effect on mount) |
 | `src/app/store/ui.store.ts` | **Trimmed 2026-07-08 (Phase 2 Task 17) to `themeMode: 'dark' \| 'light'` + `setThemeMode` only** — every other field (`activeTool`, `leftSidebarOpen`/`rightSidebarOpen`/`rightTab`, `selectedNodeId`/`selectedEdgeId`, `gridEnabled`, `connectSourceId`, `contextMenu`, `simConfigOpen`/`simConfigPanelNodeId`, `dockOpen`/`dockTab`, `packetEditorOpen`, `highlightedNodeIds`) was read only by the legacy canvas/simulation/sidebar/toolbar/dock UI deleted the same task (§A/§B/§D/§E/§F/§H/§I) — grep-verified zero remaining readers before trimming. Drives the runtime CSS custom-property bootstrap in `App.tsx` that every panel's CSS module reads via `var(--color-*)`; persisted to `localStorage` (`scalemap-theme-mode`). `App.tsx` is now the **only** file reading this store (`themeMode`, to bootstrap the CSS vars) — there is currently no UI control to call `setThemeMode` (the old toggle lived in the deleted `Toolbar.tsx`); a future task should add one to `WorldShell.tsx`'s header. If a future phase wants a "focus this node" pulse, a floating-panel-open registry, etc., re-add the specific field then rather than resurrecting the old multi-concern shape. **2026-07-10 (Polish 1 Task 6 — examples vault, §P):** gained a SECOND, unrelated field — `pendingPanelTab: PanelTab \| null` (initial `null`) + `setPendingPanelTab` — additive, `themeMode`'s contract untouched. `PanelTab` (`'topology'\|'blueprints'\|'placements'\|'traffic'\|'analysis'\|'events'\|'cost'`) is exported from here now, not from `WorldPanel.tsx` (view→store type import). One-shot signal: `HomeScreen.tsx`'s `openExample` sets it to `'analysis'` only for the teaching vault card, `WorldPanel.tsx` reads it once in a `useState` initializer and clears it in a mount effect. **2026-07-11 (Polish 4 Task 1 — contextual dock, §S):** gained a THIRD, unrelated field — `selectedServerId: ServerId \| null` (initial `null`) + `setSelectedServerId` — the AZ floor's (`az/DatacenterFloor.tsx`) selection, lifted out of local `useState` so the dock's derived scope (`app/world/dock/scope.ts`) and the floor's own highlight read the SAME value; cleared by one shared `WorldShell.tsx` effect on any `nav.level`/`nav.azId` change, not by the floor itself anymore. `PanelTab` gained an 8th member, `'config'` (the non-world scopes' shared entity-config tab id). **2026-07-11 (Polish 4 Task 3 — the floor-plan instrument, §U):** two more `selectedServerId` readers/writers — `dock/FloorPlanHeader.tsx` (the minimap IS the selection surface: a cab/pod click writes it, the `sel`-class shape reads it) and `dock/AzConfigTab.tsx` (a slat click writes it, a matching row gets a selected border) — no field/shape change, purely additive fan-in. **2026-07-11 (Polish 4 Task 4 — the faceplate + drawer spine, §V):** one more `selectedServerId` WRITER (`dock/ServerFaceplate.tsx`'s `remove…` action clears it after `removeServer`) — still no field/shape change; `InspectorV2.tsx` drops OUT of this field's fan-in the same task (its own selected-server pane retired, §V) | `App.tsx` (`themeMode`), `HomeScreen.tsx` + `WorldPanel.tsx` (`pendingPanelTab`), `DatacenterFloor.tsx` + `WorldShell.tsx` + `WorldPanel.tsx` + `dock/ScopeRail.tsx` + `dock/FloorPlanHeader.tsx` + `dock/AzConfigTab.tsx` + `dock/ServerFaceplate.tsx` (`selectedServerId`) |
-| `src/app/store/simulation.store.ts` | **The only simulation store since 2026-07-08 (Phase 2 Task 17 deleted its legacy sibling, `simulationLegacy.store.ts`, §K).** Rewritten in Task 12 as the v2 world-engine store — `MetricsBatch`/`EngineEvent`/render-scope shape from `worldEngine/types.ts`. Consumers: `SimControls.tsx`, `EventsTab.tsx`, `WorldShell.tsx`, `GlobeView.tsx`/`RegionView.tsx`, `AzCanvas.tsx`, `ScrubberV2.tsx`, `InspectorV2.tsx`, `CostTab.tsx` (§J) — the `AzCanvas.tsx` entry is stale (deleted Polish 3 Task 4, superseded by `az/DatacenterFloor.tsx`). **2026-07-11 (Polish 4 Task 4, §V):** `dock/ServerFaceplate.tsx` gained `running`/`healthOverrides`/`setOutage` reads (the SAME `setOutage('server', ...)` call `InspectorV2.tsx`'s now-retired pane used to make) and every drawer body reads `running` via a plain prop (not a fresh store subscription — `ServerFaceplate.tsx` is the only new subscriber, drawers stay dumb) | `src/app/world/**` (see §J's per-file Task 13/15/16 notes) |
+| `src/app/store/simulation.store.ts` | **The only simulation store since 2026-07-08 (Phase 2 Task 17 deleted its legacy sibling, `simulationLegacy.store.ts`, §K).** Rewritten in Task 12 as the v2 world-engine store — `MetricsBatch`/`EngineEvent`/render-scope shape from `worldEngine/types.ts`. Consumers: `SimControls.tsx`, `EventsTab.tsx`, `WorldShell.tsx`, `GlobeView.tsx`/`RegionView.tsx`, `AzCanvas.tsx`, `ScrubberV2.tsx`, `InspectorV2.tsx`, `CostTab.tsx` (§J) — the `AzCanvas.tsx` entry is stale (deleted Polish 3 Task 4, superseded by `az/DatacenterFloor.tsx`). **2026-07-11 (Polish 4 Task 4, §V):** `dock/ServerFaceplate.tsx` gained `running`/`healthOverrides`/`setOutage` reads (the SAME `setOutage('server', ...)` call `InspectorV2.tsx`'s now-retired pane used to make) and every drawer body reads `running` via a plain prop (not a fresh store subscription — `ServerFaceplate.tsx` is the only new subscriber, drawers stay dumb). **2026-07-11 (Polish 4 Task 5, §W):** no new store reads — `ServerFaceplate.tsx` derives `watching` (running OR scrubbing) from fields it already subscribed to in §V (`running` from this store, `display.scrubbing` from `useServerDisplayMetrics`'s existing `scrubBatch`/`latestBatch` reads); `HardwareDrawer`/`ServicesDrawer` gained live-metrics PROPS (`live`/`liveInstances`), not store subscriptions of their own — still dumb | `src/app/world/**` (see §J's per-file Task 13/15/16 notes) |
 
 **Convention to adopt:** when adding a new node type, only add to `NODE_CONFIG` (one new key) — don't reorder existing keys or reformat the file. Same for `NODE_SIM_DEFAULTS`. Append-only registries plus small, frequent PRs are what actually reduce conflicts here — restructuring these files is the thing to schedule as its own solo PR.
 

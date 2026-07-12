@@ -1,15 +1,21 @@
 // src/app/world/dock/ServerFaceplate.tsx
 // Polish 4 T4 (spec D6): the faceplate instrument — server scope's Config surface. A
 // screwed-on name plate (dark-scene chrome, D3) + a live vitals rail + a spine of four
-// accordion drawers (HARDWARE/FIREWALL/SERVICES/PLACEMENT), one open at a time. AUTHORING
-// posture only — T5 extends this same component with the "watching" re-voicing (a watchband,
-// live pv strings, frozen knobs) on top of the seams left here: `running`/`display` are already
-// threaded through, and each drawer's `pv` builder is a plain function T5 can branch on
-// `running` without touching this file's layout.
+// accordion drawers (HARDWARE/FIREWALL/SERVICES/PLACEMENT), one open at a time.
 //
 // InspectorV2's selected-server pane retires this same task (D6: "InspectorV2 retires its
 // selected-server pane... its dispatches all move into the faceplate") — `kill`/`↺ restore` and
 // the rack `<select>` (now PlacementDrawer) are relocated byte-for-byte from InspectorV2.tsx.
+//
+// Polish 4 T5 (spec D7): "the shape never changes — only its temperature." `watching` (running
+// OR a scrub batch is active — the exact phrase D7 uses, "stopped but a scrub batch is active")
+// drives the amber watchband*, the HW/FW/SVC pv re-voicing, and the vitals pulse's 2.2s
+// quickening — all read through `display` (`useServerDisplayMetrics`'s scrub-or-latest), never
+// a new store field. `server rps` (Σ InstanceMetrics.rps over this server's `compiled.instances`)
+// is computed once here and shared by HardwareDrawer's live rps row and FirewallDrawer's pv.
+// *The watchband text literally says "SIMULATION RUNNING" — it stays gated on `running` alone
+// (not `watching`), since it would be a lie while stopped-but-scrubbing a past run. Same for
+// `kill` (already `running`-gated by T4) and the plate's posture line (D6, untouched by T5).
 import { useEffect, useState, type CSSProperties, type ReactElement } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { useWorldStore } from '../../store/world.store'
@@ -122,6 +128,32 @@ export function ServerFaceplate({ serverId, showEnter }: ServerFaceplateProps): 
   // still has real numbers to show).
   const vitalsCaption = display.server ? 'live' : 'idle'
 
+  // T5 (spec D7): the "watching posture" gate — running, or stopped-but-scrubbing (the exact
+  // "scrub batch is active" phrase D7 uses for the scrub posture requirement). Deliberately
+  // NOT `display.server !== null` (which would also read true after a plain Stop, since
+  // `simulation.store.ts`'s `stop()` leaves `latestBatch` populated with the run's last frame
+  // until the next `start()`/`resetSession()` clears it) — that would strand the drawers in
+  // watching mode after the user has already stopped and gone back to authoring.
+  const watching = running || display.scrubbing
+  // Σ InstanceMetrics.rps over this server's compiled instances (D7's "server rps") — shared by
+  // HARDWARE's live rps row and FIREWALL's `≈N req/s allowed` pv; no metric here is invented,
+  // both reads are straight off the published `MetricsBatch`.
+  const serverInstances = Object.values(compiled.instances).filter(i => i.serverId === serverId)
+  const serverRps = serverInstances.reduce((sum, inst) => sum + (display.instances[inst.id]?.rps ?? 0), 0)
+  const firstInstance = serverInstances[0] ?? null
+  const firstInstanceMetrics = firstInstance ? display.instances[firstInstance.id] : undefined
+  const svcLive = watching && firstInstance && firstInstanceMetrics
+    ? { name: doc.blueprints[firstInstance.blueprintId]?.name ?? '?', p50Ms: firstInstanceMetrics.p50Ms }
+    : null
+
+  const hwReadout = watching
+    ? <span style={{ color: 'var(--color-success)' }}>{hardwarePv(server, { cpuPct: Math.round(cpuFraction * 100), ramPct: Math.round(ramFraction * 100) })}</span>
+    : hardwarePv(server)
+  const fwReadout = watching
+    ? <span style={{ color: 'var(--color-success)' }}>{firewallPv(server, serverRps)}</span>
+    : firewallPv(server)
+  const svcReadout = servicesPv(serverId, doc, svcLive)
+
   const ramGb = Math.round(server.specs.ramMb / 1024)
   const rackText = server.rack
     ? `${doc.racks[server.rack.rackId]?.label ?? server.rack.rackId} slot ${server.rack.unit}`
@@ -190,11 +222,14 @@ export function ServerFaceplate({ serverId, showEnter }: ServerFaceplateProps): 
       }}>
         <div style={{ width: 20, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 7, alignItems: 'center', paddingTop: 4 }}>
           <span
-            aria-hidden data-testid="vitals-pulse"
+            aria-hidden data-testid="vitals-pulse" data-live={watching ? 'true' : 'false'}
             className={reducedMotion ? undefined : 'dockfp-vitals-pulse'}
             style={{
               width: 6, height: 6, borderRadius: '50%', background: 'var(--color-success)',
               boxShadow: '0 0 6px var(--color-success)',
+              // Same keyframe (`dockfp-vitals-breathe`, faceplateStyles.ts) at a quicker rate —
+              // not a second animation, so the loop stays seamless at both durations (D7/D3).
+              animationDuration: !reducedMotion && watching ? '2.2s' : undefined,
             }}
           />
           <GaugeColumn label="cpu" fraction={cpuFraction} color="var(--kit-cat-compute)" testId="vitals-gauge-cpu" />
@@ -206,14 +241,33 @@ export function ServerFaceplate({ serverId, showEnter }: ServerFaceplateProps): 
         </div>
 
         <div style={{ flex: 1, minWidth: 0 }}>
-          <Drawer accent="var(--kit-cat-compute)" title="HARDWARE" readout={hardwarePv(server)} open={openDrawer === 'hw'} onToggle={() => toggle('hw')}>
-            <HardwareDrawer server={server} doc={doc} compiled={compiled} running={running} />
+          {running && (
+            <div
+              data-testid="watchband"
+              style={{
+                background: 'color-mix(in srgb, var(--color-warning) 14%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)',
+                color: 'var(--color-warning)', borderRadius: 5, padding: '5px 10px',
+                fontSize: 10, letterSpacing: '0.04em', marginBottom: 10,
+              }}
+            >
+              SIMULATION RUNNING — drawers are gauges now.
+            </div>
+          )}
+          <Drawer accent="var(--kit-cat-compute)" title="HARDWARE" readout={hwReadout} open={openDrawer === 'hw'} onToggle={() => toggle('hw')}>
+            <HardwareDrawer
+              server={server} doc={doc} compiled={compiled} running={running}
+              live={watching ? { cpuFraction, ramFraction, rps: serverRps, ramUsedMb: display.server?.ramUsedMb ?? 0, ramTotalMb: display.server?.ramTotalMb ?? 0 } : null}
+            />
           </Drawer>
-          <Drawer accent="var(--kit-cat-storage)" title="FIREWALL" readout={firewallPv(server)} open={openDrawer === 'fw'} onToggle={() => toggle('fw')}>
+          <Drawer accent="var(--kit-cat-storage)" title="FIREWALL" readout={fwReadout} open={openDrawer === 'fw'} onToggle={() => toggle('fw')}>
             <FirewallDrawer server={server} running={running} />
           </Drawer>
-          <Drawer accent="var(--kit-cat-messaging)" title="SERVICES" readout={servicesPv(serverId, doc)} open={openDrawer === 'svc'} onToggle={() => toggle('svc')}>
-            <ServicesDrawer server={server} doc={doc} running={running} />
+          <Drawer accent="var(--kit-cat-messaging)" title="SERVICES" readout={svcReadout} open={openDrawer === 'svc'} onToggle={() => toggle('svc')}>
+            <ServicesDrawer
+              server={server} doc={doc} compiled={compiled} running={running}
+              liveInstances={watching ? display.instances : null}
+            />
           </Drawer>
           <Drawer accent="var(--kit-cat-network)" title="PLACEMENT" readout={placementPv(server, doc)} open={openDrawer === 'pl'} onToggle={() => toggle('pl')}>
             <PlacementDrawer server={server} doc={doc} running={running} />

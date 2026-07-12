@@ -25,6 +25,12 @@ describe('hardwarePv', () => {
     const s = { specs: { vcpu: 8, ramMb: 32768 } } as Server
     expect(hardwarePv(s)).toBe('8c · 32G')
   })
+
+  // Polish 4 T5 (spec D7): watching posture re-voices the pv to "<cpu>% cpu · <ram>% ram".
+  it('re-voices to "<cpu>% cpu · <ram>% ram" when a live reading is supplied', () => {
+    const s = { specs: { vcpu: 8, ramMb: 32768 } } as Server
+    expect(hardwarePv(s, { cpuPct: 31, ramPct: 42 })).toBe('31% cpu · 42% ram')
+  })
 })
 
 describe('currentLadderIndex', () => {
@@ -118,5 +124,39 @@ describe('HardwareDrawer', () => {
     const vcpu = screen.getByLabelText('vCPU')
     expect(vcpu).toBeDisabled()
     expect(vcpu).toHaveAttribute('title', 'stop the simulation to edit')
+  })
+})
+
+// Polish 4 T5 (spec D7): watching posture — the two knobs freeze (opacity 0.55, no draggable
+// `<input>` at all — "thumb hidden"), live rps/ram rows above them, both titled
+// "locked while running".
+describe('HardwareDrawer — watching posture (live supplied)', () => {
+  it('renders live rps/ram rows and freezes both knobs (no <input>, opacity 0.55, live track fill)', () => {
+    const { serverId } = seedServer()
+    const doc = currentDoc()
+    render(
+      <HardwareDrawer
+        server={currentServer(serverId)} doc={doc} compiled={compileWorld(doc)} running
+        live={{ cpuFraction: 0.31, ramFraction: 0.42, rps: 418, ramUsedMb: 3440, ramTotalMb: 8192 }}
+      />,
+    )
+    expect(screen.getByTestId('hw-live-rps')).toHaveTextContent('418')
+    expect(screen.getByTestId('hw-live-ram')).toHaveTextContent('3.4 / 8.0 GB')
+
+    const vcpuFrozen = screen.getByTestId('hw-frozen-vcpu')
+    expect(vcpuFrozen).toHaveTextContent('vCPU — locked while running')
+    expect(vcpuFrozen).toHaveAttribute('title', 'locked while running')
+    expect(vcpuFrozen.style.opacity).toBe('0.55')
+
+    const ramFrozen = screen.getByTestId('hw-frozen-ram')
+    expect(ramFrozen).toHaveTextContent('RAM — locked while running')
+    expect(ramFrozen).toHaveAttribute('title', 'locked while running')
+    expect(ramFrozen.style.opacity).toBe('0.55')
+
+    // No draggable range input anywhere in the watching body — the thumb isn't just hidden by
+    // CSS, the interactive control doesn't render at all (holds during a stopped-but-scrubbing
+    // read too, where the edit-lock's `disabled={running}` alone would NOT have covered it).
+    expect(screen.queryByLabelText('vCPU')).toBeNull()
+    expect(screen.queryByLabelText('RAM')).toBeNull()
   })
 })

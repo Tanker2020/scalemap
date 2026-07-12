@@ -3,15 +3,23 @@
 // `presetLadder(server.kind)` (instanceCatalog.ts). A knob commit sets the target preset's FULL
 // set (`catalogId`/`specs`/`hourlyUsd`/`oversubscriptionRatio`/`burstable`) so the plate price and
 // the specs can never drift apart — moving either knob just walks the SAME shared ladder index
-// (both axes move together, matching how real cloud instance tiers actually price). Authoring
-// posture only (T4) — T5 adds the "locked while running" re-voice on top of this pv builder.
+// (both axes move together, matching how real cloud instance tiers actually price).
+//
+// Polish 4 T5 (spec D7): "the shape never changes — only its temperature." When `live` is
+// supplied (watching posture — running OR a scrub batch is active, ServerFaceplate's call),
+// this body swaps from the two draggable knobs to two FROZEN gauges (opacity 0.55, no
+// `<input>` at all — "thumb hidden" taken literally, not just visually: nothing here is
+// draggable during a scrub replay either) with the LIVE cpu/ram fraction as the track fill
+// behind the still-shown spec value, above two live rows (rps, ram). `hardwarePv` grows an
+// optional second arg for the same reason — the pv readout is text, T5 only changes what text.
 import { type CSSProperties, type ReactElement } from 'react'
 import { useWorldStore } from '../../../store/world.store'
 import { presetLadder, type InstancePreset } from '../../../../lib/world/instanceCatalog'
 import { hostRpsCapacity, residentRamDemandMb } from '../../ui/derived'
 import type { Server, WorldDoc, CompiledWorld } from '../../../../lib/world/types'
 
-export function hardwarePv(server: Server): string {
+export function hardwarePv(server: Server, live?: { cpuPct: number; ramPct: number } | null): string {
+  if (live) return `${live.cpuPct}% cpu · ${live.ramPct}% ram`
   const ramGb = Math.round(server.specs.ramMb / 1024)
   return `${server.specs.vcpu}c · ${ramGb}G`
 }
@@ -33,11 +41,24 @@ export function currentLadderIndex(server: Server, ladder: InstancePreset[]): nu
   return best
 }
 
+// The live re-voice (D7): rps is Σ InstanceMetrics.rps for this server's instances (frozen
+// contract — ServerFaceplate computes it once and shares it with FirewallDrawer's pv too), the
+// rest is ServerMetrics straight from `useServerDisplayMetrics` (scrub-or-latest). No metric
+// here is invented — `cpuFraction`/`ramFraction` are the SAME derivations the vitals gauges use.
+export interface HardwareLive {
+  cpuFraction: number
+  ramFraction: number
+  rps: number
+  ramUsedMb: number
+  ramTotalMb: number
+}
+
 export interface HardwareDrawerProps {
   server: Server
   doc: WorldDoc
   compiled: CompiledWorld
   running: boolean
+  live?: HardwareLive | null
 }
 
 const knobWrap: CSSProperties = { margin: '6px 0' }
@@ -47,7 +68,18 @@ const knobInput: CSSProperties = { width: '100%', marginTop: 5, accentColor: 'va
 const knobHint: CSSProperties = { fontSize: 9.5, color: 'var(--color-text-muted)', marginTop: 4 }
 const knobHintStrong: CSSProperties = { color: 'var(--kit-accent)' }
 
-export function HardwareDrawer({ server, doc, compiled, running }: HardwareDrawerProps): ReactElement {
+const liveRow: CSSProperties = { display: 'flex', justifyContent: 'space-between', fontSize: 10, padding: '3px 0', color: 'var(--color-text-secondary)' }
+const liveRowValue: CSSProperties = { color: 'var(--color-text-primary)', fontVariantNumeric: 'tabular-nums' }
+const frozenKnobWrap: CSSProperties = { ...knobWrap, opacity: 0.55 }
+const frozenTrack: CSSProperties = {
+  position: 'relative', width: '100%', height: 5, borderRadius: 3, marginTop: 6,
+  background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)', overflow: 'hidden',
+}
+function frozenFill(pct: number): CSSProperties {
+  return { position: 'absolute', left: 0, top: 0, bottom: 0, width: `${pct}%`, background: 'var(--color-success)' }
+}
+
+export function HardwareDrawer({ server, doc, compiled, running, live }: HardwareDrawerProps): ReactElement {
   const ladder = presetLadder(server.kind)
   const index = currentLadderIndex(server, ladder)
 
@@ -78,6 +110,39 @@ export function HardwareDrawer({ server, doc, compiled, running }: HardwareDrawe
     : null
 
   const disabled = running || ladder.length === 0
+
+  if (live) {
+    const cpuPct = Math.round(Math.min(1, Math.max(0, live.cpuFraction)) * 100)
+    const ramPct = Math.round(Math.min(1, Math.max(0, live.ramFraction)) * 100)
+    const ramUsedGb = (live.ramUsedMb / 1024).toFixed(1)
+    const ramTotalGb = (live.ramTotalMb / 1024).toFixed(1)
+    return (
+      <div data-testid="hardware-drawer-body">
+        <div style={liveRow} data-testid="hw-live-rps">
+          <span>rps</span>
+          <span style={liveRowValue}>{Math.round(live.rps).toLocaleString('en-US')}</span>
+        </div>
+        <div style={liveRow} data-testid="hw-live-ram">
+          <span>ram</span>
+          <span style={liveRowValue}>{ramUsedGb} / {ramTotalGb} GB</span>
+        </div>
+        <div style={frozenKnobWrap} title="locked while running" data-testid="hw-frozen-vcpu">
+          <div style={knobLabelRow}>
+            <span>vCPU — locked while running</span>
+            <span style={knobValue}>{server.specs.vcpu} core{server.specs.vcpu === 1 ? '' : 's'}</span>
+          </div>
+          <div style={frozenTrack}><div style={frozenFill(cpuPct)} /></div>
+        </div>
+        <div style={frozenKnobWrap} title="locked while running" data-testid="hw-frozen-ram">
+          <div style={knobLabelRow}>
+            <span>RAM — locked while running</span>
+            <span style={knobValue}>{Math.round(server.specs.ramMb / 1024)} GB</span>
+          </div>
+          <div style={frozenTrack}><div style={frozenFill(ramPct)} /></div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div data-testid="hardware-drawer-body">

@@ -5,11 +5,21 @@
 // `addPlacement(blueprintId, serverId)` — PlacementPanel's exact dispatch (relocated-dispatch
 // contract). The count stepper reuses `updatePlacement(id, { count })`, clamped >= 1 (mirrors
 // PlacementPanel's own `Math.max(1, ...)` clamp).
+//
+// Polish 4 T5 (spec D7): while watching (`liveInstances` supplied — running OR a scrub batch is
+// active), the body swaps to one live row per COMPILED instance on this server (not per
+// placement — a placement with count > 1 fans out to several instances, each with its own
+// InstanceMetrics), health · rps, success/warning/danger colored by `HEALTH_COLOR`. The pv
+// readout collapses to the server's first compiled instance (mirrors HardwareDrawer's own
+// "first resident blueprint" convention for its consequence hints).
 import { useState, type ReactElement } from 'react'
 import { useWorldStore } from '../../../store/world.store'
-import type { Placement, Server, WorldDoc } from '../../../../lib/world/types'
+import { HEALTH_COLOR } from '../../server/healthColor'
+import type { Placement, Server, WorldDoc, CompiledWorld, InstanceId } from '../../../../lib/world/types'
+import type { InstanceMetrics } from '../../../../lib/worldEngine/types'
 
-export function servicesPv(serverId: string, doc: WorldDoc): string {
+export function servicesPv(serverId: string, doc: WorldDoc, live?: { name: string; p50Ms: number } | null): string {
+  if (live) return `${live.name} · p50 ${live.p50Ms.toFixed(1)} ms`
   const placements = Object.values(doc.placements).filter(p => p.serverId === serverId)
   if (placements.length === 0) return '—'
   if (placements.length === 1) {
@@ -23,10 +33,12 @@ export function servicesPv(serverId: string, doc: WorldDoc): string {
 export interface ServicesDrawerProps {
   server: Server
   doc: WorldDoc
+  compiled: CompiledWorld
   running: boolean
+  liveInstances?: Record<InstanceId, InstanceMetrics> | null
 }
 
-export function ServicesDrawer({ server, doc, running }: ServicesDrawerProps): ReactElement {
+export function ServicesDrawer({ server, doc, compiled, running, liveInstances }: ServicesDrawerProps): ReactElement {
   const [mounting, setMounting] = useState(false)
   const placements = Object.values(doc.placements).filter(p => p.serverId === server.id)
   const blueprints = Object.values(doc.blueprints)
@@ -39,6 +51,35 @@ export function ServicesDrawer({ server, doc, running }: ServicesDrawerProps): R
     if (!blueprintId) return
     useWorldStore.getState().addPlacement(blueprintId, server.id)
     setMounting(false)
+  }
+
+  if (liveInstances) {
+    const serverInstances = Object.values(compiled.instances).filter(i => i.serverId === server.id)
+    return (
+      <div data-testid="services-drawer-body">
+        {serverInstances.length === 0 && (
+          <div style={{ color: 'var(--color-text-muted)', padding: '4px 2px' }}>No services mounted here yet.</div>
+        )}
+        {serverInstances.map(inst => {
+          const bp = doc.blueprints[inst.blueprintId]
+          const m = liveInstances[inst.id]
+          const health = m?.health ?? 'healthy'
+          return (
+            <div
+              key={inst.id} data-testid="service-live-row"
+              style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 6px', fontSize: 10 }}
+            >
+              <span style={{ color: 'var(--color-text-secondary)' }}>
+                {bp?.name ?? '?'} :{bp?.ports[0]?.port ?? '—'}
+              </span>
+              <span style={{ color: HEALTH_COLOR[health], fontVariantNumeric: 'tabular-nums' }}>
+                {health} · {Math.round(m?.rps ?? 0).toLocaleString('en-US')} rps
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    )
   }
 
   return (

@@ -6,13 +6,21 @@
 // appends `createServer`'s default rule shape (factories.ts) byte-for-byte via
 // `updateServer(id, { firewall: [...] })` — deep rule editing stays on the board (InspectorRail),
 // this drawer only appends/reads.
+//
+// Polish 4 T5 (spec D7): the BODY sentences are unchanged while watching — the frozen metrics
+// contract carries no per-rule or blocked-connection counter to re-voice them with, and the
+// engine is frozen (no new counter to add). Only the pv readout re-voices, to `≈N req/s
+// allowed` where N is the server's summed instance rps (ServerFaceplate computes it once,
+// shared with HardwareDrawer's live rps row) — a RATIFIED documented deviation from the mock's
+// `418 allowed/s · 0 blocked` (task-5-brief.md).
 import { type ReactElement } from 'react'
 import { useWorldStore } from '../../../store/world.store'
 import { nextWorldId } from '../../../../lib/world/factories'
 import { ruleSourceWords, rulePortPhrase } from '../../server/ruleSentence'
 import type { Server } from '../../../../lib/world/types'
 
-export function firewallPv(server: Server): string {
+export function firewallPv(server: Server, liveAllowedRps?: number | null): string {
+  if (liveAllowedRps != null) return `≈${Math.round(liveAllowedRps).toLocaleString('en-US')} req/s allowed`
   const allow = server.firewall.filter(r => r.action === 'allow').length
   const deny = server.firewall.filter(r => r.action === 'deny').length
   return `${allow} allow · ${deny} deny`

@@ -4,7 +4,7 @@
 // from InspectorV2.test.tsx's "selected-server card actions" describe block — InspectorV2's
 // selected-server pane retires this same task.
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, within } from '@testing-library/react'
 
 const { mockUseReducedMotion } = vi.hoisted(() => ({ mockUseReducedMotion: vi.fn(() => false) }))
 vi.mock('framer-motion', async (importOriginal) => {
@@ -39,13 +39,23 @@ const emptyServer: ServerMetrics = {
   ramByInstance: [], ramUsedMb: 0, ramTotalMb: 1024, nicInMbps: 0, nicOutMbps: 0,
   diskIoFraction: 0, health: 'healthy',
 }
-function makeBatch(servers: Record<string, Partial<ServerMetrics>>): MetricsBatch {
+function makeBatch(servers: Record<string, Partial<ServerMetrics>>, instances: MetricsBatch['instances'] = {}): MetricsBatch {
   const serverRecord: MetricsBatch['servers'] = {}
   for (const [id, patch] of Object.entries(servers)) serverRecord[id] = { ...emptyServer, serverId: id, ...patch }
   return {
-    simMs: 1000, instances: {}, servers: serverRecord, azs: {}, regions: {},
+    simMs: 1000, instances, servers: serverRecord, azs: {}, regions: {},
     world: { totalRps: 0, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
   }
+}
+
+// Adds one placement (blueprint "db", count 1) to the seeded server, so HARDWARE/SERVICES have
+// a real compiled instance to read a live reading off of. Returns the instance id the compiled
+// world will assign it (`${placementId}#0}` per ServiceInstance's id contract).
+function seedServerWithService(): { regionId: string; azId: string; serverId: string; instanceId: string } {
+  const { regionId, azId, serverId } = seedServer()
+  const bpId = useWorldStore.getState().addBlueprint('db')
+  const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+  return { regionId, azId, serverId, instanceId: `${plId}#0` }
 }
 
 describe('ServerFaceplate — plate header', () => {
@@ -284,5 +294,105 @@ describe('ServerFaceplate — unknown server', () => {
     useWorldStore.getState().newWorld()
     const { container } = render(<ServerFaceplate serverId="nope" showEnter={false} />)
     expect(container.firstChild).toBeNull()
+  })
+})
+
+// Polish 4 T5 (spec D7): "the shape never changes — only its temperature." Running re-voices
+// the spine into gauges; a scrub batch does the SAME even while stopped.
+describe('ServerFaceplate — watching mode (T5, spec D7)', () => {
+  it('shows the watchband only while running, never at rest', () => {
+    const { serverId } = seedServer()
+    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    expect(screen.queryByTestId('watchband')).toBeNull()
+
+    act(() => { useSimulationStore.setState({ running: true }) })
+    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    expect(screen.getAllByTestId('watchband')[0]).toHaveTextContent('SIMULATION RUNNING — drawers are gauges now.')
+  })
+
+  it('re-voices HARDWARE/FIREWALL/SERVICES pv readouts and the drawer bodies while running', () => {
+    const { serverId, instanceId } = seedServerWithService()
+    const instances: MetricsBatch['instances'] = {
+      [instanceId]: {
+        instanceId, rps: 418, errorRate: 0, p50Ms: 2.1, p99Ms: 5,
+        activeConnections: 3, cpuCoresUsed: 0.3, ramMb: 64, health: 'healthy',
+      },
+    }
+    const batch = makeBatch({ [serverId]: { coreUtilization: [0.31], ramUsedMb: 3440, ramTotalMb: 8192 } }, instances)
+    act(() => { useSimulationStore.setState({ running: true, latestBatch: batch }) })
+    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+
+    const drawers = screen.getAllByTestId('drawer')
+    const hw = drawers.find(d => d.getAttribute('data-drawer') === 'HARDWARE')!
+    const fw = drawers.find(d => d.getAttribute('data-drawer') === 'FIREWALL')!
+    const svc = drawers.find(d => d.getAttribute('data-drawer') === 'SERVICES')!
+
+    const hwPv = hw.querySelector('[data-testid="drawer-pv"]')!
+    expect(hwPv).toHaveTextContent('31% cpu · 42% ram')
+    expect((hwPv.firstChild as HTMLElement).style.color).toBe('var(--color-success)')
+
+    const fwPv = fw.querySelector('[data-testid="drawer-pv"]')!
+    expect(fwPv).toHaveTextContent('≈418 req/s allowed')
+    expect((fwPv.firstChild as HTMLElement).style.color).toBe('var(--color-success)')
+
+    const svcPv = svc.querySelector('[data-testid="drawer-pv"]')!
+    expect(svcPv).toHaveTextContent('db · p50 2.1 ms')
+
+    // HARDWARE is the default-open drawer — its live body/frozen knobs are visible without a click.
+    expect(screen.getByTestId('hw-live-rps')).toHaveTextContent('418')
+    expect(screen.getByTestId('hw-frozen-vcpu')).toHaveAttribute('title', 'locked while running')
+    expect(screen.queryByLabelText('vCPU')).toBeNull()
+
+    fireEvent.click(within(svc).getByTestId('drawer-header'))
+    const svcRow = screen.getByTestId('service-live-row')
+    expect(svcRow).toHaveTextContent('healthy · 418 rps')
+  })
+
+  it('the vitals pulse carries data-live and quickens to 2.2s while running', () => {
+    const { serverId } = seedServer()
+    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    expect(screen.getByTestId('vitals-pulse')).toHaveAttribute('data-live', 'false')
+    expect(screen.getByTestId('vitals-pulse').style.animationDuration).toBe('')
+
+    act(() => { useSimulationStore.setState({ running: true } ) })
+    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    const pulses = screen.getAllByTestId('vitals-pulse')
+    expect(pulses[1]).toHaveAttribute('data-live', 'true')
+    expect(pulses[1].style.animationDuration).toBe('2.2s')
+  })
+
+  it('kill lights up (enabled, active styling) while running — remove… and +-controls stay locked', () => {
+    const { serverId } = seedServerWithService()
+    act(() => { useSimulationStore.setState({ running: true } ) })
+    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+
+    const kill = screen.getByTestId('faceplate-kill')
+    expect(kill).toHaveAttribute('aria-disabled', 'false')
+    expect(kill).not.toHaveAttribute('title')
+
+    expect(screen.getByTestId('faceplate-remove')).toBeDisabled()
+    expect(screen.getByTestId('firewall-add-rule')).toBeDisabled()
+  })
+
+  it('scrub posture: stopped but a scrub batch is active renders the SAME watching posture (no watchband)', () => {
+    const { serverId, instanceId } = seedServerWithService()
+    const instances: MetricsBatch['instances'] = {
+      [instanceId]: {
+        instanceId, rps: 100, errorRate: 0, p50Ms: 3.4, p99Ms: 6,
+        activeConnections: 2, cpuCoresUsed: 0.2, ramMb: 64, health: 'degraded',
+      },
+    }
+    const batch = makeBatch({ [serverId]: { coreUtilization: [0.5], ramUsedMb: 4096, ramTotalMb: 8192 } }, instances)
+    // Stopped, no latestBatch — only a scrub batch. Mirrors setScrubIndex's published shape.
+    act(() => { useSimulationStore.setState({ running: false, latestBatch: null, scrubBatch: batch, scrubIndex: 0 }) })
+    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+
+    expect(screen.queryByTestId('watchband')).toBeNull()
+    const hwPv = screen.getAllByTestId('drawer')[0].querySelector('[data-testid="drawer-pv"]')!
+    expect(hwPv).toHaveTextContent('50% cpu · 50% ram')
+    expect(screen.getByTestId('vitals-pulse')).toHaveAttribute('data-live', 'true')
+    expect(screen.getByTestId('vitals-pulse').style.animationDuration).toBe('2.2s')
+    // kill stays run-only even while scrub-watching a stopped world.
+    expect(screen.getByTestId('faceplate-kill')).toHaveAttribute('aria-disabled', 'true')
   })
 })

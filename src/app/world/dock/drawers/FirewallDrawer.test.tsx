@@ -32,6 +32,16 @@ describe('firewallPv', () => {
     const serverId = seedServer()
     expect(firewallPv(currentServer(serverId))).toBe('1 allow · 0 deny')
   })
+
+  // Polish 4 T5 (spec D7): watching posture re-voices the pv to "≈N req/s allowed" — a RATIFIED
+  // documented deviation from the mock's "418 allowed/s · 0 blocked" (no per-rule/blocked
+  // counter exists in the frozen metrics contract; task-5-brief.md).
+  it('re-voices to "≈N req/s allowed" when a live rps reading is supplied, even at 0', () => {
+    const serverId = seedServer()
+    expect(firewallPv(currentServer(serverId), 418)).toBe('≈418 req/s allowed')
+    expect(firewallPv(currentServer(serverId), 0)).toBe('≈0 req/s allowed')
+    expect(firewallPv(currentServer(serverId), 1)).toBe('≈1 req/s allowed')
+  })
 })
 
 describe('FirewallDrawer', () => {
