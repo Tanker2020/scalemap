@@ -445,7 +445,7 @@ function ScopedCostBody({ cost }: { cost: { hourlyUsd: number; monthlyUsd: numbe
       <div style={sectionLabel}>Cost in this scope</div>
       <div style={{ font: '600 16px var(--font-mono)', color: 'var(--color-price)', marginBottom: 8 }}>
         ${cost.monthlyUsd.toFixed(2)} /mo
-        <span style={{ font: '11px var(--font-mono)', color: 'var(--color-text-muted)' }}> · ${cost.hourlyUsd.toFixed(2)}/hr</span>
+        <span style={{ font: '11px var(--font-mono)', color: 'var(--color-price)' }}> · ${cost.hourlyUsd.toFixed(2)}/hr</span>
       </div>
       {cost.egressNote && (
         <div style={{ color: 'var(--color-text-muted)', fontSize: 10.5 }}>{cost.egressNote}</div>

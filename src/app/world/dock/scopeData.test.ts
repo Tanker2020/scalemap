@@ -12,7 +12,7 @@ import { scopeEntityIds, scopedEvents, scopedFindings, scopedCost } from './scop
 import type { DockScope } from './scope'
 import type { EngineEvent, WorldMetrics } from '../../../lib/worldEngine/types'
 import type { AnalysisFinding } from '../../../lib/analysis/types'
-import type { CompileFinding, WorldDoc } from '../../../lib/world/types'
+import type { CompileFinding, ManagedService, WorldDoc } from '../../../lib/world/types'
 
 function evt(over: Partial<EngineEvent>): EngineEvent {
   return { id: 'e', simMs: 0, kind: 'engine_degraded', severity: 'info', message: '', affected: [], ...over }
@@ -59,7 +59,7 @@ function twoRegionWorld() {
 
   return {
     doc, compiled, regionA, regionB, azA1, azA2, azB1, server1, server2, server3,
-    instance1, instance3,
+    instance1, instance3, bp,
   }
 }
 
@@ -176,6 +176,93 @@ describe('scopedFindings', () => {
     const result = scopedFindings(scope, findings, compileFindings, doc, compiled)
     expect(result.analysis.map(f => f.id)).toEqual(['f-in'])
     expect(result.compile.map(f => f.id)).toEqual(['cf-in'])
+  })
+})
+
+describe('scopeEntityIds / scopedFindings — blueprint & managed-service resolution (T1 fix wave)', () => {
+  it('a blueprint id resolves into scope via its placed instances: included at its AZ and server scope, excluded from a sibling AZ', () => {
+    const { doc, compiled, azA1, azA2, server1, bp } = twoRegionWorld()
+
+    const azIds = scopeEntityIds({ kind: 'az', regionId: azA1.regionId, azId: azA1.id }, doc, compiled)!
+    expect(azIds.has(bp.id)).toBe(true)
+
+    const serverIds = scopeEntityIds(
+      { kind: 'server', regionId: azA1.regionId, azId: azA1.id, serverId: server1.id }, doc, compiled,
+    )!
+    expect(serverIds.has(bp.id)).toBe(true)
+
+    const siblingAzIds = scopeEntityIds({ kind: 'az', regionId: azA2.regionId, azId: azA2.id }, doc, compiled)!
+    expect(siblingAzIds.has(bp.id)).toBe(false)
+  })
+
+  it('a finding whose only affected id is a blueprint surfaces at the AZ/server scope of its placed instance, absent from a sibling AZ, and the scoped count reflects it', () => {
+    const { doc, compiled, azA1, azA2, server1, bp } = twoRegionWorld()
+    // Mirrors db-port-exposed's public-port variant / stateful-without-volume: affected = [bp.id] only.
+    const findings = [finding({ id: 'db-port-exposed:bp', severity: 'critical', affected: [bp.id] })]
+
+    const azScope: DockScope = { kind: 'az', regionId: azA1.regionId, azId: azA1.id }
+    const azResult = scopedFindings(azScope, findings, [], doc, compiled)
+    expect(azResult.analysis.map(f => f.id)).toEqual(['db-port-exposed:bp'])
+    expect(azResult.analysis.length + azResult.compile.length).toBe(1)
+
+    const serverScope: DockScope = { kind: 'server', regionId: azA1.regionId, azId: azA1.id, serverId: server1.id }
+    const serverResult = scopedFindings(serverScope, findings, [], doc, compiled)
+    expect(serverResult.analysis.map(f => f.id)).toEqual(['db-port-exposed:bp'])
+
+    // Absent from the sibling AZ (same region, no placed instance of this blueprint there).
+    const siblingAzScope: DockScope = { kind: 'az', regionId: azA2.regionId, azId: azA2.id }
+    const siblingResult = scopedFindings(siblingAzScope, findings, [], doc, compiled)
+    expect(siblingResult.analysis).toEqual([])
+    expect(siblingResult.analysis.length + siblingResult.compile.length).toBe(0)
+  })
+
+  it('an unplaced blueprint (no compiled instances anywhere) never resolves into a narrower scope', () => {
+    const { doc, compiled, azA1 } = twoRegionWorld()
+    const unplacedBp = 'bp-never-placed'
+    const azIds = scopeEntityIds({ kind: 'az', regionId: azA1.regionId, azId: azA1.id }, doc, compiled)!
+    expect(azIds.has(unplacedBp)).toBe(false)
+  })
+
+  it('a managed-service id resolves via its own scope field (not via placed instances): az-scoped rolls up into its region, excluded from a sibling AZ and a different region', () => {
+    const { doc, compiled, azA1, azA2, regionA, regionB } = twoRegionWorld()
+    const ms: ManagedService = {
+      id: 'ms-cache-1', label: 'cache', nodeType: 'redis',
+      scope: { kind: 'az', azId: azA1.id }, provider: 'generic', port: 6379,
+    }
+    doc.managedServices[ms.id] = ms
+
+    const azIds = scopeEntityIds({ kind: 'az', regionId: azA1.regionId, azId: azA1.id }, doc, compiled)!
+    expect(azIds.has(ms.id)).toBe(true)
+
+    // Rolls up into its parent region...
+    const regionIds = scopeEntityIds({ kind: 'region', regionId: regionA.id }, doc, compiled)!
+    expect(regionIds.has(ms.id)).toBe(true)
+
+    // ...but not into a sibling AZ in the same region, nor a different region entirely.
+    const siblingAzIds = scopeEntityIds({ kind: 'az', regionId: azA2.regionId, azId: azA2.id }, doc, compiled)!
+    expect(siblingAzIds.has(ms.id)).toBe(false)
+    const otherRegionIds = scopeEntityIds({ kind: 'region', regionId: regionB.id }, doc, compiled)!
+    expect(otherRegionIds.has(ms.id)).toBe(false)
+
+    // Mirrors unused-managed-service: affected = [ms.id] only.
+    const f = finding({ id: 'unused-managed-service:ms', severity: 'info', affected: [ms.id] })
+    const azResult = scopedFindings({ kind: 'az', regionId: azA1.regionId, azId: azA1.id }, [f], [], doc, compiled)
+    expect(azResult.analysis.map(x => x.id)).toEqual(['unused-managed-service:ms'])
+  })
+
+  it('a region-scoped managed service does NOT roll back down into any one AZ of that region', () => {
+    const { doc, compiled, azA1, regionA } = twoRegionWorld()
+    const ms: ManagedService = {
+      id: 'ms-queue-1', label: 'queue', nodeType: 'sqs',
+      scope: { kind: 'region', regionId: regionA.id }, provider: 'aws', port: 443,
+    }
+    doc.managedServices[ms.id] = ms
+
+    const regionIds = scopeEntityIds({ kind: 'region', regionId: regionA.id }, doc, compiled)!
+    expect(regionIds.has(ms.id)).toBe(true)
+
+    const azIds = scopeEntityIds({ kind: 'az', regionId: azA1.regionId, azId: azA1.id }, doc, compiled)!
+    expect(azIds.has(ms.id)).toBe(false)
   })
 })
 

@@ -14,12 +14,21 @@ import type { DockScope } from './scope'
 // Entity closure per D2's literal definition — "region -> its AZs/servers/instances" / "server
 // -> itself + its instances" — extended symmetrically for az ("itself + its servers + their
 // instances"). World scope returns `null`: the sentinel every helper below treats as "no
-// filter, show everything," never as an empty result. Deliberately does NOT walk managed
-// services, blueprints, or populations into the closure even though a handful of
-// AnalysisFinding/CompileFinding `affected` arrays carry those ids bare — D2 names only
-// region/az/server/instance descendants, so a finding whose ONLY affected id is e.g. a
-// managed-service id doesn't surface at any narrower scope yet (documented gap, not a bug;
-// matches the brief's literal closure wording rather than inventing broader scope).
+// filter, show everything," never as an empty result.
+//
+// T1 fix wave (review finding, 2026-07-11): ALSO resolves blueprint and managed-service ids into
+// the closure — several AnalysisFinding/CompileFinding `affected` arrays carry ONLY a blueprint
+// id (`db-port-exposed`'s public-port variant, `stateful-without-volume`) or ONLY a
+// managed-service id (`unused-managed-service`), so those findings were invisible at every
+// narrower scope even when physically placed there — spec D2 requires findings "physically
+// located in the scope" to surface. A blueprint id counts as in-scope when it has a
+// `compiled.instances` entry whose server/az/region falls within the current scope (the same
+// "blueprint -> placed instances" walk `entryUnreachable` in analysis/rules/network.ts performs;
+// reimplemented here, not imported, since that walk is a rule-local const, not exported). A
+// managed-service id resolves via its own `ManagedScope` field instead (`managedServiceIdsInScope`
+// below), since a managed service has no placed instances of its own. Population ids remain
+// unwalked — no `DockScope` variant models a population, so there is no narrower scope for one to
+// resolve into.
 export function scopeEntityIds(scope: DockScope, doc: WorldDoc, compiled: CompiledWorld): Set<string> | null {
   if (scope.kind === 'world') return null
 
@@ -27,19 +36,44 @@ export function scopeEntityIds(scope: DockScope, doc: WorldDoc, compiled: Compil
     const azIds = Object.values(doc.azs).filter(a => a.regionId === scope.regionId).map(a => a.id)
     const azIdSet = new Set(azIds)
     const serverIds = Object.values(doc.servers).filter(s => azIdSet.has(s.azId)).map(s => s.id)
-    const instanceIds = Object.values(compiled.instances).filter(i => i.regionId === scope.regionId).map(i => i.id)
-    return new Set([scope.regionId, ...azIds, ...serverIds, ...instanceIds])
+    const regionInstances = Object.values(compiled.instances).filter(i => i.regionId === scope.regionId)
+    const instanceIds = regionInstances.map(i => i.id)
+    const blueprintIds = new Set(regionInstances.map(i => i.blueprintId))
+    const managedServiceIds = managedServiceIdsInScope(doc, scope)
+    return new Set([scope.regionId, ...azIds, ...serverIds, ...instanceIds, ...blueprintIds, ...managedServiceIds])
   }
 
   if (scope.kind === 'az') {
     const serverIds = Object.values(doc.servers).filter(s => s.azId === scope.azId).map(s => s.id)
-    const instanceIds = Object.values(compiled.instances).filter(i => i.azId === scope.azId).map(i => i.id)
-    return new Set([scope.azId, ...serverIds, ...instanceIds])
+    const azInstances = Object.values(compiled.instances).filter(i => i.azId === scope.azId)
+    const instanceIds = azInstances.map(i => i.id)
+    const blueprintIds = new Set(azInstances.map(i => i.blueprintId))
+    const managedServiceIds = managedServiceIdsInScope(doc, scope)
+    return new Set([scope.azId, ...serverIds, ...instanceIds, ...blueprintIds, ...managedServiceIds])
   }
 
-  // server
-  const instanceIds = Object.values(compiled.instances).filter(i => i.serverId === scope.serverId).map(i => i.id)
-  return new Set([scope.serverId, ...instanceIds])
+  // server — ManagedScope has no server-level variant, so a managed service never resolves here.
+  const serverInstances = Object.values(compiled.instances).filter(i => i.serverId === scope.serverId)
+  const instanceIds = serverInstances.map(i => i.id)
+  const blueprintIds = new Set(serverInstances.map(i => i.blueprintId))
+  return new Set([scope.serverId, ...instanceIds, ...blueprintIds])
+}
+
+// Managed-service ids "physically located" within scope (T1 fix wave) — resolved via the
+// service's own `scope` field (region or az; `ManagedScope` has no server variant, so this is
+// never called for server scope) rather than via placed instances, since a managed service has
+// none. Region scope: matches services scoped directly to it PLUS services scoped to any AZ
+// inside it — the same descendant roll-up region scope already gives az/server/instance ids
+// above. Az scope: matches services scoped directly to it only — a region-scoped service does
+// NOT roll back down into one specific AZ, the same asymmetry that already keeps `regionId`
+// itself out of the az-scope closure above.
+function managedServiceIdsInScope(doc: WorldDoc, scope: DockScope): string[] {
+  if (scope.kind === 'world' || scope.kind === 'server') return []
+  return Object.values(doc.managedServices)
+    .filter(ms => scope.kind === 'region'
+      ? (ms.scope.kind === 'region' ? ms.scope.regionId === scope.regionId : doc.azs[ms.scope.azId]?.regionId === scope.regionId)
+      : (ms.scope.kind === 'az' && ms.scope.azId === scope.azId))
+    .map(ms => ms.id)
 }
 
 // World scope: every event, unfiltered (same array reference — no defensive copy needed, callers

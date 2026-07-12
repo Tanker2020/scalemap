@@ -1030,7 +1030,9 @@ wired since Phase 3 (§L); `panels/WorldPanel.tsx`'s Dock v2 tab headers still c
 `setTab`. **The only new store surface across the entire eight-task phase is Task 2's rack CRUD in
 `world.store.ts`** (`addRack`/`updateRack`/`removeRack`/`assignServerToRack`/`autoArrangeAz`,
 surfaced through `az/DatacenterFloor.tsx`'s toolbar and `InspectorV2.tsx`'s new rack selector) —
-`nav`/`simulation`/`file`/`ui` stores gain nothing (matches spec D10 verbatim).
+`nav`/`simulation`/`file`/`ui` stores gain nothing within Polish 3 (matches spec D10 verbatim) —
+Polish 4 Task 1 later added `ui.store`'s `selectedServerId`, the one exception in any later phase
+(see §S).
 
 ---
 
@@ -1065,10 +1067,16 @@ work, separate from `region/`/`az/`/`server/`'s existing "per-level view" bounda
   behavior the type didn't allow; the brief's ambiguity-resolution notes explicitly sanctioned
   picking a representation and documenting it). The closure is literally D2's wording — region →
   its AZs/servers/instances; az → itself + its servers + their instances; server → itself + its
-  instances — and deliberately does NOT walk managed-service/blueprint/population ids into the
-  closure even though a few `AnalysisFinding`/`CompileFinding.affected` arrays carry those bare;
-  a finding whose only affected id is e.g. a managed-service id won't surface at any narrow scope
-  yet (documented gap, matches the brief's literal wording rather than inventing broader scope).
+  instances — plus, since the T1 fix wave (2026-07-11, review finding), a blueprint id counts as
+  in-scope when it has a `compiled.instances` entry whose server/az/region falls within the
+  current scope, and a managed-service id resolves via its own `ManagedScope` field (az-scoped
+  services roll up into their parent region, mirroring how az/server/instance ids already roll up
+  above; region-scoped services do not roll back down into one specific AZ). This closes the
+  original gap where a finding whose only affected id was e.g. a managed-service id
+  (`unused-managed-service`) or a bare blueprint id (`db-port-exposed`'s public-port variant,
+  `stateful-without-volume`) never surfaced at any narrower scope even when physically placed
+  there — spec D2 requires findings "physically located in the scope" to surface. Population ids
+  remain unwalked (no `DockScope` variant models a population).
   `scopedEvents` delegates region scope to the EXISTING `region/regionData.ts`'s `regionEvents`
   byte-for-byte (per the brief's explicit "do not fork its logic" instruction) and generalizes
   the same "affected intersects the closure" shape for az/server via `scopeEntityIds`.
