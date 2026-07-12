@@ -52,7 +52,17 @@ export function SplitLines({ shares, height }: SplitLinesProps): ReactElement {
         const pct = Math.round(s.fraction * 100)
         const strokeWidth = s.down ? 1 : 1.5 + 2.5 * s.fraction
         const stroke = s.down ? 'var(--color-danger)' : TEAL
-        const dash = s.down ? '2 7' : '8 9'
+        // Up-beam dash period MUST divide the `dashflow` keyframe's -30 offset delta (seamless-
+        // loop law, taskA-brief.md) — '7 8' -> period 15, 30/15 = 2 whole cycles per wrap, so the
+        // dash pattern lines back up exactly where it started (no visible snap). The prior '8 9'
+        // (period 17) didn't divide 30 (30 mod 17 = 13), so the animated beam visibly jumped
+        // ~13/17 of a period every cycle (user report 2026-07-11). Chose the "change the dash,
+        // keep `values="0;-30"`" fix (brief option (a)) over rescaling the offset/dur per-beam:
+        // it preserves the exact px/sec speed and the existing `periodSec` formula untouched, and
+        // is a one-character-wider dash rather than a per-beam offset/duration derivation. Down
+        // stubs ('2 7', period 9) stay untouched — they never carry `<animate>`, so their period
+        // is irrelevant to seamlessness (see file header note).
+        const dash = s.down ? '2 7' : '7 8'
         const animated = !reduced && !s.down && animatedAzIds.has(s.azId)
         // fraction 0 → slowest (1.3s), fraction 1 → fastest (0.9s) — both endpoints are the
         // mock's own two literal durations (default 0.9s + the explicit 1.3s override).
