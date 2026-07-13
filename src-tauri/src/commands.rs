@@ -359,6 +359,41 @@ fn append_events_in(
     Ok(next_seq)
 }
 
+/// One row per Simulate press, newest-first, with its persisted event count — the run picker
+/// for the Events tab's history browser.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSummary {
+    pub id: i64,
+    pub started_at: String,
+    pub world_name: String,
+    pub events: i64,
+}
+
+fn runs_in(conn: &rusqlite::Connection) -> Result<Vec<RunSummary>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT r.id, r.started_at, r.world_name, COUNT(e.seq)
+             FROM runs r LEFT JOIN events e ON e.run_id = r.id
+             GROUP BY r.id ORDER BY r.id DESC LIMIT 100",
+        )
+        .map_err(|e| format!("could not prepare runs query: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(RunSummary { id: r.get(0)?, started_at: r.get(1)?, world_name: r.get(2)?, events: r.get(3)? })
+        })
+        .map_err(|e| format!("could not query runs: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("could not read run rows: {e}"))?;
+    Ok(rows)
+}
+
+/// Deletes ALL persisted history (every run, every event) and reclaims the disk space.
+fn clear_in(conn: &rusqlite::Connection) -> Result<(), String> {
+    conn.execute_batch("DELETE FROM events; DELETE FROM runs; VACUUM;")
+        .map_err(|e| format!("could not clear event history: {e}"))
+}
+
 /// Newest-first page of a run's events; `before_seq` (exclusive) pages further back.
 fn tail_in(
     conn: &rusqlite::Connection,
@@ -425,6 +460,18 @@ pub fn event_log_tail(
     tail_in(&conn, run_id, before_seq, limit)
 }
 
+#[tauri::command]
+pub fn event_log_runs(app: AppHandle) -> Result<Vec<RunSummary>, String> {
+    let conn = lock_event_db(event_db(&app)?)?;
+    runs_in(&conn)
+}
+
+#[tauri::command]
+pub fn event_log_clear(app: AppHandle) -> Result<(), String> {
+    let conn = lock_event_db(event_db(&app)?)?;
+    clear_in(&conn)
+}
+
 #[cfg(test)]
 mod event_log_tests {
     use super::*;
@@ -489,6 +536,34 @@ mod event_log_tests {
         let page2 = tail_in(&conn, run, Some(7), 4).unwrap();
         assert_eq!(page2.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![6, 5, 4, 3]);
         assert_eq!(page2[0].affected, vec!["srv-6".to_string(), "az-1".to_string()]);
+        drop(conn);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn runs_lists_newest_first_with_event_counts() {
+        let (conn, path) = temp_db();
+        let run_a = begin_run_in(&conn, "first").unwrap();
+        let run_b = begin_run_in(&conn, "second").unwrap();
+        append_events_in(&conn, run_a, &[evt(1), evt(2)]).unwrap();
+        append_events_in(&conn, run_b, &[evt(3)]).unwrap();
+        let runs = runs_in(&conn).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!((runs[0].id, runs[0].events, runs[0].world_name.as_str()), (run_b, 1, "second"));
+        assert_eq!((runs[1].id, runs[1].events), (run_a, 2));
+        drop(conn);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn clear_empties_everything_and_the_log_keeps_working_after() {
+        let (conn, path) = temp_db();
+        let run = begin_run_in(&conn, "w").unwrap();
+        append_events_in(&conn, run, &[evt(1), evt(2)]).unwrap();
+        clear_in(&conn).unwrap();
+        assert_eq!(runs_in(&conn).unwrap().len(), 0);
+        let fresh = begin_run_in(&conn, "w2").unwrap();
+        assert_eq!(append_events_in(&conn, fresh, &[evt(9)]).unwrap(), 1);
         drop(conn);
         let _ = fs::remove_file(path);
     }

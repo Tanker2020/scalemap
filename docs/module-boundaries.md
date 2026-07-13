@@ -42,6 +42,21 @@ not guessed from folder structure.
 > scope; `useFloorCamera.ts` now exports `INTERACTIVE_SEL` so floor deselect and camera pan
 > agree on what "background" means.
 
+> **2026-07-12 fix wave 2 — atlas depth + event history browser:** (1) `AtlasHeader.tsx` gained
+> `warpToSphere` (exported, unit-tested): projected content bends onto the same 10px center
+> bulge the graticule always drew ("looked like a flat plane" — dots/arcs and grid were two
+> geometries on one card), plus limb-darkening + zenith radials, a teal atmosphere rim at the
+> top, and harder-bowed outer meridians; all lighting sits UNDER the content so health colors
+> never dim. (2) Event history: `commands.rs` gained `RunSummary` + `runs_in`/`clear_in` +
+> `event_log_runs`/`event_log_clear` (11 cargo tests); `tauri.ts`/`tauriMock.ts` mirror them;
+> NEW `src/app/world/EventHistory.tsx` (rendered at the bottom of the world-scope `EventsTab`)
+> lists runs newest-first, expands one run at a time via `event_log_tail` paging (50/page,
+> "older events ▸"), and clears all history behind a two-step confirm that is
+> `disabled={running}`. (3) `WorldPanel.tsx`'s edit-lock fieldset is now
+> `disabled={running && tab !== 'events'}` — the events tab is a read surface whose only
+> destructive control self-locks; this follows the same escape-hatch precedent as the
+> `<div role="button">` kill controls (`ServerFaceplate.tsx`/`AzConfigTab.tsx`).
+
 ---
 
 ## 1. Feature modules (safe to own independently)

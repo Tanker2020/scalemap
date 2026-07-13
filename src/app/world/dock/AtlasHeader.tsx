@@ -53,12 +53,32 @@ const H = 92
 // under the caption text + its black text-shadow — so its traffic arc read as "a dashed line
 // to nowhere"). Graticule stays full-bleed; it's decorative chrome, not geography.
 const MAP_H = H - 20
-// Six static graticule paths (D4): 3 latitude curves + 3 longitude curves, matching the locked
-// mock's `.grid` group verbatim (decorative — not derived from projectLatLon).
+// Graticule (D4 evolved 2026-07-12): 3 latitude curves + 5 longitude curves. The lat curves
+// keep the locked mock's 10px center bulge; the outer meridians bow harder than the inner
+// ones — spherical foreshortening, the strongest single "this is a globe" cue at this size.
 const GRATICULE_PATHS = [
   'M0,30 Q186,10 372,30', 'M0,55 Q186,38 372,55', 'M0,80 Q186,66 372,80',
-  'M80,0 Q90,46 80,92', 'M186,0 Q186,46 186,92', 'M292,0 Q282,46 292,92',
+  'M28,6 Q46,46 28,86', 'M80,2 Q92,46 80,90', 'M186,0 Q186,46 186,92',
+  'M292,2 Q280,46 292,90', 'M344,6 Q326,46 344,86',
 ]
+
+// Sphere warp (user report 2026-07-12: the atlas "looks like a flat plane"): the graticule
+// always CURVED like a globe, but dots/arcs sat on flat equirectangular positions — two
+// geometries on one card. This bends the projected content onto the same bulge: the center
+// column lifts by SPHERE_LIFT, the edges don't, so a row of constant latitude follows the
+// same arc the graticule draws. Output stays inside 0..mapH (the band squeezes by LIFT first).
+const SPHERE_LIFT = 10
+export function warpToSphere(
+  pt: { x: number; y: number }, w = W, mapH = MAP_H,
+): { x: number; y: number } {
+  const u = (pt.x - w / 2) / (w / 2)                       // -1 (left limb) .. 1 (right limb)
+  const lift = SPHERE_LIFT * (1 - u * u)                   // full lift at center, 0 at limbs
+  return { x: pt.x, y: SPHERE_LIFT + pt.y * ((mapH - SPHERE_LIFT) / mapH) - lift }
+}
+
+function project(lat: number, lon: number): { x: number; y: number } {
+  return warpToSphere(projectLatLon(lat, lon, W, MAP_H))
+}
 
 /** Equirectangular projection, clamped: lon -180..180 -> 0..w; lat 75..-60 -> 0..h (north-up —
  *  the datacenter-metro latitude band REGION_GEO actually uses, not the full -90..90 globe). */
@@ -182,13 +202,32 @@ export function AtlasHeader({ regionId }: AtlasHeaderProps): ReactElement {
     }}>
       <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden="true"
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
+        {/* Sphere lighting (2026-07-12): a lit zenith upper-center and limb darkening toward
+            the card's edges — under the content so health colors never dim. */}
+        <defs>
+          <radialGradient id="atlas-zenith" cx="50%" cy="22%" r="62%">
+            <stop offset="0%" stopColor="#3a5a86" stopOpacity="0.22" />
+            <stop offset="60%" stopColor="#3a5a86" stopOpacity="0.05" />
+            <stop offset="100%" stopColor="#3a5a86" stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id="atlas-limb" cx="50%" cy="30%" r="80%">
+            <stop offset="52%" stopColor="#000" stopOpacity="0" />
+            <stop offset="86%" stopColor="#000" stopOpacity="0.28" />
+            <stop offset="100%" stopColor="#000" stopOpacity="0.55" />
+          </radialGradient>
+        </defs>
+        <rect x="0" y="0" width={W} height={H} fill="url(#atlas-zenith)" />
         <g>
           {GRATICULE_PATHS.map((d, i) => <path key={i} d={d} fill="none" stroke={GRATICULE_STROKE} strokeWidth={0.6} />)}
         </g>
+        {/* Atmosphere rim — the same thin glow the real globe wears at its limb. */}
+        <path d="M0,9 Q186,-7 372,9" fill="none" stroke={HUD} strokeWidth={3.5} opacity={0.06} />
+        <path d="M0,9 Q186,-7 372,9" fill="none" stroke={HUD} strokeWidth={1} opacity={0.28} />
+        <rect x="0" y="0" width={W} height={H} fill="url(#atlas-limb)" />
         <g>
           {topArcs.map((c, i) => {
-            const from = projectLatLon(c.from.lat, c.from.lon, W, MAP_H)
-            const to = projectLatLon(c.to.lat, c.to.lon, W, MAP_H)
+            const from = project(c.from.lat, c.from.lon)
+            const to = project(c.to.lat, c.to.lon)
             const isTop = i === 0
             const animated = isTop && animateGate
             return (
@@ -203,7 +242,7 @@ export function AtlasHeader({ regionId }: AtlasHeaderProps): ReactElement {
         </g>
         <g>
           {populations.map(p => {
-            const pt = projectLatLon(p.lat, p.lon, W, MAP_H)
+            const pt = project(p.lat, p.lon)
             // r/opacity sized to read as an arc ENDPOINT, not dust — an arc must visibly
             // terminate at a city or the whole constellation looks broken.
             return <circle key={p.id} data-testid="atlas-population-dot" cx={pt.x} cy={pt.y} r={2.5} fill={HUD} opacity={0.9} />
@@ -211,7 +250,7 @@ export function AtlasHeader({ regionId }: AtlasHeaderProps): ReactElement {
         </g>
         <g>
           {regions.map(({ region, geo }) => {
-            const pt = projectLatLon(geo.lat, geo.lon, W, MAP_H)
+            const pt = project(geo.lat, geo.lon)
             const health = regionHealth(region.id, displayBatch, doc)
             const color = pinColor(health)
             const ringed = regionId === region.id

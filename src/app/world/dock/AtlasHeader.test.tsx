@@ -15,7 +15,7 @@ vi.mock('framer-motion', async (importOriginal) => {
   return { ...actual, useReducedMotion: mockUseReducedMotion }
 })
 
-import { AtlasHeader, projectLatLon } from './AtlasHeader'
+import { AtlasHeader, projectLatLon, warpToSphere } from './AtlasHeader'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
 import { useUiStore } from '../../store/ui.store'
@@ -91,6 +91,27 @@ function runningBatch(overrides: Partial<MetricsBatch> = {}): MetricsBatch {
     ...overrides,
   }
 }
+
+describe('warpToSphere (content rides the graticule bulge — fake-3D, 2026-07-12)', () => {
+  it('lifts the center column by the full sphere lift and leaves the limbs unlifted', () => {
+    // top of the band: center reaches y=0, the limbs sit SPHERE_LIFT lower
+    expect(warpToSphere({ x: 186, y: 0 }).y).toBeCloseTo(0)
+    expect(warpToSphere({ x: 0, y: 0 }).y).toBeCloseTo(10)
+    expect(warpToSphere({ x: 372, y: 0 }).y).toBeCloseTo(10)
+  })
+  it('never leaves the 0..MAP_H band', () => {
+    for (const x of [0, 93, 186, 279, 372]) {
+      for (const y of [0, 36, 72]) {
+        const out = warpToSphere({ x, y })
+        expect(out.y).toBeGreaterThanOrEqual(0)
+        expect(out.y).toBeLessThanOrEqual(72)
+      }
+    }
+  })
+  it('keeps x untouched', () => {
+    expect(warpToSphere({ x: 123, y: 40 }).x).toBe(123)
+  })
+})
 
 describe('AtlasHeader — world scope (regionId=null)', () => {
   it('renders one atlas-region-dot per region with a REGION_GEO entry', () => {

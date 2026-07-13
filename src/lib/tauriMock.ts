@@ -81,26 +81,37 @@ export const tauriMock = {
 
   // Browser-dev event log: same command surface as the Rust SQLite (WAL) log, held in memory
   // (NOT localStorage — a long run's volume would blow its quota). Semantics mirror
-  // commands.rs: per-run monotonic seq, newest-first tail with an exclusive beforeSeq cursor.
-  async event_log_begin_run(_worldName: string): Promise<number> {
+  // commands.rs: per-run monotonic seq, newest-first tail with an exclusive beforeSeq cursor,
+  // newest-first run summaries, clear-all.
+  async event_log_begin_run(worldName: string): Promise<number> {
     const id = mockEventLogNextRun++
-    mockEventLogRuns.set(id, [])
+    mockEventLogRuns.set(id, { startedAt: new Date().toISOString(), worldName, list: [] })
     return id
   },
 
   async event_log_append(runId: number, events: MockLoggedEvent[]): Promise<number> {
-    const list = mockEventLogRuns.get(runId) ?? []
-    mockEventLogRuns.set(runId, list)
-    for (const e of events) list.push({ ...e, seq: list.length + 1 })
-    return list.length
+    const run = mockEventLogRuns.get(runId)
+    if (!run) throw new Error(`unknown run: ${runId}`)
+    for (const e of events) run.list.push({ ...e, seq: run.list.length + 1 })
+    return run.list.length
   },
 
   async event_log_tail(
     runId: number, beforeSeq: number | null, limit: number,
   ): Promise<(MockLoggedEvent & { seq: number })[]> {
-    const list = mockEventLogRuns.get(runId) ?? []
+    const list = mockEventLogRuns.get(runId)?.list ?? []
     const cursor = beforeSeq ?? Number.MAX_SAFE_INTEGER
     return list.filter(r => r.seq < cursor).slice(-limit).reverse()
+  },
+
+  async event_log_runs(): Promise<{ id: number; startedAt: string; worldName: string; events: number }[]> {
+    return [...mockEventLogRuns.entries()]
+      .map(([id, r]) => ({ id, startedAt: r.startedAt, worldName: r.worldName, events: r.list.length }))
+      .sort((a, b) => b.id - a.id)
+  },
+
+  async event_log_clear(): Promise<void> {
+    mockEventLogRuns.clear()
   },
 }
 
@@ -113,5 +124,11 @@ interface MockLoggedEvent {
   affected: string[]
 }
 
-const mockEventLogRuns = new Map<number, (MockLoggedEvent & { seq: number })[]>()
+interface MockEventLogRun {
+  startedAt: string
+  worldName: string
+  list: (MockLoggedEvent & { seq: number })[]
+}
+
+const mockEventLogRuns = new Map<number, MockEventLogRun>()
 let mockEventLogNextRun = 1

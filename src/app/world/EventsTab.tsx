@@ -4,6 +4,7 @@
 // `eventLogTotal` is that true count, shown when it outgrows the window.
 import { useSimulationStore } from '../store/simulation.store'
 import { sectionLabel } from './panels/panelStyles'
+import { EventHistory } from './EventHistory'
 
 const SEVERITY_COLOR: Record<'info' | 'warning' | 'critical', string> = {
   info: 'var(--color-text-muted)',
@@ -40,6 +41,7 @@ export function EventsTab() {
           <div style={{ color: 'var(--color-text-secondary)' }}>{e.message}</div>
         </div>
       ))}
+      <EventHistory />
     </div>
   )
 }

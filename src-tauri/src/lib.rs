@@ -17,6 +17,8 @@ pub fn run() {
             commands::event_log_begin_run,
             commands::event_log_append,
             commands::event_log_tail,
+            commands::event_log_runs,
+            commands::event_log_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

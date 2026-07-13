@@ -89,3 +89,18 @@ export const eventLogAppend = (runId: number, events: LoggedEngineEvent[]) =>
 /** Newest-first page of a run's events; pass the last row's seq as beforeSeq to page back. */
 export const eventLogTail = (runId: number, beforeSeq: number | null, limit: number) =>
   invoke<LoggedEventRow[]>('event_log_tail', { runId, beforeSeq, limit })
+
+/** One row per Simulate press, newest-first, with its persisted event count. */
+export interface EventLogRun {
+  id: number
+  startedAt: string   // RFC-3339
+  worldName: string
+  events: number
+}
+
+export const eventLogRuns = () =>
+  invoke<EventLogRun[]>('event_log_runs')
+
+/** Deletes ALL persisted history (every run, every event) and reclaims the disk space. */
+export const eventLogClear = () =>
+  invoke<void>('event_log_clear')

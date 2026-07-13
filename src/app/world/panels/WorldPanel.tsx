@@ -264,11 +264,13 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
       </div>
       {header && <SignatureHeader {...header} />}
       {/* Native fieldset-disabled cascades into every descendant button/input/select with zero
-          changes to TopologyPanel/BlueprintPanel/PlacementPanel. Findings/Events have no form
-          controls, so wrapping them here too is a harmless no-op — kept uniform on purpose. */}
+          changes to TopologyPanel/BlueprintPanel/PlacementPanel. The events tab is exempt
+          (2026-07-12): it's a READ surface — the history browser's expand/page buttons must
+          work mid-run (WAL readers never block the writer), and its one destructive control
+          (clear history) carries its own `disabled={running}` + edit-lock title. */}
       {/* minInlineSize 0: a fieldset defaults to min-inline-size:min-content and refuses to
           shrink to the dock's width, pushing rows past the viewport edge. */}
-      <fieldset disabled={running} style={{ border: 'none', margin: 0, padding: 0, minInlineSize: 0 }}>
+      <fieldset disabled={running && tab !== 'events'} style={{ border: 'none', margin: 0, padding: 0, minInlineSize: 0 }}>
         {scope.kind === 'world' ? (
           <>
             {tab === 'topology' && <TopologyPanel />}
