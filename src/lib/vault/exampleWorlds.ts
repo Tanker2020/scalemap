@@ -3,7 +3,9 @@
 // exampleWorlds.test.ts: the three clean worlds compile to ZERO compile+analysis findings; the
 // teaching world trips ≥10 analysis findings across all three families. Composition notes:
 // - Single-region worlds carry NO population: no-failover-region fires critical for any
-//   population whose region order has one entry; autoBaseline supplies their demand.
+//   population whose region order has one entry, which would break their zero-findings contract.
+//   (Auto-baseline was removed 2026-07-15, so these worlds show no live traffic until a population
+//   is added — a deliberate trade to keep them finding-clean.)
 // - multi-region's third population is São Paulo (not Singapore): passive regions sort to the
 //   end of every routing order, so a population nearest the passive region would always trip
 //   ocean-crossing-population.
@@ -82,7 +84,8 @@ function threeTier(): WorldDoc {
   place(doc, api.id, api1.id)
   place(doc, db.id, dbP.id, 'primary')
   place(doc, db.id, dbR.id, 'replica')
-  // No populations (grounded correction #1) — autoBaseline (factory default) supplies demand.
+  // No populations: a single-region world's only population would trip no-failover-region. Shows
+  // no live traffic until a population is added (auto-baseline removed 2026-07-15).
   return doc
 }
 
@@ -91,7 +94,6 @@ function multiRegion(): WorldDoc {
   doc.routing.dnsTtlSec = 20
   doc.routing.healthCheckIntervalMs = 3000
   doc.routing.healthCheckFailureThreshold = 2
-  doc.traffic.autoBaseline = false
 
   const web = blueprint(doc, 'web', 0)
   web.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
@@ -172,7 +174,8 @@ function eventDriven(): WorldDoc {
   const sp1 = place(doc, store.id, st1.id)
   // The host port mapping is what keeps worker→store permitted cross-server.
   sp1.runtime = { type: 'container', stackName: 'data', networkNames: ['datanet'], portMappings: [{ host: 5432, container: 5432 }], cpuLimit: null, memLimitMb: null }
-  // No populations (grounded correction #1) — autoBaseline supplies demand.
+  // No populations: a single-region world's only population would trip no-failover-region. Shows
+  // no live traffic until a population is added (auto-baseline removed 2026-07-15).
   return doc
 }
 

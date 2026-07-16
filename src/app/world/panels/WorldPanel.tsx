@@ -3,6 +3,7 @@ import { TopologyPanel } from './TopologyPanel'
 import { BlueprintPanel } from './BlueprintPanel'
 import { PlacementPanel } from './PlacementPanel'
 import { TrafficPanel } from './TrafficPanel'
+import { RoutesPanel } from './RoutesPanel'
 import { AnalysisTab, unsuppressedCompileFindings } from './AnalysisTab'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { useWorldStore } from '../../store/world.store'
@@ -10,6 +11,7 @@ import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { useUiStore, type PanelTab } from '../../store/ui.store'
 import { runAnalysis } from '../../../lib/analysis/runAnalysis'
+import { listRoutes } from '../../../lib/nodeConfig'
 import { EventsTab } from '../EventsTab'
 import { CostTab } from '../CostTab'
 import { panel, sectionLabel } from './panelStyles'
@@ -60,7 +62,7 @@ function SignatureHeader({ glyph, accent, summary, summaryColor }: SignatureHead
 
 const TAB_LABELS: Record<PanelTab, string> = {
   topology: 'Topology', blueprints: 'Blueprints', placements: 'Placements', traffic: 'Traffic',
-  analysis: 'Analysis', events: 'Events', cost: 'Cost', config: 'Config',
+  routes: 'Routes', analysis: 'Analysis', events: 'Events', cost: 'Cost', config: 'Config',
 }
 
 export interface WorldPanelProps {
@@ -191,7 +193,15 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
       const nPopulations = Object.keys(doc.populations).length
       header = {
         glyph: '⇢', accent: 'var(--kit-cat-network)',
-        summary: `${doc.traffic.baselineTotalRps.toLocaleString('en-US')} rps baseline · ${nPopulations} population${nPopulations === 1 ? '' : 's'}`,
+        summary: `${nPopulations} population${nPopulations === 1 ? '' : 's'} · routed by ${doc.routing.policy}`,
+      }
+      break
+    }
+    case 'routes': {
+      const nRoutes = listRoutes(doc.packets).length
+      header = {
+        glyph: '⋔', accent: 'var(--kit-cat-network)',
+        summary: `${nRoutes} route${nRoutes === 1 ? '' : 's'}`,
       }
       break
     }
@@ -279,6 +289,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
             {tab === 'traffic' && (
               <TrafficPanel placeMode={placeMode} onTogglePlaceMode={onTogglePlaceMode} selectedPopulationId={selectedPopulationId} />
             )}
+            {tab === 'routes' && <RoutesPanel />}
             {tab === 'analysis' && <AnalysisTab openSettings={openSettings} />}
             {tab === 'events' && <EventsTab />}
             {tab === 'cost' && <CostTab />}

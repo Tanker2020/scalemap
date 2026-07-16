@@ -44,7 +44,7 @@ function tworegionWorld() {
 }
 
 describe('azShares', () => {
-  it('splits by rps and pins down AZs to zero', () => {
+  it('splits the region ingress by throughput share; down AZs pinned to zero and excluded', () => {
     const doc = createWorld()
     const region = createRegion('us-east-1')
     const azA = createAz(region.id, 'us-east-1a')
@@ -53,10 +53,14 @@ describe('azShares', () => {
     doc.regions[region.id] = region
     doc.azs[azA.id] = azA; doc.azs[azB.id] = azB; doc.azs[azC.id] = azC
     const batch = fakeBatch(1000, {
-      [azA.id]: az({ azId: azA.id, rps: 600, health: 'healthy' }),
+      [azA.id]: az({ azId: azA.id, rps: 600, health: 'healthy' }),   // throughput (incl. internal)
       [azB.id]: az({ azId: azB.id, rps: 400, health: 'healthy' }),
-      [azC.id]: az({ azId: azC.id, rps: 250, health: 'down' }),   // stale rps while down — must still pin to 0
+      [azC.id]: az({ azId: azC.id, rps: 250, health: 'down' }),      // stale rps while down — pins to 0
     })
+    // Region ingress = 500 (what the sources actually send in) — the shares distribute THIS, not
+    // the 1000 of AZ throughput, so a.rps + b.rps === 500, never ~1000.
+    batch.world.populationRoutes = [{ populationId: 'p', regionId: region.id, rps: 500 }]
+    batch.world.totalRps = 500
     const shares = azShares(region.id, doc, batch)
     expect(shares).toHaveLength(3)
     const a = shares.find(s => s.azId === azA.id)!
@@ -64,6 +68,9 @@ describe('azShares', () => {
     const c = shares.find(s => s.azId === azC.id)!
     expect(a.fraction).toBeCloseTo(0.6, 5)
     expect(b.fraction).toBeCloseTo(0.4, 5)
+    expect(a.rps).toBeCloseTo(300, 5)   // 0.6 × 500
+    expect(b.rps).toBeCloseTo(200, 5)   // 0.4 × 500
+    expect(a.rps + b.rps).toBeCloseTo(500, 5)   // sums to the region ingress, NOT 2× it
     expect(c.down).toBe(true)
     expect(c.fraction).toBe(0)
     expect(c.rps).toBe(0)

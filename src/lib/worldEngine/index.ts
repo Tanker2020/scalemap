@@ -9,13 +9,14 @@ import type {
 } from './types'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
-  ServiceInstance,
+  ServiceInstance, CompiledLbRouting,
 } from '../world/types'
+import { routeMatchesPattern, listRoutes } from '../nodeConfig'
 import { createRng, type Rng } from './rng'
 import { createClock, type ClockHandle } from './engineClock'
-import { populationDemandRps, baselineDemands } from './demand'
+import { populationDemandRps, splitDemandByMix, type RouteDemand } from './demand'
 import {
-  createRoutingState, resolveRegion, runHealthChecks, azSplit, pickInstance, type RoutingState,
+  createRoutingState, resolveRegion, runHealthChecks, distributeToTargets, type RoutingState,
 } from './routingRuntime'
 import { stepHost, type InstanceLoad, type HostStepResult } from './hostScheduler'
 import { createVpsState, stepVps, type VpsState } from './vpsModel'
@@ -67,6 +68,27 @@ function groupInstancesByServer(compiled: CompiledWorld): Map<ServerId, ServiceI
   return byServer
 }
 
+// Route id → route path, resolved once at start from the world's route catalog (doc.packets).
+// A population's requestMix references routes by id; the LB matches on their path.
+function buildRoutePathById(doc: WorldDoc): Map<string, string> {
+  const m = new Map<string, string>()
+  for (const route of listRoutes(doc.packets)) m.set(String(route.id), route.path)
+  return m
+}
+
+// The L7 listener-rule match: the first rule (authored order) whose pattern matches the route's
+// path selects its target group; a route with no path (the implicit default route) or one that
+// matches nothing falls to the LB's default action. L4 LBs carry no rules, so every route lands
+// on the default targets — byte-identical to the pre-route single-target-group distribution.
+function matchRouteTargets(path: string | null | undefined, lb: CompiledLbRouting): BlueprintId[] {
+  if (path != null) {
+    for (const rule of lb.rules) {
+      if (routeMatchesPattern(path, rule.pathPattern)) return [rule.targetBlueprintId]
+    }
+  }
+  return lb.defaultTargetBlueprintIds
+}
+
 interface Attached { scope: RenderScope; onFrame: (p: FramePayload) => void }
 
 interface EngineState {
@@ -80,6 +102,7 @@ interface EngineState {
   compiled: CompiledWorld
   callbacks: EngineCallbacks
   entryBlueprintIds: BlueprintId[]           // blueprints with a 'public' port = client entry points
+  routePathById: Map<string, string>         // routeId → route path, for L7 listener-rule matching
 
   routing: RoutingState
   failover: FailoverState
@@ -159,25 +182,34 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
   const healthOfAny = (id: string): HealthState =>
     state!.compiled.instances[id] ? healthOfInstance(id) : healthOfScope(id)
 
-  // Distribute a region's inbound rps to entry-blueprint instances: healthy AZs (equal shares)
-  // → entry blueprints present in the AZ (equal shares) → round-robin instance.
-  const distributeToEntries = (regionId: RegionId, rps: number, simMs: number, into: Record<InstanceId, number>): void => {
+  // Route a region's inbound demand through its regional load balancer to service instances.
+  // Demand arrives already split per route (splitDemandByMix); for EACH route we first-match a
+  // listener rule (L7) — or fall to the default action — to pick the target group, then hand that
+  // group to distributeToTargets, which owns the region→AZ→instance tier and the cross-zone
+  // setting. An L4 LB has no rules, so every route lands on the default targets — byte-identical
+  // to the pre-route distribution, so the engine's golden tests hold. Traffic whose target group
+  // resolves empty (a rule/default pointing at a service with no instance here) is dropped: the
+  // analysis engine surfaces that as a finding.
+  const distributeViaLb = (regionId: RegionId, routeDemands: RouteDemand[], into: Record<InstanceId, number>): void => {
     const s = state!
-    if (rps <= 0) return
-    const azIds = azSplit(s.compiled.routing.regionAzSpread[regionId] ?? [], healthOfScope)
-    if (azIds.length === 0) return
-    const perAz = rps / azIds.length
-    for (const azId of azIds) {
-      const byBp = s.compiled.routing.azBlueprintTargets[azId] ?? {}
-      const entriesHere = s.entryBlueprintIds.filter(bpId => (byBp[bpId]?.length ?? 0) > 0)
-      if (entriesHere.length === 0) continue
-      const perBp = perAz / entriesHere.length
-      for (const bpId of entriesHere) {
-        const inst = pickInstance(s.routing, azId, bpId, byBp[bpId], healthOfInstance)
-        if (inst) into[inst] = (into[inst] ?? 0) + perBp
-      }
+    const lb = s.compiled.routing.lbRouting[regionId]
+    if (!lb) return
+    const regionAzSpread = s.compiled.routing.regionAzSpread[regionId] ?? []
+    for (const { routeId, rps } of routeDemands) {
+      if (rps <= 0) continue
+      const path = routeId != null ? s.routePathById.get(routeId) : null
+      distributeToTargets({
+        targetBlueprintIds: matchRouteTargets(path, lb),
+        rps,
+        crossZone: lb.crossZone,
+        regionAzSpread,
+        azBlueprintTargets: s.compiled.routing.azBlueprintTargets,
+        healthOfScope,
+        healthOfInstance,
+        cursors: s.routing,
+        into,
+      })
     }
-    void simMs   // reserved; AZ drain is currently visual-only — buildAzParticles fades a draining AZ's particles, but rps re-splits instantly via azSplit when an AZ goes down
   }
 
   const applyHealth = (scope: 'server' | 'az' | 'region', id: string, inputs: { errorRate: number; cpuPressure: number; checkFailed: boolean; manualDown: boolean }, simMs: number): void => {
@@ -219,7 +251,6 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // ── 1. demand ──
     const demandByPop: Record<PopulationId, number> = {}
     for (const pop of Object.values(doc.populations)) demandByPop[pop.id] = populationDemandRps(pop, simMs, s.rng)
-    const baseline = baselineDemands(doc.traffic, doc.populations, doc.regions)
 
     // ── 2. routing: health checks ──
     // The probe input is the RAW signal (manual outage now, last step's error/pressure via
@@ -259,14 +290,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       }
       s.popRegion.set(pop.id, region)
       populationRoutes.push({ populationId: pop.id, regionId: region, rps: demandByPop[pop.id] })
-      distributeToEntries(region, demandByPop[pop.id], simMs, entryDemand)
-    }
-    // baseline synthetic populations bypass DNS — straight to their own region (controller ruling)
-    for (const [popId, rps] of Object.entries(baseline)) {
-      const regionId = popId.slice('baseline:'.length)
-      if (!doc.regions[regionId] || healthOfScope(regionId) === 'down') continue
-      populationRoutes.push({ populationId: popId, regionId, rps })
-      distributeToEntries(regionId, rps, simMs, entryDemand)
+      // Split the population's scalar demand into per-route rps (its requestMix, else one implicit
+      // default route) so the LB can route each class independently. populationRoutes keeps the
+      // scalar total — the globe/routing snapshot is per-population, not per-route.
+      distributeViaLb(region, splitDemandByMix(demandByPop[pop.id], pop.requestMix), entryDemand)
     }
     s.lastRoutingSnapshot = { populationRoutes }
 
@@ -440,7 +467,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
   const populationForEntry = (entryInstanceId: InstanceId): PopulationId | null => {
     const inst = state!.compiled.instances[entryInstanceId]
     if (!inst) return null
-    const route = state!.lastRoutingSnapshot.populationRoutes.find(r => r.regionId === inst.regionId && !r.populationId.startsWith('baseline:'))
+    const route = state!.lastRoutingSnapshot.populationRoutes.find(r => r.regionId === inst.regionId)
     return route?.populationId ?? null
   }
 
@@ -508,7 +535,6 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const maxRps = Math.max(1, ...routes.map(r => r.rps))
     const arcs: VisualArc[] = []
     for (const r of routes) {
-      if (r.populationId.startsWith('baseline:')) continue
       const pop = s.doc.populations[r.populationId]
       const region = s.doc.regions[r.regionId]
       const geo = region ? REGION_GEO_LOCAL[region.catalogId] : undefined
@@ -583,7 +609,6 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     }
 
     for (const r of s.lastRoutingSnapshot.populationRoutes) {
-      if (r.populationId.startsWith('baseline:')) continue
       if (healthOfScope(r.regionId) !== 'down') continue
       const pop = s.doc.populations[r.populationId]
       const toGeo = geoOfRegion(r.regionId)
@@ -682,6 +707,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       state = {
         running: true, seed, rng: createRng(seed), clock: createClock(DEFAULT_STEP_MS), stepMs: DEFAULT_STEP_MS,
         timeScale: 1, doc, compiled, callbacks, entryBlueprintIds: entryBlueprints(doc),
+        routePathById: buildRoutePathById(doc),
         routing: createRoutingState(), failover: createFailoverState(),
         vpsStates: new Map(Object.values(doc.servers).map(sv => [sv.id, createVpsState(sv)])),
         vpsFactor: new Map(), breakers: new Map(), metrics: createMetricsState(),

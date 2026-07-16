@@ -2,7 +2,7 @@
 // state and TTL-lagged cutover are the Phase-2 engine's job; it consumes these orders.
 import type {
   WorldDoc, CompiledRouting, CompileFinding, ServiceInstance, InstanceId, Region, RegionId,
-  ClientPopulation,
+  ClientPopulation, ServiceBlueprint, LoadBalancer, BlueprintId,
 } from './types'
 import { REGION_GEO, greatCircleKm } from './regionGeo'
 import { WORLD_REGIONS } from '../regionConfig'
@@ -72,7 +72,63 @@ export function computeRouting(
     for (const list of Object.values(byBp)) list.sort()
   }
 
-  return { populationRegionOrder, regionAzSpread, azBlueprintTargets }
+  return { populationRegionOrder, regionAzSpread, azBlueprintTargets, lbRouting: computeLbRouting(doc, instances) }
+}
+
+// A blueprint is a client entry point when it exposes a 'public' port (the documented entry
+// rule the engine's distribution reads).
+function isEntryBlueprint(bp: ServiceBlueprint): boolean {
+  return bp.ports.some(p => p.visibility === 'public')
+}
+
+// Resolves each region's regional LB (authored in doc.loadBalancers, else a synthesized default)
+// into the CompiledLbRouting the engine consumes. The synthesized default is an NLB (L4,
+// cross-zone off) whose targets are the region's entry blueprints — byte-equivalent to the
+// pre-LB equal-per-AZ distribution. `defaultTargetBlueprintIds` lists only blueprints that
+// actually have an instance in the region (a target with no instances would route nowhere).
+function computeLbRouting(
+  doc: WorldDoc,
+  instances: Record<InstanceId, ServiceInstance>,
+): CompiledRouting['lbRouting'] {
+  const blueprintsByRegion = new Map<RegionId, Set<BlueprintId>>()
+  for (const inst of Object.values(instances)) {
+    let set = blueprintsByRegion.get(inst.regionId)
+    if (!set) { set = new Set(); blueprintsByRegion.set(inst.regionId, set) }
+    set.add(inst.blueprintId)
+  }
+  const lbByRegion = new Map<RegionId, LoadBalancer>()
+  for (const lb of Object.values(doc.loadBalancers)) lbByRegion.set(lb.regionId, lb)
+
+  const result: CompiledRouting['lbRouting'] = {}
+  for (const region of Object.values(doc.regions)) {
+    const present = blueprintsByRegion.get(region.id) ?? new Set<BlueprintId>()
+    const lb = lbByRegion.get(region.id)
+    const entryTargets = Object.values(doc.blueprints)
+      .filter(bp => isEntryBlueprint(bp) && present.has(bp.id))
+      .map(bp => bp.id)
+      .sort()
+    const defaultTargetBlueprintIds =
+      lb?.defaultTargetBlueprintId != null
+        ? (present.has(lb.defaultTargetBlueprintId) ? [lb.defaultTargetBlueprintId] : [])
+        : entryTargets
+    // L7 (ALB): resolve listener rules into compiled first-match rules, IN AUTHORED ORDER. Rules
+    // are kept verbatim — even one whose target has no instance in the region — so first-match
+    // semantics are accurate: a matching rule with an empty target group catches the route and
+    // the engine drops it (AWS's "target group with no healthy targets → 503"), rather than the
+    // route silently falling through to a later rule. The absent-target case is surfaced by the
+    // analysis rule, not by reordering here. L4 (NLB) has no path routing ⇒ no rules.
+    const rules = lb?.mode === 'l7'
+      ? lb.listenerRules.map(r => ({ pathPattern: r.pathPattern, targetBlueprintId: r.targetBlueprintId }))
+      : []
+    result[region.id] = {
+      mode: lb?.mode ?? 'l4',
+      crossZone: lb?.crossZone ?? false,
+      algorithm: lb?.algorithm ?? 'round-robin',
+      rules,
+      defaultTargetBlueprintIds,
+    }
+  }
+  return result
 }
 
 export function volumeFindings(doc: WorldDoc): CompileFinding[] {

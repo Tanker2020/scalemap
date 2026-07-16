@@ -52,16 +52,16 @@ describe('WorldPanel findings tab', () => {
   it('switches to a pendingPanelTab set while mounted and clears it', () => {
     useUiStore.setState({ pendingPanelTab: null })
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
-    expect(screen.queryByLabelText('autoBaseline')).not.toBeInTheDocument()   // starts on Topology
+    expect(screen.queryByText('+ place on globe')).not.toBeInTheDocument()   // starts on Topology
     act(() => useUiStore.getState().setPendingPanelTab('traffic'))
-    expect(screen.getByLabelText('autoBaseline')).toBeInTheDocument()         // switched to Traffic
+    expect(screen.getByText('+ place on globe')).toBeInTheDocument()         // switched to Traffic
     expect(useUiStore.getState().pendingPanelTab).toBeNull()                  // one-shot consumed
   })
 
   it('tab ink slides — clicking a tab still switches content with the ink element present', () => {
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
     fireEvent.click(screen.getByText('Traffic'))
-    expect(screen.getByLabelText('autoBaseline')).toBeInTheDocument()
+    expect(screen.getByText('+ place on globe')).toBeInTheDocument()
     expect(document.querySelector('.kit-ink')).not.toBeNull()
   })
 })
@@ -78,12 +78,12 @@ describe('WorldPanel atlas header (Polish 4 T2)', () => {
     expect(screen.getByTestId('atlas-header')).toBeInTheDocument()
   })
 
-  it('atlas headline at rest counts the authored doc (same copy as the old world summary)', () => {
+  it('atlas headline at rest counts the authored doc', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
     const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
     useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
-    expect(screen.getByTestId('atlas-headline')).toHaveTextContent(/1 region · 1 server · baseline 1,000 rps/)
+    expect(screen.getByTestId('atlas-headline')).toHaveTextContent(/1 region · 1 server · 0 populations/)
   })
 
   it('the atlas headline $/hr renders in the price color while running', () => {
@@ -156,7 +156,7 @@ describe('WorldPanel signature headers (Polish 3 T7)', () => {
     expect(screen.getByTestId('signature-header')).toHaveTextContent('1 placement')
 
     fireEvent.click(screen.getByText('Traffic'))
-    expect(screen.getByTestId('signature-header')).toHaveTextContent('1,000 rps baseline · 1 population')
+    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 population · routed by latency')
 
     fireEvent.click(screen.getByText('Analysis'))
     expect(screen.getByTestId('signature-header')).toHaveTextContent(/\d+ findings? \(\d+ errors?\)/)

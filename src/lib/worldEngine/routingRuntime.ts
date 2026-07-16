@@ -95,6 +95,64 @@ export function azSplit(azIds: AzId[], healthOf: (id: AzId) => HealthState): AzI
   return azIds.filter(id => healthOf(id) !== 'down')
 }
 
+export interface DistributeInput {
+  targetBlueprintIds: BlueprintId[]                                  // the target group (implicit: all instances of these bps)
+  rps: number
+  crossZone: boolean
+  regionAzSpread: AzId[]                                             // compiled.routing.regionAzSpread[regionId]
+  azBlueprintTargets: Record<AzId, Record<BlueprintId, InstanceId[]>>
+  healthOfScope: (id: string) => HealthState
+  healthOfInstance: (id: InstanceId) => HealthState
+  cursors: RoutingState
+  into: Record<InstanceId, number>                                   // accumulator (mutated)
+}
+
+// Distributes `rps` across a target group per the regional LB's cross-zone setting. This is the
+// region→AZ→instance tier (the LB "between the AZs"); the caller has already resolved which
+// target blueprints answer this traffic (default action in L4, a matched listener rule in L7).
+//   crossZone false (NLB default) — each healthy AZ node takes an equal share and serves ONLY
+//     its own AZ's targets (entry-node == serving-AZ). Byte-equivalent to the pre-LB equal-per-AZ
+//     distribution: perAz = rps / healthyAzCount, then one round-robin instance per target
+//     blueprint present in the AZ. An AZ with no target instances forfeits its share.
+//   crossZone true (ALB default) — every healthy target instance region-wide gets an equal split
+//     (entry-node decoupled from serving-AZ), so unequal per-AZ instance counts skew the per-AZ
+//     totals toward the AZ with more instances.
+export function distributeToTargets(input: DistributeInput): void {
+  const { targetBlueprintIds, rps, crossZone, regionAzSpread, azBlueprintTargets,
+    healthOfScope, healthOfInstance, cursors, into } = input
+  if (rps <= 0 || targetBlueprintIds.length === 0) return
+  const healthyAzs = azSplit(regionAzSpread, healthOfScope)
+  if (healthyAzs.length === 0) return
+
+  if (crossZone) {
+    const targets: InstanceId[] = []
+    for (const azId of healthyAzs) {
+      const byBp = azBlueprintTargets[azId] ?? {}
+      for (const bpId of targetBlueprintIds) {
+        for (const iid of byBp[bpId] ?? []) {
+          if (healthOfInstance(iid) !== 'down') targets.push(iid)
+        }
+      }
+    }
+    if (targets.length === 0) return
+    const per = rps / targets.length
+    for (const iid of targets) into[iid] = (into[iid] ?? 0) + per
+    return
+  }
+
+  const perAz = rps / healthyAzs.length
+  for (const azId of healthyAzs) {
+    const byBp = azBlueprintTargets[azId] ?? {}
+    const targetsHere = targetBlueprintIds.filter(bpId => (byBp[bpId]?.length ?? 0) > 0)
+    if (targetsHere.length === 0) continue
+    const perBp = perAz / targetsHere.length
+    for (const bpId of targetsHere) {
+      const inst = pickInstance(cursors, azId, bpId, byBp[bpId], healthOfInstance)
+      if (inst) into[inst] = (into[inst] ?? 0) + perBp
+    }
+  }
+}
+
 // AZ LB -> round-robin instance pick, one cursor per (az, blueprint) pair so different
 // blueprints in the same AZ don't share rotation state.
 export function pickInstance(

@@ -4,16 +4,20 @@
 import { create } from 'zustand'
 import type {
   WorldDoc, Server, ServiceBlueprint, Placement, ManagedScope, ManagedService, ClientPopulation,
-  RoutingConfig, TrafficConfig, AzId, Rack, RackId,
+  RoutingConfig, AzId, Rack, RackId, LoadBalancer,
 } from '../../lib/world/types'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
-  createPopulation, createRack, nextWorldId, type InstancePresetLike,
+  createPopulation, createRack, createLoadBalancer, nextWorldId, type InstancePresetLike,
 } from '../../lib/world/factories'
 import {
   canAssign, rackUsedU, serverHeightU, autoArrangePlan,
   RACK_CAPACITY_MIN, RACK_CAPACITY_MAX,
 } from '../../lib/world/rackModel'
+import {
+  addRoute as addRouteToRegistry, updateRoute as updateRouteInRegistry,
+  removeRoute as removeRouteFromRegistry, routeIdOf, type RouteFields,
+} from '../../lib/nodeConfig'
 import { useFileStore } from './file.store'
 import { useSimulationStore } from './simulation.store'
 
@@ -46,10 +50,12 @@ function withoutRegion(doc: WorldDoc, regionId: string): WorldDoc {
   delete regions[regionId]
   const managedServices = Object.fromEntries(
     Object.entries(next.managedServices).filter(([, m]) => !(m.scope.kind === 'region' && m.scope.regionId === regionId)))
+  const loadBalancers = Object.fromEntries(
+    Object.entries(next.loadBalancers).filter(([, lb]) => lb.regionId !== regionId))
   const weights = { ...next.routing.weights }
   delete weights[regionId]
   return {
-    ...next, regions, managedServices,
+    ...next, regions, managedServices, loadBalancers,
     routing: { ...next.routing, weights, priorityOrder: next.routing.priorityOrder.filter(id => id !== regionId) },
   }
 }
@@ -59,6 +65,19 @@ function stripDependencies(doc: WorldDoc, matches: (dep: ServiceBlueprint['depen
     id, { ...bp, dependencies: bp.dependencies.filter(d => !matches(d)) },
   ]))
   return { ...doc, blueprints }
+}
+
+// Removing a blueprint must not leave a regional LB pointing a listener rule or its default action
+// at a service that no longer exists (compile would resolve it to an empty target group and the
+// engine would silently drop that route). Drop matching listener rules; null out a default action
+// that referenced the removed blueprint (⇒ compile falls back to the region's entry blueprints).
+function scrubBlueprintFromLbs(doc: WorldDoc, blueprintId: string): WorldDoc {
+  const loadBalancers = Object.fromEntries(Object.entries(doc.loadBalancers).map(([id, lb]) => [id, {
+    ...lb,
+    listenerRules: lb.listenerRules.filter(r => r.targetBlueprintId !== blueprintId),
+    defaultTargetBlueprintId: lb.defaultTargetBlueprintId === blueprintId ? null : lb.defaultTargetBlueprintId,
+  }]))
+  return { ...doc, loadBalancers }
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -88,7 +107,11 @@ interface WorldStore {
   updatePopulation: (id: string, patch: Partial<ClientPopulation>) => void
   removePopulation: (id: string) => void
   updateRouting: (patch: Partial<RoutingConfig>) => void
-  updateTraffic: (patch: Partial<TrafficConfig>) => void
+  addLoadBalancer: (regionId: string) => string
+  updateLoadBalancer: (id: string, patch: Partial<LoadBalancer>) => void
+  addRoute: (fields: RouteFields) => string
+  updateRoute: (routeId: string, patch: Partial<RouteFields>) => void
+  removeRoute: (routeId: string) => void
   addRack: (azId: AzId) => void
   updateRack: (id: RackId, patch: Partial<Pick<Rack, 'label' | 'capacityU'>>) => void
   removeRack: (id: RackId) => void
@@ -178,7 +201,7 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       delete blueprints[id]
       const placements = Object.fromEntries(
         Object.entries(d.placements).filter(([, p]) => p.blueprintId !== id))
-      return stripDependencies({ ...d, blueprints, placements },
+      return stripDependencies(scrubBlueprintFromLbs({ ...d, blueprints, placements }, id),
         dep => dep.target.kind === 'blueprint' && dep.target.blueprintId === id)
     }),
 
@@ -227,7 +250,41 @@ export const useWorldStore = create<WorldStore>((set, get) => {
     }),
 
     updateRouting: (patch) => mutate(d => ({ ...d, routing: { ...d.routing, ...patch } })),
-    updateTraffic: (patch) => mutate(d => ({ ...d, traffic: { ...d.traffic, ...patch } })),
+
+    addLoadBalancer: (regionId) => {
+      const lb = createLoadBalancer(regionId)
+      mutate(d => ({ ...d, loadBalancers: { ...d.loadBalancers, [lb.id]: lb } }))
+      return lb.id
+    },
+    updateLoadBalancer: (id, patch) => mutate(d => {
+      const existing = d.loadBalancers[id]
+      if (!existing) return d
+      return { ...d, loadBalancers: { ...d.loadBalancers, [id]: { ...existing, ...patch, id } } }
+    }),
+
+    // Route catalog CRUD (Phase 2). Routes live in doc.packets (the revived registry) so these
+    // ride mutate() for undo/dirty like every other entity. The new route's id is the registry's
+    // pre-mutation nextId — captured inside the synchronous mutate() transform.
+    addRoute: (fields) => {
+      let id = ''
+      mutate(d => {
+        const { registry, route } = addRouteToRegistry(d.packets, fields)
+        id = routeIdOf(route)
+        return { ...d, packets: registry }
+      })
+      return id
+    },
+    updateRoute: (routeId, patch) => mutate(d => ({ ...d, packets: updateRouteInRegistry(d.packets, routeId, patch) })),
+    // Deleting a route scrubs every population's requestMix reference to it, so no population is
+    // left emitting a class that resolves to nothing (which the engine would drop and analysis flag).
+    removeRoute: (routeId) => mutate(d => {
+      const packets = removeRouteFromRegistry(d.packets, routeId)
+      const populations = Object.fromEntries(Object.entries(d.populations).map(([id, pop]) => {
+        if (!pop.requestMix) return [id, pop]
+        return [id, { ...pop, requestMix: pop.requestMix.filter(e => e.routeId !== routeId) }]
+      }))
+      return { ...d, packets, populations }
+    }),
 
     addRack: (azId) => mutate(d => {
       const count = Object.values(d.racks).filter(r => r.azId === azId).length

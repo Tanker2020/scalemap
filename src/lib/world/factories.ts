@@ -1,8 +1,9 @@
 import type {
   WorldDoc, Region, AvailabilityZone, Server, ServiceBlueprint, Placement,
-  ServerKind, ServerSpecs, ClientPopulation, AzId, Rack,
+  ServerKind, ServerSpecs, ClientPopulation, AzId, Rack, LoadBalancer,
 } from './types'
 import { RACK_CAPACITY_DEFAULT } from './rackModel'
+import { emptyPacketRegistry } from '../nodeConfig'
 
 let worldCounter = 0
 export function nextWorldId(prefix: string): string {
@@ -22,7 +23,6 @@ export function createWorld(): WorldDoc {
       healthCheckFailureThreshold: 3,
       dnsTtlSec: 30,
     },
-    traffic: { autoBaseline: true, baselineTotalRps: 1000 },
     populations: {},
     regions: {},
     azs: {},
@@ -30,7 +30,9 @@ export function createWorld(): WorldDoc {
     blueprints: {},
     placements: {},
     managedServices: {},
+    loadBalancers: {},
     racks: {},
+    packets: emptyPacketRegistry(),
   }
 }
 
@@ -100,4 +102,20 @@ export function createPlacement(blueprintId: string, serverId: string): Placemen
 
 export function createPopulation(label: string, lat: number, lon: number): ClientPopulation {
   return { id: nextWorldId('pop'), label, lat, lon, peakRps: 500, diurnal: 'flat' }
+}
+
+// A regional load balancer. Defaults to an NLB (L4, cross-zone off) — the accurate NLB default,
+// and byte-equivalent to the pre-LB equal-per-AZ distribution. `defaultTargetBlueprintId: null`
+// means "all entry blueprints" (blueprints with a public port), matching the old entry rule.
+export function createLoadBalancer(regionId: string): LoadBalancer {
+  return {
+    id: nextWorldId('lb'),
+    regionId,
+    label: 'lb',
+    mode: 'l4',
+    crossZone: false,
+    algorithm: 'round-robin',
+    listenerRules: [],
+    defaultTargetBlueprintId: null,
+  }
 }

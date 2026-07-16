@@ -55,7 +55,7 @@ describe('broken-teaching (teaching world)', () => {
 })
 
 describe.each(VAULT.map(e => [e.id] as const))('%s engine smoke', (id) => {
-  it('seeded engine reaches non-zero world rps in 50 steps', () => {
+  it('seeded engine runs and produces metrics; worlds with populations reach non-zero rps', () => {
     const doc = entry(id).build()
     const compiled = compileWorld(doc)
     const engine = createWorldEngine(1)
@@ -64,6 +64,10 @@ describe.each(VAULT.map(e => [e.id] as const))('%s engine smoke', (id) => {
     engine.__test_step(50)
     engine.stop()
     expect(batches.length).toBeGreaterThan(0)
-    expect(batches[batches.length - 1].world.totalRps).toBeGreaterThan(0)
+    // Auto-baseline was removed 2026-07-15: traffic comes only from authored populations, so the
+    // single-region clean worlds (three-tier, event-driven — deliberately population-less to stay
+    // finding-clean) legitimately idle at zero rps.
+    const expectRps = Object.keys(doc.populations).length > 0
+    expect(batches[batches.length - 1].world.totalRps > 0).toBe(expectRps)
   })
 })

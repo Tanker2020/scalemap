@@ -24,6 +24,27 @@ export interface WorldCostResult {
   byRegion: { regionId: RegionId; monthlyUsd: number }[]
   byAz: { azId: AzId; monthlyUsd: number }[]
   egress: { crossAzUsd: number; crossRegionUsd: number; internetUsd: number }
+  // Total LB-hours cost of every AUTHORED regional load balancer (Phase 3). Already folded into
+  // byRegion (each LB is region-scoped) and therefore into monthlyUsd — exposed separately only
+  // as an itemization line for the Cost tab, NOT a second addend.
+  loadBalancerUsd: number
+  loadBalancerCount: number
+}
+
+// LBs carry no provider field, so their LB-hours price at the aws default — the same
+// single-provider simplification the internet-egress line already makes. Cross-zone LB traffic is
+// NOT billed here: it rides the cross-AZ egress bytes the engine already meters and costs above.
+const LB_PROVIDER: CloudProvider = 'aws'
+
+function loadBalancerMonthlyUsd(): number {
+  const spec = getServiceSpec('loadBalancer', LB_PROVIDER)
+  if (!spec) return 0
+  let usd = 0
+  for (const c of spec.pricing) {
+    if (c.kind === 'instanceHourly') usd += c.defaultRateUsdHr * c.defaultCount * HOURS_PER_MONTH
+    // egress component: intentionally skipped — cross-zone bytes are already in cross-AZ egress.
+  }
+  return usd
 }
 
 function managedServiceMonthlyUsd(nodeType: string, provider: CloudProvider): number {
@@ -63,6 +84,18 @@ export function computeWorldCost(doc: WorldDoc, world: WorldMetrics | null): Wor
     }
   }
 
+  // Regional load balancers (Phase 3): each AUTHORED LB adds LB-hours to its region (region-scoped
+  // like a region-level managed service — bumped into byRegion so region-scoped cost picks it up).
+  let loadBalancerUsd = 0
+  let loadBalancerCount = 0
+  for (const lb of Object.values(doc.loadBalancers)) {
+    if (!doc.regions[lb.regionId]) continue
+    const usd = loadBalancerMonthlyUsd()
+    bump(byRegionMap, lb.regionId, usd)
+    loadBalancerUsd += usd
+    loadBalancerCount += 1
+  }
+
   const crossAzUsd = world ? (world.crossAzBytesPerSec * SECONDS_PER_MONTH / BYTES_PER_GB) * CROSS_AZ_USD_PER_GB : 0
   const crossRegionUsd = world ? (world.crossRegionBytesPerSec * SECONDS_PER_MONTH / BYTES_PER_GB) * CROSS_REGION_USD_PER_GB : 0
   // Internet egress bills at PROVIDER_EGRESS.aws's tiered schedule regardless of the world's
@@ -72,9 +105,10 @@ export function computeWorldCost(doc: WorldDoc, world: WorldMetrics | null): Wor
   const internetGbMonth = world ? (world.internetEgressBytesPerSec * SECONDS_PER_MONTH) / BYTES_PER_GB : 0
   const internetUsd = world ? egressMonthlyCost('aws', internetGbMonth) : 0
 
-  // byRegionMap already sums every server + every managed service exactly once (each managed
-  // service contributes to exactly one region, directly or via its AZ's region) — safe to use
-  // directly as the compute total, no need to re-walk doc.servers/managedServices again.
+  // byRegionMap already sums every server + every managed service + every load balancer exactly
+  // once (each contributes to exactly one region, directly or via its AZ's region) — safe to use
+  // directly as the compute total, no need to re-walk the doc again. loadBalancerUsd is a SUBSET
+  // of this (already bumped in above), so it is NOT added to monthlyUsd a second time.
   const computeTotal = [...byRegionMap.values()].reduce((a, b) => a + b, 0)
   const monthlyUsd = computeTotal + crossAzUsd + crossRegionUsd + internetUsd
 
@@ -83,5 +117,7 @@ export function computeWorldCost(doc: WorldDoc, world: WorldMetrics | null): Wor
     byRegion: [...byRegionMap.entries()].map(([regionId, monthlyUsd]) => ({ regionId, monthlyUsd })),
     byAz: [...byAzMap.entries()].map(([azId, monthlyUsd]) => ({ azId, monthlyUsd })),
     egress: { crossAzUsd, crossRegionUsd, internetUsd },
+    loadBalancerUsd,
+    loadBalancerCount,
   }
 }

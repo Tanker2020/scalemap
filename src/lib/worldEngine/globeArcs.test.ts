@@ -29,7 +29,6 @@ function publicBlueprint(name: string, colorIndex: number) {
 // useful for the "client arcs unchanged" and "deterministic" cases below.
 function e2eFixture() {
   const doc = createWorld()
-  doc.traffic.autoBaseline = false
   doc.routing.policy = 'geo'
   doc.routing.dnsTtlSec = 5
 
@@ -76,7 +75,6 @@ function e2eFixture() {
 // downstream rows into ONE (region1 -> region2) arc.
 function crossRegionFixture() {
   const doc = createWorld()
-  doc.traffic.autoBaseline = false
   doc.routing.policy = 'geo'
 
   const r1 = createRegion('us-east-1')
@@ -127,7 +125,6 @@ function crossRegionFixture() {
 // to 0.2 ≠ 0.15 — so asserting the faint arc's intensity === 0.15 exactly discriminates the two.
 function twoPairFixture() {
   const doc = createWorld()
-  doc.traffic.autoBaseline = false
   doc.routing.policy = 'geo'
 
   const r1 = createRegion('us-east-1')
@@ -175,7 +172,6 @@ function twoPairFixture() {
 // count without touching the rest of the topology.
 function singleRegionFixture(popCount: number) {
   const doc = createWorld()
-  doc.traffic.autoBaseline = false
   doc.routing.policy = 'geo'
   doc.routing.dnsTtlSec = 5
 
@@ -226,7 +222,6 @@ function singleRegionFixture(popCount: number) {
 // once traffic fails over to the region that DOES have a REGION_GEO entry.
 function missingGeoFailoverFixture() {
   const doc = createWorld()
-  doc.traffic.autoBaseline = false
   doc.routing.policy = 'weighted'
   doc.routing.dnsTtlSec = 5
 
@@ -279,7 +274,6 @@ function computeExpectedClientArcs(doc: WorldDoc, routes: MetricsBatch['world'][
   const maxRps = Math.max(1, ...routes.map(r => r.rps))
   const arcs: VisualArc[] = []
   for (const r of routes) {
-    if (r.populationId.startsWith('baseline:')) continue
     const pop = doc.populations[r.populationId]
     const region = doc.regions[r.regionId]
     const geo = region ? REGION_GEO[region.catalogId] : undefined

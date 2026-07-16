@@ -2048,3 +2048,217 @@ communication purely to solve a code-ownership problem — real added complexity
 (serialization, latency, deployment) without the deployment-independence benefit
 that normally justifies it. The module boundaries above get most of the
 conflict-reduction benefit without that cost.
+
+---
+
+## Regional Load Balancer — Phase 1 (accurate ALB/NLB, cross-zone AZ distribution)
+
+The region-internal load balancer — the tier "between the AZs" that was previously a hardcoded
+equal split inside `worldEngine/index.ts` — is now a real, authorable device. Phase 1 ships the
+L4/NLB device with a configurable **cross-zone** setting; L7 listener rules + the route/packet
+system are Phase 2 (parked, not built).
+
+**New model (`src/lib/world/types.ts`)** — a `LoadBalancer` entity (id-keyed, region-scoped like
+`ManagedService`): `mode: 'l4'|'l7'`, `crossZone`, `algorithm: 'round-robin'|'weighted'`,
+`listenerRules: ListenerRule[]` ([] in L4), `defaultTargetBlueprintId` (null = all entry
+blueprints). Added to `WorldDoc.loadBalancers`. A target group is modeled implicitly as all
+healthy instances of a target blueprint in the region (explicit target groups: future). The LB is
+abstract managed infra (no rackable server, no SPOF/capacity — matches AWS, and the app's prior
+abstraction).
+
+**Compiled gate (additive) (`src/lib/world/routing.ts`, `types.ts`)** — `CompiledRouting.lbRouting:
+Record<RegionId, CompiledLbRouting>` (`{ mode, crossZone, algorithm, rules, defaultTargetBlueprintIds }`).
+`computeLbRouting` synthesizes a default LB per region when none is authored: **NLB (L4,
+cross-zone OFF)** whose default targets are the region's entry blueprints (public port) that have
+≥1 instance there. This default is byte-equivalent to the pre-LB equal-per-AZ distribution, so
+every engine golden test passes unchanged. `CompiledRouting` is extended additively (never
+reshaped) — it fans out to every view + the engine.
+
+**Engine (`worldEngine/index.ts` hub, `routingRuntime.ts`)** — the old inline `distributeToEntries`
+now delegates to a new pure, reusable helper `distributeToTargets` (`routingRuntime.ts`):
+- **cross-zone OFF (NLB default)** — `perAz = rps / healthyAzCount`, then one round-robin
+  instance per target blueprint present in the AZ (entry-node == serving-AZ). Byte-equivalent to
+  the old path; an AZ with no target instances forfeits its share.
+- **cross-zone ON (ALB)** — every healthy target instance region-wide gets an equal split
+  (entry-node decoupled from serving-AZ), so unequal per-AZ instance counts skew per-AZ totals.
+`distributeToTargets` takes an input object (target blueprint ids + rps + cross-zone + the compiled
+AZ tables + health fns + cursors + accumulator) so Phase 2 can call it once per matched route.
+Reuses `azSplit` (healthy-AZ filter) + `pickInstance` (round-robin cursors). `index.ts` dropped its
+`azSplit`/`pickInstance` imports (both now live inside the helper); `entryBlueprintIds` stays —
+still read by the particle builders.
+
+**Store (`app/store/world.store.ts`)** — `addLoadBalancer(regionId)` / `updateLoadBalancer(id,
+patch)` via the existing `mutate()` (undo/dirty for free). `withoutRegion` cascades LB deletion
+(mirrors its `managedServices` cascade).
+
+**Config UI (`app/world/dock/RegionConfigTab.tsx`)** — a `LOAD BALANCER` section below the AZ
+list: cross-zone + algorithm `Segmented`s, edit-locked while running via a `<fieldset disabled>`.
+Reads the authored LB or shows the synthesized default (cross-zone off); the first edit lazily
+creates the LB. Mode is L4-only this phase (L7 toggle arrives with listener rules in Phase 2).
+
+**Persistence (`serializer.ts`)** — `loadBalancers` serializes with the whole `world`; deserialize
+defaults it to `{}` for pre-LB files (same additive-normalization pattern as `racks`), and
+`compileWorld` synthesizes the default LB from there — old `.scalemap` files load and behave
+identically.
+
+**Gate** — new TDD tests: `routing.test.ts` (+3, lbRouting synthesis), `routingRuntime.test.ts`
+(+3, distributeToTargets cross-zone on/off/down-AZ), `world.store.test.ts` (+3, LB actions +
+region cascade), `serializer.test.ts` (+1, back-compat default), `RegionConfigTab.test.tsx` (+3, LB
+section render/toggle/edit-lock). All engine golden tests green (byte-equivalence proven);
+`npm run build` clean. Phase 2 (routes + L7) is scoped but not built.
+
+---
+
+## Regional Load Balancer — Phase 2 (route/packet system + L7 listener rules)
+
+Phase 2 gives the LB's L7 mode real meaning by **reviving the dormant packet system** as a route
+catalog and making the engine's ingress distribution route-aware. Everything is additive on top of
+Phase 1; back-compat is preserved by construction (a world with no routes/mix and an L4 LB ticks
+byte-identically to Phase 1).
+
+**Route catalog — packets fold into `WorldDoc` (`world/types.ts`, `nodeConfig.ts`,
+`factories.ts`)** — `WorldDoc.packets: PacketRegistry` is now a first-class collection (previously
+the registry existed only as a serializer type the running app never populated). Its
+**HTTP-protocol templates ARE the routes**: a route = an `HttpTemplate` (method + path, plus
+size/workload for later realism). `nodeConfig.ts` gained pure, immutable route helpers —
+`emptyPacketRegistry`, `listRoutes`, `getRoute`, `addRoute`, `updateRoute`, `removeRoute`,
+`routeIdOf` (routeId = the template id, stringified), and `routeMatchesPattern` (glob-prefix
+first-match, shared by compile + engine + analysis). Living inside `WorldDoc` means every route
+edit rides `mutate()` (undo/dirty) and serializes with the world.
+
+**Population request mix (`world/types.ts`, `worldEngine/demand.ts`)** —
+`ClientPopulation.requestMix?: { routeId; weight }[]` (absent ⇒ one implicit default route at
+100%). `demand.ts` `splitDemandByMix(totalRps, requestMix?)` splits the (already-jittered) scalar
+into per-route rps — a pure proportional split, **no `rng`**, so determinism and golden tests
+hold. Returns `RouteDemand[]` where `routeId: null` is the default class.
+
+**Compile L7 (`world/routing.ts`)** — `computeLbRouting` now populates `CompiledLbRouting.rules`
+(already typed in Phase 1, empty until now) from an L7 LB's `listenerRules`, verbatim and
+**in authored order** — even a rule whose target has no in-region instance is kept, so first-match
+is accurate and the empty target group drops the route (AWS "503 on empty target group"); the
+absent-target case is surfaced by analysis, not by silently reordering. L4 LBs still compile no
+rules. No new `CompiledRouting` shape — purely fills an existing field.
+
+**Engine route-aware distribution (`worldEngine/index.ts` hub)** — Phase 1's `distributeToEntries`
+became `distributeViaLb(regionId, routeDemands, into)`: per route, `matchRouteTargets(path, lb)`
+first-matches a listener rule (or falls to the default action) to pick the target group, then hands
+it to the **unchanged** `distributeToTargets` (the region→AZ→instance + cross-zone tier). Route
+paths are resolved once at `start()` into `state.routePathById` (built from `doc.packets`). The
+demand loop now calls `distributeViaLb(region, splitDemandByMix(total, pop.requestMix), …)`;
+`populationRoutes` keeps the scalar total (per-population, not per-route). Back-compat: no mix ⇒
+one `{routeId:null}` route ⇒ default targets; L4 ⇒ no rules ⇒ default targets — identical to
+Phase 1 (proven: 40 golden engine tests unchanged).
+
+**Store (`app/store/world.store.ts`)** — `addRoute`/`updateRoute`/`removeRoute` via `mutate()` on
+`doc.packets`. Reference hygiene: `removeRoute` scrubs the deleted routeId from every population's
+`requestMix`; `removeBlueprint` now also runs `scrubBlueprintFromLbs` (drops listener rules
+targeting the removed blueprint, nulls a default action that pointed at it).
+
+**Persistence (`serializer.ts`)** — `packets` now serializes **inside `world`** (the top-level
+`packets` slot was vestigial — write-never/read-never in the app). `deserializeWorld` defaults
+`world.packets` to an empty registry and **migrates any legacy top-level `packets` slot** into it,
+so pre-Phase-2 files (with or without the old slot) load unchanged.
+
+**UI** — new **`panels/RoutesPanel.tsx`** (world scope, 8th world tab `routes`, wired through
+`ui.store` `PanelTab` + `dock/scope.ts` `WORLD_TABS` + `WorldPanel.tsx` label/render/header) is the
+route catalog editor (modeled on `BlueprintPanel`). `TrafficPanel.tsx` gained a `RequestMixEditor`
+in the expanded population row (relative-weight fields over the route catalog; empty ⇒ default
+class). `RegionConfigTab.tsx`'s LB section gained the **L4/L7 `type` toggle** and, in L7, a
+`ListenerRulesEditor` (ordered pathPattern → target-service rows + a default-action select).
+
+**Analysis (`analysis/rules/network.ts`)** — two new rules registered in `networkRules`:
+`lb-listener-target-absent` (an L7 listener rule points at a service with no instance in the
+region → dropped) and `lb-route-dropped` (a population's request-mix class reaches an L7 region
+that has no matching rule and no default action → dropped).
+
+**Gate** — new TDD tests across `nodeConfig.test.ts` (route helpers + glob matcher),
+`serializer.test.ts` (packets round-trip + legacy-slot migration), `demand.test.ts`
+(`splitDemandByMix`), `routing.test.ts` (L7 rule compilation), `index.test.ts` (+3 L7 integration:
+split, unmatched→default, dropped), `world.store.test.ts` (route CRUD + scrubbing),
+`network.test.ts` (+4 analysis), `RoutesPanel.test.tsx`, `TrafficPanel.test.tsx` (mix editor),
+`RegionConfigTab.test.tsx` (L7 rules). Full suite green (the wall-clock engine perf bench is
+load-sensitive and passes in isolation); `npm run build` clean.
+
+**Scope boundary (unchanged from the plan)** — L7 routing is at **ingress** (client → entry
+service). Internal service-to-service per-route routing keeps `solveFlows`' fan-out unchanged (a
+deliberate future extension). Explicit multi-blueprint target groups, and per-route byte/workload
+realism from the packet templates, are likewise parked.
+
+---
+
+## Auto-baseline removal + region "who's sending" summation fix (2026-07-15)
+
+Two user-reported traffic issues, fixed together.
+
+**Auto-baseline traffic removed.** The synthetic per-region ambient demand (a phantom
+`baselineTotalRps` defaulting to 1000, injected as `baseline:<regionId>` pseudo-populations) is
+gone — all traffic now originates from authored `ClientPopulation`s. Removed: `TrafficConfig` +
+`WorldDoc.traffic` (`world/types.ts`), the `traffic` default (`factories.ts`), `baselineDemands`
+(`worldEngine/demand.ts`) and the engine's baseline demand loop + the three `baseline:`
+population-id guards (`worldEngine/index.ts`), `updateTraffic` (`world.store.ts`), the
+`TrafficHero` baseline controls (`panels/TrafficPanel.tsx` — the routing-policy `Segmented` it
+hosted moved into `RoutingSection`; the auto-baseline checkbox/slider/exact-value are deleted),
+and the baseline mentions in the world/traffic headers (`WorldPanel.tsx`, `dock/AtlasHeader.tsx`,
+`region/SourcesColumn.tsx`). `serializer.ts` dropped `traffic` from its required-collections list;
+old `.scalemap` files with a leftover `world.traffic` object still load (the extra field is
+ignored). **Vault consequence:** the single-region clean worlds (`three-tier`, `event-driven` in
+`vault/exampleWorlds.ts`) are deliberately population-less to stay finding-clean (a population
+would trip `no-failover-region`), so they now render **trafficless** until a population is added —
+`exampleWorlds.test.ts`'s engine-smoke asserts non-zero rps only for worlds that author
+populations.
+
+**Region "who's sending" trunk now sums the ingress rows** (`region/SourcesColumn.tsx`). It
+previously read `batch.regions[regionId].rps`, which is the region's *total instance throughput*
+(ingress **plus** internal service→service hops via `metrics.ts`' AZ→region reduction) and so
+exceeded the sum of the visible source rows — the "summation is always incorrect" report. The
+trunk is now `rows.reduce((s,r)=>s+r.rps, 0)` (the ingress the sources actually send). The region
+headline elsewhere still legitimately shows total throughput; only the ingress box was wrong.
+Regression-locked by `RegionView.test.tsx` (trunk shows the ingress sum, not `region.rps`).
+
+**Region → AZ split now distributes the ingress, not AZ throughput** (`region/regionData.ts`
+`azShares`, consumed by `SplitLines.tsx` pills + `AzRow.tsx`'s inbound header). Same throughput ≠
+ingress bug one level down: `azShares.rps` used `batch.azs[az].rps` (per-AZ total throughput), so
+the two AZ pills summed to ~2× the region ingress (the "both AZs receive the entirety, doubling"
+report). `fraction` still ranks AZs by throughput share, but `rps` is now `fraction × regionIngress`
+(regionIngress = Σ `populationRoutes` into the region = the SourcesColumn trunk), so the pills sum
+to the ingress. `AzRow` gained an `inboundRps` prop (threaded from `azShares` by `RegionView.tsx`)
+and its `◂ N rps` header shows that instead of `batch.azs[az].rps`; per-server rows still show
+actual per-instance throughput (where the internal amplification remains visible). Note: this is a
+*proportional* attribution — it does not by itself reveal that cross-zone-OFF **drops** an AZ's
+share when that AZ holds no entry/target instance. That real engine behavior (verified by
+`index.test.ts` "cross-zone-off ingress distribution": entry in both AZs → clean 50/50; entry in
+one AZ → the other AZ's share is dropped, `world.totalRps` ≈ half) is surfaced by explanation/
+recommendation (place the entry service in every AZ, or enable cross-zone), not yet by an analysis
+rule.
+
+---
+
+## Regional Load Balancer — Phase 3 (cost + region visualization)
+
+Final phase of the regional-LB feature: pricing and an at-a-glance region-page instrument.
+
+**Cost (`costModelV2.ts`, `cloudRegistry.ts`)** — each AUTHORED regional LB (`doc.loadBalancers`)
+now prices at the existing `CLOUD_REGISTRY.loadBalancer` LB-hours (aws default,
+`instanceHourly` 0.0225/hr × 730 ≈ $16.43/mo), **bumped into `byRegionMap`** so it flows into the
+region total AND every region-scoped cost reader (`dock/scopeData.ts` `scopedCost` → region Cost
+tab + `AtlasHeader`) for free. `WorldCostResult` gained `loadBalancerUsd` + `loadBalancerCount`
+(additive) — a *subset* of `computeTotal`, exposed only for the Cost tab's "includes N load
+balancer(s)" itemization line (`CostTab.tsx`), NOT a second addend to `monthlyUsd`. Cross-zone LB
+traffic is deliberately **not** billed here — it rides the cross-AZ egress bytes the engine already
+meters/costs (the `egress` pricing component of the LB spec is skipped). Synthesized default LBs
+(regions with no authored LB) cost $0 — you pay once you configure one. Tests: `costModelV2.test.ts`
+(+2, LB priced into region / deleted-region guard).
+
+**Region visualization (`region/RegionLbCard.tsx`, new)** — a compact, read-only card in the
+Level-2 region flow row, inserted by `RegionView.tsx` between `SourcesColumn` (the DNS-outcome
+"who's sending" view, deliberately unchanged — it is *not* the LB) and `SplitLines` (the region→AZ
+beams), i.e. exactly where the regional LB sits in the flow. Reads `compiled.routing.lbRouting`
+(so it reflects the synthesized default too, never the raw doc): shows NLB·L4 / ALB·L7, the
+cross-zone on/off badge + fan-out note, and — in L7 — each listener rule as `pattern → service`
+plus the default action. Token-only styling (theme-correct). Full authoring still lives in the
+dock's `RegionConfigTab`; this is the read-only flow-page mirror. Tests: `RegionLbCard.test.tsx`
+(synthesized L4 default + authored L7 rules).
+
+**Contract drift** — no `worldEngine/types.ts` or `CompiledWorld`/`CompiledRouting` change in
+Phase 3 (cost model + a display component only). The additive `WorldCostResult` fields are logged
+in `.superpowers/sdd/contract-drift.md`.

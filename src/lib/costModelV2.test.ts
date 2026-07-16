@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { computeWorldCost } from './costModelV2'
-import { createWorld, createRegion, createAz, createServer } from './world/factories'
+import { createWorld, createRegion, createAz, createServer, createLoadBalancer } from './world/factories'
 import { getPreset } from './world/instanceCatalog'
 import { useWorldStore } from '../app/store/world.store'
 import type { WorldDoc } from './world/types'
@@ -75,6 +75,32 @@ describe('computeWorldCost', () => {
     useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'az', azId }, 5432, 'aws')
     const doc = useWorldStore.getState().doc
     expect(computeWorldCost(doc, null).monthlyUsd).toBeGreaterThan(0)
+  })
+
+  it('prices an authored regional load balancer at aws LB-hours, folded into its region', () => {
+    const { doc, regionId } = twoServerWorld()
+    const baseline = computeWorldCost(doc, null)
+    expect(baseline.loadBalancerCount).toBe(0)
+    expect(baseline.loadBalancerUsd).toBe(0)
+
+    const lb = createLoadBalancer(regionId)
+    doc.loadBalancers[lb.id] = lb
+    const withLb = computeWorldCost(doc, null)
+
+    const expectedLb = 0.0225 * 1 * 730   // aws loadBalancer instanceHourly × 730
+    expect(withLb.loadBalancerCount).toBe(1)
+    expect(withLb.loadBalancerUsd).toBeCloseTo(expectedLb, 5)
+    // folded into the region total (scopedCost reads byRegion) and the world total, exactly once
+    expect(withLb.byRegion.find(r => r.regionId === regionId)!.monthlyUsd)
+      .toBeCloseTo(baseline.byRegion.find(r => r.regionId === regionId)!.monthlyUsd + expectedLb, 5)
+    expect(withLb.monthlyUsd).toBeCloseTo(baseline.monthlyUsd + expectedLb, 5)
+  })
+
+  it('does not price a load balancer whose region was deleted', () => {
+    const { doc } = twoServerWorld()
+    const lb = createLoadBalancer('region-that-does-not-exist')
+    doc.loadBalancers[lb.id] = lb
+    expect(computeWorldCost(doc, null).loadBalancerCount).toBe(0)
   })
 
   it('still prices legacy managed services with old nodeType aliases (rds)', () => {

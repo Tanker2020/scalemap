@@ -17,6 +17,81 @@ function buildChain() {
   return { regionId, azId, serverId, bpId, plId }
 }
 
+describe('world.store — load balancers', () => {
+  it('addLoadBalancer creates a region-scoped L4 LB and marks the file dirty', () => {
+    const { regionId } = buildChain()
+    useFileStore.getState().setDirty(false)
+    const lbId = useWorldStore.getState().addLoadBalancer(regionId)
+    const lb = useWorldStore.getState().doc.loadBalancers[lbId]
+    expect(lb).toMatchObject({ regionId, mode: 'l4', crossZone: false })
+    expect(useFileStore.getState().dirty).toBe(true)
+  })
+
+  it('updateLoadBalancer patches config through mutate (undoable)', () => {
+    const { regionId } = buildChain()
+    const lbId = useWorldStore.getState().addLoadBalancer(regionId)
+    useWorldStore.getState().updateLoadBalancer(lbId, { crossZone: true, mode: 'l7' })
+    const lb = useWorldStore.getState().doc.loadBalancers[lbId]
+    expect(lb.crossZone).toBe(true)
+    expect(lb.mode).toBe('l7')
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc.loadBalancers[lbId].crossZone).toBe(false)
+  })
+
+  it('removeRegion cascades to its load balancers', () => {
+    const { regionId } = buildChain()
+    const lbId = useWorldStore.getState().addLoadBalancer(regionId)
+    useWorldStore.getState().removeRegion(regionId)
+    expect(useWorldStore.getState().doc.loadBalancers[lbId]).toBeUndefined()
+  })
+
+  it('removeBlueprint scrubs LB listener rules and default action referencing it', () => {
+    const { regionId, bpId } = buildChain()
+    const lbId = useWorldStore.getState().addLoadBalancer(regionId)
+    useWorldStore.getState().updateLoadBalancer(lbId, {
+      mode: 'l7',
+      listenerRules: [{ id: 'r1', pathPattern: '/api/*', targetBlueprintId: bpId }],
+      defaultTargetBlueprintId: bpId,
+    })
+    useWorldStore.getState().removeBlueprint(bpId)
+    const lb = useWorldStore.getState().doc.loadBalancers[lbId]
+    expect(lb.listenerRules).toEqual([])
+    expect(lb.defaultTargetBlueprintId).toBeNull()
+  })
+})
+
+describe('world.store — route catalog', () => {
+  it('addRoute stores an http template in doc.packets, returns its id, marks dirty', () => {
+    useFileStore.getState().setDirty(false)
+    const routeId = useWorldStore.getState().addRoute({ name: 'api', method: 'GET', path: '/api/*' })
+    const reg = useWorldStore.getState().doc.packets
+    expect(reg.templates[Number(routeId)]).toMatchObject({ protocol: 'http', path: '/api/*', method: 'GET' })
+    expect(useFileStore.getState().dirty).toBe(true)
+  })
+
+  it('updateRoute patches a route and is undoable', () => {
+    const routeId = useWorldStore.getState().addRoute({ name: 'api', method: 'GET', path: '/api/*' })
+    useWorldStore.getState().updateRoute(routeId, { path: '/v2/*', method: 'POST' })
+    expect(useWorldStore.getState().doc.packets.templates[Number(routeId)]).toMatchObject({ path: '/v2/*', method: 'POST' })
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc.packets.templates[Number(routeId)]).toMatchObject({ path: '/api/*', method: 'GET' })
+  })
+
+  it('removeRoute deletes the template and scrubs it from every population requestMix', () => {
+    const { azId } = buildChain()
+    void azId
+    const keepId = useWorldStore.getState().addRoute({ name: 'keep', method: 'GET', path: '/keep' })
+    const dropId = useWorldStore.getState().addRoute({ name: 'drop', method: 'GET', path: '/drop' })
+    const popId = useWorldStore.getState().addPopulation('nyc', 40, -74)
+    useWorldStore.getState().updatePopulation(popId, {
+      requestMix: [{ routeId: keepId, weight: 1 }, { routeId: dropId, weight: 2 }],
+    })
+    useWorldStore.getState().removeRoute(dropId)
+    expect(useWorldStore.getState().doc.packets.templates[Number(dropId)]).toBeUndefined()
+    expect(useWorldStore.getState().doc.populations[popId].requestMix).toEqual([{ routeId: keepId, weight: 1 }])
+  })
+})
+
 describe('world.store', () => {
   it('newWorld resets the dirty flag and created timestamp', () => {
     useFileStore.getState().setDirty(true)

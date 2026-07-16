@@ -43,6 +43,10 @@ export interface AzRowDbEndpoint { serverId: ServerId; role: 'primary' | 'replic
 export interface AzRowProps {
   azId: AzId
   regionId: RegionId
+  // The region ingress routed to this AZ (azShares' rps — the region trunk split by AZ share).
+  // The header shows THIS as the AZ's inbound rate, not batch.azs[az].rps (total instance
+  // throughput, which additionally counts internal service→service hops and reads ~2× the ingress).
+  inboundRps: number
   monthlyUsd: number
   dbEndpoints: AzRowDbEndpoint[]
   onNavigateAz: () => void
@@ -51,7 +55,7 @@ export interface AzRowProps {
 }
 
 export function AzRow({
-  azId, regionId, monthlyUsd, dbEndpoints, onNavigateAz, onNavigateServer, onHoverServer,
+  azId, regionId, inboundRps, monthlyUsd, dbEndpoints, onNavigateAz, onNavigateServer, onHoverServer,
 }: AzRowProps): ReactElement {
   const doc = useWorldStore(s => s.doc)
   const addServer = useWorldStore(s => s.addServer)
@@ -122,7 +126,7 @@ export function AzRow({
           {az?.label ?? azId}
         </span>
         <span style={{ color: isDown ? 'var(--color-danger)' : 'var(--r3-hud)', fontSize: 10.5, fontVariantNumeric: 'tabular-nums' }}>
-          {isDown ? (isManuallyDown ? 'outage (manual)' : 'outage') : `◂ ${(metrics?.rps ?? 0).toFixed(0)} rps`}
+          {isDown ? (isManuallyDown ? 'outage (manual)' : 'outage') : `◂ ${inboundRps.toFixed(0)} rps`}
         </span>
         <span style={{ color: 'var(--color-text-muted)', fontSize: 9.5 }}>
           {servers.length} srv · {instanceCount} svc

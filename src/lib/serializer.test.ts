@@ -60,6 +60,68 @@ describe('scalemap v2 serializer', () => {
     expect(parsed.world.servers['s1'].rack).toBeNull()
   })
 
+  it('a v2 file without loadBalancers loads with {} (pre-LB back-compat)', () => {
+    // Simulates a file saved before the regional load balancer existed: no `loadBalancers`
+    // key. compileWorld synthesizes a default LB per region, so behavior is unchanged.
+    const raw = JSON.stringify({
+      version: '2',
+      meta: { name: 'legacy', created: '2020-01-01T00:00:00.000Z', modified: '2020-01-01T00:00:00.000Z' },
+      world: {
+        routing: { policy: 'latency', weights: {}, priorityOrder: [], healthCheckIntervalMs: 10_000, healthCheckFailureThreshold: 3, dnsTtlSec: 30 },
+        traffic: { autoBaseline: true, baselineTotalRps: 1000 },
+        populations: {}, regions: {}, azs: {}, servers: {}, blueprints: {}, placements: {}, managedServices: {},
+        racks: {},
+        // no `loadBalancers` key
+      },
+    })
+    const parsed = deserializeWorld(raw)
+    expect(parsed.world.loadBalancers).toEqual({})
+  })
+
+  it('a v2 file without packets loads with an empty registry (pre-route back-compat)', () => {
+    const raw = JSON.stringify({
+      version: '2',
+      meta: { name: 'legacy', created: '2020-01-01T00:00:00.000Z', modified: '2020-01-01T00:00:00.000Z' },
+      world: {
+        routing: { policy: 'latency', weights: {}, priorityOrder: [], healthCheckIntervalMs: 10_000, healthCheckFailureThreshold: 3, dnsTtlSec: 30 },
+        traffic: { autoBaseline: true, baselineTotalRps: 1000 },
+        populations: {}, regions: {}, azs: {}, servers: {}, blueprints: {}, placements: {}, managedServices: {},
+        racks: {}, loadBalancers: {},
+        // no `packets` key
+      },
+    })
+    const parsed = deserializeWorld(raw)
+    expect(parsed.world.packets).toEqual({ mode: 'generic', templates: {}, nextId: 1 })
+  })
+
+  it('folds a legacy top-level packets slot into world.packets', () => {
+    // Any file that DID carry the vestigial top-level `packets` sibling must not lose its routes.
+    const legacyPackets = { mode: 'custom', templates: { 5: { id: 5, name: 'api', protocol: 'http', sizeKb: 2, method: 'GET', path: '/api/*', statusCode: 200 } }, nextId: 6 }
+    const raw = JSON.stringify({
+      version: '2',
+      meta: { name: 'legacy', created: '2020-01-01T00:00:00.000Z', modified: '2020-01-01T00:00:00.000Z' },
+      packets: legacyPackets,
+      world: {
+        routing: { policy: 'latency', weights: {}, priorityOrder: [], healthCheckIntervalMs: 10_000, healthCheckFailureThreshold: 3, dnsTtlSec: 30 },
+        traffic: { autoBaseline: true, baselineTotalRps: 1000 },
+        populations: {}, regions: {}, azs: {}, servers: {}, blueprints: {}, placements: {}, managedServices: {},
+        racks: {}, loadBalancers: {},
+        // no world.packets — the legacy top-level slot is the only carrier
+      },
+    })
+    const parsed = deserializeWorld(raw)
+    expect(parsed.world.packets).toEqual(legacyPackets)
+  })
+
+  it('round-trips a world.packets route catalog', () => {
+    const world = createWorld()
+    world.packets = { mode: 'generic', templates: { 1: { id: 1, name: 'api', protocol: 'http', sizeKb: 1, method: 'POST', path: '/api/*', statusCode: 200 } }, nextId: 2 }
+    const raw = serializeWorld(world, 'routed', '2026-07-08T00:00:00.000Z')
+    const parsed = deserializeWorld(raw)
+    expect(parsed.world.packets).toEqual(world.packets)
+    expect(parsed.world).toEqual(world)
+  })
+
   it('round-trips racks and a null server.rack', () => {
     const world = createWorld()
     const region = createRegion('us-east-1')

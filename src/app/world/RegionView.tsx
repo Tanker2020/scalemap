@@ -19,6 +19,7 @@ import { SplitLines } from './region/SplitLines'
 import { AzRow, type AzRowDbEndpoint } from './region/AzRow'
 import { CrossAzColumn } from './region/CrossAzColumn'
 import { SourcesColumn } from './region/SourcesColumn'
+import { RegionLbCard } from './region/RegionLbCard'
 import { ReplicaRail, type ReplicaRailEntry } from './region/ReplicaRail'
 import { TimelineV2 } from './region/TimelineV2'
 
@@ -135,12 +136,15 @@ export function RegionView() {
         <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, position: 'relative' }}>
           <SourcesColumn regionId={regionId} internetEgressMonthlyUsd={costs.egress.internetUsd} />
 
+          <RegionLbCard regionId={regionId} />
+
           <SplitLines shares={shares} height={rowsHeight} />
 
           <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', gap: 8, marginRight: 20 }}>
             {azs.map(az => (
               <AzRow
                 key={az.id} azId={az.id} regionId={regionId}
+                inboundRps={shares.find(s => s.azId === az.id)?.rps ?? 0}
                 monthlyUsd={costs.byAz.find(e => e.azId === az.id)?.monthlyUsd ?? 0}
                 dbEndpoints={dbEndpointsByAz.get(az.id) ?? []}
                 onNavigateAz={() => goAz(regionId, az.id)}

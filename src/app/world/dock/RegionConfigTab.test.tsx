@@ -2,7 +2,7 @@
 // Polish 4 T2 (spec D4): region scope's Config tab — this region's AZ rows + a "+ az" button
 // reusing TopologyPanel's exact `addAz` dispatch, edit-locked while running.
 import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, within } from '@testing-library/react'
 import { RegionConfigTab } from './RegionConfigTab'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
@@ -104,6 +104,67 @@ describe('RegionConfigTab', () => {
     const btn = screen.getByText('+ az')
     expect(btn).not.toBeDisabled()
     expect(btn).not.toHaveAttribute('title')
+  })
+
+  it('renders a load balancer section reflecting the effective default (cross-zone off)', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    render(<RegionConfigTab regionId={regionId} />)
+    const group = screen.getByRole('group', { name: 'cross-zone' })
+    expect(within(group).getByText('off')).toHaveAttribute('aria-pressed', 'true')
+    expect(within(group).getByText('on')).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('toggling cross-zone on creates/updates the region load balancer', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    render(<RegionConfigTab regionId={regionId} />)
+    fireEvent.click(within(screen.getByRole('group', { name: 'cross-zone' })).getByText('on'))
+    const lb = Object.values(useWorldStore.getState().doc.loadBalancers).find(l => l.regionId === regionId)
+    expect(lb).toBeDefined()
+    expect(lb!.crossZone).toBe(true)
+  })
+
+  it('load balancer controls are edit-locked while the simulation runs', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useSimulationStore.setState({ running: true })
+    render(<RegionConfigTab regionId={regionId} />)
+    expect(within(screen.getByRole('group', { name: 'cross-zone' })).getByText('on')).toBeDisabled()
+  })
+
+  it('defaults to L4 with no listener-rules editor; switching to L7 reveals it and sets mode', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    render(<RegionConfigTab regionId={regionId} />)
+    expect(within(screen.getByRole('group', { name: 'lb-mode' })).getByText('NLB · L4')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByText('▸ LISTENER RULES')).toBeNull()
+
+    fireEvent.click(within(screen.getByRole('group', { name: 'lb-mode' })).getByText('ALB · L7'))
+    const lb = Object.values(useWorldStore.getState().doc.loadBalancers).find(l => l.regionId === regionId)
+    expect(lb!.mode).toBe('l7')
+    expect(screen.getByText('▸ LISTENER RULES')).toBeInTheDocument()
+  })
+
+  it('adds a listener rule mapping a path pattern to a blueprint', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const bpId = useWorldStore.getState().addBlueprint('api')
+    render(<RegionConfigTab regionId={regionId} />)
+    fireEvent.click(within(screen.getByRole('group', { name: 'lb-mode' })).getByText('ALB · L7'))
+    fireEvent.click(screen.getByText('+ rule'))
+    const lb = Object.values(useWorldStore.getState().doc.loadBalancers).find(l => l.regionId === regionId)!
+    expect(lb.listenerRules).toHaveLength(1)
+    expect(lb.listenerRules[0]).toMatchObject({ pathPattern: '/*', targetBlueprintId: bpId })
+
+    fireEvent.change(screen.getByLabelText('rule-pattern-0'), { target: { value: '/api/*' } })
+    const after = Object.values(useWorldStore.getState().doc.loadBalancers).find(l => l.regionId === regionId)!
+    expect(after.listenerRules[0].pathPattern).toBe('/api/*')
+  })
+
+  it('setting the default action patches defaultTargetBlueprintId', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const bpId = useWorldStore.getState().addBlueprint('api')
+    render(<RegionConfigTab regionId={regionId} />)
+    fireEvent.click(within(screen.getByRole('group', { name: 'lb-mode' })).getByText('ALB · L7'))
+    fireEvent.change(screen.getByLabelText('lb-default-target'), { target: { value: bpId } })
+    const lb = Object.values(useWorldStore.getState().doc.loadBalancers).find(l => l.regionId === regionId)!
+    expect(lb.defaultTargetBlueprintId).toBe(bpId)
   })
 
   // T2 review fix (motion-law violation): spec D3 gives the dock exactly ONE ambient stroke

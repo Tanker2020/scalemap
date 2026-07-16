@@ -26,7 +26,7 @@ ever needed).
 Core systems that exist today:
 
 - **World document model** (`src/lib/world/`) — a normalized `WorldDoc` (regions, AZs, servers,
-  service blueprints, placements, managed services, client populations, routing/traffic config)
+  service blueprints, placements, managed services, client populations, routing config)
   plus `compileWorld(doc)`, the pure gate every other system reads through: it resolves
   placements into concrete `ServiceInstance`s, evaluates firewall/port/network-isolation rules
   into permitted/blocked `CompiledPath`s, builds routing tables, and emits structural
@@ -45,9 +45,10 @@ Core systems that exist today:
   chassis) → a DOM/SVG isometric datacenter floor (racks, free-pool pods, flow traces) → a
   per-server "circuit board" view (NIC/firewall gate, service chips, a unified hardware
   platform). All four are live-metrics-aware and replay-scrubbable.
-- **Traffic authoring** — client populations (placed by hand or by clicking the globe),
-  auto-baseline synthetic per-region demand, and routing policy (latency/geo/weighted/priority)
-  with DNS TTL + health-check tuning.
+- **Traffic authoring** — client populations (placed by hand or by clicking the globe, each with
+  an optional per-population L7 route mix) and routing policy (latency/geo/weighted/priority) with
+  DNS TTL + health-check tuning. (Auto-baseline synthetic per-region demand was removed
+  2026-07-15 — all traffic now originates from authored populations.)
 - **Analysis engine** (`src/lib/analysis/`) — three rule families (structural/network-security/
   capacity, 13 rules) run over the compiled world plus the latest metrics batch, rendered in an
   `Analysis` tab merged with compile findings, with clickable affected-entity chips that jump to
@@ -190,10 +191,12 @@ src/
                                    # request client
     costModelV2.ts, cloudRegistry.ts, regionConfig.ts
     serializer.ts                 # .scalemap v2 (de)serialization
-    nodeConfig.ts                 # Packet-template types only (PacketTemplate/PacketMode/
-                                   # PacketRegistry) — the canvas-era NODE_CONFIG icon registry
-                                   # and node/edge sim-config types were removed 2026-07-12
-                                   # (zero live consumers)
+    nodeConfig.ts                 # Packet-template types + route-catalog helpers. The canvas-era
+                                   # NODE_CONFIG icon registry / node-edge sim-config types were
+                                   # removed 2026-07-12; the surviving PacketRegistry was REVIVED
+                                   # in the Phase 2 route system — its HttpTemplates are the L7
+                                   # "routes" (listRoutes/addRoute/…/routeMatchesPattern here),
+                                   # now held in WorldDoc.packets and authored via RoutesPanel
     theme.ts                      # DARK_COLORS/LIGHT_COLORS/CATEGORY_COLORS/FONT — the
                                    # --color-* token source for both themes
     tauri.ts / tauriMock.ts       # Tauri command wrappers + browser-dev localStorage/fetch
@@ -246,11 +249,16 @@ array. Add new rules there; don't special-case execution elsewhere. Rules never 
 `compiled.findings` — the Analysis tab merges both lists and suppresses the compile-side
 duplicate of any rule that re-surfaces a compile finding (e.g. `blocked-dependency-path`).
 
-**Packet system's current role:** the Flyweight packet-template *types*
-(`PacketTemplate`/`PacketMode`/`PacketRegistry`, `src/lib/nodeConfig.ts`) survive from the
-deleted canvas app and are read by `BlueprintDependency.packetTemplateId` and
-`ScalemapFileV2.packets` — but there is no authoring UI for them in the world model today. Don't
-assume a packet editor exists; adding one would be new work, not a restoration.
+**Packet system's current role (revived as the route catalog, Phase 2):** the Flyweight
+packet-template types (`PacketTemplate`/`PacketMode`/`PacketRegistry`, `src/lib/nodeConfig.ts`)
+survive from the deleted canvas app; the Phase 2 regional-LB route system revived them as the L7
+**route catalog**. The registry now lives in `WorldDoc.packets` (mutate()-managed, serialized
+inside `world`; the old vestigial top-level `.scalemap` `packets` slot is migrated in on load),
+its HTTP-protocol templates ARE the "routes" (`nodeConfig.ts` `listRoutes`/`addRoute`/…), and it
+is authored via `panels/RoutesPanel.tsx` (world-scope `routes` tab). `ClientPopulation.requestMix`
+maps routes→weights; a region's L7 LB `listenerRules` map route paths→services. Internal
+service-to-service per-route routing is still parked (ingress-only L7). The non-http template
+kinds (event/stream/db) remain type-only — no authoring UI.
 
 **LLM reviewer + key security (non-negotiable):** `src/lib/llmReview.ts` builds a review context
 from the compiled world + deterministic findings + aggregated metrics (never raw instance maps),
@@ -319,27 +327,32 @@ error message):
   "meta": { "name": "", "created": "", "modified": "" },
   "world": {
     "routing": { "policy": "latency", "weights": {}, "priorityOrder": [], "healthCheckIntervalMs": 10000, "healthCheckFailureThreshold": 3, "dnsTtlSec": 30 },
-    "traffic": { "autoBaseline": true, "baselineTotalRps": 1000 },
     "populations": {},
     "regions": {},
     "azs": {},
     "servers": {},
     "blueprints": {},
     "placements": {},
-    "managedServices": {}
+    "managedServices": {},
+    "loadBalancers": {},
+    "racks": {},
+    "packets": { "mode": "generic", "templates": {}, "nextId": 1 }
   },
-  "packets": {},
   "viewState": { "level": "globe" }
 }
 ```
 
 `world` is the full `WorldDoc` (`src/lib/world/types.ts`) — every entity collection
-(`regions`/`azs`/`servers`/`blueprints`/`placements`/`managedServices`/`populations`) plus
-`routing`/`traffic` config, keyed by id. `deserializeWorld` validates that `meta` and all 9
-top-level `WorldDoc` collections are present and non-null objects before accepting a file,
-throwing a single "missing or malformed world document" error otherwise. `packets` is optional —
-present only when the world uses custom (non-generic) packet templates (`PacketRegistry`,
-`src/lib/nodeConfig.ts`; see Key Architecture Decisions for the packet system's current, reduced
+(`regions`/`azs`/`servers`/`blueprints`/`placements`/`managedServices`/`populations`/
+`loadBalancers`/`racks`) plus `routing` config and the `packets` route catalog, keyed by id.
+(The `traffic`/auto-baseline config was removed 2026-07-15 — traffic comes only from authored
+populations.) `deserializeWorld` validates that `meta` and the 8 required top-level collections
+(`routing`/`populations`/`regions`/`azs`/`servers`/`blueprints`/`placements`/`managedServices`)
+are present and non-null before accepting a file, throwing a single "missing or malformed world
+document" error otherwise; `loadBalancers`/`racks`/`packets` are additive-normalized (defaulted
+when absent). `packets` now lives inside `world` (Phase 2 route system); a legacy TOP-LEVEL
+`packets` slot in an older file is migrated into `world.packets` on load (see Key Architecture
+Decisions for the packet system's current, reduced
 role). `viewState` is optional — `{ level, regionId?, azId?, serverId? }`, the nav focus at save
 time, restored on reopen so a saved file reopens where you left it. There is no analysis-finding
 or LLM-review persistence in this format — both are derived/ephemeral (see Key Architecture

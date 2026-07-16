@@ -13,7 +13,6 @@ import type { FramePayload, RenderScope } from './types'
 // api -> managed queue (off-server) ; web -> blockedDep on s1 firewall-denied.
 function fixture(peakRps = 200) {
   const doc = createWorld()
-  doc.traffic.autoBaseline = false
   const region = createRegion('us-east-1')
   const az = createAz(region.id, 'us-east-1a')
   const s1 = createServer(az.id, getPreset('dedicated-8')!)

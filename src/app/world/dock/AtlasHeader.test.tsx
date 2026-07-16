@@ -150,10 +150,10 @@ describe('AtlasHeader — world scope (regionId=null)', () => {
     expect(screen.getByTestId('atlas-region-dot')).toHaveAttribute('fill', '#EF4444')
   })
 
-  it('headline at rest shows the authored-doc posture (regions/servers/baseline)', () => {
+  it('headline at rest shows the authored-doc posture (regions/servers/populations)', () => {
     seedRegion('us-east-1', 'us-east-1a')
     render(<AtlasHeader regionId={null} />)
-    expect(screen.getByTestId('atlas-headline')).toHaveTextContent(/1 region · 1 server · baseline 1,000 rps/)
+    expect(screen.getByTestId('atlas-headline')).toHaveTextContent(/1 region · 1 server · 0 populations/)
   })
 
   it('headline while running shows the handling posture with a price-colored $/hr', () => {

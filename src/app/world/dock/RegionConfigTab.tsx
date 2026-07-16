@@ -7,8 +7,11 @@
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore } from '../../store/simulation.store'
-import { SectionHeader, EdgeRow } from '../ui/kit'
-import { smallBtn } from '../panels/panelStyles'
+import { SectionHeader, EdgeRow, Segmented, Explainer } from '../ui/kit'
+import { smallBtn, dangerBtn, field, row } from '../panels/panelStyles'
+import { nextWorldId } from '../../../lib/world/factories'
+import { listRoutes } from '../../../lib/nodeConfig'
+import type { LbAlgorithm, LbMode, LoadBalancer } from '../../../lib/world/types'
 
 export interface RegionConfigTabProps { regionId: string }
 
@@ -69,6 +72,134 @@ export function RegionConfigTab({ regionId }: RegionConfigTabProps) {
       >
         + az
       </button>
+
+      <LoadBalancerSection regionId={regionId} running={running} />
+    </div>
+  )
+}
+
+// The region's regional load balancer (the tier "between the AZs"). `mode` picks the device: NLB
+// (L4, connection routing) or ALB (L7, path routing via listener rules). Cross-zone off serves
+// each AZ locally; on spreads across every AZ. Reads the authored LB if present, else shows the
+// synthesized default (L4, cross-zone off); the first edit creates the LB via the store's
+// addLoadBalancer + patch dance.
+function LoadBalancerSection({ regionId, running }: { regionId: string; running: boolean }) {
+  const doc = useWorldStore(s => s.doc)
+  const addLoadBalancer = useWorldStore(s => s.addLoadBalancer)
+  const updateLoadBalancer = useWorldStore(s => s.updateLoadBalancer)
+  const lb = Object.values(doc.loadBalancers).find(l => l.regionId === regionId)
+  const mode: LbMode = lb?.mode ?? 'l4'
+  const crossZone = lb?.crossZone ?? false
+  const algorithm: LbAlgorithm = lb?.algorithm ?? 'round-robin'
+
+  const patch = (p: Parameters<typeof updateLoadBalancer>[1]) =>
+    updateLoadBalancer(lb?.id ?? addLoadBalancer(regionId), p)
+
+  const rowLabel = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 11 } as const
+
+  return (
+    <div>
+      <SectionHeader label="▸ LOAD BALANCER" />
+      <Explainer>
+        {mode === 'l7'
+          ? 'ALB · L7 — routes by request path to services via the listener rules below.'
+          : 'NLB · L4 — connection routing; all inbound traffic hits the default target group.'}
+        {crossZone ? ' Cross-zone on: spreads across every AZ.' : ' Cross-zone off: each AZ serves its own share.'}
+      </Explainer>
+      <fieldset disabled={running} style={{ border: 'none', padding: 0, margin: 0, display: 'grid', gap: 8, marginTop: 8 }}>
+        <label style={rowLabel}>
+          <span>type</span>
+          <Segmented<LbMode>
+            ariaLabel="lb-mode"
+            value={mode}
+            onChange={m => patch({ mode: m })}
+            options={[{ value: 'l4', label: 'NLB · L4' }, { value: 'l7', label: 'ALB · L7' }]}
+          />
+        </label>
+        <label style={rowLabel}>
+          <span>cross-zone</span>
+          <Segmented<'off' | 'on'>
+            ariaLabel="cross-zone"
+            value={crossZone ? 'on' : 'off'}
+            onChange={v => patch({ crossZone: v === 'on' })}
+            options={[{ value: 'off', label: 'off' }, { value: 'on', label: 'on' }]}
+          />
+        </label>
+        <label style={rowLabel}>
+          <span>algorithm</span>
+          <Segmented<LbAlgorithm>
+            ariaLabel="lb-algorithm"
+            value={algorithm}
+            onChange={a => patch({ algorithm: a })}
+            options={[{ value: 'round-robin', label: 'round robin' }, { value: 'weighted', label: 'weighted' }]}
+          />
+        </label>
+        {mode === 'l7' && <ListenerRulesEditor lb={lb} patch={patch} />}
+      </fieldset>
+    </div>
+  )
+}
+
+// L7 listener rules: an ordered, first-match list mapping a path pattern to a target service, plus
+// the default action (the "otherwise" target). Only rendered in L7 mode. `lb` is defined here
+// because switching to L7 already created it via patch({ mode: 'l7' }); the ?? guards keep the
+// component pure if it ever renders a tick early.
+function ListenerRulesEditor({ lb, patch }: {
+  lb: LoadBalancer | undefined
+  patch: (p: Partial<LoadBalancer>) => void
+}) {
+  const doc = useWorldStore(s => s.doc)
+  const blueprints = Object.values(doc.blueprints)
+  const routes = listRoutes(doc.packets)
+  const rules = lb?.listenerRules ?? []
+  const defaultTarget = lb?.defaultTargetBlueprintId ?? ''
+
+  const addRule = () => patch({
+    listenerRules: [...rules, { id: nextWorldId('lr'), pathPattern: '/*', targetBlueprintId: blueprints[0]?.id ?? '' }],
+  })
+  const updateRule = (i: number, p: Partial<{ pathPattern: string; targetBlueprintId: string }>) =>
+    patch({ listenerRules: rules.map((r, j) => j === i ? { ...r, ...p } : r) })
+  const removeRule = (i: number) => patch({ listenerRules: rules.filter((_, j) => j !== i) })
+
+  return (
+    <div style={{ marginTop: 4 }}>
+      <SectionHeader label="▸ LISTENER RULES" />
+      <Explainer>First match wins; unmatched requests use the default action.</Explainer>
+      {routes.length > 0 && (
+        <div style={{ fontSize: 9.5, color: 'var(--color-text-muted)', margin: '4px 0' }}>
+          route paths: {routes.map(r => r.path).join('  ·  ')}
+        </div>
+      )}
+      {rules.map((r, i) => (
+        <div key={r.id} style={row}>
+          <input
+            style={{ ...field, flex: 1, marginBottom: 0 }} aria-label={`rule-pattern-${i}`} placeholder="/api/*"
+            value={r.pathPattern} onChange={e => updateRule(i, { pathPattern: e.target.value })}
+          />
+          <span style={{ color: 'var(--color-text-muted)', flexShrink: 0 }}>→</span>
+          <select
+            style={{ ...field, width: 96, marginBottom: 0 }} aria-label={`rule-target-${i}`}
+            value={r.targetBlueprintId} onChange={e => updateRule(i, { targetBlueprintId: e.target.value })}
+          >
+            {blueprints.length === 0 && <option value="">(no services)</option>}
+            {blueprints.map(bp => <option key={bp.id} value={bp.id}>{bp.name}</option>)}
+          </select>
+          <button className="kit-press" style={dangerBtn} aria-label={`remove-rule-${i}`} onClick={() => removeRule(i)}>×</button>
+        </div>
+      ))}
+      <button className="kit-press" style={{ ...smallBtn, marginTop: 2 }} disabled={blueprints.length === 0} onClick={addRule}>
+        + rule
+      </button>
+      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 11, marginTop: 8 }}>
+        <span>default action</span>
+        <select
+          style={{ ...field, width: 128, marginBottom: 0 }} aria-label="lb-default-target"
+          value={defaultTarget} onChange={e => patch({ defaultTargetBlueprintId: e.target.value || null })}
+        >
+          <option value="">entry services</option>
+          {blueprints.map(bp => <option key={bp.id} value={bp.id}>{bp.name}</option>)}
+        </select>
+      </label>
     </div>
   )
 }

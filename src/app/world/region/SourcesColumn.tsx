@@ -1,7 +1,9 @@
 // src/app/world/region/SourcesColumn.tsx
 // Region v4 (Polish 3 T3, mockup `.r3` `.src`/"WHO'S SENDING" column) — one row per population
-// currently routed into this region (rps > 0 in `batch.world.populationRoutes`), a synthetic
-// `baseline:<regionId>` row when auto-baseline supplies demand, and the merged trunk total. A
+// currently routed into this region (rps > 0 in `batch.world.populationRoutes`) and the merged
+// trunk total. The trunk is the SUM of those ingress rows (what the sources send merges at the
+// edge) — deliberately NOT `region.rps`, which also counts internal service-to-service traffic
+// and so would exceed the visible sources. A
 // "self-sufficient scoped view" in the same sense `AzRow.tsx`/`CrossAzColumn.tsx` are
 // (module-boundaries.md §M) — reads its own store data off just a `regionId` — except for the
 // sparkline series and world-egress total, which RegionView.tsx already computes once (the same
@@ -28,7 +30,6 @@ interface SourceRow {
   key: string
   label: string
   rps: number
-  isBaseline: boolean
   latencyMs: number | null
   egressUsdPerHr: number | null
 }
@@ -50,9 +51,6 @@ export function SourcesColumn({ regionId, internetEgressMonthlyUsd }: SourcesCol
   const rows: SourceRow[] = (batch?.world.populationRoutes ?? [])
     .filter(r => r.regionId === regionId && r.rps > 0)
     .map(r => {
-      if (r.populationId.startsWith('baseline:')) {
-        return { key: r.populationId, label: 'baseline', rps: r.rps, isBaseline: true, latencyMs: null, egressUsdPerHr: null }
-      }
       const pop = doc.populations[r.populationId]
       const latencyMs = pop && geo ? Math.round(greatCircleKm(pop.lat, pop.lon, geo.lat, geo.lon) / POP_LATENCY_KM_PER_MS) : null
       // Schematic proportional attribution of the world's simulated internet-egress bill by
@@ -60,12 +58,15 @@ export function SourcesColumn({ regionId, internetEgressMonthlyUsd }: SourcesCol
       // byte-rate metric exists to attribute exactly), same "schematic estimate" spirit as
       // RegionView.tsx's ROW_HEIGHT_ESTIMATE.
       const egressUsdPerHr = worldTotalRps > 0 ? (internetEgressMonthlyUsd / HOURS_PER_MONTH) * (r.rps / worldTotalRps) : 0
-      return { key: r.populationId, label: pop?.label ?? r.populationId, rps: r.rps, isBaseline: false, latencyMs, egressUsdPerHr }
+      return { key: r.populationId, label: pop?.label ?? r.populationId, rps: r.rps, latencyMs, egressUsdPerHr }
     })
     .sort((a, b) => b.rps - a.rps)
 
   const maxRps = rows[0]?.rps ?? 0
-  const trunkTotal = batch?.regions[regionId]?.rps ?? 0
+  // The trunk = what the sources merge into at the edge = the SUM of the ingress rows above (NOT
+  // the region's total instance throughput, which additionally counts internal service→service
+  // hops and so would read higher than the visible sources — the mismatch this box used to show).
+  const trunkTotal = rows.reduce((sum, r) => sum + r.rps, 0)
 
   const h4: CSSProperties = { fontSize: 9.5, letterSpacing: '0.13em', color: 'var(--r3-hud)', textShadow: '0 0 8px var(--r3-hud-dim)', marginBottom: 8 }
 
@@ -144,11 +145,9 @@ function SrcRow({ row, maxRps, animated, reduced }: { row: SourceRow; maxRps: nu
         ))}
       </div>
       <div style={{ fontSize: 8.5, color: 'var(--color-text-muted)', marginTop: 1 }}>
-        {row.isBaseline
-          ? 'synthetic · auto'
-          : row.latencyMs != null
-            ? <>{row.latencyMs} ms away · <span style={{ color: 'var(--color-price)' }}>+${(row.egressUsdPerHr ?? 0).toFixed(2)}/hr egress</span></>
-            : 'routed here'}
+        {row.latencyMs != null
+          ? <>{row.latencyMs} ms away · <span style={{ color: 'var(--color-price)' }}>+${(row.egressUsdPerHr ?? 0).toFixed(2)}/hr egress</span></>
+          : 'routed here'}
       </div>
     </div>
   )

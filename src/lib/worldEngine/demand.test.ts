@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { populationDemandRps, baselineDemands } from './demand'
+import { populationDemandRps, splitDemandByMix } from './demand'
 import { createRng } from './rng'
-import { createPopulation, createRegion } from '../world/factories'
-import type { TrafficConfig } from '../world/types'
+import { createPopulation } from '../world/factories'
 
 describe('populationDemandRps', () => {
   it('flat pattern stays at peakRps within the +-3% jitter band, independent of simMs', () => {
@@ -44,35 +43,30 @@ describe('populationDemandRps', () => {
   })
 })
 
-describe('baselineDemands', () => {
-  const traffic = (autoBaseline: boolean, baselineTotalRps = 900): TrafficConfig => ({ autoBaseline, baselineTotalRps })
-
-  it('splits baselineTotalRps evenly across regions with baseline:<regionId> keys', () => {
-    const r1 = createRegion('us-east-1')
-    const r2 = createRegion('eu-west-1')
-    const r3 = createRegion('ap-southeast-1')
-    const regions = { [r1.id]: r1, [r2.id]: r2, [r3.id]: r3 }
-    const result = baselineDemands(traffic(true, 900), {}, regions)
-    expect(Object.keys(result).sort()).toEqual([`baseline:${r1.id}`, `baseline:${r2.id}`, `baseline:${r3.id}`].sort())
-    for (const regionId of [r1.id, r2.id, r3.id]) {
-      expect(result[`baseline:${regionId}`]).toBe(300)
-    }
+describe('splitDemandByMix', () => {
+  it('no mix ⇒ a single implicit default route carrying 100% (pre-route equivalence)', () => {
+    expect(splitDemandByMix(1000)).toEqual([{ routeId: null, rps: 1000 }])
+    expect(splitDemandByMix(1000, [])).toEqual([{ routeId: null, rps: 1000 }])
   })
 
-  it('returns {} when autoBaseline is off', () => {
-    const r1 = createRegion('us-east-1')
-    expect(baselineDemands(traffic(false), {}, { [r1.id]: r1 })).toEqual({})
+  it('an all-non-positive mix collapses to the default route (no divide-by-zero)', () => {
+    expect(splitDemandByMix(500, [{ routeId: 'a', weight: 0 }, { routeId: 'b', weight: -1 }]))
+      .toEqual([{ routeId: null, rps: 500 }])
   })
 
-  it('returns {} for an empty region set (no divide-by-zero)', () => {
-    expect(baselineDemands(traffic(true), {}, {})).toEqual({})
+  it('splits by relative weight and preserves routeIds', () => {
+    const out = splitDemandByMix(1000, [{ routeId: 'api', weight: 1 }, { routeId: 'static', weight: 3 }])
+    expect(out).toEqual([{ routeId: 'api', rps: 250 }, { routeId: 'static', rps: 750 }])
   })
 
-  it('does not clobber an authored population that already owns a baseline:<regionId> id', () => {
-    const r1 = createRegion('us-east-1')
-    const clashId = `baseline:${r1.id}`
-    const authored = { [clashId]: { ...createPopulation('manual', 1, 1), id: clashId } }
-    const result = baselineDemands(traffic(true, 500), authored, { [r1.id]: r1 })
-    expect(result[clashId]).toBeUndefined()
+  it('the split conserves total rps', () => {
+    const out = splitDemandByMix(777, [{ routeId: 'a', weight: 2 }, { routeId: 'b', weight: 5 }, { routeId: 'c', weight: 1 }])
+    const sum = out.reduce((s, r) => s + r.rps, 0)
+    expect(sum).toBeCloseTo(777, 6)
+  })
+
+  it('drops zero-weight entries but keeps positive ones', () => {
+    const out = splitDemandByMix(100, [{ routeId: 'keep', weight: 4 }, { routeId: 'drop', weight: 0 }])
+    expect(out).toEqual([{ routeId: 'keep', rps: 100 }])
   })
 })

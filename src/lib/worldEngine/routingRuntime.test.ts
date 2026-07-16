@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createRoutingState, resolveRegion, runHealthChecks, azSplit, pickInstance } from './routingRuntime'
+import { createRoutingState, resolveRegion, runHealthChecks, azSplit, pickInstance, distributeToTargets } from './routingRuntime'
 import { createRng } from './rng'
 import type { RoutingConfig } from '../world/types'
 import type { HealthState } from './types'
@@ -12,6 +12,49 @@ const basePolicy = (overrides: Partial<RoutingConfig> = {}): RoutingConfig => ({
   healthCheckFailureThreshold: 3,
   dnsTtlSec: 30,
   ...overrides,
+})
+
+describe('distributeToTargets (regional LB distribution)', () => {
+  const healthy = () => 'healthy' as HealthState
+  // az1 holds two target instances, az2 holds one (deliberately unequal to distinguish modes).
+  const azBlueprintTargets = { az1: { bp: ['i-a0', 'i-a1'] }, az2: { bp: ['i-b0'] } }
+  const regionAzSpread = ['az1', 'az2']
+
+  it('cross-zone off splits equally per AZ (entry-node = serving-AZ)', () => {
+    const into: Record<string, number> = {}
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 100, crossZone: false,
+      regionAzSpread, azBlueprintTargets,
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into,
+    })
+    // each AZ node takes 50; az1's round-robin pick claims its whole 50, az2's instance takes 50
+    expect(into['i-a0']).toBe(50)
+    expect(into['i-b0']).toBe(50)
+    expect(into['i-a1'] ?? 0).toBe(0)   // second az1 instance not picked this step
+  })
+
+  it('cross-zone on splits evenly across ALL region target instances', () => {
+    const into: Record<string, number> = {}
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 90, crossZone: true,
+      regionAzSpread, azBlueprintTargets,
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into,
+    })
+    // 3 healthy targets region-wide → 30 each (az1 total 60, az2 total 30)
+    expect(into).toEqual({ 'i-a0': 30, 'i-a1': 30, 'i-b0': 30 })
+  })
+
+  it('excludes down AZs from the split', () => {
+    const into: Record<string, number> = {}
+    const scope = (id: string) => (id === 'az2' ? 'down' : 'healthy') as HealthState
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 100, crossZone: false,
+      regionAzSpread, azBlueprintTargets,
+      healthOfScope: scope, healthOfInstance: healthy, cursors: createRoutingState(), into,
+    })
+    expect(into['i-a0']).toBe(100)      // only az1 healthy → it takes the whole 100
+    expect(into['i-b0'] ?? 0).toBe(0)
+  })
 })
 
 describe('resolveRegion', () => {

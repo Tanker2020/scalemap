@@ -13,9 +13,14 @@ export function CostTab() {
   return (
     <div>
       <div style={sectionLabel}>Monthly cost</div>
-      <div style={{ font: '600 16px var(--font-mono)', color: 'var(--color-price)', marginBottom: 12 }}>
+      <div style={{ font: '600 16px var(--font-mono)', color: 'var(--color-price)', marginBottom: cost.loadBalancerCount > 0 ? 2 : 12 }}>
         ${cost.monthlyUsd.toFixed(2)} /mo
       </div>
+      {cost.loadBalancerCount > 0 && (
+        <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 12 }}>
+          includes {cost.loadBalancerCount} load balancer{cost.loadBalancerCount === 1 ? '' : 's'} · ${cost.loadBalancerUsd.toFixed(2)}/mo LB-hours (in the region totals below)
+        </div>
+      )}
 
       <div style={sectionLabel}>By region</div>
       {cost.byRegion.length === 0 && <div style={{ color: 'var(--color-text-muted)' }}>no regions yet</div>}

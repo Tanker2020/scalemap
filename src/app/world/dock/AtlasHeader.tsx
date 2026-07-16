@@ -174,7 +174,7 @@ export function AtlasHeader({ regionId }: AtlasHeaderProps): ReactElement {
     const serverCount = Object.keys(doc.servers).length
     const cityCount = Object.keys(doc.populations).length
     if (!displayBatch) {
-      headline = `${regionCount} region${regionCount === 1 ? '' : 's'} · ${serverCount} server${serverCount === 1 ? '' : 's'} · baseline ${doc.traffic.baselineTotalRps.toLocaleString('en-US')} rps`
+      headline = `${regionCount} region${regionCount === 1 ? '' : 's'} · ${serverCount} server${serverCount === 1 ? '' : 's'} · ${cityCount} population${cityCount === 1 ? '' : 's'}`
     } else {
       const cost = scopedCost({ kind: 'world' }, doc, displayBatch.world)
       headline = (

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, createPopulation } from './factories'
+import { createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, createPopulation, createLoadBalancer } from './factories'
 import { getPreset } from './instanceCatalog'
 import { compileWorld, instanceId } from './compileWorld'
 import { volumeFindings } from './routing'
@@ -68,6 +68,119 @@ describe('computeRouting (via compileWorld)', () => {
     const { routing } = compileWorld(doc)
     expect(routing.regionAzSpread[useast.id]).toEqual([az1.id, az2.id])
     expect(routing.azBlueprintTargets[az1.id][bp.id]).toEqual([instanceId(pl.id, 0), instanceId(pl.id, 1)])
+  })
+})
+
+describe('lbRouting (regional load balancer compilation)', () => {
+  function entryBlueprint(name: string, colorIndex: number) {
+    const bp = createBlueprint(name, colorIndex)
+    bp.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+    return bp
+  }
+
+  it('synthesizes a default L4 cross-zone-off LB per region targeting entry blueprints', () => {
+    const { doc, useast, az1 } = geoWorld()
+    const srv = createServer(az1.id, getPreset('vps-medium')!)
+    doc.servers[srv.id] = srv
+    const web = entryBlueprint('web', 0)
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, srv.id)
+    doc.placements[pl.id] = pl
+
+    const { routing } = compileWorld(doc)
+    expect(routing.lbRouting[useast.id]).toEqual({
+      mode: 'l4',
+      crossZone: false,
+      algorithm: 'round-robin',
+      rules: [],
+      defaultTargetBlueprintIds: [web.id],
+    })
+  })
+
+  it('excludes internal-only blueprints from default targets', () => {
+    const { doc, useast, az1 } = geoWorld()
+    const srv = createServer(az1.id, getPreset('vps-medium')!)
+    doc.servers[srv.id] = srv
+    const web = entryBlueprint('web', 0)          // public :443 — an entry
+    const api = createBlueprint('api', 1)         // internal :8080 only — not an entry
+    doc.blueprints[web.id] = web
+    doc.blueprints[api.id] = api
+    const plWeb = createPlacement(web.id, srv.id); doc.placements[plWeb.id] = plWeb
+    const plApi = createPlacement(api.id, srv.id); doc.placements[plApi.id] = plApi
+
+    const { routing } = compileWorld(doc)
+    expect(routing.lbRouting[useast.id].defaultTargetBlueprintIds).toEqual([web.id])
+  })
+
+  it('an authored load balancer overrides the synthesized default', () => {
+    const { doc, useast, az1 } = geoWorld()
+    const srv = createServer(az1.id, getPreset('vps-medium')!)
+    doc.servers[srv.id] = srv
+    const web = entryBlueprint('web', 0)
+    doc.blueprints[web.id] = web
+    const plWeb = createPlacement(web.id, srv.id); doc.placements[plWeb.id] = plWeb
+    const lb = createLoadBalancer(useast.id)
+    lb.crossZone = true
+    doc.loadBalancers[lb.id] = lb
+
+    const { routing } = compileWorld(doc)
+    expect(routing.lbRouting[useast.id].crossZone).toBe(true)
+  })
+
+  it('an L4 LB compiles no listener rules even if some are authored', () => {
+    const { doc, useast, az1 } = geoWorld()
+    const srv = createServer(az1.id, getPreset('vps-medium')!); doc.servers[srv.id] = srv
+    const web = entryBlueprint('web', 0); doc.blueprints[web.id] = web
+    const api = entryBlueprint('api', 1); doc.blueprints[api.id] = api
+    doc.placements['p1'] = createPlacement(web.id, srv.id)
+    doc.placements['p2'] = createPlacement(api.id, srv.id)
+    const lb = createLoadBalancer(useast.id)   // mode 'l4' by default
+    lb.listenerRules = [{ id: 'r1', pathPattern: '/api/*', targetBlueprintId: api.id }]
+    doc.loadBalancers[lb.id] = lb
+
+    const { routing } = compileWorld(doc)
+    expect(routing.lbRouting[useast.id].rules).toEqual([])
+  })
+
+  it('an L7 LB compiles its listener rules verbatim, in authored order', () => {
+    const { doc, useast, az1 } = geoWorld()
+    const srv = createServer(az1.id, getPreset('vps-medium')!); doc.servers[srv.id] = srv
+    const web = entryBlueprint('web', 0); doc.blueprints[web.id] = web
+    const api = entryBlueprint('api', 1); doc.blueprints[api.id] = api
+    doc.placements['p1'] = createPlacement(web.id, srv.id)
+    doc.placements['p2'] = createPlacement(api.id, srv.id)
+    const lb = createLoadBalancer(useast.id)
+    lb.mode = 'l7'
+    lb.listenerRules = [
+      { id: 'r1', pathPattern: '/api/*', targetBlueprintId: api.id },
+      { id: 'r2', pathPattern: '/*', targetBlueprintId: web.id },
+    ]
+    lb.defaultTargetBlueprintId = web.id
+    doc.loadBalancers[lb.id] = lb
+
+    const { routing } = compileWorld(doc)
+    const compiled = routing.lbRouting[useast.id]
+    expect(compiled.mode).toBe('l7')
+    expect(compiled.rules).toEqual([
+      { pathPattern: '/api/*', targetBlueprintId: api.id },
+      { pathPattern: '/*', targetBlueprintId: web.id },
+    ])
+    expect(compiled.defaultTargetBlueprintIds).toEqual([web.id])
+  })
+
+  it('keeps an L7 rule whose target has no instance (accurate first-match; engine drops it)', () => {
+    const { doc, useast, az1 } = geoWorld()
+    const srv = createServer(az1.id, getPreset('vps-medium')!); doc.servers[srv.id] = srv
+    const web = entryBlueprint('web', 0); doc.blueprints[web.id] = web
+    const ghost = entryBlueprint('ghost', 1); doc.blueprints[ghost.id] = ghost   // declared, never placed
+    doc.placements['p1'] = createPlacement(web.id, srv.id)
+    const lb = createLoadBalancer(useast.id)
+    lb.mode = 'l7'
+    lb.listenerRules = [{ id: 'r1', pathPattern: '/ghost/*', targetBlueprintId: ghost.id }]
+    doc.loadBalancers[lb.id] = lb
+
+    const { routing } = compileWorld(doc)
+    expect(routing.lbRouting[useast.id].rules).toEqual([{ pathPattern: '/ghost/*', targetBlueprintId: ghost.id }])
   })
 })
 

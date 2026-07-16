@@ -64,3 +64,76 @@ export interface PacketRegistry {
   templates: Record<number, PacketTemplate>
   nextId: number
 }
+
+// ─── Route catalog (Phase 2 L7 route system) ─────────────────────────────────────────────────
+// The revival of the dormant packet system: the HTTP-protocol templates in a PacketRegistry ARE
+// the "routes" a ClientPopulation emits (via requestMix) and a regional LB's listener rules match
+// on. A route is just an HttpTemplate — it already carries method/path (for matching) and
+// sizeKb/workload (for future byte/compute realism). routeId is the template id, stringified,
+// so it round-trips through requestMix's string routeId. All functions are pure and immutable
+// (mirroring the world.store mutate() convention) so store actions and compileWorld share them.
+export type RouteId = string
+
+export function routeIdOf(t: HttpTemplate): RouteId { return String(t.id) }
+
+export function emptyPacketRegistry(): PacketRegistry {
+  return { mode: 'generic', templates: {}, nextId: 1 }
+}
+
+// Only the http templates, id-ascending (stable order for the routes UI + deterministic compile).
+export function listRoutes(reg: PacketRegistry): HttpTemplate[] {
+  return Object.values(reg.templates)
+    .filter((t): t is HttpTemplate => t.protocol === 'http')
+    .sort((a, b) => a.id - b.id)
+}
+
+export function getRoute(reg: PacketRegistry, routeId: RouteId): HttpTemplate | undefined {
+  const t = reg.templates[Number(routeId)]
+  return t && t.protocol === 'http' ? t : undefined
+}
+
+export interface RouteFields {
+  name: string
+  method: HttpTemplate['method']
+  path: string          // the route's path, e.g. '/api/users' — matched against listener patterns
+  sizeKb?: number
+}
+
+export function addRoute(reg: PacketRegistry, fields: RouteFields): { registry: PacketRegistry; route: HttpTemplate } {
+  const id = reg.nextId
+  const route: HttpTemplate = {
+    id, name: fields.name, protocol: 'http', sizeKb: fields.sizeKb ?? 1,
+    method: fields.method, path: fields.path, statusCode: 200,
+  }
+  return {
+    registry: { ...reg, templates: { ...reg.templates, [id]: route }, nextId: id + 1 },
+    route,
+  }
+}
+
+export function updateRoute(reg: PacketRegistry, routeId: RouteId, patch: Partial<RouteFields>): PacketRegistry {
+  const existing = reg.templates[Number(routeId)]
+  if (!existing || existing.protocol !== 'http') return reg
+  const updated: HttpTemplate = { ...existing, ...patch }
+  return { ...reg, templates: { ...reg.templates, [existing.id]: updated } }
+}
+
+export function removeRoute(reg: PacketRegistry, routeId: RouteId): PacketRegistry {
+  const templates = { ...reg.templates }
+  delete templates[Number(routeId)]
+  return { ...reg, templates }
+}
+
+// Glob prefix matching for listener rules. `*` / `/*` match anything; `/prefix/*` matches the
+// prefix and its path children (but NOT a sibling sharing the stem, e.g. `/apix` ∉ `/api/*`); a
+// bare trailing `*` is a plain string prefix; everything else is exact equality. First-match-wins
+// is the CALLER's responsibility (iterate rules in authored order) — mirrors the firewall loop.
+export function routeMatchesPattern(path: string, pattern: string): boolean {
+  if (pattern === '*' || pattern === '/*') return true
+  if (pattern.endsWith('/*')) {
+    const prefix = pattern.slice(0, -2)
+    return path === prefix || path.startsWith(prefix + '/')
+  }
+  if (pattern.endsWith('*')) return path.startsWith(pattern.slice(0, -1))
+  return path === pattern
+}

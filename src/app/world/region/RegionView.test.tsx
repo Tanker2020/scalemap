@@ -186,7 +186,7 @@ describe('RegionView (Phase 4 flow page)', () => {
     expect(setOutageSpy).toHaveBeenCalledWith('az', azA.id, true)
   })
 
-  it('sources column renders one row per population plus baseline, top-5 animated', () => {
+  it('sources column renders one row per population, top-5 animated', () => {
     const { doc, region } = seedRegion()
     const popRps: [string, number][] = [['p1', 600], ['p2', 500], ['p3', 400], ['p4', 300], ['p5', 200], ['p6', 100]]
     for (const [id, peakRps] of popRps) {
@@ -194,12 +194,10 @@ describe('RegionView (Phase 4 flow page)', () => {
     }
     useWorldStore.setState({ doc })
     const populationRoutes = popRps.map(([id, rps]) => ({ populationId: id, regionId: region.id, rps }))
-    const baselineId = `baseline:${region.id}`
-    populationRoutes.push({ populationId: baselineId, regionId: region.id, rps: 50 })
     useSimulationStore.setState({
       latestBatch: {
         simMs: 1000, instances: {}, servers: {}, azs: {}, regions: {},
-        world: { ...emptyWorldMetrics(), populationRoutes, totalRps: 2150 },
+        world: { ...emptyWorldMetrics(), populationRoutes, totalRps: 2100 },
       },
     })
     render(<RegionView />)
@@ -207,7 +205,33 @@ describe('RegionView (Phase 4 flow page)', () => {
       expect(screen.getByTestId(`src-row-${id}`).getAttribute('data-dot-count')).not.toBe('0')
     }
     expect(screen.getByTestId('src-row-p6').getAttribute('data-dot-count')).toBe('0')
-    expect(screen.getByTestId(`src-row-${baselineId}`).getAttribute('data-dot-count')).toBe('0')
+  })
+
+  it('the who\'s-sending trunk sums the ingress rows, NOT the region total-throughput metric', () => {
+    // Regression for the "region summation is always incorrect" report: the trunk used to read
+    // region.rps (ingress + internal service→service traffic), which exceeds the visible sources.
+    const { doc, region } = seedRegion()
+    doc.populations['a'] = { id: 'a', label: 'Chicago', lat: 41.9, lon: -87.6, peakRps: 1383, diurnal: 'flat' }
+    doc.populations['b'] = { id: 'b', label: 'Seattle', lat: 47.6, lon: -122.3, peakRps: 511, diurnal: 'flat' }
+    useWorldStore.setState({ doc })
+    useSimulationStore.setState({
+      latestBatch: {
+        simMs: 1000, instances: {}, servers: {}, azs: {},
+        // region.rps deliberately far exceeds the ingress sum (as internal fan-out makes it) so a
+        // trunk reading region.rps would show 9,999 instead of the ingress 1,894.
+        regions: { [region.id]: { regionId: region.id, rps: 9999, errorRate: 0, p50Ms: 5, healthScore: 100, health: 'healthy', inboundByPopulation: [] } },
+        world: {
+          ...emptyWorldMetrics(), totalRps: 9999,
+          populationRoutes: [
+            { populationId: 'a', regionId: region.id, rps: 1383 },
+            { populationId: 'b', regionId: region.id, rps: 511 },
+          ],
+        },
+      },
+    })
+    render(<RegionView />)
+    expect(screen.getByText('1,894')).toBeInTheDocument()   // 1383 + 511, the ingress sum
+    expect(screen.queryByText('9,999')).not.toBeInTheDocument()
   })
 
   it('replica rail caps concurrent dashflow animation at MAX_ANIMATED_RAILS regardless of pair count', () => {

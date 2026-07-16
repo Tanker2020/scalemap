@@ -2,6 +2,7 @@
 // loop because src/lib/world/network.ts's evaluateFirewall ignores `source` (Phase-1 all-internal).
 import type { AnalysisFinding, AnalysisRule } from '../types'
 import type { FirewallRule } from '../../world/types'
+import { getRoute, routeMatchesPattern } from '../../nodeConfig'
 
 // First rule (array order) that matches the port+tcp; null = default deny. Source-aware callers read
 // match.action + match.source themselves.
@@ -124,4 +125,76 @@ const entryUnreachable: AnalysisRule = {
   },
 }
 
-export const networkRules: AnalysisRule[] = [blockedDependencyPath, dbPortExposed, entryUnreachable]
+// L7 load balancer: a listener rule pointing at a service with no instance in the LB's region.
+// The compiled rule is kept for accurate first-match, but its target group is empty, so any
+// traffic the rule catches is dropped (AWS ALB "target group with no healthy targets").
+const lbListenerTargetAbsent: AnalysisRule = {
+  id: 'lb-listener-target-absent', family: 'network',
+  run: ({ doc, compiled }) => {
+    const out: AnalysisFinding[] = []
+    const presentByRegion = new Map<string, Set<string>>()
+    for (const inst of Object.values(compiled.instances)) {
+      let set = presentByRegion.get(inst.regionId)
+      if (!set) { set = new Set(); presentByRegion.set(inst.regionId, set) }
+      set.add(inst.blueprintId)
+    }
+    for (const lb of Object.values(doc.loadBalancers)) {
+      if (lb.mode !== 'l7') continue
+      const present = presentByRegion.get(lb.regionId) ?? new Set<string>()
+      const regionName = doc.regions[lb.regionId]?.catalogId ?? lb.regionId
+      for (const rule of lb.listenerRules) {
+        if (present.has(rule.targetBlueprintId)) continue
+        const bpName = doc.blueprints[rule.targetBlueprintId]?.name ?? '(deleted service)'
+        out.push({
+          id: `lb-listener-target-absent:${lb.id}:${rule.id}`,
+          ruleId: 'lb-listener-target-absent', family: 'network', severity: 'warning',
+          title: 'Listener rule targets an absent service',
+          why: `The ${regionName} load balancer routes ${rule.pathPattern} to ${bpName}, which has no instance in that region — matching traffic is dropped.`,
+          fix: `Place ${bpName} in ${regionName}, or repoint the rule to a service present there (Region config → load balancer).`,
+          affected: [lb.regionId, rule.targetBlueprintId].filter(Boolean),
+        })
+      }
+    }
+    return out
+  },
+}
+
+// A population's request-mix class that reaches an L7 region but matches NO listener rule and the
+// LB has no default action — the traffic has nowhere to go and is dropped. (An unmatched route
+// with a default action lands there instead and is fine; a matched-but-absent target is the rule
+// above.) The population's steady-state region is its first routing choice.
+const lbRouteDropped: AnalysisRule = {
+  id: 'lb-route-dropped', family: 'network',
+  run: ({ doc, compiled }) => {
+    const out: AnalysisFinding[] = []
+    for (const pop of Object.values(doc.populations)) {
+      if (!pop.requestMix || pop.requestMix.length === 0) continue
+      const regionId = compiled.routing.populationRegionOrder[pop.id]?.[0]
+      if (!regionId) continue
+      const lb = compiled.routing.lbRouting[regionId]
+      if (!lb || lb.mode !== 'l7') continue
+      if (lb.defaultTargetBlueprintIds.length > 0) continue   // an unmatched class still hits the default action
+      const regionName = doc.regions[regionId]?.catalogId ?? regionId
+      for (const entry of pop.requestMix) {
+        if (entry.weight <= 0) continue
+        const route = getRoute(doc.packets, entry.routeId)
+        const path = route?.path
+        if (path != null && lb.rules.some(r => routeMatchesPattern(path, r.pathPattern))) continue
+        const label = route ? `${route.method} ${route.path}` : `an unknown route (${entry.routeId})`
+        out.push({
+          id: `lb-route-dropped:${pop.id}:${entry.routeId}`,
+          ruleId: 'lb-route-dropped', family: 'network', severity: 'warning',
+          title: 'Request-mix route is dropped',
+          why: `${pop.label} sends ${label} to ${regionName}, but its L7 load balancer has no matching listener rule and no default action — this traffic is dropped.`,
+          fix: `Add a listener rule for this path or set a default target on the ${regionName} load balancer (Region config → load balancer).`,
+          affected: [pop.id, regionId],
+        })
+      }
+    }
+    return out
+  },
+}
+
+export const networkRules: AnalysisRule[] = [
+  blockedDependencyPath, dbPortExposed, entryUnreachable, lbListenerTargetAbsent, lbRouteDropped,
+]

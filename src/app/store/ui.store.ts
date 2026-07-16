@@ -17,7 +17,7 @@
 import { create } from 'zustand'
 import type { ServerId } from '../../lib/world/types'
 
-export type PanelTab = 'topology' | 'blueprints' | 'placements' | 'traffic' | 'analysis' | 'events' | 'cost' | 'config'
+export type PanelTab = 'topology' | 'blueprints' | 'placements' | 'traffic' | 'routes' | 'analysis' | 'events' | 'cost' | 'config'
 
 export interface SceneOverlayTarget { kind: 'region' | 'population'; id: string }
 

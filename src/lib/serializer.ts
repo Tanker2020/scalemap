@@ -1,4 +1,5 @@
 import type { PacketRegistry } from './nodeConfig'
+import { emptyPacketRegistry } from './nodeConfig'
 import type { WorldDoc } from './world/types'
 
 // ─── .scalemap v2 (world model) ──────────────────────────────────────────────
@@ -48,7 +49,7 @@ export function deserializeWorld(raw: string): ScalemapFileV2 {
   const meta = (data as { meta?: unknown }).meta
   const world = data.world as Record<string, unknown> | undefined
   const requiredCollections = [
-    'routing', 'traffic', 'populations', 'regions', 'azs', 'servers',
+    'routing', 'populations', 'regions', 'azs', 'servers',
     'blueprints', 'placements', 'managedServices',
   ] as const
   const worldIsValid =
@@ -63,6 +64,21 @@ export function deserializeWorld(raw: string): ScalemapFileV2 {
   // (null) rather than rejecting/leaving the field undefined.
   const result = data as ScalemapFileV2
   result.world.racks ??= {}
+  // Additive-format normalization (Phase 1 regional LB): `loadBalancers` was introduced after
+  // v2 shipped, so a pre-LB file won't carry it — default to {}. compileWorld synthesizes a
+  // default LB per region from it, so behavior is unchanged.
+  result.world.loadBalancers ??= {}
+  // Additive-format normalization (Phase 2 route system): the route catalog now lives at
+  // `world.packets` (mutate()-managed for undo/dirty, serialized inside `world` like every other
+  // collection). Older files either omit it entirely or carry a LEGACY top-level `packets` slot —
+  // the vestigial sibling the running app never actually populated (fileOps always passed
+  // undefined). Prefer world.packets; else fold the legacy slot in; else default to empty. This
+  // keeps every pre-Phase-2 file byte-behaviorally unchanged (empty catalog ⇒ implicit default
+  // route ⇒ the pre-route scalar distribution).
+  if (result.world.packets == null) {
+    const legacy = (data as { packets?: PacketRegistry }).packets
+    result.world.packets = legacy ?? emptyPacketRegistry()
+  }
   for (const server of Object.values(result.world.servers)) {
     if (server.rack === undefined) server.rack = null
   }

@@ -1,5 +1,6 @@
 // World document entities (normalized, id-keyed) + compiled output types.
 // Spec: docs/superpowers/specs/2026-07-08-world-model-multiscale-simulation-design.md §3
+import type { PacketRegistry } from '../nodeConfig'
 
 export type RegionId = string
 export type AzId = string
@@ -10,6 +11,7 @@ export type PlacementId = string
 export type ManagedServiceId = string
 export type PopulationId = string
 export type InstanceId = string
+export type LbId = string
 
 export type RoutingPolicyKind = 'latency' | 'geo' | 'weighted' | 'priority'
 
@@ -22,12 +24,16 @@ export interface RoutingConfig {
   dnsTtlSec: number
 }
 
-export interface TrafficConfig {
-  autoBaseline: boolean
-  baselineTotalRps: number
-}
-
 export type DiurnalPattern = 'flat' | 'day-night'
+
+// A single entry of a population's request mix (Phase 2 route system): the fraction (relative
+// weight) of this population's rps that belongs to a given route. `routeId` is a route's id (an
+// HttpTemplate id, stringified) in WorldDoc.packets. Weights are relative — the engine normalizes
+// them per population, so [{a:1},{b:3}] means 25%/75%.
+export interface RequestMixEntry {
+  routeId: string
+  weight: number
+}
 
 export interface ClientPopulation {
   id: PopulationId
@@ -36,6 +42,11 @@ export interface ClientPopulation {
   lon: number
   peakRps: number
   diurnal: DiurnalPattern
+  // Optional L7 route mix (Phase 2). Absent ⇒ a single implicit "default" route carries 100% of
+  // the population's rps — byte-equivalent to the pre-route scalar behavior, so old worlds and the
+  // engine's golden tests are unchanged. Entries referencing a deleted route are scrubbed by the
+  // store's removeRoute; the engine/analysis treat an unknown routeId as an unmatched route.
+  requestMix?: RequestMixEntry[]
 }
 
 export type RegionRole = 'active' | 'passive'
@@ -177,9 +188,34 @@ export interface ManagedService {
   port: number       // endpoint port, participates in path semantics
 }
 
+// ─── Regional load balancer (accurate ALB/NLB) ───────────────────────────────
+// One regional LB per region whose nodes conceptually live in each AZ. `mode` picks the
+// device: 'l4' (NLB — connection routing, cross-zone off by default) or 'l7' (ALB — path
+// routing via listenerRules, cross-zone on by default). `crossZone` decouples the entry AZ
+// (ingress node) from the serving AZ. A target group is modeled implicitly as all healthy
+// instances of a `targetBlueprintId` in the region.
+export type LbMode = 'l4' | 'l7'
+export type LbAlgorithm = 'round-robin' | 'weighted'
+
+export interface ListenerRule {
+  id: string
+  pathPattern: string          // e.g. '/api/*' — glob prefix, first-match-wins (L7 only)
+  targetBlueprintId: BlueprintId
+}
+
+export interface LoadBalancer {
+  id: LbId
+  regionId: RegionId
+  label: string
+  mode: LbMode
+  crossZone: boolean
+  algorithm: LbAlgorithm
+  listenerRules: ListenerRule[]                 // L7 only; [] in L4
+  defaultTargetBlueprintId: BlueprintId | null  // ALB "default action"; null = all entry blueprints
+}
+
 export interface WorldDoc {
   routing: RoutingConfig
-  traffic: TrafficConfig
   populations: Record<PopulationId, ClientPopulation>
   regions: Record<RegionId, Region>
   azs: Record<AzId, AvailabilityZone>
@@ -187,7 +223,13 @@ export interface WorldDoc {
   blueprints: Record<BlueprintId, ServiceBlueprint>
   placements: Record<PlacementId, Placement>
   managedServices: Record<ManagedServiceId, ManagedService>
+  loadBalancers: Record<LbId, LoadBalancer>
   racks: Record<RackId, Rack>
+  // Route catalog (Phase 2 L7 route system) — the revived packet registry. Its HTTP-protocol
+  // templates ARE the routes populations emit (via requestMix) and listener rules match. Lives
+  // inside WorldDoc so every route edit rides world.store's mutate() (undo/dirty) and serializes
+  // with the world. Persisted in .scalemap's `packets` slot (serializer lifts/folds it).
+  packets: PacketRegistry
 }
 
 // ─── Compiled output (produced by compileWorld, consumed by views/engine) ────
@@ -227,10 +269,23 @@ export interface CompiledPath {
   blockReason: BlockReason | null
 }
 
+// Resolved regional LB config the engine consumes (additive to CompiledRouting). Target
+// blueprint ids only — the engine resolves them to instances via azBlueprintTargets + the
+// round-robin cursors at runtime. `rules` is [] in L4; `defaultTargetBlueprintIds` holds the
+// default action's targets (entry blueprints when the LB was synthesized).
+export interface CompiledLbRouting {
+  mode: LbMode
+  crossZone: boolean
+  algorithm: LbAlgorithm
+  rules: { pathPattern: string; targetBlueprintId: BlueprintId }[]
+  defaultTargetBlueprintIds: BlueprintId[]
+}
+
 export interface CompiledRouting {
   populationRegionOrder: Record<PopulationId, RegionId[]>
   regionAzSpread: Record<RegionId, AzId[]>
   azBlueprintTargets: Record<AzId, Record<BlueprintId, InstanceId[]>>
+  lbRouting: Record<RegionId, CompiledLbRouting>
 }
 
 export interface CompileFinding {

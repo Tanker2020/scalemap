@@ -9,8 +9,8 @@ describe('world factories', () => {
     expect(w.routing.healthCheckIntervalMs).toBe(10_000)
     expect(w.routing.dnsTtlSec).toBe(30)
     expect(Object.keys(w.regions)).toHaveLength(0)
-    expect(w.traffic.autoBaseline).toBe(true)
     expect(w.racks).toEqual({})
+    expect(w.packets).toEqual({ mode: 'generic', templates: {}, nextId: 1 })
   })
 
   it('createServer lands in the free pool', () => {

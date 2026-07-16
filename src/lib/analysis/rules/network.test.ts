@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { scenario, dep } from '../__fixtures__/worlds'
 import { runAnalysis } from '../runAnalysis'
+import { createLoadBalancer } from '../../world/factories'
+import { addRoute, routeIdOf } from '../../nodeConfig'
 import type { AnalysisFinding } from '../types'
 import type { FirewallRule } from '../../world/types'
 
@@ -94,5 +96,77 @@ describe('network: entry-unreachable', () => {
     web.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
     s.placement(web.id, s1.id)
     expect(ids(run(s), 'entry-unreachable')).toHaveLength(0)
+  })
+})
+
+describe('network: lb-listener-target-absent', () => {
+  it('fires when an L7 listener rule points at a service with no instance in the region', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const s1 = s.server(az.id)
+    const api = s.blueprint('api', 0); api.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+    const ghost = s.blueprint('ghost', 1); ghost.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+    s.placement(api.id, s1.id)   // ghost intentionally NOT placed
+    const lb = createLoadBalancer(r.id)
+    lb.mode = 'l7'
+    lb.listenerRules = [{ id: 'rg', pathPattern: '/ghost/*', targetBlueprintId: ghost.id }]
+    s.doc.loadBalancers[lb.id] = lb
+    const f = ids(run(s), 'lb-listener-target-absent')
+    expect(f).toHaveLength(1)
+    expect(f[0].affected).toContain(ghost.id)
+    expect(f[0].why).toMatch(/ghost/i)
+  })
+
+  it('silent when the rule target is present, or the LB is L4', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const s1 = s.server(az.id)
+    const api = s.blueprint('api', 0); api.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+    s.placement(api.id, s1.id)
+    const lb = createLoadBalancer(r.id)   // L4 with an authored rule → no L7 semantics, no finding
+    lb.listenerRules = [{ id: 'ra', pathPattern: '/api/*', targetBlueprintId: api.id }]
+    s.doc.loadBalancers[lb.id] = lb
+    expect(ids(run(s), 'lb-listener-target-absent')).toHaveLength(0)
+  })
+})
+
+describe('network: lb-route-dropped', () => {
+  it('fires for a request-mix route matching no listener rule with no default action', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const s1 = s.server(az.id)
+    const web = s.blueprint('web', 0); web.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+    s.placement(web.id, s1.id)
+    const added = addRoute(s.doc.packets, { name: 'health', method: 'GET', path: '/health/live' })
+    s.doc.packets = added.registry
+    const pop = s.population('nyc', 40.7, -74.0)
+    pop.requestMix = [{ routeId: routeIdOf(added.route), weight: 1 }]
+    const lb = createLoadBalancer(r.id)
+    lb.mode = 'l7'
+    lb.listenerRules = [{ id: 'ra', pathPattern: '/api/*', targetBlueprintId: web.id }]
+    lb.defaultTargetBlueprintId = 'bp-absent'   // default resolves to no in-region instance ⇒ empty
+    s.doc.loadBalancers[lb.id] = lb
+    const f = ids(run(s), 'lb-route-dropped')
+    expect(f).toHaveLength(1)
+    expect(f[0].affected).toContain(pop.id)
+    expect(f[0].why).toMatch(/health/i)
+  })
+
+  it('silent when a default action exists to catch the unmatched route', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const s1 = s.server(az.id)
+    const web = s.blueprint('web', 0); web.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+    s.placement(web.id, s1.id)
+    const added = addRoute(s.doc.packets, { name: 'health', method: 'GET', path: '/health/live' })
+    s.doc.packets = added.registry
+    const pop = s.population('nyc', 40.7, -74.0)
+    pop.requestMix = [{ routeId: routeIdOf(added.route), weight: 1 }]
+    const lb = createLoadBalancer(r.id)
+    lb.mode = 'l7'
+    lb.listenerRules = [{ id: 'ra', pathPattern: '/api/*', targetBlueprintId: web.id }]
+    // defaultTargetBlueprintId null ⇒ default = present entry blueprints (web) ⇒ non-empty
+    s.doc.loadBalancers[lb.id] = lb
+    expect(ids(run(s), 'lb-route-dropped')).toHaveLength(0)
   })
 })

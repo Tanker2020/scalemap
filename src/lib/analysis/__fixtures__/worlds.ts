@@ -18,10 +18,9 @@ export interface Scenario {
   compile(): ReturnType<typeof compileWorld>
 }
 
-// autoBaseline is disabled so tests exercise only what they author.
+// Tests exercise only what they author (auto-baseline traffic was removed 2026-07-15).
 export function scenario(): Scenario {
   const doc = createWorld()
-  doc.traffic.autoBaseline = false
   return {
     doc,
     region(catalogId) { const r = createRegion(catalogId); doc.regions[r.id] = r; return r },

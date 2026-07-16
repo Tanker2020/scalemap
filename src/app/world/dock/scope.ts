@@ -54,7 +54,7 @@ export function deriveScope(nav: NavSnapshot, selectedServerId: string | null, d
 // inherently world-only and fold into the world pill instead of showing global data in a local
 // frame. Returns a fresh array each call so a caller can't mutate a shared constant out from
 // under future callers.
-const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'placements', 'traffic', 'analysis', 'events', 'cost']
+const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'placements', 'traffic', 'routes', 'analysis', 'events', 'cost']
 const SCOPED_TABS: PanelTab[] = ['config', 'analysis', 'events', 'cost']
 
 export function scopeTabs(scope: DockScope): PanelTab[] {

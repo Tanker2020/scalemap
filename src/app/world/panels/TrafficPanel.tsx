@@ -1,23 +1,22 @@
 // src/app/world/panels/TrafficPanel.tsx
-// Traffic-authoring tab (Phase 5 D8): populations (incl. globe placement), auto-baseline
-// traffic, and routing policy — all three sections write through EXISTING world.store actions
-// only (addPopulation/updatePopulation/removePopulation/updateRouting/updateTraffic — Phase 5
-// adds no new store actions). Mounted inside WorldPanel's `<fieldset disabled={running}>`
-// (WorldPanel.tsx) — this component does NOT duplicate that running-gate itself.
+// Traffic-authoring tab: populations (incl. globe placement, per-population request mix) and the
+// routing policy — both sections write through EXISTING world.store actions only (addPopulation/
+// updatePopulation/removePopulation/updateRouting). Mounted inside WorldPanel's
+// `<fieldset disabled={running}>` (WorldPanel.tsx) — this component does NOT duplicate that
+// running-gate itself.
 //
-// Polish 2 T5 reshape: hero → populations (sentence rows) → routing. The traffic hero
-// (`TrafficHero`) absorbs the old `TrafficSection`'s baselineTotalRps slider role — that
-// section is dissolved into it — and embeds the routing-policy Segmented from RoutingSection
-// (RoutingSection keeps its own SectionHeader/Explainer/weighted-priority editors/ttl fields).
-// Population rows became sentence rows (collapsed summary, click to expand into the existing
-// tuning fields) instead of always-open EdgeRows; every store dispatch is unchanged.
+// The auto-baseline "incoming traffic" hero was removed 2026-07-15 (auto-baseline is gone — all
+// traffic now comes from authored populations); the routing-policy Segmented it used to host moved
+// into RoutingSection. Population rows are sentence rows (collapsed summary, click to expand into
+// the tuning fields + the request-mix editor).
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { useWorldStore } from '../../store/world.store'
-import type { DiurnalPattern, RegionId, RoutingPolicyKind } from '../../../lib/world/types'
+import type { ClientPopulation, DiurnalPattern, RegionId, RoutingPolicyKind } from '../../../lib/world/types'
+import { listRoutes, routeIdOf } from '../../../lib/nodeConfig'
 import { nextPopulationLabel } from '../../../lib/world/populationLabel'
 import { field, smallBtn, dangerBtn, row } from './panelStyles'
 import { SectionHeader, DerivedField, Segmented, Explainer } from '../ui/kit'
-import { ttlLagHint, populationLanding, frontlineCapacityRps, isEntryBlueprint } from '../ui/derived'
+import { ttlLagHint, populationLanding } from '../ui/derived'
 import { useCompiledWorld } from '../useCompiledWorld'
 
 export interface TrafficPanelProps {
@@ -58,94 +57,12 @@ const armedBtn = { border: '1px solid var(--color-accent)', color: 'var(--color-
 export function TrafficPanel({ placeMode, onTogglePlaceMode, selectedPopulationId }: TrafficPanelProps): ReactElement {
   return (
     <div>
-      <TrafficHero />
       <PopulationsSection selectedPopulationId={selectedPopulationId} placeMode={placeMode} onTogglePlaceMode={onTogglePlaceMode} />
       <RoutingSection />
     </div>
   )
 }
 
-// The headline control (Polish 2 T5): a sentence-slider over baselineTotalRps with the
-// routing-policy Segmented embedded mid-sentence, a frontline-capacity hint, and the
-// autoBaseline checkbox + exact-value NumberField folded in below (same field, same dispatch
-// — updateTraffic({ baselineTotalRps })  — as the pre-Polish-2 TrafficSection).
-function TrafficHero() {
-  const doc = useWorldStore(s => s.doc)
-  const updateTraffic = useWorldStore(s => s.updateTraffic)
-  const updateRouting = useWorldStore(s => s.updateRouting)
-  const compiled = useCompiledWorld()
-  const [draft, setDraft] = useState(doc.traffic.baselineTotalRps)
-  const interacted = useRef(false)
-  const [exactOpen, setExactOpen] = useState(false)
-  useEffect(() => { setDraft(doc.traffic.baselineTotalRps); interacted.current = false }, [doc.traffic.baselineTotalRps])
-
-  const commit = () => {
-    if (!interacted.current) return
-    interacted.current = false
-    if (draft !== doc.traffic.baselineTotalRps) updateTraffic({ baselineTotalRps: draft })
-  }
-
-  const capacity = frontlineCapacityRps(doc, compiled)
-  const entryPlacements = Object.values(doc.placements)
-    .filter(pl => { const bp = doc.blueprints[pl.blueprintId]; return bp != null && isEntryBlueprint(bp) }).length
-  const ratio = capacity > 0 ? draft / capacity : 0
-  const cpuPct = Math.round(ratio * 100)
-  const perReplica = entryPlacements > 0 ? Math.round(draft / entryPlacements) : 0
-  const hint = capacity <= 0 ? null
-    : ratio >= 1 ? { text: `≈ ${perReplica} rps per frontline replica — ✗ will shed load (est. ${cpuPct}% cpu). Add replicas or bigger presets.`, tone: 'var(--color-danger)' }
-    : ratio >= 0.7 ? { text: `≈ ${perReplica} rps per frontline replica — tight (est. ${cpuPct}% cpu)`, tone: 'var(--color-warning)' }
-    : { text: `≈ ${perReplica} rps per frontline replica — comfortable (est. ${cpuPct}% cpu)`, tone: 'var(--kit-teal)' }
-
-  return (
-    <div>
-      <SectionHeader label="▸ INCOMING TRAFFIC" />
-      <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', lineHeight: 2.15 }}>
-        Send <b style={{ color: 'var(--color-text-primary)', fontVariantNumeric: 'tabular-nums' }}>{draft.toLocaleString('en-US')}</b> requests/sec,
-        routed to the
-      </div>
-      <Segmented<RoutingPolicyKind>
-        ariaLabel="routing-policy"
-        value={doc.routing.policy}
-        onChange={v => updateRouting({ policy: v })}
-        options={[
-          { value: 'latency', label: 'latency' },
-          { value: 'geo', label: 'geo' },
-          { value: 'weighted', label: 'weighted' },
-          { value: 'priority', label: 'priority' },
-        ]}
-      />
-      <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', marginLeft: 6 }}>region.</span>
-      <div style={{ margin: '10px 0 2px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 3 }}>
-          <span>quiet day</span><span>launch day</span>
-        </div>
-        <input
-          type="range" aria-label="hero-baseline-rps" min={100} max={20000} step={100} value={draft}
-          style={{ width: '100%', accentColor: 'var(--color-accent)' }}
-          onChange={e => { interacted.current = true; setDraft(Number(e.target.value)) }}
-          onMouseUp={commit} onTouchEnd={commit} onKeyUp={commit} onBlur={commit}
-        />
-        {hint && <div style={{ fontSize: 10.5, marginTop: 5, color: hint.tone }}>{hint.text}</div>}
-      </div>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '6px 0 4px' }}>
-        <input type="checkbox" aria-label="autoBaseline" checked={doc.traffic.autoBaseline}
-          onChange={e => updateTraffic({ autoBaseline: e.target.checked })} />
-        <span>auto-baseline traffic</span>
-      </label>
-      <button type="button" className="kit-press" style={{ ...smallBtn }} aria-expanded={exactOpen}
-        onClick={() => setExactOpen(o => !o)}>
-        {exactOpen ? '▾' : '▸'} exact value
-      </button>
-      {exactOpen && (
-        <label style={{ display: 'flex', justifyContent: 'space-between', gap: 6, marginTop: 4 }}>
-          <span>baselineTotalRps</span>
-          <NumberField label="baselineTotalRps" value={doc.traffic.baselineTotalRps} min={0} max={Infinity}
-            onCommit={n => updateTraffic({ baselineTotalRps: n })} />
-        </label>
-      )}
-    </div>
-  )
-}
 
 function PopulationsSection({ selectedPopulationId, placeMode, onTogglePlaceMode }: {
   selectedPopulationId: string | null; placeMode: boolean; onTogglePlaceMode: () => void
@@ -229,6 +146,7 @@ function PopulationsSection({ selectedPopulationId, placeMode, onTogglePlaceMode
                   </select>
                   <button className="kit-press" style={dangerBtn} aria-label={`remove-${pop.id}`} onClick={() => removePopulation(pop.id)}>✕</button>
                 </div>
+                <RequestMixEditor pop={pop} />
               </div>
             )}
           </div>
@@ -262,6 +180,56 @@ function PopulationsSection({ selectedPopulationId, placeMode, onTogglePlaceMode
   )
 }
 
+// Per-population L7 request mix (Phase 2). Relative weights across the route catalog; a route left
+// blank (weight 0) is not in the mix. An empty mix ⇒ the population sends one implicit default
+// class (byte-equivalent to the pre-route scalar). Display order follows the id-sorted catalog so
+// editing a weight never reshuffles the rows; storage order is irrelevant (the engine normalizes).
+function RequestMixEditor({ pop }: { pop: ClientPopulation }) {
+  const doc = useWorldStore(s => s.doc)
+  const updatePopulation = useWorldStore(s => s.updatePopulation)
+  const routes = listRoutes(doc.packets)
+  if (routes.length === 0) {
+    return (
+      <Explainer>
+        No routes defined. Add routes in the Routes tab to split this population's traffic by
+        request class; until then it sends a single default class.
+      </Explainer>
+    )
+  }
+  const mix = pop.requestMix ?? []
+  const weightOf = (routeId: string) => mix.find(e => e.routeId === routeId)?.weight ?? 0
+  const total = mix.reduce((sum, e) => sum + (e.weight > 0 ? e.weight : 0), 0)
+  const setWeight = (routeId: string, w: number) => {
+    const others = mix.filter(e => e.routeId !== routeId)
+    const next = w > 0 ? [...others, { routeId, weight: w }] : others
+    updatePopulation(pop.id, { requestMix: next.length > 0 ? next : undefined })
+  }
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 4 }}>
+        request mix — relative weights (blank ⇒ one default class)
+      </div>
+      {routes.map(rt => {
+        const id = routeIdOf(rt)
+        const w = weightOf(id)
+        const pct = total > 0 && w > 0 ? Math.round((w / total) * 100) : 0
+        return (
+          <div key={rt.id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {rt.method} {rt.path}
+            </span>
+            <span style={{ width: 32, textAlign: 'right', fontSize: 9.5, color: w > 0 ? 'var(--kit-teal)' : 'var(--color-text-muted)' }}>
+              {w > 0 ? `${pct}%` : '—'}
+            </span>
+            <NumberField label={`mix-${pop.id}-${id}`} value={w} min={0} max={Infinity} onCommit={n => setWeight(id, n)} />
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 const POLICY_EXPLAINER: Record<RoutingPolicyKind, string> = {
   latency: 'each population is served by its fastest healthy region; failover honors the DNS TTL',
   geo: 'each population is pinned to its nearest region by great-circle distance',
@@ -287,6 +255,19 @@ function RoutingSection() {
   return (
     <div>
       <SectionHeader label="▸ ROUTING" />
+      <div style={{ margin: '4px 0 6px' }}>
+        <Segmented<RoutingPolicyKind>
+          ariaLabel="routing-policy"
+          value={policy}
+          onChange={v => updateRouting({ policy: v })}
+          options={[
+            { value: 'latency', label: 'latency' },
+            { value: 'geo', label: 'geo' },
+            { value: 'weighted', label: 'weighted' },
+            { value: 'priority', label: 'priority' },
+          ]}
+        />
+      </div>
       <Explainer>{POLICY_EXPLAINER[policy]}</Explainer>
 
       {policy === 'weighted' && regions.map(region => (

@@ -7,25 +7,27 @@ import type { MetricsBatch, EngineEvent, ReplayFrame } from '../../../lib/worldE
 
 export interface AzShare { azId: AzId; fraction: number; rps: number; down: boolean }
 
-// Ordered by doc iteration order. fraction of the region's total az rps (0 when total 0);
-// down = batch az health === 'down' (or healthOverride-style absence tolerated: null batch
-// → fraction 0, down false). A down AZ's `rps`/`fraction` are BOTH pinned to 0 regardless of
-// what the batch reports for it (mockup line 244 shows "0 rps" on a down row, not a stale
-// number) — the denominator used for the other AZs' fractions excludes the down AZ's rps too,
-// so the remaining shares still sum to 1 (the "redistribution" the ribbon/split-lines depict).
+// The region → AZ INGRESS split. `fraction` is each healthy AZ's share of the region's total
+// AZ throughput; `rps` is that fraction applied to the region's actual INGRESS (what the sources
+// send in — the SourcesColumn trunk = Σ populationRoutes into this region), NOT the AZ's own
+// throughput. Using throughput for `rps` double-counted internal service→service hops, so the two
+// AZ pills summed to ~2× the ingress (the "both AZs receive the entirety, doubling" report); the
+// shares now sum to the region ingress. A down AZ's `rps`/`fraction` are pinned to 0 (mockup line
+// 244) and excluded from the throughput denominator, so the remaining shares still sum to 1.
 export function azShares(regionId: RegionId, doc: WorldDoc, batch: MetricsBatch | null): AzShare[] {
   const azIds = Object.values(doc.azs).filter(a => a.regionId === regionId).map(a => a.id)
   const raw = azIds.map(azId => {
     const m = batch?.azs[azId] ?? null
-    return { azId, rawRps: m?.rps ?? 0, down: m?.health === 'down' }
+    return { azId, throughput: m?.rps ?? 0, down: m?.health === 'down' }
   })
-  const total = raw.reduce((sum, a) => sum + (a.down ? 0 : a.rawRps), 0)
-  return raw.map(a => ({
-    azId: a.azId,
-    down: a.down,
-    rps: a.down ? 0 : a.rawRps,
-    fraction: a.down || total <= 0 ? 0 : a.rawRps / total,
-  }))
+  const totalThroughput = raw.reduce((sum, a) => sum + (a.down ? 0 : a.throughput), 0)
+  const regionIngress = (batch?.world.populationRoutes ?? [])
+    .filter(r => r.regionId === regionId)
+    .reduce((sum, r) => sum + r.rps, 0)
+  return raw.map(a => {
+    const fraction = a.down || totalThroughput <= 0 ? 0 : a.throughput / totalThroughput
+    return { azId: a.azId, down: a.down, fraction, rps: a.down ? 0 : fraction * regionIngress }
+  })
 }
 
 export interface RibbonAlert { severity: 'warning' | 'critical'; message: string; simMs: number }
