@@ -11,7 +11,7 @@ const batch = (simMs: number): MetricsBatch => ({
 })
 const frames: ReplayFrame[] = [{ simMs: 1000, batch: batch(1000), events: [] }]
 
-beforeEach(() => useSimulationStore.setState({ running: false, latestBatch: null, scrubIndex: null, scrubBatch: null }))
+beforeEach(() => useSimulationStore.setState({ running: false, paused: false, latestBatch: null, scrubIndex: null, scrubBatch: null }))
 
 describe('ScrubberV2 session gate', () => {
   it('shown after a normal stop (frames + latestBatch)', () => {
@@ -23,5 +23,15 @@ describe('ScrubberV2 session gate', () => {
     useSimulationStore.setState({ latestBatch: null, getReplayFrames: () => frames })
     render(<ScrubberV2 />)
     expect(screen.queryByLabelText('replay-scrubber')).not.toBeInTheDocument()
+  })
+  it('hidden while live (running, not paused)', () => {
+    useSimulationStore.setState({ running: true, paused: false, latestBatch: batch(1000), getReplayFrames: () => frames })
+    render(<ScrubberV2 />)
+    expect(screen.queryByLabelText('replay-scrubber')).not.toBeInTheDocument()
+  })
+  it('shown while PAUSED — scrub-back is enabled without ending the run', () => {
+    useSimulationStore.setState({ running: true, paused: true, latestBatch: batch(1000), getReplayFrames: () => frames })
+    render(<ScrubberV2 />)
+    expect(screen.getByLabelText('replay-scrubber')).toBeInTheDocument()
   })
 })

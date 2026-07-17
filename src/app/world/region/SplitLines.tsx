@@ -29,9 +29,9 @@ const TARGET_X = 85
 // idle page static and a region has 2–4 AZs in practice; the cap is a safety rail, not the norm.
 const MAX_ANIMATED_BEAMS = 4
 
-export interface SplitLinesProps { shares: AzShare[]; height: number }
+export interface SplitLinesProps { shares: AzShare[]; height: number; live: boolean }
 
-export function SplitLines({ shares, height }: SplitLinesProps): ReactElement {
+export function SplitLines({ shares, height, live }: SplitLinesProps): ReactElement {
   const reduced = useReducedMotion()
   const originY = height / 2
   const rowY = (i: number) => ((i + 0.5) * height) / Math.max(1, shares.length)
@@ -63,7 +63,7 @@ export function SplitLines({ shares, height }: SplitLinesProps): ReactElement {
         // stubs ('2 7', period 9) stay untouched — they never carry `<animate>`, so their period
         // is irrelevant to seamlessness (see file header note).
         const dash = s.down ? '2 7' : '7 8'
-        const animated = !reduced && !s.down && animatedAzIds.has(s.azId)
+        const animated = live && !reduced && !s.down && animatedAzIds.has(s.azId)
         // fraction 0 → slowest (1.3s), fraction 1 → fastest (0.9s) — both endpoints are the
         // mock's own two literal durations (default 0.9s + the explicit 1.3s override).
         const periodSec = (1.3 - 0.4 * s.fraction).toFixed(2)

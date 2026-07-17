@@ -727,6 +727,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       if (state.rafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(state.rafId)
       state.rafId = null
     },
+    resume() {
+      if (!state || state.running) return
+      state.running = true
+      // The wall-clock gap while halted must NOT be charged as one giant frame (it would jump the
+      // sim forward and spike the step cost) — reset the frame anchor so the next tick is a normal step.
+      state.lastFrameMs = null
+      if (typeof requestAnimationFrame === 'function') state.rafId = requestAnimationFrame(tick)
+    },
     isRunning() {
       return state?.running ?? false
     },

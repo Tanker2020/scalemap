@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
-import { useSimulationStore } from '../store/simulation.store'
+import { useSimulationStore, selectLive } from '../store/simulation.store'
 import { useCompiledWorld } from './useCompiledWorld'
 import { WORLD_REGIONS } from '../../lib/regionConfig'
 import { computeWorldCost } from '../../lib/costModelV2'
@@ -42,6 +42,7 @@ export function RegionView() {
   const { regionId, goAz, goServer } = useNavStore()
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const running = useSimulationStore(s => s.running)
+  const live = useSimulationStore(selectLive)
   const events = useSimulationStore(s => s.events)
   const isDown = useSimulationStore(s => s.healthOverrides[regionId ?? ''] ?? false)
   const setOutage = useSimulationStore(s => s.setOutage)
@@ -136,9 +137,11 @@ export function RegionView() {
         <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, position: 'relative' }}>
           <SourcesColumn regionId={regionId} internetEgressMonthlyUsd={costs.egress.internetUsd} />
 
-          <RegionLbCard regionId={regionId} />
+          {/* Same ≥2-AZ gate as RegionConfigTab's LoadBalancerSection — a single-AZ region's LB
+              config is a no-op, so the flow-page card stays out of the way until it's meaningful. */}
+          {azs.length >= 2 && <RegionLbCard regionId={regionId} />}
 
-          <SplitLines shares={shares} height={rowsHeight} />
+          <SplitLines shares={shares} height={rowsHeight} live={live} />
 
           <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', gap: 8, marginRight: 20 }}>
             {azs.map(az => (
@@ -152,7 +155,7 @@ export function RegionView() {
                 onHoverServer={setHoveredServerId}
               />
             ))}
-            <ReplicaRail entries={railEntries} azCount={azs.length} rowsHeight={rowsHeight} hoveredServerId={hoveredServerId} flowing={(batch?.regions[regionId]?.rps ?? 0) > 0} />
+            <ReplicaRail entries={railEntries} azCount={azs.length} rowsHeight={rowsHeight} hoveredServerId={hoveredServerId} flowing={live && (batch?.regions[regionId]?.rps ?? 0) > 0} />
           </div>
 
           <CrossAzColumn regionId={regionId} />

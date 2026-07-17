@@ -50,7 +50,7 @@ const realSetOutage = useSimulationStore.getState().setOutage
 
 function resetSim() {
   useSimulationStore.setState({
-    running: false, timeScale: 1, latestBatch: null, events: [], healthOverrides: {},
+    running: false, paused: false, timeScale: 1, latestBatch: null, events: [], healthOverrides: {},
     scrubIndex: null, scrubBatch: null, degraded: false, setOutage: realSetOutage,
   })
 }
@@ -77,6 +77,24 @@ describe('RegionView (Phase 4 flow page)', () => {
     expect(within(container.querySelector(`[data-az-row="${azB.id}"]`)!).getByText(azB.label)).toBeInTheDocument()
     expect(screen.getByText('91')).toBeInTheDocument()
     expect(screen.getByText('87')).toBeInTheDocument()
+  })
+
+  it('shows the regional LB card once the region has 2+ AZs', () => {
+    seedRegion()
+    render(<RegionView />)
+    expect(screen.getByTestId('region-lb-card')).toBeInTheDocument()
+  })
+
+  it('hides the regional LB card at exactly 1 AZ (crossZone is a no-op below 2 AZs)', () => {
+    const doc: WorldDoc = createWorld()
+    const region = createRegion('us-east-1')
+    const azA = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[azA.id] = azA
+    useWorldStore.setState({ doc, history: [], future: [] })
+    useNavStore.setState({ level: 'region', regionId: region.id, azId: null, serverId: null })
+    render(<RegionView />)
+    expect(screen.queryByTestId('region-lb-card')).toBeNull()
   })
 
   it('down az row shows drain targets instead of strips', () => {
@@ -195,6 +213,7 @@ describe('RegionView (Phase 4 flow page)', () => {
     useWorldStore.setState({ doc })
     const populationRoutes = popRps.map(([id, rps]) => ({ populationId: id, regionId: region.id, rps }))
     useSimulationStore.setState({
+      running: true,   // live: source dots march only while the sim is actively ticking
       latestBatch: {
         simMs: 1000, instances: {}, servers: {}, azs: {}, regions: {},
         world: { ...emptyWorldMetrics(), populationRoutes, totalRps: 2100 },
@@ -273,7 +292,7 @@ describe('RegionView (Phase 4 flow page)', () => {
     const region = Object.values(doc.regions)[0]
     const batch = fakeBatch(1000, { [azA.id]: az({ azId: azA.id, rps: 250 }), [azB.id]: az({ azId: azB.id, rps: 250 }) })
     batch.regions[region.id] = { regionId: region.id, rps: 500, errorRate: 0, p50Ms: 5, healthScore: 100, health: 'healthy', inboundByPopulation: [] }
-    useSimulationStore.setState({ latestBatch: batch })
+    useSimulationStore.setState({ running: true, latestBatch: batch })   // live: rail marches only while ticking
     rerender(<RegionView />)
     const animatedPaths = container.querySelectorAll('path[stroke="var(--r3-amber)"][data-animated]')
     expect(animatedPaths.length).toBe(1)

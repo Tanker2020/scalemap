@@ -2262,3 +2262,54 @@ dock's `RegionConfigTab`; this is the read-only flow-page mirror. Tests: `Region
 **Contract drift** — no `worldEngine/types.ts` or `CompiledWorld`/`CompiledRouting` change in
 Phase 3 (cost model + a display component only). The additive `WorldCostResult` fields are logged
 in `.superpowers/sdd/contract-drift.md`.
+
+---
+
+## Simulation pause / resume / end + flow-animation freeze (2026-07-16)
+
+**Pause/Resume/End controls.** `simulation.store.ts` gained a `paused` flag and `pause()`/
+`resume()` actions alongside `stop()` (now semantically "End"). `pause()` calls the engine's
+`stop()` (which preserves state) and keeps the whole session (latestBatch, events, manual outages,
+event-log run + flusher — no events tick in while frozen); `running` stays true so the world stays
+edit-locked. `resume()` calls the new engine facade `resume()` (additive to the frozen
+`WorldEngineApi` — restarts ticking on preserved state; see contract-drift). `SimControls.tsx`:
+idle → `Simulate`; live → `[Pause] [End]`; paused → `[Resume] [End]` (green pulse when live, static
+amber when paused).
+
+**`selectLive` — the "actively ticking" gate.** `simulation.store.ts` exports
+`selectLive = s => s.running && !s.paused && s.scrubIndex === null`. Engine-driven animations
+(globe arcs, server-board particles via `attachRenderer`) already stop when ticking halts — but the
+region/AZ views use **CSS/SMIL** animations keyed off the (frozen) batch's `rps`, which kept
+marching on pause/end/scrub. Those now gate on `selectLive`: `SourcesColumn` (trunk march + source
+dots), `SplitLines` (new `live` prop, ingress beams), `ReplicaRail` (`flowing` = `live && rps>0`
+from `RegionView`), and `DatacenterFloor` (its `animatedKeys` flow-trace + `animatedLedIds` LED
+memos short-circuit to empty when not live). Tests assert both the animated (live) and frozen
+(not-live) states; `RegionView.test`/`DatacenterFloor.test` set `running: true` where they assert
+motion.
+
+**Scrub while paused.** `ScrubberV2.tsx` previously showed only when `!running`; since a paused run
+keeps `running` true, it now gates on `halted = !running || paused` (stopped OR paused) — you can
+scrub replay history without ending the run. `resume()` snaps back to the live head (clears
+`scrubIndex`/`scrubBatch`) so a scrub position set while paused doesn't strand the views on a past
+frame once ticking continues.
+
+---
+
+## Regional LB UI gated on AZ count ≥2 (2026-07-17)
+
+A region's LB config (cross-zone, algorithm, listener rules) is a verified no-op below 2 AZs —
+`distributeToTargets` (`routingRuntime.ts`) computes `perAz = rps / healthyAzs.length`, which
+degenerates to `rps / 1` regardless of `crossZone` when there's only one healthy AZ. `compileWorld`
+still always synthesizes an LB config per region (a back-compat mechanism for when a region *does*
+reach 2+ AZs with no authored LB — unchanged), but that's an engine-internal concern, not a UI
+signal. Both LB render sites now gate on the region's own `azs.length >= 2`:
+- `dock/RegionConfigTab.tsx` — the "LOAD BALANCER" section renders only at 2+ AZs; at exactly 1 AZ
+  it shows a one-line hint ("Add a second AZ to configure this region's load balancer.") instead of
+  silently disappearing; at 0 AZs neither renders (the existing "No AZs yet" empty state covers it).
+- `RegionView.tsx` — `region/RegionLbCard.tsx` (the flow-page LB card) renders only at 2+ AZs; below
+  that it just doesn't take up space in the flow row (no hint — schematic diagram, not a config
+  panel). `RegionLbCard.tsx` itself is unchanged and stays agnostic to AZ count; the gate lives
+  entirely in its two callers.
+
+A previously-authored `doc.loadBalancers` entry is never deleted when a region drops back below 2
+AZs — only the UI toggles; the config resurfaces unchanged if a second AZ is re-added.

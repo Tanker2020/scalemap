@@ -1,4 +1,5 @@
-// Simulate/Stop + timeScale controls for WorldShell's header. Never touches the engine facade
+// Simulate / Pause·Resume / End + timeScale controls for WorldShell's header. Idle shows Simulate;
+// an active run shows Pause (or Resume when frozen) + End. Never touches the engine facade
 // directly — contracts: "views... read this store; only control actions call the facade."
 // (Task 18 adds a `degraded` amber chip, shown when the facade halved its step rate.)
 import type { CSSProperties } from 'react'
@@ -12,7 +13,8 @@ const btn: CSSProperties = {
   borderRadius: 4, padding: '3px 10px', cursor: 'pointer',
   font: '11px var(--font-mono)', color: 'var(--color-text-secondary)',
 }
-const btnRunning: CSSProperties = { ...btn, color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }
+const btnResume: CSSProperties = { ...btn, color: 'var(--color-success)', border: '1px solid var(--color-success)' }
+const btnEnd: CSSProperties = { ...btn, color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }
 const selectStyle: CSSProperties = {
   background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
   borderRadius: 4, padding: '3px 6px', font: '11px var(--font-mono)', color: 'var(--color-text-primary)',
@@ -24,32 +26,45 @@ const degradedChip: CSSProperties = {
 
 export function SimControls() {
   const running = useSimulationStore(s => s.running)
+  const paused = useSimulationStore(s => s.paused)
   const timeScale = useSimulationStore(s => s.timeScale)
   const degraded = useSimulationStore(s => s.degraded)
   const start = useSimulationStore(s => s.start)
   const stop = useSimulationStore(s => s.stop)
+  const pause = useSimulationStore(s => s.pause)
+  const resume = useSimulationStore(s => s.resume)
   const setTimeScale = useSimulationStore(s => s.setTimeScale)
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const reduced = useReducedMotion()
 
+  // live = actively ticking; a running-but-paused sim keeps its state but freezes.
+  const live = running && !paused
+
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       {running && (
+        // Pulses green while live; sits static amber while paused (the run is frozen, not ended).
         <motion.span
           aria-hidden
-          style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--color-success)' }}
-          animate={reduced ? { opacity: 1 } : { opacity: [1, 0.35, 1] }}
-          transition={reduced ? undefined : { duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
+          style={{ width: 7, height: 7, borderRadius: '50%', background: live ? 'var(--color-success)' : 'var(--color-warning)' }}
+          animate={reduced || !live ? { opacity: 1 } : { opacity: [1, 0.35, 1] }}
+          transition={reduced || !live ? undefined : { duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
         />
       )}
-      <button
-        className="kit-press"
-        style={running ? btnRunning : btn}
-        onClick={() => (running ? stop() : start(doc, compiled))}
-      >
-        {running ? 'Stop' : 'Simulate'}
-      </button>
+
+      {!running ? (
+        <button className="kit-press" style={btn} onClick={() => start(doc, compiled)}>Simulate</button>
+      ) : (
+        <>
+          {/* Pause/Resume toggles the freeze; End tears the run down (state kept for scrubbing). */}
+          <button className="kit-press" style={live ? btn : btnResume} onClick={() => (live ? pause() : resume())}>
+            {live ? 'Pause' : 'Resume'}
+          </button>
+          <button className="kit-press" style={btnEnd} onClick={() => stop()}>End</button>
+        </>
+      )}
+
       {/* Enabled while stopped too: the selection lives in the store and start() re-applies it
           to the engine, so picking 2x before hitting Simulate now works (it used to be a
           disabled control that "didn't seem to do anything"). */}

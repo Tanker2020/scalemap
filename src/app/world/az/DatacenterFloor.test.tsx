@@ -91,9 +91,9 @@ describe('DatacenterFloor', () => {
       instanceRps[`${plId}#0`] = (i + 1) * 10   // strictly increasing rps, 10..100
     }
 
-    useSimulationStore.setState({ latestBatch: makeBatch(instanceRps, serverIds) })
+    useSimulationStore.setState({ running: true, latestBatch: makeBatch(instanceRps, serverIds) })
 
-    render(<DatacenterFloor />)
+    const { rerender } = render(<DatacenterFloor />)
 
     const animated = screen.getAllByTestId(/^flow-/).filter(el => el.getAttribute('data-animated') === 'true')
     const all = screen.getAllByTestId(/^flow-/)
@@ -105,6 +105,11 @@ describe('DatacenterFloor', () => {
     expect(animatedSources.has(`flow-${serverIds[0]}->${msId}`)).toBe(false)
     expect(animatedSources.has(`flow-${serverIds[1]}->${msId}`)).toBe(false)
     expect(animatedSources.has(`flow-${serverIds[9]}->${msId}`)).toBe(true)
+
+    // Freeze: pausing (or ending) the run stops the marching traces even though rps stays non-zero.
+    useSimulationStore.setState({ paused: true })
+    rerender(<DatacenterFloor />)
+    expect(screen.getAllByTestId(/^flow-/).filter(el => el.getAttribute('data-animated') === 'true')).toHaveLength(0)
   })
 
   it('LED blink is capped at MAX_ANIMATED_LEDS (3), ranked by cpu utilization', () => {
@@ -120,6 +125,7 @@ describe('DatacenterFloor', () => {
       serverRecord[id] = { ...emptyServer, serverId: id, coreUtilization: [(i + 1) / N] }
     })
     useSimulationStore.setState({
+      running: true,   // live: LEDs blink only while the sim is actively ticking
       latestBatch: {
         simMs: 1000, instances: {}, servers: serverRecord, azs: {}, regions: {},
         world: { totalRps: 0, populationRoutes: [] } as unknown as MetricsBatch['world'],

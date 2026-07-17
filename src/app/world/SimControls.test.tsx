@@ -7,7 +7,7 @@ import { useWorldStore } from '../store/world.store'
 
 beforeEach(() => {
   useWorldStore.getState().newWorld()
-  useSimulationStore.setState({ running: false, timeScale: 1 })
+  useSimulationStore.setState({ running: false, paused: false, timeScale: 1 })
 })
 
 describe('SimControls', () => {
@@ -21,12 +21,26 @@ describe('SimControls', () => {
     expect(compiled.instances).toEqual({})   // fresh world → compileWorld returns no instances
   })
 
-  it('shows Stop and calls stop() when running', () => {
-    useSimulationStore.setState({ running: true })
+  it('while live, shows Pause + End; Pause calls pause(), End calls stop()', () => {
+    useSimulationStore.setState({ running: true, paused: false })
+    const pauseSpy = vi.spyOn(useSimulationStore.getState(), 'pause').mockImplementation(() => {})
     const stopSpy = vi.spyOn(useSimulationStore.getState(), 'stop').mockImplementation(() => {})
     render(<SimControls />)
-    fireEvent.click(screen.getByText('Stop'))
+    expect(screen.queryByText('Simulate')).toBeNull()
+    fireEvent.click(screen.getByText('Pause'))
+    expect(pauseSpy).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByText('End'))
     expect(stopSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('while paused, shows Resume + End; Resume calls resume()', () => {
+    useSimulationStore.setState({ running: true, paused: true })
+    const resumeSpy = vi.spyOn(useSimulationStore.getState(), 'resume').mockImplementation(() => {})
+    render(<SimControls />)
+    expect(screen.queryByText('Pause')).toBeNull()
+    fireEvent.click(screen.getByText('Resume'))
+    expect(resumeSpy).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('End')).toBeInTheDocument()
   })
 
   it('changes timeScale via the select while running', () => {

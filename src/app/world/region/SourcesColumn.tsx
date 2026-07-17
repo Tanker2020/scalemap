@@ -12,7 +12,7 @@
 import { useReducedMotion } from 'framer-motion'
 import type { CSSProperties, ReactElement } from 'react'
 import { useWorldStore } from '../../store/world.store'
-import { useSimulationStore } from '../../store/simulation.store'
+import { useSimulationStore, selectLive } from '../../store/simulation.store'
 import { HOURS_PER_MONTH } from '../../../lib/costModelV2'
 import { REGION_GEO, greatCircleKm } from '../../../lib/world/regionGeo'
 import { dotStreamParams } from './regionData'
@@ -42,6 +42,9 @@ export interface SourcesColumnProps {
 export function SourcesColumn({ regionId, internetEgressMonthlyUsd }: SourcesColumnProps): ReactElement {
   const doc = useWorldStore(s => s.doc)
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
+  // Flow marches only while the sim is actively ticking; a paused/ended/scrubbed run freezes the
+  // trunk + source dots (the batch stays non-zero, so an rps-only gate would keep them marching).
+  const live = useSimulationStore(selectLive)
   const reduced = useReducedMotion()
 
   const region = doc.regions[regionId]
@@ -80,7 +83,7 @@ export function SourcesColumn({ regionId, internetEgressMonthlyUsd }: SourcesCol
       <div style={h4}>▸ WHO&apos;S SENDING</div>
       {rows.length === 0 && <div style={{ color: 'var(--color-text-muted)', fontSize: 9.5 }}>no traffic yet</div>}
       {rows.map((row, i) => (
-        <SrcRow key={row.key} row={row} maxRps={maxRps} animated={i < TOP_ANIMATED} reduced={!!reduced} />
+        <SrcRow key={row.key} row={row} maxRps={maxRps} animated={live && i < TOP_ANIMATED} reduced={!!reduced} />
       ))}
       <div style={{ marginTop: 10, borderTop: '1px dashed #1c2430', paddingTop: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -90,12 +93,12 @@ export function SourcesColumn({ regionId, internetEgressMonthlyUsd }: SourcesCol
                 marchx's 22px translate exactly (see r3Styles.ts) so the loop is seamless. */}
             <div
               data-testid="trunk-march"
-              data-animated={!reduced && trunkTotal > 0}
+              data-animated={!reduced && live && trunkTotal > 0}
               style={{
                 position: 'absolute', top: 0, bottom: 0, left: -22, right: 0,
                 background: 'repeating-linear-gradient(90deg, var(--r3-hud) 0 11px, transparent 11px 22px)',
                 opacity: trunkTotal > 0 ? 0.9 : 0.22,
-                ...(!reduced && trunkTotal > 0 ? { animation: 'marchx 0.5s linear infinite' } : {}),
+                ...(!reduced && live && trunkTotal > 0 ? { animation: 'marchx 0.5s linear infinite' } : {}),
               }}
             />
           </div>

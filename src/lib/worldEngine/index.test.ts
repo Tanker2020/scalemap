@@ -126,6 +126,34 @@ describe('cross-zone-off ingress distribution', () => {
   })
 })
 
+describe('pause/resume (stop preserves state; resume continues)', () => {
+  it('stop halts without resetting the clock, and resume continues the same run', () => {
+    const f = e2eFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(3)
+    const atStop = sim.latest().simMs
+    sim.engine.stop()
+    expect(sim.engine.isRunning()).toBe(false)
+    // stop() must PRESERVE state — the clock does not rewind (resume needs the frozen position).
+    sim.engine.resume()
+    expect(sim.engine.isRunning()).toBe(true)
+    sim.stepFor(2)
+    expect(sim.latest().simMs).toBeGreaterThan(atStop)   // continued forward, not restarted at 0
+    sim.engine.stop()
+  })
+
+  it('resume is a no-op when never started or already running', () => {
+    const engine = createWorldEngine(1)
+    expect(() => engine.resume()).not.toThrow()   // never started
+    const f = e2eFixture()
+    engine.start(f.doc, f.compiled, { onMetrics: () => {}, onEvent: () => {}, onHealthChange: () => {} })
+    expect(engine.isRunning()).toBe(true)
+    engine.resume()                                // already running
+    expect(engine.isRunning()).toBe(true)
+    engine.stop()
+  })
+})
+
 describe('world engine integration', () => {
   it('flows client rps end-to-end through the compiled world', () => {
     const f = e2eFixture()

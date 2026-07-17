@@ -43,7 +43,7 @@ describe('SplitLines — seamless-loop invariant (taskA)', () => {
       { azId: 'az-a', fraction: 0.7, rps: 700, down: false },
       { azId: 'az-b', fraction: 0.3, rps: 300, down: false },
     ]
-    const { container } = render(<SplitLines shares={shares} height={200} />)
+    const { container } = render(<SplitLines shares={shares} height={200} live />)
 
     // az-a has the top fraction among rps>0 shares, so it's the (only, in this 2-AZ fixture)
     // animated beam — locate its <path> via the sibling <animate> child.
@@ -74,7 +74,7 @@ describe('SplitLines — seamless-loop invariant (taskA)', () => {
       { azId: 'az-down', fraction: 0, rps: 0, down: true },
       { azId: 'az-idle', fraction: 0, rps: 0, down: false },
     ]
-    const { container } = render(<SplitLines shares={shares} height={200} />)
+    const { container } = render(<SplitLines shares={shares} height={200} live />)
     expect(container.querySelectorAll('animate').length).toBe(0)
   })
 
@@ -84,7 +84,16 @@ describe('SplitLines — seamless-loop invariant (taskA)', () => {
       { azId: 'az-a', fraction: 0.7, rps: 700, down: false },
       { azId: 'az-b', fraction: 0.3, rps: 300, down: false },
     ]
-    const { container } = render(<SplitLines shares={shares} height={200} />)
+    const { container } = render(<SplitLines shares={shares} height={200} live />)
+    expect(container.querySelectorAll('animate').length).toBe(0)
+  })
+
+  it('a NOT-live (paused/ended/scrubbed) run freezes the beam — no <animate> child even at rps>0', () => {
+    const shares: AzShare[] = [
+      { azId: 'az-a', fraction: 0.7, rps: 700, down: false },
+      { azId: 'az-b', fraction: 0.3, rps: 300, down: false },
+    ]
+    const { container } = render(<SplitLines shares={shares} height={200} live={false} />)
     expect(container.querySelectorAll('animate').length).toBe(0)
   })
 })

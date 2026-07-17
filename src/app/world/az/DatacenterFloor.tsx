@@ -13,7 +13,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
-import { useSimulationStore } from '../../store/simulation.store'
+import { useSimulationStore, selectLive } from '../../store/simulation.store'
 import { useUiStore } from '../../store/ui.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { layoutFloor } from './floorLayout'
@@ -65,6 +65,9 @@ export function DatacenterFloor() {
   const compiled = useCompiledWorld()
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const running = useSimulationStore(s => s.running)
+  // Flow traces + LED blink march only while the sim is actively ticking; a paused/ended/scrubbed
+  // run freezes them (the batch stays non-zero, so a rate-only gate would keep marching).
+  const live = useSimulationStore(selectLive)
   const { regionId, azId, goServer } = useNavStore()
   const reducedMotion = useReducedMotion() ?? false
 
@@ -161,6 +164,7 @@ export function DatacenterFloor() {
   }, [azServers, compiled.instances, batch])
 
   const animatedKeys = useMemo(() => {
+    if (!live) return new Map<string, number>()   // frozen run → no marching traces
     const ranked = [
       ...flows
         .filter(f => f.blocked === 0)
@@ -177,20 +181,21 @@ export function DatacenterFloor() {
       .sort((a, b) => b.rate - a.rate)
       .slice(0, TOP_ANIMATED)
     return new Map(ranked.map(r => [r.key, r.rate]))
-  }, [flows, ingress, rpsByServer])
+  }, [flows, ingress, rpsByServer, live])
   const maxAnimatedRate = Math.max(1, ...animatedKeys.values())
 
   // Motion budget (D1, T8 sweep): rank every AZ server (racked or free-pool) by live cpuMean and
   // let only the top MAX_ANIMATED_LEDS blink — same "top-N by magnitude" shape as `animatedKeys`
   // above, just a separate, smaller budget line (see the MAX_ANIMATED_LEDS comment).
   const animatedLedIds = useMemo(() => {
+    if (!live) return new Set<string>()   // frozen run → LEDs stop blinking
     const ranked = azServers
       .map(s => ({ id: s.id, cpuMean: meanUtilization(batch?.servers[s.id]?.coreUtilization) }))
       .filter(s => s.cpuMean > 0)
       .sort((a, b) => b.cpuMean - a.cpuMean)
       .slice(0, MAX_ANIMATED_LEDS)
     return new Set(ranked.map(r => r.id))
-  }, [azServers, batch])
+  }, [azServers, batch, live])
 
   // Per-server identity (user request 2026-07-11): each server's resident blueprints' signature
   // colors, rendered as faceplate ticks by RackSlot/FreePoolPod so no two servers hosting

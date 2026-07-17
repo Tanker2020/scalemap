@@ -1,6 +1,7 @@
 // src/app/world/ScrubberV2.tsx
-// Bottom-bar playback scrubber. Shown only once replay frames exist and the sim is stopped
-// (contracts: replay is a 1Hz, 300-frame ring — "scrubbing any level reads one frame").
+// Bottom-bar playback scrubber. Shown once replay frames exist and the sim is NOT live — i.e.
+// stopped OR paused (the engine's replay ring survives both, since pause/stop only halt ticking).
+// (contracts: replay is a 1Hz, 300-frame ring — "scrubbing any level reads one frame".)
 import { useEffect, useState } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { useSimulationStore } from '../store/simulation.store'
@@ -19,21 +20,27 @@ function worstAzHealthScore(frame: ReplayFrame): number {
 
 export function ScrubberV2() {
   const running = useSimulationStore(s => s.running)
+  const paused = useSimulationStore(s => s.paused)
   const latestBatch = useSimulationStore(s => s.latestBatch)
   const scrubIndex = useSimulationStore(s => s.scrubIndex)
   const setScrubIndex = useSimulationStore(s => s.setScrubIndex)
   const [frames, setFrames] = useState<ReplayFrame[]>([])
   const reduced = useReducedMotion()
 
-  useEffect(() => {
-    if (running) return
-    setFrames(useSimulationStore.getState().getReplayFrames())
-  }, [running])
+  // "Halted" = not actively ticking (stopped OR paused). Scrubbing is only meaningful then; while
+  // live the bottom bar hides and the views follow the head. A paused run keeps `running` true, so
+  // this deliberately checks `paused` too rather than just `!running`.
+  const halted = !running || paused
 
-  // A fresh doc (post New/Open resetSession) has neither frames nor a batch — the engine's
-  // replay ring survives stop() and only clears on the next start(), so latestBatch is the
-  // signal that distinguishes "just stopped, scrub away" from "discarded world, stale ring".
-  if (running || frames.length === 0 || latestBatch === null) return null
+  useEffect(() => {
+    if (!halted) return
+    setFrames(useSimulationStore.getState().getReplayFrames())
+  }, [halted])
+
+  // A fresh doc (post New/Open resetSession) has neither frames nor a batch — the engine's replay
+  // ring survives stop()/pause and only clears on the next start(), so latestBatch is the signal
+  // that distinguishes "just stopped/paused, scrub away" from "discarded world, stale ring".
+  if (!halted || frames.length === 0 || latestBatch === null) return null
 
   const pick = (clientX: number, target: HTMLDivElement) => {
     const rect = target.getBoundingClientRect()

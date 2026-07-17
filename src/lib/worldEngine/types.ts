@@ -176,6 +176,10 @@ export interface EngineCallbacks {
 export interface WorldEngineApi {
   start: (doc: WorldDoc, compiled: CompiledWorld, callbacks: EngineCallbacks) => void
   stop: () => void
+  // Resume ticking a run that was halted by stop() WITHOUT rebuilding state — the clock, metrics,
+  // and every subsystem continue from where they froze. No-op if never started or already running.
+  // (stop() only halts the loop; it preserves state, so a stop→resume pair is a pause/resume.)
+  resume: () => void
   isRunning: () => boolean
   setTimeScale: (scale: number) => void
   // Manual failure switches (spec D8). Idempotent; emit outage_triggered/cleared.

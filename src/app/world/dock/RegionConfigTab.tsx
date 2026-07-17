@@ -73,7 +73,17 @@ export function RegionConfigTab({ regionId }: RegionConfigTabProps) {
         + az
       </button>
 
-      <LoadBalancerSection regionId={regionId} running={running} />
+      {/* A regional LB only makes a real decision once there are ≥2 AZs to distribute across —
+          crossZone is a mathematical no-op with 0-1 AZs (perAz = rps / healthyAzs.length
+          degenerates to rps / 1 either way). Hide the config until it's meaningful; explain why
+          at exactly 1 AZ so the section's disappearance reads as expected, not broken. */}
+      {azs.length >= 2 ? (
+        <LoadBalancerSection regionId={regionId} running={running} />
+      ) : azs.length === 1 ? (
+        <div style={{ color: 'var(--color-text-muted)', padding: '10px 2px 4px', fontSize: 10.5 }}>
+          Add a second AZ to configure this region's load balancer.
+        </div>
+      ) : null}
     </div>
   )
 }

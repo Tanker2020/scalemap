@@ -108,6 +108,8 @@ describe('RegionConfigTab', () => {
 
   it('renders a load balancer section reflecting the effective default (cross-zone off)', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addAz(regionId, 'us-east-1b')
     render(<RegionConfigTab regionId={regionId} />)
     const group = screen.getByRole('group', { name: 'cross-zone' })
     expect(within(group).getByText('off')).toHaveAttribute('aria-pressed', 'true')
@@ -116,6 +118,8 @@ describe('RegionConfigTab', () => {
 
   it('toggling cross-zone on creates/updates the region load balancer', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addAz(regionId, 'us-east-1b')
     render(<RegionConfigTab regionId={regionId} />)
     fireEvent.click(within(screen.getByRole('group', { name: 'cross-zone' })).getByText('on'))
     const lb = Object.values(useWorldStore.getState().doc.loadBalancers).find(l => l.regionId === regionId)
@@ -125,6 +129,8 @@ describe('RegionConfigTab', () => {
 
   it('load balancer controls are edit-locked while the simulation runs', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addAz(regionId, 'us-east-1b')
     useSimulationStore.setState({ running: true })
     render(<RegionConfigTab regionId={regionId} />)
     expect(within(screen.getByRole('group', { name: 'cross-zone' })).getByText('on')).toBeDisabled()
@@ -132,6 +138,8 @@ describe('RegionConfigTab', () => {
 
   it('defaults to L4 with no listener-rules editor; switching to L7 reveals it and sets mode', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addAz(regionId, 'us-east-1b')
     render(<RegionConfigTab regionId={regionId} />)
     expect(within(screen.getByRole('group', { name: 'lb-mode' })).getByText('NLB · L4')).toHaveAttribute('aria-pressed', 'true')
     expect(screen.queryByText('▸ LISTENER RULES')).toBeNull()
@@ -144,6 +152,8 @@ describe('RegionConfigTab', () => {
 
   it('adds a listener rule mapping a path pattern to a blueprint', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addAz(regionId, 'us-east-1b')
     const bpId = useWorldStore.getState().addBlueprint('api')
     render(<RegionConfigTab regionId={regionId} />)
     fireEvent.click(within(screen.getByRole('group', { name: 'lb-mode' })).getByText('ALB · L7'))
@@ -159,12 +169,42 @@ describe('RegionConfigTab', () => {
 
   it('setting the default action patches defaultTargetBlueprintId', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addAz(regionId, 'us-east-1b')
     const bpId = useWorldStore.getState().addBlueprint('api')
     render(<RegionConfigTab regionId={regionId} />)
     fireEvent.click(within(screen.getByRole('group', { name: 'lb-mode' })).getByText('ALB · L7'))
     fireEvent.change(screen.getByLabelText('lb-default-target'), { target: { value: bpId } })
     const lb = Object.values(useWorldStore.getState().doc.loadBalancers).find(l => l.regionId === regionId)!
     expect(lb.defaultTargetBlueprintId).toBe(bpId)
+  })
+
+  it('hides the load balancer section entirely with 0 AZs', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    render(<RegionConfigTab regionId={regionId} />)
+    expect(screen.queryByText('▸ LOAD BALANCER')).toBeNull()
+    expect(screen.queryByRole('group', { name: 'cross-zone' })).toBeNull()
+  })
+
+  it('hides the load balancer section at exactly 1 AZ, showing a hint instead (crossZone is a no-op with <2 AZs)', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    render(<RegionConfigTab regionId={regionId} />)
+    expect(screen.queryByText('▸ LOAD BALANCER')).toBeNull()
+    expect(screen.queryByRole('group', { name: 'cross-zone' })).toBeNull()
+    expect(screen.getByText(/add a second az/i)).toBeInTheDocument()
+  })
+
+  it('reveals the load balancer section the moment a second AZ is added', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const { rerender } = render(<RegionConfigTab regionId={regionId} />)
+    expect(screen.queryByText('▸ LOAD BALANCER')).toBeNull()
+
+    useWorldStore.getState().addAz(regionId, 'us-east-1b')
+    rerender(<RegionConfigTab regionId={regionId} />)
+    expect(screen.getByText('▸ LOAD BALANCER')).toBeInTheDocument()
+    expect(screen.queryByText(/add a second az/i)).toBeNull()
   })
 
   // T2 review fix (motion-law violation): spec D3 gives the dock exactly ONE ambient stroke

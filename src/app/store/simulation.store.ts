@@ -49,6 +49,11 @@ function stopEventFlusher(): void {
 
 interface SimulationStoreV2 {
   running: boolean
+  // A run that is active but frozen: the engine has halted ticking (no new frames/events), yet the
+  // session — latestBatch, events, manual outages, the event-log run — is kept so resume()
+  // continues seamlessly. `running` stays true while paused (the world is still edit-locked); use
+  // `selectLive` to gate "is the sim actively producing frames" (animations, live reads).
+  paused: boolean
   timeScale: number
   latestBatch: MetricsBatch | null
   events: EngineEvent[]
@@ -63,6 +68,9 @@ interface SimulationStoreV2 {
 
   start: (doc: WorldDoc, compiled: CompiledWorld) => void
   stop: () => void
+  // Freeze/continue an active run (engine halts/resumes ticking; session state is preserved).
+  pause: () => void
+  resume: () => void
   // Doc swaps (New/Open) call this instead of stop(): healthOverrides referenced the
   // discarded world's ids, and a stale latestBatch/replay ring would let ScrubberV2 offer
   // frames from a world that no longer exists (see ScrubberV2.tsx's latestBatch gate).
@@ -75,8 +83,15 @@ interface SimulationStoreV2 {
   getTracedRequests: (scope: RenderScope) => TracedRequest[]
 }
 
+// "Live" = the sim is actively producing new frames: running, not paused, and not scrubbing a past
+// frame. Flow animations and other live-motion cues gate on this so they freeze on pause/end/scrub
+// (the engine-driven globe/board particles already stop when ticking halts; the region/AZ views use
+// CSS/SMIL animations keyed off rps, which would otherwise keep marching over a frozen batch).
+export const selectLive = (s: SimulationStoreV2): boolean => s.running && !s.paused && s.scrubIndex === null
+
 export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
   running: false,
+  paused: false,
   timeScale: 1,
   latestBatch: null,
   events: [],
@@ -89,7 +104,7 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
 
   start: (doc, compiled) => {
     set({
-      running: true, latestBatch: null, events: [], degraded: false, scrubIndex: null,
+      running: true, paused: false, latestBatch: null, events: [], degraded: false, scrubIndex: null,
       scrubBatch: null, eventLogRunId: null, eventLogTotal: 0,
     })
     pendingEvents = []
@@ -129,13 +144,29 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
     // everything you killed. The engine rebuilds its failover state on the next start()
     // anyway — this clears the UI side (kill/restore buttons, health tinting keyed off
     // healthOverrides) so a fresh Simulate starts from a healthy world.
-    set({ running: false, healthOverrides: {} })
+    set({ running: false, paused: false, healthOverrides: {} })
+  },
+  // Pause: halt the engine (which PRESERVES state) and keep the whole session — latestBatch,
+  // events, manual outages, the event-log run and its 1 Hz flusher (no new events tick in while
+  // frozen, so the flusher simply idles). `running` stays true so the world remains edit-locked.
+  pause: () => {
+    if (!get().running || get().paused) return
+    worldEngine.stop()
+    set({ paused: true })
+  },
+  // Resume: continue ticking the same run from where it froze (engine clock/metrics/replay intact).
+  // Snap back to the live head — a scrub position set while paused must not keep the views frozen
+  // on a past frame once the sim is live again.
+  resume: () => {
+    if (!get().running || !get().paused) return
+    worldEngine.resume()
+    set({ paused: false, scrubIndex: null, scrubBatch: null })
   },
   resetSession: () => {
     worldEngine.stop()
     stopEventFlusher()
     set({
-      running: false, latestBatch: null, events: [], scrubIndex: null, scrubBatch: null,
+      running: false, paused: false, latestBatch: null, events: [], scrubIndex: null, scrubBatch: null,
       degraded: false, healthOverrides: {}, eventLogRunId: null, eventLogTotal: 0,
     })
   },
