@@ -1,6 +1,6 @@
 import type {
   WorldDoc, Region, AvailabilityZone, Server, ServiceBlueprint, Placement,
-  ServerKind, ServerSpecs, ClientPopulation, AzId, Rack, LoadBalancer,
+  ServerKind, ServerSpecs, ClientPopulation, AzId, Rack, LoadBalancer, DbEngine,
 } from './types'
 import { RACK_CAPACITY_DEFAULT } from './rackModel'
 import { emptyPacketRegistry } from '../nodeConfig'
@@ -33,6 +33,7 @@ export function createWorld(): WorldDoc {
     loadBalancers: {},
     racks: {},
     packets: emptyPacketRegistry(),
+    connectionLayout: {},
   }
 }
 
@@ -81,12 +82,50 @@ export function createBlueprint(name: string, colorIndex: number): ServiceBluepr
     id: nextWorldId('bp'),
     name,
     color: BLUEPRINT_COLORS[colorIndex % BLUEPRINT_COLORS.length],
+    kind: 'api',
     workload: { cpuMsPerRequest: 5, ramBaseMb: 128, ramPerConnMb: 0.5, diskIoPerRequest: 0 },
     ports: [{ port: 8080, protocol: 'tcp', visibility: 'internal' }],
     dependencies: [],
     stateful: false,
     volumeName: null,
+    dbConfig: null,
+    ownerServerKind: null,
   }
+}
+
+// A self-hosted database appliance, created as ONE unit: the box, the single blueprint it owns,
+// and the placement binding them. Per the design decision "the blueprint IS the cluster", adding
+// a replica later means placing THIS blueprint (role 'replica') on another db box — there is no
+// separate cluster record to keep in sync.
+//
+// Callers must insert all three into the doc together; world.store does this inside one mutate()
+// so the whole appliance is a single undo step.
+export function createDbServer(
+  azId: string,
+  preset: InstancePresetLike,
+  name: string,
+): { server: Server; blueprint: ServiceBlueprint; placement: Placement } {
+  const engine: DbEngine = preset.kind === 'db-nosql' ? 'nosql' : 'sql'
+  const server = createServer(azId, preset)
+  server.label = name
+
+  const blueprint = createBlueprint(name, 0)
+  blueprint.kind = preset.kind === 'db-nosql' ? 'db-nosql' : 'db-sql'
+  blueprint.ownerServerKind = preset.kind
+  blueprint.dbConfig = { engine, storageGb: Math.round(preset.specs.diskGb * 0.8) }
+  // A database owns data by definition, so it is always stateful and always has a volume —
+  // this is exactly the pairing compileWorld's 'stateful-without-volume' finding checks for.
+  blueprint.stateful = true
+  blueprint.volumeName = `${name}-data`
+  // Ports: SQL and NoSQL engines both terminate on one endpoint; 5432 is the recognizable
+  // default and the user can change it. Internal only — a database must be opted into exposure.
+  blueprint.ports = [{ port: 5432, protocol: 'tcp', visibility: 'internal' }]
+  // A DB request is heavier than a stateless API call and does real disk IO.
+  blueprint.workload = { cpuMsPerRequest: 12, ramBaseMb: 1024, ramPerConnMb: 2, diskIoPerRequest: 1 }
+
+  const placement = createPlacement(blueprint.id, server.id)   // role defaults to 'primary'
+
+  return { server, blueprint, placement }
 }
 
 export function createPlacement(blueprintId: string, serverId: string): Placement {

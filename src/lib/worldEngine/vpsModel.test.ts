@@ -25,6 +25,15 @@ describe('createVpsState', () => {
     expect(state).not.toBeNull()
     expect(state!.steal).toBe(0)
   })
+
+  // A DB appliance is not a VPS: it must never get noisy-neighbor steal or burstable credits,
+  // which would make database latency jitter for no modeled reason. Guards against the branch
+  // being written as a negative test ('!== dedicated'), which sweeps every new kind in here.
+  it('returns null for a db appliance server', () => {
+    const server = vpsServer()
+    server.kind = 'db-sql'
+    expect(createVpsState(server)).toBeNull()
+  })
 })
 
 describe('stepVps — steal walk', () => {

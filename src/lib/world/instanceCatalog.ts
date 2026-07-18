@@ -22,6 +22,16 @@ export const INSTANCE_CATALOG: InstancePreset[] = [
   { id: 'dedicated-8',  label: 'Dedicated 8-core / 32 GB',  kind: 'dedicated', specs: { vcpu: 8,  threadsPerCore: 2, ramMb: 32768,  diskGb: 500,  nicMbps: 10000 }, hourlyUsd: 0.34, oversubscriptionRatio: null, burstable: false },
   { id: 'dedicated-16', label: 'Dedicated 16-core / 64 GB', kind: 'dedicated', specs: { vcpu: 16, threadsPerCore: 2, ramMb: 65536,  diskGb: 1000, nicMbps: 10000 }, hourlyUsd: 0.67, oversubscriptionRatio: null, burstable: false },
   { id: 'dedicated-32', label: 'Dedicated 32-core / 128 GB', kind: 'dedicated', specs: { vcpu: 32, threadsPerCore: 2, ramMb: 131072, diskGb: 2000, nicMbps: 25000 }, hourlyUsd: 1.32, oversubscriptionRatio: null, burstable: false },
+  // Self-hosted DB appliances. Never oversubscribed or burstable — a database on a noisy,
+  // credit-throttled box is a pathology, not a configuration. Disk is generous relative to the
+  // compute presets because the box exists to hold data. Priced above a same-size dedicated box
+  // to reflect the storage-heavy build.
+  { id: 'db-sql-small',    label: 'SQL DB Small (4 vCPU / 16 GB)',      kind: 'db-sql',   specs: { vcpu: 4,  threadsPerCore: 2, ramMb: 16384,  diskGb: 500,  nicMbps: 5000 },  hourlyUsd: 0.21, oversubscriptionRatio: null, burstable: false },
+  { id: 'db-sql-medium',   label: 'SQL DB Medium (8 vCPU / 32 GB)',     kind: 'db-sql',   specs: { vcpu: 8,  threadsPerCore: 2, ramMb: 32768,  diskGb: 1000, nicMbps: 10000 }, hourlyUsd: 0.42, oversubscriptionRatio: null, burstable: false },
+  { id: 'db-sql-large',    label: 'SQL DB Large (16 vCPU / 64 GB)',     kind: 'db-sql',   specs: { vcpu: 16, threadsPerCore: 2, ramMb: 65536,  diskGb: 2000, nicMbps: 10000 }, hourlyUsd: 0.83, oversubscriptionRatio: null, burstable: false },
+  { id: 'db-nosql-small',  label: 'NoSQL DB Small (4 vCPU / 16 GB)',    kind: 'db-nosql', specs: { vcpu: 4,  threadsPerCore: 2, ramMb: 16384,  diskGb: 500,  nicMbps: 5000 },  hourlyUsd: 0.19, oversubscriptionRatio: null, burstable: false },
+  { id: 'db-nosql-medium', label: 'NoSQL DB Medium (8 vCPU / 32 GB)',   kind: 'db-nosql', specs: { vcpu: 8,  threadsPerCore: 2, ramMb: 32768,  diskGb: 1000, nicMbps: 10000 }, hourlyUsd: 0.38, oversubscriptionRatio: null, burstable: false },
+  { id: 'db-nosql-large',  label: 'NoSQL DB Large (16 vCPU / 64 GB)',   kind: 'db-nosql', specs: { vcpu: 16, threadsPerCore: 2, ramMb: 65536,  diskGb: 2000, nicMbps: 10000 }, hourlyUsd: 0.76, oversubscriptionRatio: null, burstable: false },
 ]
 
 export function getPreset(id: string): InstancePreset | undefined {

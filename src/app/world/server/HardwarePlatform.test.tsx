@@ -25,8 +25,10 @@ const metrics = (over: Partial<ServerMetrics> = {}): ServerMetrics => ({
   ramUsedMb: 5900, ramTotalMb: 8192, nicInMbps: 214, nicOutMbps: 118, diskIoFraction: 0.12, health: 'healthy', ...over,
 })
 const blueprint = (id: string, color: string, name = id): ServiceBlueprint => ({
-  id, name, color, workload: { cpuMsPerRequest: 5, ramBaseMb: 128, ramPerConnMb: 0.5, diskIoPerRequest: 0 },
+  id, name, color, kind: 'api',
+  workload: { cpuMsPerRequest: 5, ramBaseMb: 128, ramPerConnMb: 0.5, diskIoPerRequest: 0 },
   ports: [], dependencies: [], stateful: false, volumeName: null,
+  dbConfig: null, ownerServerKind: null,
 })
 const blueprints: Record<BlueprintId, ServiceBlueprint> = {
   b1: blueprint('b1', '#A78BFA', 'postgres'), b2: blueprint('b2', '#4A9EFF', 'api'),

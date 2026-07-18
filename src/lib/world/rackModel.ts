@@ -9,10 +9,12 @@ export const RACK_CAPACITY_DEFAULT = 8
 export const RACK_CAPACITY_MIN = 4
 export const RACK_CAPACITY_MAX = 42
 
-// 2U dedicated / 1U vps — matches the old factory seeding (createServer used to hardcode
-// this same split when every server was born pre-racked).
+// 1U vps / 2U everything else (dedicated boxes and db appliances are full chassis) — matches
+// the old factory seeding, which hardcoded the same split when every server was born pre-racked.
+// POSITIVE test on the 1U case so a new ServerKind defaults to a full 2U chassis rather than
+// silently claiming a VPS-sized slice.
 export function serverHeightU(server: Server): number {
-  return server.kind === 'dedicated' ? 2 : 1
+  return server.kind === 'vps' ? 1 : 2
 }
 
 export function rackUsedU(doc: WorldDoc, rackId: RackId): number {

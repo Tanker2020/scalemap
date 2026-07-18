@@ -106,6 +106,26 @@ describe('RegionConfigTab', () => {
     expect(btn).not.toHaveAttribute('title')
   })
 
+  it('"×" on an AZ row dispatches removeAz without triggering the row\'s own goAz navigation', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    render(<RegionConfigTab regionId={regionId} />)
+    fireEvent.click(screen.getByLabelText('remove us-east-1a'))
+    expect(useWorldStore.getState().doc.azs[azId]).toBeUndefined()
+    // Proves stopPropagation worked: goAz would have flipped nav to 'az' had the click bubbled.
+    expect(useNavStore.getState().level).toBe('globe')
+  })
+
+  it('AZ row delete is edit-locked while running, with the standard tooltip', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useSimulationStore.setState({ running: true })
+    render(<RegionConfigTab regionId={regionId} />)
+    const btn = screen.getByLabelText('remove us-east-1a')
+    expect(btn).toBeDisabled()
+    expect(btn).toHaveAttribute('title', 'stop the simulation to edit')
+  })
+
   it('renders a load balancer section reflecting the effective default (cross-zone off)', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
     useWorldStore.getState().addAz(regionId, 'us-east-1a')

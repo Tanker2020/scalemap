@@ -11,7 +11,7 @@ import { useSimulationStore } from '../../store/simulation.store'
 import { useUiStore } from '../../store/ui.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { rackUsedU } from '../../../lib/world/rackModel'
-import { getPreset } from '../../../lib/world/instanceCatalog'
+import { NodePalette } from '../az/NodePalette'
 import { serverAccents, meanUtilization } from '../az/floorData'
 import { healthWord } from '../ui/derived'
 import { scopedCost } from './scopeData'
@@ -142,6 +142,23 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
                     position: 'absolute', inset: 0, opacity: 0.6,
                     background: 'repeating-linear-gradient(180deg, transparent 0 8px, var(--color-canvas) 8px 9.5px)',
                   }} />
+                  {/* Delete rack — edit-locked while running (same `!running` gate as the "+ rack"
+                      ghost). Dispatches the store's `removeRack`, which frees any resident servers
+                      to the pool then deletes, one undo step. */}
+                  {!running && (
+                    <button
+                      type="button" data-testid="rack-delete" title={`delete ${rack.label}`}
+                      aria-label={`delete ${rack.label}`}
+                      onClick={() => useWorldStore.getState().removeRack(rack.id)}
+                      style={{
+                        position: 'absolute', top: 1, right: 1, width: 13, height: 13, lineHeight: '11px',
+                        padding: 0, borderRadius: 3, cursor: 'pointer',
+                        font: '10px var(--font-mono)', color: 'var(--color-danger)',
+                        background: 'color-mix(in srgb, var(--color-canvas) 80%, transparent)',
+                        border: '1px solid color-mix(in srgb, var(--color-danger) 30%, transparent)',
+                      }}
+                    >×</button>
+                  )}
                 </div>
                 <small style={{ display: 'block', textAlign: 'center', fontSize: 8.5, color: 'var(--color-text-muted)', marginTop: 4 }}>
                   {rack.label}<br />{used}/{rack.capacityU}U
@@ -229,16 +246,13 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
         </span>
       </div>
 
+      {/* The typed node palette replaces the old hardcoded "+ server" (which always dropped a
+          vps-medium). Compute entries add an empty host; data entries add a preconfigured DB
+          appliance. Shared with the floor toolbar so the two can't drift. */}
+      <SectionRail label="ADD A NODE" />
+      <NodePalette azId={azId} />
+
       <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
-        {/* "+ server": the floor toolbar's EXACT dispatch/preset (DatacenterFloor.tsx's own
-            "+ server" button — `addServer(azId, getPreset('vps-medium')!)`). */}
-        <button
-          type="button" className="kit-press" style={running ? actionBtnLocked : actionBtn} disabled={running}
-          title={running ? 'stop the simulation to edit' : undefined}
-          onClick={() => useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)}
-        >
-          + server
-        </button>
         {/* "auto-arrange": the floor toolbar's EXACT dispatch (`autoArrangeAz(azId)`). */}
         <button
           type="button" className="kit-press" style={running ? actionBtnLocked : actionBtn} disabled={running}

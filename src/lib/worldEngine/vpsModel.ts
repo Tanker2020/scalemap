@@ -22,7 +22,10 @@ export interface VpsState {
 }
 
 export function createVpsState(server: Server): VpsState | null {
-  if (server.kind === 'dedicated') return null
+  // POSITIVE test on purpose: VPS modeling applies to VPS hosts only. Written as
+  // `!== 'dedicated'` this would hand steal/credits to every future ServerKind (db appliances
+  // included) by default.
+  if (server.kind !== 'vps') return null
   return { steal: 0, credits: 100 }
 }
 

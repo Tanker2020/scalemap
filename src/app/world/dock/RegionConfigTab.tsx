@@ -48,6 +48,22 @@ export function RegionConfigTab({ regionId }: RegionConfigTabProps) {
             // continuously (not hover-gated), so passing `running` here would add a second,
             // per-row ambient motion source alongside the marching atlas. Static color dot only.
             onClick={() => goAz(regionId, az.id)}
+            // EdgeRow's `trailing` slot, unlike the rps figure below — this needs its OWN click
+            // isolated from the row's goAz navigation (stopPropagation), so it can't share the
+            // row's onClick-bubbling `children` block. Reuses TopologyPanel's exact `removeAz`
+            // dispatch byte-for-byte (relocated-dispatch contract, same convention as "+ az"
+            // above) — no parallel mutation path, no confirmation dialog (matches every other
+            // remove* action in the app).
+            trailing={
+              <button
+                className="kit-press" style={dangerBtn} disabled={running}
+                title={running ? 'stop the simulation to edit' : undefined}
+                aria-label={`remove ${az.label}`}
+                onClick={e => { e.stopPropagation(); store.removeAz(az.id) }}
+              >
+                ×
+              </button>
+            }
           >
             {/* One block (not EdgeRow's separate `trailing` slot) so the rps figure — right-
                 aligned via `marginLeft: auto` inside this already flex:1 children area — stays

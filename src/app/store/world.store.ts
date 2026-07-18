@@ -4,10 +4,11 @@
 import { create } from 'zustand'
 import type {
   WorldDoc, Server, ServiceBlueprint, Placement, ManagedScope, ManagedService, ClientPopulation,
-  RoutingConfig, AzId, Rack, RackId, LoadBalancer,
+  RoutingConfig, AzId, Rack, RackId, LoadBalancer, DependencyTarget, BlueprintDependency,
 } from '../../lib/world/types'
+import { planReachability, applyReachabilityPlan } from '../../lib/world/connections'
 import {
-  createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
+  createWorld, createRegion, createAz, createServer, createDbServer, createBlueprint, createPlacement,
   createPopulation, createRack, createLoadBalancer, nextWorldId, type InstancePresetLike,
 } from '../../lib/world/factories'
 import {
@@ -93,11 +94,26 @@ interface WorldStore {
   addAz: (regionId: string, label: string) => string
   removeAz: (id: string) => void
   addServer: (azId: string, preset: InstancePresetLike) => string
+  /** Drops a self-hosted DB appliance: box + owned blueprint + primary placement, one undo step. */
+  addDbServer: (azId: string, preset: InstancePresetLike, name: string) =>
+    { serverId: string; blueprintId: string; placementId: string }
   updateServer: (id: string, patch: Partial<Server>) => void
   removeServer: (id: string) => void
   addBlueprint: (name: string) => string
   updateBlueprint: (id: string, patch: Partial<ServiceBlueprint>) => void
   removeBlueprint: (id: string) => void
+  // Service-connections layer (app/world/connections/): author a service→service/managed edge
+  // (intent) and, when autoProvision is on, open the firewall + bind the port in the same undo
+  // step. disconnect drops just the intent; fixReachability re-provisions a blocked edge;
+  // setInternetFacing toggles a blueprint's public port (ingress) + opens `allow … any`.
+  connectServices: (fromBpId: string, target: DependencyTarget, opts: { port: number; protocol: BlueprintDependency['protocol']; autoProvision: boolean }) => string
+  disconnectServices: (fromBpId: string, depId: string) => void
+  fixReachability: (fromBpId: string, depId: string) => void
+  setInternetFacing: (bpId: string, port: number, exposed: boolean) => void
+  // Connections-editor node layout: store a single dragged node's override (one undo step per
+  // drag) or clear every override back to the auto tree-layout ("auto-arrange").
+  setNodePosition: (nodeId: string, pos: { x: number; y: number }) => void
+  clearConnectionLayout: () => void
   addPlacement: (blueprintId: string, serverId: string) => string
   updatePlacement: (id: string, patch: Partial<Placement>) => void
   removePlacement: (id: string) => void
@@ -179,6 +195,18 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       mutate(d => ({ ...d, servers: { ...d.servers, [server.id]: server } }))
       return server.id
     },
+    // ONE mutate() for all three records: a half-applied appliance (a db box whose blueprint
+    // hasn't landed yet) is not a state the user should ever be able to undo into.
+    addDbServer: (azId, preset, name) => {
+      const { server, blueprint, placement } = createDbServer(azId, preset, name)
+      mutate(d => ({
+        ...d,
+        servers: { ...d.servers, [server.id]: server },
+        blueprints: { ...d.blueprints, [blueprint.id]: blueprint },
+        placements: { ...d.placements, [placement.id]: placement },
+      }))
+      return { serverId: server.id, blueprintId: blueprint.id, placementId: placement.id }
+    },
     updateServer: (id, patch) => mutate(d => {
       const existing = d.servers[id]
       if (!existing) return d
@@ -204,6 +232,43 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       return stripDependencies(scrubBlueprintFromLbs({ ...d, blueprints, placements }, id),
         dep => dep.target.kind === 'blueprint' && dep.target.blueprintId === id)
     }),
+
+    connectServices: (fromBpId, target, opts) => {
+      const depId = nextWorldId('dep')
+      mutate(d => {
+        const bp = d.blueprints[fromBpId]
+        if (!bp) return d
+        const dep: BlueprintDependency = { id: depId, target, port: opts.port, protocol: opts.protocol, packetTemplateId: null }
+        let next: WorldDoc = { ...d, blueprints: { ...d.blueprints, [fromBpId]: { ...bp, dependencies: [...bp.dependencies, dep] } } }
+        if (opts.autoProvision) next = applyReachabilityPlan(next, planReachability(next, target, opts.port, 'internal'))
+        return next
+      })
+      return depId
+    },
+    disconnectServices: (fromBpId, depId) => mutate(d => {
+      const bp = d.blueprints[fromBpId]
+      if (!bp) return d
+      return { ...d, blueprints: { ...d.blueprints, [fromBpId]: { ...bp, dependencies: bp.dependencies.filter(dep => dep.id !== depId) } } }
+    }),
+    fixReachability: (fromBpId, depId) => mutate(d => {
+      const dep = d.blueprints[fromBpId]?.dependencies.find(x => x.id === depId)
+      if (!dep) return d
+      return applyReachabilityPlan(d, planReachability(d, dep.target, dep.port, 'internal'))
+    }),
+    setInternetFacing: (bpId, port, exposed) => mutate(d => {
+      const bp = d.blueprints[bpId]
+      if (!bp) return d
+      const has = bp.ports.some(p => p.port === port)
+      const visibility: 'public' | 'internal' = exposed ? 'public' : 'internal'
+      const ports = has
+        ? bp.ports.map(p => (p.port === port ? { ...p, visibility } : p))
+        : exposed ? [...bp.ports, { port, protocol: 'tcp' as const, visibility }] : bp.ports
+      let next: WorldDoc = { ...d, blueprints: { ...d.blueprints, [bpId]: { ...bp, ports } } }
+      if (exposed) next = applyReachabilityPlan(next, planReachability(next, { kind: 'blueprint', blueprintId: bpId }, port, 'any'))
+      return next
+    }),
+    setNodePosition: (nodeId, pos) => mutate(d => ({ ...d, connectionLayout: { ...d.connectionLayout, [nodeId]: pos } })),
+    clearConnectionLayout: () => mutate(d => ({ ...d, connectionLayout: {} })),
 
     addPlacement: (blueprintId, serverId) => {
       const pl = createPlacement(blueprintId, serverId)

@@ -2313,3 +2313,191 @@ signal. Both LB render sites now gate on the region's own `azs.length >= 2`:
 
 A previously-authored `doc.loadBalancers` entry is never deleted when a region drops back below 2
 AZs — only the UI toggles; the config resurfaces unchanged if a second AZ is re-added.
+
+---
+
+## AZ delete button in Region Config tab (2026-07-17)
+
+Fixed a user-reported dead end: `RegionConfigTab.tsx`'s AZ rows had no way to remove an AZ, and
+the only `×`-styled control near an AZ in the app (the region flow page's `AzRow.tsx` "kill"
+button) is actually an outage-SIMULATION toggle (`disabled={!running}` — it only makes sense
+during a live run), not a delete — easy to mistake for one. `RegionConfigTab.tsx`'s AZ rows now
+carry a real delete `×` in `EdgeRow`'s `trailing` slot, dispatching `store.removeAz(az.id)` — the
+exact same store action `TopologyPanel.tsx`'s AZ-row `×` already used (relocated-dispatch
+contract, matching this file's existing "+ az" convention; no parallel mutation path, no
+confirmation dialog, consistent with every other `remove*` action in the app). The button's
+`onClick` calls `stopPropagation()` since it sits inside the row's own `goAz`-navigating
+`onClick` — needed only for this new control (the rps figure stays in `children`, not
+`trailing`, precisely because it does NOT need click isolation). Edit-locked
+(`disabled={running}` + the standard tooltip) matching every other authoring control in this
+file.
+
+---
+
+## Visual service-connections layer (`src/lib/world/connections.ts`, `src/app/world/connections/`, 2026-07-17)
+
+Made the app's existing (but invisible + two-surface) service-to-service connection concept
+directly authorable as a visual edge-drawing overlay. **Source of truth is unchanged**:
+`ServiceBlueprint.dependencies` (`BlueprintDependency`) stays the only persistent record of intent,
+and ingress stays derived from `port.visibility:'public'`. There is **no serializer change and no
+`compileWorld.ts`/`network.ts` change** — the compiled `paths` (with `verdict`/`blockReason`)
+already carry everything the view reads. The two riskiest hub files stayed untouched.
+
+**New pure module — `src/lib/world/connections.ts`** (no store/React imports, same purity contract
+as `rackModel.ts`; owned independently):
+- `planReachability(doc, target, port, source?)` → the minimal patch set that makes an edge
+  permitted: a `ServicePort` to bind on the target blueprint if missing, plus an `allow` rule to
+  **prepend** (first-match-wins over any later deny) to every server hosting the target that doesn't
+  already allow the port. Agrees with `network.ts`'s `evaluateFirewall` rather than forking it;
+  idempotent (a server already allowing the port is skipped). Only auto-fixes `no-port-binding` +
+  `firewall-deny`; container `network-isolation` (shared docker network / host port mapping) stays
+  manual and will still surface blocked. `applyReachabilityPlan(doc, plan)` folds it into the doc
+  immutably.
+- `edgesForView(doc, compiled)` → folds authored dependencies (so an unplaced intent still renders)
+  with `compiled.paths` grouped by `dependencyId` into blueprint-level `ConnEdge`s with a
+  four-state `status` (`permitted`/`partial`/`blocked`/`unplaced`) + worst `blockReason`, plus
+  synthetic `INTERNET_NODE → entry-blueprint` ingress edges (entry = `isEntryBlueprint`, re-derived
+  here from public ports to avoid a `routing.ts` edit).
+- `connNodes(doc)` + `layoutNodes(nodes, edges)` → deterministic layered left→right layout (Internet
+  col 0, entries col ≥1, callee col = max caller col + 1 to a cycle-safe fixpoint). No graph-layout
+  dependency added — React Flow is gone; DOM/SVG precedent is `az/DatacenterFloor.tsx`.
+
+**New store actions — `src/app/store/world.store.ts`** (all through the existing `mutate()`, one
+undo/dirty step each): `connectServices(fromBpId, target, { port, protocol, autoProvision })` →
+appends a dependency and (when `autoProvision`) applies `planReachability` in the same mutation;
+`disconnectServices(fromBpId, depId)` → drops intent only, leaving provisioned firewall/ports;
+`fixReachability(fromBpId, depId)` → re-provisions a blocked edge (the inspector's one-click fix);
+`setInternetFacing(bpId, port, exposed)` → flips a port's visibility public/internal and, when
+exposing, opens `allow … any` on hosting servers (LB entry targeting is already automatic via
+`isEntryBlueprint`). Reuses the existing `stripDependencies`/`scrubBlueprintFromLbs` cascade
+cleanup on blueprint/managed deletion — no change there.
+
+**New view — `src/app/world/connections/ConnectionsView.tsx`** (full-stage overlay, `createPortal`
++ capture-phase Esc, same modal idiom as `SettingsModal.tsx`; presentation + dispatch only, all
+geometry/verdict logic imported from the pure module). SVG bezier edges coloured by `status` over
+absolutely-positioned DOM node boxes; drag a service's `●` handle onto another node → a draft bar
+(port/protocol + auto-provision checkbox) → `connectServices`; drag from the Internet node or click
+a service's `🌐` toggle → `setInternetFacing`; click an edge → an inspector with `blockReason`
+detail + "Open firewall (fix)" (`fixReachability`) + remove/make-private. Theme via `var(--color-*)`
+only; nothing animates (reduced-motion satisfied by construction). Launched from a new
+`🔗 connections` button in `WorldShell.tsx`'s header (single entry point — the always-visible
+header is more discoverable than a scope-gated dock link, and it keeps the high-conflict
+`WorldPanel.tsx` untouched; a dock entry point was considered and deliberately dropped).
+
+Tests: `connections.test.ts` (planReachability idempotence + end-to-end permit, edge folding,
+ingress derivation, layout), `world.store.test.ts` (the four actions + single-undo atomicity),
+`ConnectionsView.test.tsx` (drag-connect, blocked-edge fix, ingress toggle).
+
+### Usability refactor — draggable tree layout + persistence + prominent entry (2026-07-17)
+
+Reworked the editor from a fixed linear grid (edges overlapped, nothing could be untangled, the
+entry was a muted header link) into a re-arrangeable tree:
+
+- **Crossing-reduced tree layout.** `layoutNodes` (`connections.ts`) went from stable-insertion
+  rows to a Sugiyama-style layered layout: after the same depth-based column assignment, it runs
+  repeated barycenter sweeps (down then up) that order each layer by the mean position of a node's
+  neighbours in the adjacent layer, then vertically centers shorter layers against the tallest.
+  Pure + deterministic; `COL_GAP`/`ROW_GAP` are now exported constants.
+- **Draggable nodes + persistence.** A new **additive `WorldDoc.connectionLayout`** field
+  (`Record<nodeId, {x,y}>`, `types.ts`'s `NodeLayout`) holds ONLY user-dragged overrides — a node
+  absent from it falls back to the auto tree position. Normalized-on-load in `serializer.ts`
+  (`?? = {}`, same pattern as `racks`/`loadBalancers`/`packets`) and defaulted in
+  `factories.ts`'s `createWorld`. Two new `world.store` actions ride `mutate()`:
+  `setNodePosition(nodeId, {x,y})` (committed once on drag-END so one drag = one undo step — the
+  live drag is component state) and `clearConnectionLayout()` (the "⟲ auto-arrange" button, back
+  to pure auto-layout). `ConnectionsView.tsx` now distinguishes a **move drag** (grab the node
+  body) from a **connect drag** (grab the `●` handle, which `stopPropagation`s the body's
+  mousedown); edges gained direction arrowheads.
+- **Front-and-center entry.** The header button is now accent-filled (`connBtn` in
+  `WorldShell.tsx`) reading as a primary action rather than one more muted file button. Still the
+  single entry point (dock link deliberately dropped, as above).
+
+Added tests: node-drag persistence + auto-arrange reset (`ConnectionsView.test.tsx`),
+`setNodePosition`/`clearConnectionLayout` undo semantics (`world.store.test.ts`). `serializer.ts`
++ `factories.ts` round-trips covered by their existing suites (additive field, defaulted).
+
+**Scope decision — logical (blueprint), not per-AZ/per-server (2026-07-17).** Fielded the question
+"shouldn't connections be per-AZ with servers as nodes?". They are deliberately NOT: intent lives
+on the blueprint template and applies wherever a service is placed, and the engine's traffic unit
+is the service call, not the server link (a server→server edge is meaningless without naming the
+services). The per-server *physical* resolution already exists as derived `CompiledPath`s and is
+visualized by the AZ-level `DatacenterFloor` flow traces (Level 3) — the connections editor is the
+*authoring* surface for the *logical* layer. Rather than change the model, the editor header now
+carries a `logical service graph` badge + a scope note ("edges apply in every AZ/region where a
+service runs; per-server view: open an AZ floor") so the altitude reads unambiguously. If a
+per-AZ physical edge view is ever wanted, the right shape is a complementary AZ-scoped mode that
+renders derived instance→instance `CompiledPath`s (not a second authoring surface).
+
+---
+
+## Delete-rack control in the AZ Config tab (2026-07-17)
+
+The AZ-scope dock config (`dock/AzConfigTab.tsx`) could ADD racks (the "+ rack" ghost well) but
+had no way to remove one — the `world.store` `removeRack` action existed with no caller. Each rack
+well now carries a small danger `×` (`data-testid="rack-delete"`) that dispatches
+`removeRack(rack.id)` — the store action already frees any resident servers to the pool and then
+deletes, one undo step, so no orphaned placements. Gated on `!running` (hidden while a sim runs),
+the exact same edit-lock convention as the sibling "+ rack" ghost (`ghostVisible = !running`) —
+consistent with `+ server`/`auto-arrange` being `disabled={running}` in the same tab. The floor
+scene (`az/DatacenterFloor.tsx`) still only ADDS racks via its toolbar (it has no per-rack
+selection to hang a delete on); the per-rack delete lives solely where each rack is individually
+rendered, mirroring where "+ rack" lives. Tests: `AzConfigTab.test.tsx` (delete frees residents +
+removes the rack; the `×` is hidden while running).
+
+## Typed node palette + DB appliance nodes — node-model Phase 1 (`src/lib/world/`, `src/app/world/az/`, 2026-07-18)
+
+First phase of the authoring redesign (plan: `~/.claude/plans/sunny-growing-shore.md`). Replaces
+"every server is a generic host you attach a generic blueprint to" with a TYPED palette, so a
+database is a recognizable thing you drop into an AZ rather than three abstractions you assemble.
+
+**Model.** `ServerKind` widened `'dedicated' | 'vps'` → `+ 'db-sql' | 'db-nosql'`, with
+`isDbServerKind()` and `DB_SERVER_KINDS` beside it (`lib/world/types.ts`). `ServiceBlueprint`
+gained three additive fields: `kind: BlueprintKind` (`api`/`worker`/`db-sql`/`db-nosql`/`cache`),
+`dbConfig: DbConfig | null` (`engine: 'sql' | 'nosql'` + `storageGb`), and
+`ownerServerKind: ServerKind | null` (non-null ⇒ appliance-owned; the box refuses other services
+and the blueprint refuses general-purpose hosts). No new top-level collection — **a self-hosted DB
+is a `Server`**, so `hostScheduler`, `rackModel`, firewall compile, and `costModelV2` needed no
+DB-specific cases at all.
+
+**"The blueprint IS the cluster."** There is deliberately NO cluster entity. Every instance of a DB
+blueprint is that cluster; `Placement.role` says primary vs replica. Since `BlueprintDependency`
+already targets a blueprint id, adding replicas later (node-model Phase 3's read/write routing)
+needs no new `DependencyTarget` shape — only a role-filtered target list in `routing.ts`.
+
+**Factories/store.** `createDbServer(azId, preset, name)` (`lib/world/factories.ts`) returns
+`{ server, blueprint, placement }` as one unit — stateful, volume-bearing, port 5432 internal,
+heavier workload profile than an API. `world.store.addDbServer` inserts all three in ONE
+`mutate()`: a half-applied appliance (a db box whose blueprint hasn't landed) is not a state undo
+should be able to reach.
+
+**Palette UI.** `az/paletteEntries.ts` is PURE (no React/store — node-env testable, like
+`floorLayout.ts`/`floorData.ts` beside it): derives entries from `INSTANCE_CATALOG` so a new preset
+can never drift out of sync with what `getPreset()` resolves, partitions them `compute` → `data`,
+and shortens catalog labels (which embed their own specs) against the row's separate detail column.
+`az/NodePalette.tsx` renders it and owns dispatch (`addDbServer` for db kinds, `addServer`
+otherwise). It is consumed by `dock/AzConfigTab.tsx`, which REPLACED that tab's hardcoded
+`+ server` button (always a `vps-medium`). `az/DatacenterFloor.tsx`'s toolbar keeps a quick-add,
+relabelled **`+ compute`** because it no longer reaches every node kind — the full palette lives in
+the dock, the AZ's config instrument. Note the filename: the pure module is `paletteEntries.ts`,
+NOT `nodePalette.ts`, because `nodePalette.ts`/`NodePalette.tsx` collide on Windows'
+case-insensitive filesystem (the component import silently resolves to the pure module and React
+renders `undefined` — passes on Linux, fails on Windows).
+
+**Two latent bugs fixed by auditing `ServerKind` branches BEFORE widening the union** — both were
+written as NEGATIVE tests, which sweep every future kind into the wrong side:
+- `worldEngine/vpsModel.ts` `createVpsState`: `=== 'dedicated' → null` became `!== 'vps' → null`.
+  Left alone, a DB appliance would have inherited noisy-neighbor steal and burstable CPU credits.
+- `world/rackModel.ts` `serverHeightU`: `=== 'dedicated' ? 2 : 1` became `=== 'vps' ? 1 : 2`, so a
+  db chassis claims 2U rather than a VPS-sized 1U slice.
+- The same anti-pattern lived in `instanceCatalog.test.ts`, whose `if (dedicated) … else expect(
+  ratio > 1)` actively DEMANDED that any new kind be oversubscribed. Inverted to a positive test.
+
+**Convention this establishes:** branches on `ServerKind` must be positive (`=== 'vps'`), and
+exhaustive `Record<ServerKind, …>` maps (e.g. `az/FreePoolPod.tsx`'s `KIND_STRIPE`) are load-bearing
+— that Record is what turned a would-be silent rendering gap into a build error.
+
+Tests: `paletteEntries.test.ts` (grouping/ordering, preset resolvability, label shortening +
+uniqueness, appliance naming per engine), `NodePalette.test.tsx` (compute adds a bare host, data
+adds box+blueprint+placement, edit-lock while running), `factories.test.ts` (createDbServer),
+`world.store.test.ts` (single-undo appliance, dirty-marking), plus updated `AzConfigTab.test.tsx`,
+`vpsModel.test.ts`, `rackModel.test.ts`.

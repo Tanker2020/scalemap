@@ -91,7 +91,18 @@ export interface ComposeStack {
   volumes: ComposeVolume[]
 }
 
-export type ServerKind = 'dedicated' | 'vps'
+// Compute kinds host arbitrary placements; appliance kinds ('db-*') are boxes born owning
+// exactly one blueprint+placement, which the authoring UI refuses to add other services to.
+// NOTE for anyone widening this further: branches on ServerKind must be written as POSITIVE
+// tests ('=== vps'), never negative ones ('!== dedicated') — a negative test silently sweeps
+// every new kind into the wrong side (see vpsModel.createVpsState / rackModel.serverHeightU).
+export type ServerKind = 'dedicated' | 'vps' | 'db-sql' | 'db-nosql'
+
+export const DB_SERVER_KINDS = ['db-sql', 'db-nosql'] as const satisfies readonly ServerKind[]
+
+export function isDbServerKind(kind: ServerKind): boolean {
+  return kind === 'db-sql' || kind === 'db-nosql'
+}
 
 export interface RackPosition { rackId: string; unit: number; heightU: number }
 
@@ -140,15 +151,37 @@ export interface BlueprintDependency {
   packetTemplateId: number | null
 }
 
+// What a service IS, as opposed to what it costs to run. Drives which authoring form the user
+// sees and — for the db-* kinds only — which routing semantics apply downstream.
+export type BlueprintKind = 'api' | 'worker' | 'db-sql' | 'db-nosql' | 'cache'
+
+export type DbEngine = 'sql' | 'nosql'
+
+// The one behavioral fork: SQL is single-writer (writes bottleneck on the primary's host, so
+// replicas scale reads only), NoSQL is write-scalable (writes fan out across every node). The
+// write CEILING itself is not stored here — for a self-hosted DB it is emergent from the host
+// CPU model (hostScheduler's admittedScale); only cloud-managed DBs carry an explicit cap,
+// which lives on ManagedService instead.
+export interface DbConfig {
+  engine: DbEngine
+  storageGb: number
+}
+
 export interface ServiceBlueprint {
   id: BlueprintId
   name: string
   color: string   // signature color (hex) — binds chip/RAM stratum/core share across views
+  kind: BlueprintKind
   workload: WorkloadProfile
   ports: ServicePort[]
   dependencies: BlueprintDependency[]
   stateful: boolean
   volumeName: string | null   // required when stateful
+  dbConfig: DbConfig | null   // non-null iff kind is db-*
+  // Non-null ⇒ this blueprint is OWNED by an appliance box of that kind and was created with it;
+  // the authoring UI refuses to place other services on such a box, and refuses to place this
+  // blueprint on a general-purpose host. null ⇒ a free-standing service.
+  ownerServerKind: ServerKind | null
 }
 
 export type PlacementRole = 'primary' | 'replica' | 'canary'
@@ -230,7 +263,14 @@ export interface WorldDoc {
   // inside WorldDoc so every route edit rides world.store's mutate() (undo/dirty) and serializes
   // with the world. Persisted in .scalemap's `packets` slot (serializer lifts/folds it).
   packets: PacketRegistry
+  // Manual node positions for the visual Connections editor (app/world/connections/), keyed by
+  // node id (blueprint id, managed-service id, or the synthetic '__internet__'). Holds ONLY
+  // user-dragged OVERRIDES — a node absent here falls back to the auto tree-layout. Additive/
+  // normalized-on-load (defaulted to {}); "auto-arrange" clears it back to pure auto-layout.
+  connectionLayout: Record<string, NodeLayout>
 }
+
+export interface NodeLayout { x: number; y: number }
 
 // ─── Compiled output (produced by compileWorld, consumed by views/engine) ────
 

@@ -15,20 +15,26 @@ describe('instance catalog', () => {
     }
   })
 
-  it('vps presets carry oversubscription, dedicated never do', () => {
+  // Written as a POSITIVE test on 'vps': oversubscription and burst credits are a VPS-tenancy
+  // property, so every OTHER kind — dedicated boxes and db appliances alike — must have neither.
+  // Phrased the other way round ('if dedicated … else expect ratio > 1') it wrongly demanded
+  // oversubscription from every kind added after vps/dedicated.
+  it('only vps presets carry oversubscription; every other kind has none', () => {
     for (const p of INSTANCE_CATALOG) {
-      if (p.kind === 'dedicated') {
+      if (p.kind === 'vps') {
+        expect(p.oversubscriptionRatio).toBeGreaterThan(1)
+      } else {
         expect(p.oversubscriptionRatio).toBeNull()
         expect(p.burstable).toBe(false)
-      } else {
-        expect(p.oversubscriptionRatio).toBeGreaterThan(1)
       }
     }
   })
 
-  it('contains both kinds and resolves by id', () => {
+  it('contains every kind and resolves by id', () => {
     expect(INSTANCE_CATALOG.some(p => p.kind === 'vps')).toBe(true)
     expect(INSTANCE_CATALOG.some(p => p.kind === 'dedicated')).toBe(true)
+    expect(INSTANCE_CATALOG.some(p => p.kind === 'db-sql')).toBe(true)
+    expect(INSTANCE_CATALOG.some(p => p.kind === 'db-nosql')).toBe(true)
     expect(getPreset('vps-medium')?.specs.vcpu).toBe(4)
     expect(getPreset('nope')).toBeUndefined()
   })

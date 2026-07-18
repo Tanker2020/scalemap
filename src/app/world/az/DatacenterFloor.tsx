@@ -646,7 +646,11 @@ export function DatacenterFloor() {
           added/deleted/moved mid-run) — same rule the dock's topology fieldset already follows.
           Observation controls (fit) stay live. */}
       <div data-no-pan style={{ position: 'absolute', right: 16, bottom: 16, display: 'flex', gap: 8, zIndex: 6 }}>
-        <button style={running ? lockedBtnStyle : btnStyle} disabled={running} title={running ? 'stop the simulation to edit' : undefined} onClick={() => azId && useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)}>+ server</button>
+        {/* Quick-add of the default compute host. The FULL typed palette (compute presets + DB
+            appliances) lives in the dock's AzConfigTab, which is the AZ's config instrument —
+            this row is four buttons wide and is not the place for it. Labelled "+ compute" rather
+            than "+ server" precisely because it can no longer reach every node kind. */}
+        <button style={running ? lockedBtnStyle : btnStyle} disabled={running} title={running ? 'stop the simulation to edit' : 'add a default compute host — the dock has the full node palette'} onClick={() => azId && useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)}>+ compute</button>
         <button style={running ? lockedBtnStyle : btnStyle} disabled={running} title={running ? 'stop the simulation to edit' : undefined} onClick={() => azId && useWorldStore.getState().addRack(azId)}>+ rack</button>
         <button style={running ? lockedBtnStyle : btnStyle} disabled={running} title={running ? 'stop the simulation to edit' : undefined} onClick={() => azId && useWorldStore.getState().autoArrangeAz(azId)}>auto-arrange</button>
         <button style={btnStyle} aria-label="fit floor to view" onClick={camera.fit}>fit</button>

@@ -27,10 +27,15 @@ const LED_COLOR: Record<'success' | 'warning' | 'danger', string> = {
 }
 
 // Kind identity (user request 2026-07-11 — "each server should have its own visual"): a small
-// stripe along the pod roof's front edge, teal for vps, compute-blue for dedicated. Hexes match
-// the design system's network/compute accents (SVG polygons; same local-hex carve-out the LED
-// colors above use).
-const KIND_STRIPE: Record<Server['kind'], string> = { vps: '#3FC7B8', dedicated: '#5B9CF6' }
+// stripe along the pod roof's front edge, teal for vps, compute-blue for dedicated, storage-amber
+// for the db appliances (both engines share the amber because the stripe reads CATEGORY — the
+// label says sql vs nosql). Hexes match the design system's network/compute/storage accents (SVG
+// polygons; same local-hex carve-out the LED colors above use).
+// Exhaustive Record on purpose: a new ServerKind must fail the build here rather than render
+// a stripe-less pod.
+const KIND_STRIPE: Record<Server['kind'], string> = {
+  vps: '#3FC7B8', dedicated: '#5B9CF6', 'db-sql': '#E0A552', 'db-nosql': '#E0A552',
+}
 
 export interface FreePoolPodProps {
   server: Server

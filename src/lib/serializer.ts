@@ -82,5 +82,9 @@ export function deserializeWorld(raw: string): ScalemapFileV2 {
   for (const server of Object.values(result.world.servers)) {
     if (server.rack === undefined) server.rack = null
   }
+  // Additive-format normalization (Connections editor): manual node positions were introduced
+  // after v2 shipped — a pre-Connections file simply won't carry the map. Default to {} (every
+  // node then falls back to the auto tree-layout).
+  result.world.connectionLayout ??= {}
   return result
 }

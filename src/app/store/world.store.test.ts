@@ -17,6 +17,45 @@ function buildChain() {
   return { regionId, azId, serverId, bpId, plId }
 }
 
+describe('world.store — db appliance nodes', () => {
+  function seedAz() {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    return useWorldStore.getState().addAz(regionId, 'us-east-1a')
+  }
+
+  it('addDbServer inserts the box, its owned blueprint, and the binding placement', () => {
+    const azId = seedAz()
+    const { serverId, blueprintId, placementId } =
+      useWorldStore.getState().addDbServer(azId, getPreset('db-sql-medium')!, 'orders-db')
+
+    const doc = useWorldStore.getState().doc
+    expect(doc.servers[serverId].kind).toBe('db-sql')
+    expect(doc.blueprints[blueprintId].ownerServerKind).toBe('db-sql')
+    expect(doc.placements[placementId]).toMatchObject({ blueprintId, serverId, role: 'primary' })
+  })
+
+  // The whole appliance is ONE mutate() — otherwise undo would peel it apart into a server with
+  // a dangling blueprint, which compileWorld would surface as a bogus finding mid-undo.
+  it('undoes the entire appliance in a single step', () => {
+    const azId = seedAz()
+    useWorldStore.getState().addDbServer(azId, getPreset('db-sql-medium')!, 'orders-db')
+
+    useWorldStore.getState().undo()
+
+    const doc = useWorldStore.getState().doc
+    expect(Object.keys(doc.servers)).toHaveLength(0)
+    expect(Object.keys(doc.blueprints)).toHaveLength(0)
+    expect(Object.keys(doc.placements)).toHaveLength(0)
+  })
+
+  it('marks the file dirty', () => {
+    const azId = seedAz()
+    useFileStore.getState().setDirty(false)
+    useWorldStore.getState().addDbServer(azId, getPreset('db-nosql-medium')!, 'events-db')
+    expect(useFileStore.getState().dirty).toBe(true)
+  })
+})
+
 describe('world.store — load balancers', () => {
   it('addLoadBalancer creates a region-scoped L4 LB and marks the file dirty', () => {
     const { regionId } = buildChain()
@@ -89,6 +128,87 @@ describe('world.store — route catalog', () => {
     useWorldStore.getState().removeRoute(dropId)
     expect(useWorldStore.getState().doc.packets.templates[Number(dropId)]).toBeUndefined()
     expect(useWorldStore.getState().doc.populations[popId].requestMix).toEqual([{ routeId: keepId, weight: 1 }])
+  })
+})
+
+describe('world.store — service connections', () => {
+  // api + db each placed on their own server; db's server firewall tightened to default-deny.
+  function apiDb() {
+    const s = useWorldStore.getState()
+    const regionId = s.addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const apiSrv = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const dbSrv = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const apiId = useWorldStore.getState().addBlueprint('api')
+    const dbId = useWorldStore.getState().addBlueprint('db')
+    useWorldStore.getState().addPlacement(apiId, apiSrv)
+    useWorldStore.getState().addPlacement(dbId, dbSrv)
+    useWorldStore.getState().updateServer(dbSrv, { firewall: [] })
+    return { apiId, dbId, dbSrv }
+  }
+
+  it('connectServices with autoProvision adds the dep, binds the port, and opens the firewall in one undo step', () => {
+    const { apiId, dbId, dbSrv } = apiDb()
+    const depId = useWorldStore.getState().connectServices(apiId, { kind: 'blueprint', blueprintId: dbId }, { port: 5432, protocol: 'db', autoProvision: true })
+    let doc = useWorldStore.getState().doc
+    expect(doc.blueprints[apiId].dependencies.find(d => d.id === depId)).toMatchObject({ port: 5432, protocol: 'db' })
+    expect(doc.blueprints[dbId].ports.some(p => p.port === 5432)).toBe(true)
+    expect(doc.servers[dbSrv].firewall.some(r => r.action === 'allow' && r.port === 5432)).toBe(true)
+    // Single undo reverts intent + reachability together.
+    useWorldStore.getState().undo()
+    doc = useWorldStore.getState().doc
+    expect(doc.blueprints[apiId].dependencies).toHaveLength(0)
+    expect(doc.blueprints[dbId].ports.some(p => p.port === 5432)).toBe(false)
+    expect(doc.servers[dbSrv].firewall).toEqual([])
+  })
+
+  it('connectServices without autoProvision records intent only (leaves firewall/ports untouched)', () => {
+    const { apiId, dbId, dbSrv } = apiDb()
+    useWorldStore.getState().connectServices(apiId, { kind: 'blueprint', blueprintId: dbId }, { port: 5432, protocol: 'db', autoProvision: false })
+    const doc = useWorldStore.getState().doc
+    expect(doc.blueprints[dbId].ports.some(p => p.port === 5432)).toBe(false)
+    expect(doc.servers[dbSrv].firewall).toEqual([])
+  })
+
+  it('fixReachability provisions a previously blocked edge', () => {
+    const { apiId, dbId, dbSrv } = apiDb()
+    const depId = useWorldStore.getState().connectServices(apiId, { kind: 'blueprint', blueprintId: dbId }, { port: 5432, protocol: 'db', autoProvision: false })
+    useWorldStore.getState().fixReachability(apiId, depId)
+    const doc = useWorldStore.getState().doc
+    expect(doc.blueprints[dbId].ports.some(p => p.port === 5432)).toBe(true)
+    expect(doc.servers[dbSrv].firewall.some(r => r.action === 'allow' && r.port === 5432)).toBe(true)
+  })
+
+  it('disconnectServices removes the dependency but leaves provisioned reachability', () => {
+    const { apiId, dbId, dbSrv } = apiDb()
+    const depId = useWorldStore.getState().connectServices(apiId, { kind: 'blueprint', blueprintId: dbId }, { port: 5432, protocol: 'db', autoProvision: true })
+    useWorldStore.getState().disconnectServices(apiId, depId)
+    const doc = useWorldStore.getState().doc
+    expect(doc.blueprints[apiId].dependencies).toHaveLength(0)
+    expect(doc.servers[dbSrv].firewall.some(r => r.port === 5432)).toBe(true)  // left in place
+  })
+
+  it('setNodePosition stores one override (undoable) and clearConnectionLayout resets all', () => {
+    const { apiId, dbId } = apiDb()
+    useWorldStore.getState().setNodePosition(apiId, { x: 100, y: 40 })
+    useWorldStore.getState().setNodePosition(dbId, { x: 300, y: 40 })
+    expect(useWorldStore.getState().doc.connectionLayout).toEqual({ [apiId]: { x: 100, y: 40 }, [dbId]: { x: 300, y: 40 } })
+    useWorldStore.getState().undo()   // one drag = one undo step
+    expect(useWorldStore.getState().doc.connectionLayout).toEqual({ [apiId]: { x: 100, y: 40 } })
+    useWorldStore.getState().clearConnectionLayout()
+    expect(useWorldStore.getState().doc.connectionLayout).toEqual({})
+  })
+
+  it('setInternetFacing flips a port to public and opens allow-any; toggling off makes it internal', () => {
+    const { apiId } = apiDb()
+    // api's default port is 8080 (internal). Expose it.
+    useWorldStore.getState().setInternetFacing(apiId, 8080, true)
+    let doc = useWorldStore.getState().doc
+    expect(doc.blueprints[apiId].ports.find(p => p.port === 8080)?.visibility).toBe('public')
+    // Toggle back to private.
+    useWorldStore.getState().setInternetFacing(apiId, 8080, false)
+    doc = useWorldStore.getState().doc
+    expect(doc.blueprints[apiId].ports.find(p => p.port === 8080)?.visibility).toBe('internal')
   })
 })
 

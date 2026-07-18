@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { createWorld, createRegion, createAz, createServer } from './factories'
 import { getPreset } from './instanceCatalog'
-import { canAssign, autoArrangePlan } from './rackModel'
+import { canAssign, autoArrangePlan, serverHeightU } from './rackModel'
 import type { Rack, Server } from './types'
 
 function seedAz() {
@@ -21,6 +21,23 @@ function dedicatedServer(azId: string, label: string): Server {
 }
 
 describe('rackModel', () => {
+  describe('serverHeightU', () => {
+    it('gives a vps 1U and a dedicated box 2U', () => {
+      const { azId } = seedAz()
+      expect(serverHeightU(createServer(azId, getPreset('vps-medium')!))).toBe(2 - 1)
+      expect(serverHeightU(dedicatedServer(azId, 'd'))).toBe(2)
+    })
+
+    // A DB appliance is a real chassis, not a 1U VPS slice. Guards the ternary against
+    // defaulting every non-'dedicated' kind to 1U.
+    it('gives a db appliance 2U', () => {
+      const { azId } = seedAz()
+      const server = createServer(azId, getPreset('vps-medium')!)
+      server.kind = 'db-sql'
+      expect(serverHeightU(server)).toBe(2)
+    })
+  })
+
   describe('canAssign', () => {
     it('refuses when the rack is full and allows at exactly capacity', () => {
       const { doc, azId } = seedAz()

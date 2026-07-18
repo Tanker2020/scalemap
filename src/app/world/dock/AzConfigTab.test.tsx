@@ -80,6 +80,27 @@ describe('AzConfigTab', () => {
     expect(Object.values(useWorldStore.getState().doc.racks)).toHaveLength(1)
   })
 
+  it('rack "×" deletes the rack and frees its resident servers to the pool', () => {
+    const { azId } = seedAz()
+    useWorldStore.getState().addRack(azId)
+    const rack = Object.values(useWorldStore.getState().doc.racks)[0]
+    const server = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useWorldStore.getState().assignServerToRack(server, rack.id)
+
+    render(<AzConfigTab azId={azId} />)
+    fireEvent.click(screen.getByTestId('rack-delete'))
+    expect(useWorldStore.getState().doc.racks[rack.id]).toBeUndefined()
+    expect(useWorldStore.getState().doc.servers[server].rack).toBeNull()   // freed, not deleted
+  })
+
+  it('rack "×" is hidden while running (edit-locked, same gate as the "+ rack" ghost)', () => {
+    const { azId } = seedAz()
+    useWorldStore.getState().addRack(azId)
+    act(() => { useSimulationStore.setState({ running: true }) })
+    render(<AzConfigTab azId={azId} />)
+    expect(screen.queryByTestId('rack-delete')).toBeNull()
+  })
+
   it('renders one dock-slat per server, racked first then free pool', () => {
     const { azId } = seedAz()
     useWorldStore.getState().addRack(azId)
@@ -185,20 +206,31 @@ describe('AzConfigTab', () => {
     expect(row).toHaveTextContent('/mo')
   })
 
-  it('"+ server" dispatches addServer with the floor toolbar\'s exact vps-medium preset', () => {
+  // The hardcoded "+ server" button (always a vps-medium) was replaced by the typed node
+  // palette, which is what the tab now embeds. NodePalette has its own dedicated coverage in
+  // az/NodePalette.test.tsx — these two assert only that the tab actually mounts it and that it
+  // participates in the tab's edit-lock.
+  it('embeds the typed node palette, offering compute and data nodes', () => {
     const { azId } = seedAz()
     render(<AzConfigTab azId={azId} />)
-    fireEvent.click(screen.getByText('+ server'))
+    expect(screen.getByRole('button', { name: /VPS Medium/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^SQL DB Medium/i })).toBeTruthy()
+  })
+
+  it('adds a compute host through the palette', () => {
+    const { azId } = seedAz()
+    render(<AzConfigTab azId={azId} />)
+    fireEvent.click(screen.getByRole('button', { name: /VPS Medium/i }))
     const servers = Object.values(useWorldStore.getState().doc.servers)
     expect(servers).toHaveLength(1)
     expect(servers[0].catalogId).toBe(getPreset('vps-medium')!.id)
   })
 
-  it('"+ server" and "auto-arrange" are edit-locked while running', () => {
+  it('the palette and "auto-arrange" are edit-locked while running', () => {
     const { azId } = seedAz()
     act(() => { useSimulationStore.setState({ running: true }) })
     render(<AzConfigTab azId={azId} />)
-    const addBtn = screen.getByText('+ server')
+    const addBtn = screen.getByRole('button', { name: /VPS Medium/i })
     const arrangeBtn = screen.getByText('auto-arrange')
     expect(addBtn).toBeDisabled()
     expect(addBtn).toHaveAttribute('title', 'stop the simulation to edit')
