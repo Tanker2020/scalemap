@@ -54,7 +54,10 @@ export function deriveScope(nav: NavSnapshot, selectedServerId: string | null, d
 // inherently world-only and fold into the world pill instead of showing global data in a local
 // frame. Returns a fresh array each call so a caller can't mutate a shared constant out from
 // under future callers.
-const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'placements', 'traffic', 'routes', 'analysis', 'events', 'cost']
+// 'connections' sits directly after the two tabs that describe WHAT services are (blueprints) and
+// WHERE they run (placements), because it answers the third question about the same set — how they
+// talk to each other. It was previously reachable only via a header toggle (node-model Phase 2).
+const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'placements', 'connections', 'traffic', 'routes', 'analysis', 'events', 'cost']
 const SCOPED_TABS: PanelTab[] = ['config', 'analysis', 'events', 'cost']
 
 export function scopeTabs(scope: DockScope): PanelTab[] {

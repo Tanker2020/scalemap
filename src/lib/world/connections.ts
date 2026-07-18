@@ -290,3 +290,44 @@ export function layoutNodes(nodes: ConnNode[], edges: ConnEdge[]): Record<string
   })
   return pos
 }
+
+// ─── Row projection for the dock's Connections tab ──────────────────────────────
+// The dock lists connections; the full-screen canvas draws the same ones as geometry. Both read
+// edgesForView, so the list and the graph can never disagree about what exists or its status.
+
+export interface ConnectionRow {
+  id: string
+  fromLabel: string
+  toLabel: string
+  port: number
+  protocol: string
+  status: EdgeStatus
+  fromId: string
+  toId: string
+}
+
+// Sorted by source-then-target LABEL rather than by id or insertion order: the list is the tab's
+// entire content, and rows reshuffling under the user whenever an unrelated edit changes id
+// ordering is worse than any cleverer ranking. An edge whose endpoint has been deleted still
+// renders (with a placeholder) instead of vanishing — a dangling dependency is exactly the kind
+// of misconfiguration this surface exists to make visible.
+export function connectionRows(doc: WorldDoc, compiled: CompiledWorld): ConnectionRow[] {
+  const labelById = new Map(connNodes(doc).map(n => [n.id, n.label]))
+  const labelOf = (id: string): string => labelById.get(id) ?? '(deleted)'
+
+  return edgesForView(doc, compiled)
+    .map(edge => ({
+      id: edge.id,
+      fromLabel: labelOf(edge.fromId),
+      toLabel: labelOf(edge.toId),
+      port: edge.port,
+      protocol: edge.protocol,
+      status: edge.status,
+      fromId: edge.fromId,
+      toId: edge.toId,
+    }))
+    .sort((a, b) =>
+      a.fromLabel.localeCompare(b.fromLabel) ||
+      a.toLabel.localeCompare(b.toLabel) ||
+      a.port - b.port)
+}

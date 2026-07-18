@@ -2,6 +2,8 @@ import { useState, useMemo, useEffect, useLayoutEffect, useRef, type CSSProperti
 import { TopologyPanel } from './TopologyPanel'
 import { BlueprintPanel } from './BlueprintPanel'
 import { PlacementPanel } from './PlacementPanel'
+import { ConnectionsPanel } from './ConnectionsPanel'
+import { isEntryBlueprint } from '../../../lib/world/connections'
 import { TrafficPanel } from './TrafficPanel'
 import { RoutesPanel } from './RoutesPanel'
 import { AnalysisTab, unsuppressedCompileFindings } from './AnalysisTab'
@@ -61,7 +63,8 @@ function SignatureHeader({ glyph, accent, summary, summaryColor }: SignatureHead
 }
 
 const TAB_LABELS: Record<PanelTab, string> = {
-  topology: 'Topology', blueprints: 'Blueprints', placements: 'Placements', traffic: 'Traffic',
+  topology: 'Topology', blueprints: 'Blueprints', placements: 'Placements',
+  connections: 'Connections', traffic: 'Traffic',
   routes: 'Routes', analysis: 'Analysis', events: 'Events', cost: 'Cost', config: 'Config',
 }
 
@@ -71,9 +74,11 @@ export interface WorldPanelProps {
   onTogglePlaceMode: () => void
   selectedPopulationId: string | null
   openSettings: () => void
+  /** Opens the full-screen connections canvas from the Connections tab (node-model Phase 2). */
+  openConnections: () => void
 }
 
-export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopulationId, openSettings }: WorldPanelProps) {
+export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopulationId, openSettings, openConnections }: WorldPanelProps) {
   const [tab, setTab] = useState<PanelTab>(() => useUiStore.getState().pendingPanelTab ?? 'topology')
   const pendingPanelTab = useUiStore(s => s.pendingPanelTab)
   useEffect(() => {
@@ -189,6 +194,18 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
       header = { glyph: '◎', accent: 'var(--kit-cat-messaging)', summary: `${nPlacements} placement${nPlacements === 1 ? '' : 's'}` }
       break
     }
+    case 'connections': {
+      // Must match the ROW COUNT the panel below renders, or the header reads "3 connections"
+      // over a list of four. That means authored dependencies PLUS one synthetic Internet ingress
+      // edge per publicly-exposed blueprint — the same two sources edgesForView folds together.
+      // Counted per dependency (not per compiled path): one dependency is one connection the user
+      // drew, however many instance-to-instance paths it fans out into.
+      const nDeps = Object.values(doc.blueprints).reduce((sum, bp) => sum + bp.dependencies.length, 0)
+      const nIngress = Object.values(doc.blueprints).filter(isEntryBlueprint).length
+      const nConns = nDeps + nIngress
+      header = { glyph: '🔗', accent: 'var(--kit-cat-network)', summary: `${nConns} connection${nConns === 1 ? '' : 's'}` }
+      break
+    }
     case 'traffic': {
       const nPopulations = Object.keys(doc.populations).length
       header = {
@@ -286,6 +303,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
             {tab === 'topology' && <TopologyPanel />}
             {tab === 'blueprints' && <BlueprintPanel />}
             {tab === 'placements' && <PlacementPanel />}
+            {tab === 'connections' && <ConnectionsPanel onOpenGraph={openConnections} />}
             {tab === 'traffic' && (
               <TrafficPanel placeMode={placeMode} onTogglePlaceMode={onTogglePlaceMode} selectedPopulationId={selectedPopulationId} />
             )}

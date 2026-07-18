@@ -56,6 +56,88 @@ describe('world.store — db appliance nodes', () => {
   })
 })
 
+describe('world.store — spread', () => {
+  function seedTwoAzWorld() {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azA = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const azB = useWorldStore.getState().addAz(regionId, 'us-east-1b')
+    const serverId = useWorldStore.getState().addServer(azA, getPreset('vps-medium')!)
+    const bpId = useWorldStore.getState().addBlueprint('api')
+    useWorldStore.getState().addPlacement(bpId, serverId)
+    return { azA, azB, serverId, bpId }
+  }
+
+  it('places onto an existing host in the target AZ', () => {
+    const { azB, bpId } = seedTwoAzWorld()
+    const target = useWorldStore.getState().addServer(azB, getPreset('vps-medium')!)
+
+    useWorldStore.getState().spreadBlueprint(bpId, [azB])
+
+    const placed = Object.values(useWorldStore.getState().doc.placements)
+      .filter(p => p.blueprintId === bpId).map(p => p.serverId)
+    expect(placed).toContain(target)
+  })
+
+  it('creates a host in a target AZ that has none, then places onto it', () => {
+    const { azB, bpId } = seedTwoAzWorld()
+
+    useWorldStore.getState().spreadBlueprint(bpId, [azB])
+
+    const doc = useWorldStore.getState().doc
+    const inB = Object.values(doc.servers).filter(s => s.azId === azB)
+    expect(inB).toHaveLength(1)
+    expect(Object.values(doc.placements).some(p => p.blueprintId === bpId && p.serverId === inB[0].id)).toBe(true)
+  })
+
+  // A spread that half-applies — a new server with no placement on it — is not a state undo
+  // should reach, so the whole spread is ONE mutate().
+  it('undoes an entire multi-AZ spread in a single step', () => {
+    const { azA, azB, bpId } = seedTwoAzWorld()
+    const regionId = useWorldStore.getState().doc.azs[azA].regionId
+    const azC = useWorldStore.getState().addAz(regionId, 'us-east-1c')
+    const serversBefore = Object.keys(useWorldStore.getState().doc.servers).length
+    const placementsBefore = Object.keys(useWorldStore.getState().doc.placements).length
+
+    useWorldStore.getState().spreadBlueprint(bpId, [azB, azC])
+    useWorldStore.getState().undo()
+
+    const doc = useWorldStore.getState().doc
+    expect(Object.keys(doc.servers)).toHaveLength(serversBefore)
+    expect(Object.keys(doc.placements)).toHaveLength(placementsBefore)
+  })
+
+  it('is idempotent — spreading into an AZ that already hosts it adds nothing', () => {
+    const { azB, bpId } = seedTwoAzWorld()
+    useWorldStore.getState().spreadBlueprint(bpId, [azB])
+    const after = Object.keys(useWorldStore.getState().doc.placements).length
+
+    useWorldStore.getState().spreadBlueprint(bpId, [azB])
+
+    expect(Object.keys(useWorldStore.getState().doc.placements)).toHaveLength(after)
+  })
+
+  it('marks the file dirty', () => {
+    const { azB, bpId } = seedTwoAzWorld()
+    useFileStore.getState().setDirty(false)
+    useWorldStore.getState().spreadBlueprint(bpId, [azB])
+    expect(useFileStore.getState().dirty).toBe(true)
+  })
+
+  // Nothing to do must not burn an undo slot on a no-op.
+  it('does not push history when the spread is a no-op', () => {
+    const { azB, bpId } = seedTwoAzWorld()
+    useWorldStore.getState().spreadBlueprint(bpId, [azB])
+    const doc = useWorldStore.getState().doc
+
+    useWorldStore.getState().spreadBlueprint(bpId, [azB])
+    useWorldStore.getState().undo()
+
+    // One undo steps back past the REAL spread, not past a recorded no-op.
+    expect(Object.keys(useWorldStore.getState().doc.servers).length)
+      .toBeLessThan(Object.keys(doc.servers).length)
+  })
+})
+
 describe('world.store — load balancers', () => {
   it('addLoadBalancer creates a region-scoped L4 LB and marks the file dirty', () => {
     const { regionId } = buildChain()

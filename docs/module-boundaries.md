@@ -2501,3 +2501,65 @@ uniqueness, appliance naming per engine), `NodePalette.test.tsx` (compute adds a
 adds box+blueprint+placement, edit-lock while running), `factories.test.ts` (createDbServer),
 `world.store.test.ts` (single-undo appliance, dirty-marking), plus updated `AzConfigTab.test.tsx`,
 `vpsModel.test.ts`, `rackModel.test.ts`.
+
+## AZ spread + Connections as a first-class tab — node-model Phase 2 (partial) (2026-07-18)
+
+Second phase of the authoring redesign. Two of Phase 2's four pieces landed; the service-authoring
+form and the spread UI are still outstanding (see "Not yet" below).
+
+**Spread (`src/lib/world/spread.ts`, new).** `planSpread(doc, blueprintId, targetAzIds)` answers
+"replicate this service into these AZs" — the design brief's fifth pain point, where replicating
+meant hand-placing N placements onto N servers that happened to live in different AZs. Rules:
+reuse the least-loaded host in the target AZ that fits, else create one cloned from the SOURCE
+host's preset (not from whatever happens to sit in the target AZ, so spreading a big service never
+silently shrinks it); skip AZs already hosting the blueprint, so spreading twice is idempotent;
+return `[]` for an unplaced blueprint, since there is nothing to replicate from and no preset to
+clone. Admission is on **RAM**, not CPU — an over-committed host OOM-kills a victim outright while
+CPU contention only degrades latency, which the engine already models gracefully. Appliance rules
+are enforced both directions: a general service never lands on a db box, and a db blueprint only
+lands on a box of its own kind. PURE — plans only, allocates no ids, mutates nothing (same
+contract as `rackModel.ts` beside it).
+
+`world.store.spreadBlueprint` applies a whole plan in ONE `mutate()` (a half-applied spread — a
+new host with no placement on it — is not a state undo should reach) and returns BEFORE `mutate()`
+when the plan is empty, so a no-op spread never burns an undo slot. Spread copies are created with
+`role: 'replica'`; the source placement stays primary. That is what makes a spread DB a real
+cluster (one writer, N read replicas) rather than N primaries — and it is the input Phase 3's
+write routing reads.
+
+**Connections is now a world tab** (`panels/ConnectionsPanel.tsx`, new). It was reachable ONLY
+from an accent-filled `🔗 Connections` header button that opened a full-screen overlay —
+discoverable by accident, absent from the tab set that otherwise describes the world, and looking
+like a mode switch. `PanelTab` gained `'connections'`; `dock/scope.ts`'s `WORLD_TABS` places it
+directly after Blueprints/Placements, because those three answer what a service IS, WHERE it runs,
+and HOW it talks. The header button is deleted; `WorldShell` now passes `openConnections` down to
+`WorldPanel`, which hands it to the panel as `onOpenGraph`.
+
+Division of labour, decided against putting the canvas in the dock (the dock is a ~340px column
+and the canvas is a pan/zoom graph editor): **the dock lists, the canvas edits.** The tab renders
+one scannable row per connection (source → target, port, status dot) and an `open graph ↗` button.
+Both surfaces read the same `edgesForView` projection through the new
+`connections.connectionRows()`, so the list and the graph can never disagree about what exists or
+its status. Rows sort by source-then-target LABEL — the list is the tab's entire content, and rows
+reshuffling under the user on unrelated edits is worse than any cleverer ranking. An edge whose
+endpoint was deleted still renders as `(deleted)` rather than vanishing: a dangling dependency is
+exactly what this surface exists to make visible.
+
+**Gotcha worth keeping:** the tab header's count MUST match the row count the panel renders, which
+means authored dependencies PLUS one synthetic Internet ingress edge per publicly-exposed
+blueprint. Counting only dependencies shipped a header reading "3 connections" above four rows
+(caught by driving the app, not by tests). `ConnectionsPanel.test.tsx` now pins the row
+composition so the `WorldPanel` formula has something concrete to agree with.
+
+**Not yet (remaining Phase 2):** the kind-driven service-authoring form inside a host (the "VPS
+door", with Light/Medium/Heavy request-cost presets over `WorkloadProfile` and an Advanced
+disclosure), and the spread UI that calls `spreadBlueprint` (an AZ picker in the AZ/server views).
+`BlueprintPanel`/`PlacementPanel` are still the live authoring surfaces and are not retired until
+Phase 5.
+
+Tests: `spread.test.ts` (9 — reuse/create/idempotence/least-loaded/RAM headroom/appliance rules
+both directions/multi-AZ ordering), `world.store.test.ts` spread block (single-undo, no-op does
+not push history, dirty-marking), `connections.test.ts` `connectionRows` block (labels, ingress,
+stable order, deleted-endpoint fallback), `ConnectionsPanel.test.tsx` (rows, ingress, open-graph
+handoff, empty state, blocked status, row composition), updated `scope.test.ts` and
+`WorldPanel.test.tsx`.

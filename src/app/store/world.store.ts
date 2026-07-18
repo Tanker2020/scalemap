@@ -7,6 +7,8 @@ import type {
   RoutingConfig, AzId, Rack, RackId, LoadBalancer, DependencyTarget, BlueprintDependency,
 } from '../../lib/world/types'
 import { planReachability, applyReachabilityPlan } from '../../lib/world/connections'
+import { planSpread } from '../../lib/world/spread'
+import { getPreset } from '../../lib/world/instanceCatalog'
 import {
   createWorld, createRegion, createAz, createServer, createDbServer, createBlueprint, createPlacement,
   createPopulation, createRack, createLoadBalancer, nextWorldId, type InstancePresetLike,
@@ -97,6 +99,8 @@ interface WorldStore {
   /** Drops a self-hosted DB appliance: box + owned blueprint + primary placement, one undo step. */
   addDbServer: (azId: string, preset: InstancePresetLike, name: string) =>
     { serverId: string; blueprintId: string; placementId: string }
+  /** Replicates a blueprint into each target AZ (reusing a fitting host, else creating one). */
+  spreadBlueprint: (blueprintId: string, targetAzIds: string[]) => void
   updateServer: (id: string, patch: Partial<Server>) => void
   removeServer: (id: string) => void
   addBlueprint: (name: string) => string
@@ -206,6 +210,39 @@ export const useWorldStore = create<WorldStore>((set, get) => {
         placements: { ...d.placements, [placement.id]: placement },
       }))
       return { serverId: server.id, blueprintId: blueprint.id, placementId: placement.id }
+    },
+    // Applies planSpread's whole plan in ONE mutate(): a half-applied spread — a freshly created
+    // host with no placement on it — is not a state undo should be able to land in. Bails BEFORE
+    // mutate() when the plan is empty so a no-op spread never burns an undo slot.
+    spreadBlueprint: (blueprintId, targetAzIds) => {
+      const plan = planSpread(get().doc, blueprintId, targetAzIds)
+      if (plan.length === 0) return
+
+      mutate(d => {
+        const servers = { ...d.servers }
+        const placements = { ...d.placements }
+
+        for (const target of plan) {
+          let serverId: string
+          if (target.kind === 'existing') {
+            serverId = target.serverId
+          } else {
+            const preset = getPreset(target.presetId)
+            if (!preset) continue   // catalog drift — skip rather than place onto nothing
+            const server = createServer(target.azId, preset)
+            server.label = `${d.blueprints[blueprintId]?.name ?? 'server'}-${target.azId.slice(-4)}`
+            servers[server.id] = server
+            serverId = server.id
+          }
+          const placement = createPlacement(blueprintId, serverId)
+          // Spread copies are replicas: the source placement stays the primary. This is what
+          // makes a spread DB a real cluster (one writer, N read replicas) rather than N primaries.
+          placement.role = 'replica'
+          placements[placement.id] = placement
+        }
+
+        return { ...d, servers, placements }
+      })
     },
     updateServer: (id, patch) => mutate(d => {
       const existing = d.servers[id]

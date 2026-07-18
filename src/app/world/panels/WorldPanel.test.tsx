@@ -24,34 +24,34 @@ describe('WorldPanel findings tab', () => {
     const bpId = useWorldStore.getState().addBlueprint('api')
     useWorldStore.getState().updateBlueprint(bpId, { stateful: true, volumeName: null })
 
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     fireEvent.click(screen.getByText('Analysis'))
 
     expect(screen.getByText(/is stateful but has no volume configured/)).toBeInTheDocument()
   })
 
   it('shows the empty state when there are no findings', () => {
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     fireEvent.click(screen.getByText('Analysis'))
     expect(screen.getByText('No findings — the compiled world is clean.')).toBeInTheDocument()
   })
 
   it('active tab renders the count as a chip and stays clickable', () => {
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     fireEvent.click(screen.getByText('Analysis'))
     expect(screen.getByText('No findings — the compiled world is clean.')).toBeInTheDocument()
   })
 
   it('consumes a pending panel tab once on mount', () => {
     useUiStore.setState({ pendingPanelTab: 'analysis' })
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     expect(screen.getByText('No findings — the compiled world is clean.')).toBeInTheDocument()
     expect(useUiStore.getState().pendingPanelTab).toBeNull()
   })
 
   it('switches to a pendingPanelTab set while mounted and clears it', () => {
     useUiStore.setState({ pendingPanelTab: null })
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     expect(screen.queryByText('+ place on globe')).not.toBeInTheDocument()   // starts on Topology
     act(() => useUiStore.getState().setPendingPanelTab('traffic'))
     expect(screen.getByText('+ place on globe')).toBeInTheDocument()         // switched to Traffic
@@ -59,7 +59,7 @@ describe('WorldPanel findings tab', () => {
   })
 
   it('tab ink slides — clicking a tab still switches content with the ink element present', () => {
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     fireEvent.click(screen.getByText('Traffic'))
     expect(screen.getByText('+ place on globe')).toBeInTheDocument()
     expect(document.querySelector('.kit-ink')).not.toBeNull()
@@ -73,7 +73,7 @@ describe('WorldPanel findings tab', () => {
 // was deleted, not just hidden) — asserted explicitly below alongside the migrated assertions.
 describe('WorldPanel atlas header (Polish 4 T2)', () => {
   it('the old world-summary testid is gone — WorldSummary was absorbed, not duplicated', () => {
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     expect(screen.queryByTestId('world-summary')).not.toBeInTheDocument()
     expect(screen.getByTestId('atlas-header')).toBeInTheDocument()
   })
@@ -82,7 +82,7 @@ describe('WorldPanel atlas header (Polish 4 T2)', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
     const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
     useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     expect(screen.getByTestId('atlas-headline')).toHaveTextContent(/1 region · 1 server · 0 populations/)
   })
 
@@ -95,7 +95,7 @@ describe('WorldPanel atlas header (Polish 4 T2)', () => {
       world: { totalRps: 0, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
     }
     useSimulationStore.setState({ latestBatch: batch })
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     // Scoped to the atlas headline specifically (not a blind screen.getByText): the default
     // Topology tab's own wtree meta line legitimately shows the SAME rounded $/hr for this
     // single-region/single-server world, so an unscoped query would find two matches.
@@ -107,7 +107,7 @@ describe('WorldPanel atlas header (Polish 4 T2)', () => {
   it('region scope shows a scoped atlas headline above the four tabs', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
     useNavStore.getState().goRegion(regionId)
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     expect(screen.getByTestId('atlas-header')).toBeInTheDocument()
     expect(screen.getByTestId('atlas-headline')).toHaveTextContent('us-east-1')
   })
@@ -116,7 +116,7 @@ describe('WorldPanel atlas header (Polish 4 T2)', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
     const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
     useNavStore.getState().goAz(regionId, azId)
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     expect(screen.queryByTestId('atlas-header')).not.toBeInTheDocument()
     expect(screen.getByTestId('floor-plan-header')).toBeInTheDocument()
   })
@@ -126,7 +126,7 @@ describe('WorldPanel atlas header (Polish 4 T2)', () => {
     const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
     const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
     useNavStore.getState().goServer(regionId, azId, serverId)
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     expect(screen.queryByTestId('atlas-header')).not.toBeInTheDocument()
     expect(screen.queryByTestId('floor-plan-header')).not.toBeInTheDocument()
   })
@@ -141,7 +141,7 @@ describe('WorldPanel signature headers (Polish 3 T7)', () => {
     useWorldStore.getState().addPlacement(bpId, serverId)
     useWorldStore.getState().addPopulation('nyc', 40.7, -74)
 
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
 
     // 1-of-each fixture (1 region/AZ/server/blueprint/placement/population) doubles as the
     // singular-aware-grammar exercise (review fix wave, Polish 3 T7) — every count below is
@@ -169,7 +169,7 @@ describe('WorldPanel signature headers (Polish 3 T7)', () => {
   })
 
   it('all seven tab-header accents are distinct CSS var tokens (light-mode collision fix)', () => {
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
 
     const labels = ['Topology', 'Blueprints', 'Placements', 'Traffic', 'Analysis', 'Events', 'Cost']
     const accents = labels.map(label => {
@@ -184,7 +184,7 @@ describe('WorldPanel signature headers (Polish 3 T7)', () => {
   })
 
   it('cost header uses the price color', () => {
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     fireEvent.click(screen.getByText('Cost'))
     const header = screen.getByTestId('signature-header')
     const summary = within(header).getByText(/^\$\d+\.\d{2}\/hr$/)
@@ -197,13 +197,13 @@ describe('WorldPanel signature headers (Polish 3 T7)', () => {
     useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
     expect(useSimulationStore.getState().latestBatch).toBeNull()
 
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     // Starts on Topology by default — no metrics batch has ever been set.
     expect(screen.getByTestId('signature-header')).toHaveTextContent('1 region · 1 AZ · 1 server')
   })
 
   it('renders the signature header between the tab bar and the fieldset, outside disabled scope', () => {
-    render(<WorldPanel running={true} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={true} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     const header = screen.getByTestId('signature-header')
     // A header nested inside `<fieldset disabled>` would itself carry the disabled attribute
     // cascade only for form controls — but the header must not be a fieldset descendant at all
@@ -214,13 +214,13 @@ describe('WorldPanel signature headers (Polish 3 T7)', () => {
 
 describe('WorldPanel scope (Polish 4 T1)', () => {
   it('always renders the scope rail, even at world scope', () => {
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     expect(screen.getByTestId('scope-rail')).toBeInTheDocument()
     expect(screen.getByTestId('scope-pill-world')).toBeInTheDocument()
   })
 
   it('world scope keeps all seven existing tabs', () => {
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     for (const label of ['Topology', 'Blueprints', 'Placements', 'Traffic', 'Analysis', 'Events', 'Cost']) {
       expect(screen.getByText(label)).toBeInTheDocument()
     }
@@ -231,7 +231,7 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
     useNavStore.getState().goRegion(regionId)
 
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
 
     expect(screen.getByText('Config')).toBeInTheDocument()
     expect(screen.queryByText('Topology')).not.toBeInTheDocument()
@@ -251,7 +251,7 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
     const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
     useNavStore.getState().goAz(regionId, azId)
 
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
 
     expect(screen.getByText('Config')).toBeInTheDocument()
     expect(screen.queryByText('Topology')).not.toBeInTheDocument()
@@ -264,7 +264,7 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
   })
 
   it('keeps a tab id shared across scopes (Analysis) instead of resetting to Config on a scope change', () => {
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     fireEvent.click(screen.getByText('Analysis'))
     expect(screen.getByText('No findings — the compiled world is clean.')).toBeInTheDocument()
 
@@ -286,7 +286,7 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
     const regionB = useWorldStore.getState().addRegion('eu-west-1')   // clean — no findings
 
     useNavStore.getState().goRegion(regionB)
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
 
     fireEvent.click(screen.getByText('Analysis'))
     expect(screen.getByText('No findings in this scope.')).toBeInTheDocument()
@@ -299,7 +299,7 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
     useWorldStore.getState().updateServer(serverId, { label: 'db-replica' })
     useNavStore.getState().goAz(regionId, azId)
 
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     expect(screen.queryByTestId('scope-pill-server')).not.toBeInTheDocument()
 
     act(() => useUiStore.getState().setSelectedServerId(serverId))
@@ -319,7 +319,7 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
     const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
     useNavStore.getState().goServer(regionId, azId, serverId)
 
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
 
     expect(screen.getByTestId('server-faceplate')).toBeInTheDocument()
     expect(screen.queryByTestId('faceplate-enter')).not.toBeInTheDocument()
@@ -331,7 +331,7 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
     const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
     useNavStore.getState().goServer(regionId, azId, serverId)
 
-    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} />)
+    render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
     fireEvent.click(screen.getByText('Cost'))
 
     expect(screen.getByTestId('scoped-cost')).toBeInTheDocument()

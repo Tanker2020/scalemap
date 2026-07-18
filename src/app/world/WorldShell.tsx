@@ -25,13 +25,10 @@ const hdrBtn: CSSProperties = {
   borderRadius: 4, padding: '3px 10px', cursor: 'pointer',
   font: '11px var(--font-mono)', color: 'var(--color-text-secondary)',
 }
-// Connections is a primary authoring surface — accent-filled so it reads as the front-and-center
-// action it is, not one more muted file button.
-const connBtn: CSSProperties = {
-  background: 'var(--color-accent)', border: '1px solid var(--color-accent)',
-  borderRadius: 4, padding: '3px 12px', cursor: 'pointer',
-  font: '600 11px var(--font-mono)', color: '#fff',
-}
+// The accent-filled "🔗 Connections" header button is GONE (node-model Phase 2). Connections is
+// now a world tab in the dock (panels/ConnectionsPanel.tsx), which is where the rest of the
+// world's authoring surfaces already live; the full-screen canvas below is opened from that tab
+// instead of from a header button that looked like a mode switch.
 
 export function WorldShell() {
   const nav = useNavStore()
@@ -136,7 +133,6 @@ export function WorldShell() {
         <Breadcrumb />
         <SimControls />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button className="kit-press" style={connBtn} aria-label="connections" onClick={() => setConnectionsOpen(true)}>🔗 Connections</button>
           <button className="kit-press" style={hdrBtn} aria-label="settings" onClick={() => setSettingsOpen(true)}>settings</button>
           <span style={{ font: '10px var(--font-mono)', color: 'var(--color-text-muted)' }}>esc = up one level</span>
           {dirty && <span style={{ color: 'var(--color-warning)', font: '10px var(--font-mono)' }}>● unsaved</span>}
@@ -174,6 +170,7 @@ export function WorldShell() {
           onTogglePlaceMode={onTogglePlaceMode}
           selectedPopulationId={selectedPopulationId}
           openSettings={() => setSettingsOpen(true)}
+          openConnections={() => setConnectionsOpen(true)}
         />
       </div>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

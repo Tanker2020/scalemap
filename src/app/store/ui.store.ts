@@ -17,7 +17,11 @@
 import { create } from 'zustand'
 import type { ServerId } from '../../lib/world/types'
 
-export type PanelTab = 'topology' | 'blueprints' | 'placements' | 'traffic' | 'routes' | 'analysis' | 'events' | 'cost' | 'config'
+// 2026-07-18 (node-model Phase 2): gained 'connections' — the service-dependency graph was a
+// header-toggled overlay, reachable only from a button that looked like a mode switch. It is now
+// a first-class world tab whose dock body lists every edge (source → target, port, status) and
+// opens the full-screen canvas on demand.
+export type PanelTab = 'topology' | 'blueprints' | 'placements' | 'connections' | 'traffic' | 'routes' | 'analysis' | 'events' | 'cost' | 'config'
 
 export interface SceneOverlayTarget { kind: 'region' | 'population'; id: string }
 

@@ -5,7 +5,7 @@ import { compileWorld } from './compileWorld'
 import type { BlueprintDependency, WorldDoc } from './types'
 import {
   planReachability, applyReachabilityPlan, edgesForView, connNodes, layoutNodes,
-  isEntryBlueprint, INTERNET_NODE,
+  isEntryBlueprint, INTERNET_NODE, connectionRows,
 } from './connections'
 
 // api (placed) depends on db (placed). db's server starts with a wide-open firewall unless a test
@@ -125,5 +125,59 @@ describe('layoutNodes', () => {
     expect(pos[INTERNET_NODE].col).toBe(0)
     expect(pos[api.id].col).toBeGreaterThanOrEqual(1)
     expect(pos[db.id].col).toBeGreaterThan(pos[api.id].col)
+  })
+})
+
+// The dock's Connections tab renders these rows; the full-screen canvas renders the same edges
+// as geometry. Both read edgesForView, so the list can never disagree with the graph.
+describe('connectionRows', () => {
+  it('labels each edge with its endpoint names and port', () => {
+    const { doc, api, db } = apiDbWorld()
+    addDep(doc, api.id, { kind: 'blueprint', blueprintId: db.id }, 5432)
+
+    const row = connectionRows(doc, compileWorld(doc)).find(r => r.toLabel === 'db')
+
+    expect(row).toBeDefined()
+    expect(row!.fromLabel).toBe('api')
+    expect(row!.port).toBe(5432)
+  })
+
+  it('labels a synthetic ingress edge as coming from the Internet', () => {
+    const { doc, api } = apiDbWorld()
+    api.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+
+    const rows = connectionRows(doc, compileWorld(doc))
+
+    expect(rows.some(r => r.fromLabel === 'Internet')).toBe(true)
+  })
+
+  // The list IS the tab's content, so a stable order matters more than a clever one: rows must
+  // not reshuffle under the user as unrelated parts of the world change.
+  it('orders rows by source then target label', () => {
+    const { doc, api, db } = apiDbWorld()
+    addDep(doc, api.id, { kind: 'blueprint', blueprintId: db.id }, 5432)
+
+    const labels = connectionRows(doc, compileWorld(doc)).map(r => `${r.fromLabel} ${r.toLabel}`)
+
+    expect([...labels].sort()).toEqual(labels)
+  })
+
+  it('carries each edge status through for the row status dot', () => {
+    const { doc, api, db } = apiDbWorld()
+    addDep(doc, api.id, { kind: 'blueprint', blueprintId: db.id }, 5432)
+
+    for (const row of connectionRows(doc, compileWorld(doc))) {
+      expect(['permitted', 'partial', 'blocked', 'unplaced']).toContain(row.status)
+    }
+  })
+
+  it('falls back to a placeholder label for an edge pointing at a deleted node', () => {
+    const { doc, api } = apiDbWorld()
+    addDep(doc, api.id, { kind: 'blueprint', blueprintId: 'bp-deleted' }, 9999)
+
+    const row = connectionRows(doc, compileWorld(doc)).find(r => r.port === 9999)
+
+    expect(row).toBeDefined()
+    expect(row!.toLabel).toBe('(deleted)')
   })
 })
