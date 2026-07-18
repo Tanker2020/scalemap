@@ -13,6 +13,7 @@
 // readout collapses to the server's first compiled instance (mirrors HardwareDrawer's own
 // "first resident blueprint" convention for its consequence hints).
 import { useState, type ReactElement } from 'react'
+import { SpreadControl } from './SpreadControl'
 import { useWorldStore } from '../../../store/world.store'
 import { HEALTH_COLOR } from '../../server/healthColor'
 import type { Placement, Server, WorldDoc, CompiledWorld, InstanceId } from '../../../../lib/world/types'
@@ -90,8 +91,9 @@ export function ServicesDrawer({ server, doc, compiled, running, liveInstances }
       {placements.map(pl => {
         const bp = doc.blueprints[pl.blueprintId]
         return (
+          <div key={pl.id}>
           <div
-            key={pl.id} data-testid="service-chip-line" className="kit-row"
+            data-testid="service-chip-line" className="kit-row"
             style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '4px 6px', borderRadius: 5 }}
           >
             <span aria-hidden style={{ width: 8, height: 8, borderRadius: 2, background: bp?.color ?? 'var(--color-text-muted)', flexShrink: 0 }} />
@@ -118,6 +120,12 @@ export function ServicesDrawer({ server, doc, compiled, running, liveInstances }
             <span data-testid="service-chip-count" style={{ color: 'var(--color-text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
               ×{pl.count}
             </span>
+          </div>
+          {/* Replication lives beside the service it replicates, not in a separate surface: the
+              count stepper above scales this service ON THIS BOX, spread scales it ACROSS AZs. */}
+          <div style={{ padding: '0 6px 4px' }}>
+            <SpreadControl blueprintId={pl.blueprintId} serverId={server.id} running={running} />
+          </div>
           </div>
         )
       })}

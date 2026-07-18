@@ -2563,3 +2563,30 @@ not push history, dirty-marking), `connections.test.ts` `connectionRows` block (
 stable order, deleted-endpoint fallback), `ConnectionsPanel.test.tsx` (rows, ingress, open-graph
 handoff, empty state, blocked status, row composition), updated `scope.test.ts` and
 `WorldPanel.test.tsx`.
+
+### Spread UI — `dock/drawers/SpreadControl.tsx` (2026-07-18)
+
+The caller for `world.store.spreadBlueprint`. Lives on each service row inside the server
+faceplate's SERVICES drawer, deliberately beside the count stepper: the stepper scales a service
+ON THIS BOX, spread scales it ACROSS AZs — two axes of the same question, so they belong together
+rather than in separate surfaces.
+
+Tick AZs, press "spread into N AZs". Candidates are the AZs of THIS SERVER'S REGION that do not
+already run the service; an AZ already hosting it is not offered at all, because `planSpread`
+skips it and listing it would invite a click that silently does nothing. When every AZ is covered
+the panel says so instead of showing an empty list. The action is disabled at zero checked, and
+the panel collapses after applying (the candidate list has just changed underneath, and stale
+ticked boxes invite a second click that does nothing).
+
+**Scope is same-region on purpose.** "Spread" here means multi-AZ high availability, which is what
+the brief asked for ("replicating a service across AZs"). Standing a service up in another REGION
+is a different concern with its own machinery — region role active/passive, DNS failover, the
+routing policy — and deliberately does not hide behind this button.
+
+**Gotcha:** spread-created hosts are named from the AZ's LABEL suffix (`web-1c`), never from the
+AZ id. The first cut sliced the id and produced `web-36su`, since ids look like `az-3-mf8k36su`.
+Tests asserted placement and count but never the name — caught only by looking at the running app,
+and now pinned by a `world.store.test.ts` case.
+
+Tests: `SpreadControl.test.tsx` (candidate derivation, same-region scoping, already-hosted
+exclusion, full-coverage message, disabled-at-zero, edit-lock while running, collapse-after-apply).

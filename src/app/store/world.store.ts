@@ -230,7 +230,10 @@ export const useWorldStore = create<WorldStore>((set, get) => {
             const preset = getPreset(target.presetId)
             if (!preset) continue   // catalog drift — skip rather than place onto nothing
             const server = createServer(target.azId, preset)
-            server.label = `${d.blueprints[blueprintId]?.name ?? 'server'}-${target.azId.slice(-4)}`
+            // Name it after the service and the AZ's LABEL suffix ('web-1c'), never the AZ id —
+            // ids look like 'az-3-mf8k36su', so slicing them yields names like 'web-36su'.
+            const azSuffix = d.azs[target.azId]?.label.split('-').pop() ?? 'az'
+            server.label = `${d.blueprints[blueprintId]?.name ?? 'server'}-${azSuffix}`
             servers[server.id] = server
             serverId = server.id
           }

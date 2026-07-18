@@ -123,6 +123,21 @@ describe('world.store — spread', () => {
     expect(useFileStore.getState().dirty).toBe(true)
   })
 
+  // Names are read constantly in the server list, the floor and the breadcrumb. Derived from the
+  // AZ LABEL suffix, never the AZ id — ids look like 'az-3-mf8k36su', so slicing one produced
+  // names like 'web-36su'.
+  it('names a spread-created host after the service and the AZ label', () => {
+    const { azA, azB, bpId } = seedTwoAzWorld()
+    useWorldStore.getState().spreadBlueprint(bpId, [azB])
+
+    const doc = useWorldStore.getState().doc
+    const created = Object.values(doc.servers).find(s => s.azId === azB)!
+
+    expect(created.label).toBe('api-1b')
+    expect(created.label).not.toMatch(/[0-9a-z]{6,}/)   // no raw id fragment
+    expect(azA).toBeTruthy()
+  })
+
   // Nothing to do must not burn an undo slot on a no-op.
   it('does not push history when the spread is a no-op', () => {
     const { azB, bpId } = seedTwoAzWorld()
