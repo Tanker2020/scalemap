@@ -38,7 +38,13 @@ export function Drawer({ accent, title, readout, open, onToggle, children }: Dra
     transition: reduced ? undefined : 'transform 0.18s',
   }
   const bodyStyle: CSSProperties = {
-    overflow: 'hidden',
+    // Horizontal stays hidden (rows must never push the dock sideways); vertical SCROLLS when
+    // open. With `overflow: hidden` on both axes, any content taller than OPEN_MAX_HEIGHT was
+    // silently clipped and unreachable — the add-service form's submit button landed 9px past the
+    // cap and could not be clicked, while tests still passed because jsdom has no layout and the
+    // button was present in the DOM. Closed keeps hidden so the collapse animation stays clean.
+    overflowX: 'hidden',
+    overflowY: open ? 'auto' : 'hidden',
     maxHeight: open ? OPEN_MAX_HEIGHT : 0,
     opacity: open ? 1 : 0,
     padding: open ? '2px 11px 10px' : '0 11px',

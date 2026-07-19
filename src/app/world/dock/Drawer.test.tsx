@@ -48,6 +48,26 @@ describe('Drawer', () => {
     expect(screen.getByTestId('drawer-body').style.maxHeight).toBe('340px')
   })
 
+  // The 340px cap plus overflow:hidden silently CLIPS taller content — content past the cap is
+  // rendered, findable by tests, and physically unreachable in the browser (the add-service form's
+  // submit button landed 9px below the cap and could not be clicked). An open drawer must
+  // therefore scroll rather than swallow. Closed stays hidden so the collapse animation is clean.
+  it('scrolls instead of clipping when open, so tall content stays reachable', () => {
+    const { rerender } = render(
+      <Drawer accent="blue" title="SERVICES" readout="—" open={false} onToggle={() => {}}>
+        <div>x</div>
+      </Drawer>,
+    )
+    expect(screen.getByTestId('drawer-body').style.overflowY).toBe('hidden')
+
+    rerender(
+      <Drawer accent="blue" title="SERVICES" readout="—" open onToggle={() => {}}>
+        <div>x</div>
+      </Drawer>,
+    )
+    expect(screen.getByTestId('drawer-body').style.overflowY).toBe('auto')
+  })
+
   it('clicking the header calls onToggle', () => {
     let toggled = false
     render(

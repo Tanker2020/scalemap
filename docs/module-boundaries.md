@@ -2590,3 +2590,53 @@ and now pinned by a `world.store.test.ts` case.
 
 Tests: `SpreadControl.test.tsx` (candidate derivation, same-region scoping, already-hosted
 exclusion, full-coverage message, disabled-at-zero, edit-lock while running, collapse-after-apply).
+
+### Service authoring form — the "VPS door" (`dock/drawers/AddServiceForm.tsx`, `lib/world/serviceDraft.ts`, 2026-07-18)
+
+Completes node-model Phase 2. Standing up a service used to take three surfaces — create an
+abstract blueprint in the world-scope Blueprints tab, fill in four raw physics numbers
+(cpu-ms/request, ram base, ram/conn, disk-io/request), then attach it to a host from Placements.
+No path began at "I want a service on this box", and an API and a database were asked identical
+questions (the brief's complaint #4). The form is that path: one dialog on a host that creates the
+global service record AND places it there.
+
+**The host is a DOOR, not an owner.** `addServiceToServer` writes a normal global
+`ServiceBlueprint` with `ownerServerKind: null`, so the service can afterwards be spread across
+AZs, mounted on other hosts, or edited from any surface. Only appliance boxes stamp
+`ownerServerKind` — that is what locks a database to its own box. One `mutate()`: create-and-place
+is one action to the user, so undo must not strand a blueprint nothing runs.
+
+**`lib/world/serviceDraft.ts` (pure)** is the translation layer. `HOSTABLE_KINDS` is
+`api`/`worker`/`cache` — deliberately NOT the db kinds, since a database arrives as an appliance
+from the AZ palette and `spread.canHost()` would refuse its blueprint on a plain VPS; offering it
+here would let the form create a service nothing can host. `COST_MS` (light 2 / medium 8 / heavy
+25) and `MEMORY_MB` (512 MB / 2 GB / 8 GB, each with a per-connection figure) map the form's
+vocabulary onto `WorkloadProfile`. The presets ARE the WorkloadProfile — no parallel model, nothing
+new for the engine to learn. Per-kind defaults differ because the kind changes what the form asks:
+a worker gets `port: null` (it pulls work; a phantom listener would enter compileWorld's
+port/firewall reasoning), a cache starts memory-heavy and light per request.
+
+**Preset-vs-Advanced precedence:** `ServiceDraft.workload?` is an explicit override rather than a
+"was edited" flag. Editing an Advanced field sets it; picking any preset CLEARS it. Whichever the
+user touched last wins — without the reset, choosing a preset after hand-tuning would silently do
+nothing and the preset radios would look broken.
+
+Mounted in `ServicesDrawer` alongside — not replacing — `+ mount a blueprint…`. The two are
+distinct: *add* authors a new service, *mount* attaches an existing one to a second host (how you
+hand-place a replica without spread). Both are hidden on an appliance box, which owns exactly one
+service. `BlueprintPanel`/`PlacementPanel` remain live until Phase 5, so this ships additively.
+
+**Drawer clipping fix (`dock/Drawer.tsx`) — a latent bug this form surfaced.** The drawer body had
+`overflow: hidden` with a hardcoded `OPEN_MAX_HEIGHT = 340`, so ANY content taller than 340px was
+silently clipped and physically unreachable. The add-service form's submit button landed 9px past
+the cap: present in the DOM, found by tests, unclickable in the browser — jsdom has no layout
+engine, so all nine of the form's tests passed against a form that could not be submitted. The body
+now scrolls vertically when open (`overflowY: open ? 'auto' : 'hidden'`; horizontal stays hidden so
+rows never push the dock sideways). This affected every drawer, not just this one — a FIREWALL
+drawer with enough rules had the same silent cliff.
+
+Tests: `serviceDraft.test.ts` (10 — hostable kinds exclude db, preset→workload mapping, per-kind
+defaults, port emission), `AddServiceForm.test.tsx` (9 — create+place, name required, preset
+written through, worker hides ports, no db kind offered, Advanced override wins, preset overrides
+a hand-tuned value, closes after adding, edit-lock), `world.store.test.ts` `addServiceToServer`
+block (6), `Drawer.test.tsx` scroll-not-clip case.

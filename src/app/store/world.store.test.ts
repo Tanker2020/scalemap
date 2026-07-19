@@ -4,6 +4,7 @@ import { useFileStore } from './file.store'
 import { useSimulationStore } from './simulation.store'
 import { getPreset } from '../../lib/world/instanceCatalog'
 import { rackUsedU, RACK_CAPACITY_MIN, RACK_CAPACITY_MAX } from '../../lib/world/rackModel'
+import { defaultDraft, COST_MS, MEMORY_MB } from '../../lib/world/serviceDraft'
 
 beforeEach(() => useWorldStore.getState().newWorld())
 
@@ -52,6 +53,83 @@ describe('world.store — db appliance nodes', () => {
     const azId = seedAz()
     useFileStore.getState().setDirty(false)
     useWorldStore.getState().addDbServer(azId, getPreset('db-nosql-medium')!, 'events-db')
+    expect(useFileStore.getState().dirty).toBe(true)
+  })
+})
+
+describe('world.store — addServiceToServer', () => {
+  function seedHost() {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    return useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+  }
+
+  it('creates the global service record AND places it on this host', () => {
+    const serverId = seedHost()
+
+    const { blueprintId, placementId } = useWorldStore.getState().addServiceToServer(serverId, {
+      ...defaultDraft('api'), name: 'orders-api',
+    })
+
+    const doc = useWorldStore.getState().doc
+    expect(doc.blueprints[blueprintId]).toMatchObject({ name: 'orders-api', kind: 'api' })
+    expect(doc.placements[placementId]).toMatchObject({ blueprintId, serverId })
+  })
+
+  it('translates the draft presets into the workload the engine reads', () => {
+    const serverId = seedHost()
+
+    const { blueprintId } = useWorldStore.getState().addServiceToServer(serverId, {
+      ...defaultDraft('api'), name: 'heavy-api', cost: 'heavy', memory: 'large',
+    })
+
+    const workload = useWorldStore.getState().doc.blueprints[blueprintId].workload
+    expect(workload.cpuMsPerRequest).toBe(COST_MS.heavy)
+    expect(workload.ramBaseMb).toBe(MEMORY_MB.large.base)
+  })
+
+  it('binds the drafted port, and binds nothing for a worker', () => {
+    const serverId = seedHost()
+
+    const api = useWorldStore.getState().addServiceToServer(serverId, {
+      ...defaultDraft('api'), name: 'api', port: 9000, visibility: 'public',
+    })
+    const worker = useWorldStore.getState().addServiceToServer(serverId, {
+      ...defaultDraft('worker'), name: 'worker',
+    })
+
+    const doc = useWorldStore.getState().doc
+    expect(doc.blueprints[api.blueprintId].ports).toEqual([{ port: 9000, protocol: 'tcp', visibility: 'public' }])
+    expect(doc.blueprints[worker.blueprintId].ports).toEqual([])
+  })
+
+  // Create-and-place is ONE action to the user, so it must be one undo step — otherwise undo
+  // strands a blueprint nothing runs.
+  it('undoes the service and its placement together', () => {
+    const serverId = seedHost()
+    useWorldStore.getState().addServiceToServer(serverId, { ...defaultDraft('api'), name: 'api' })
+
+    useWorldStore.getState().undo()
+
+    const doc = useWorldStore.getState().doc
+    expect(Object.keys(doc.blueprints)).toHaveLength(0)
+    expect(Object.keys(doc.placements)).toHaveLength(0)
+  })
+
+  // A service authored through a host is a NORMAL global record — the host is a door, not an
+  // owner. Only appliance boxes stamp ownerServerKind, which is what locks a DB to its box.
+  it('leaves the service free-standing, not owned by the host it was authored from', () => {
+    const serverId = seedHost()
+    const { blueprintId } = useWorldStore.getState().addServiceToServer(serverId, {
+      ...defaultDraft('api'), name: 'api',
+    })
+    expect(useWorldStore.getState().doc.blueprints[blueprintId].ownerServerKind).toBeNull()
+  })
+
+  it('marks the file dirty', () => {
+    const serverId = seedHost()
+    useFileStore.getState().setDirty(false)
+    useWorldStore.getState().addServiceToServer(serverId, { ...defaultDraft('api'), name: 'api' })
     expect(useFileStore.getState().dirty).toBe(true)
   })
 })

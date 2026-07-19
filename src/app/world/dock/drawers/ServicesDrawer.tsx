@@ -14,8 +14,10 @@
 // "first resident blueprint" convention for its consequence hints).
 import { useState, type ReactElement } from 'react'
 import { SpreadControl } from './SpreadControl'
+import { AddServiceForm } from './AddServiceForm'
 import { useWorldStore } from '../../../store/world.store'
 import { HEALTH_COLOR } from '../../server/healthColor'
+import { isDbServerKind } from '../../../../lib/world/types'
 import type { Placement, Server, WorldDoc, CompiledWorld, InstanceId } from '../../../../lib/world/types'
 import type { InstanceMetrics } from '../../../../lib/worldEngine/types'
 
@@ -41,6 +43,10 @@ export interface ServicesDrawerProps {
 
 export function ServicesDrawer({ server, doc, compiled, running, liveInstances }: ServicesDrawerProps): ReactElement {
   const [mounting, setMounting] = useState(false)
+  const [adding, setAdding] = useState(false)
+  // An appliance box (a DB) owns exactly one service and accepts no others, so it offers no way
+  // to author or mount another — the same rule spread's canHost() enforces on the model side.
+  const isAppliance = isDbServerKind(server.kind)
   const placements = Object.values(doc.placements).filter(p => p.serverId === server.id)
   const blueprints = Object.values(doc.blueprints)
 
@@ -165,6 +171,31 @@ export function ServicesDrawer({ server, doc, compiled, running, liveInstances }
           + mount a blueprint…
         </div>
       )}
+
+      {/* Two distinct actions, deliberately both kept:
+            "add a service"      — author a NEW global service and place it here (the door)
+            "mount a blueprint…" — attach a service that ALREADY exists to this second host
+          The second is how you hand-place a replica without spread, so the new form augments it
+          rather than replacing it. An appliance box is excluded: it owns exactly one service. */}
+      {!isAppliance && (adding ? (
+        <AddServiceForm serverId={server.id} running={running} onDone={() => setAdding(false)} />
+      ) : (
+        <div
+          role="button" tabIndex={running ? -1 : 0} data-testid="add-service-ghost"
+          aria-disabled={running}
+          style={{
+            fontSize: 10, color: 'var(--color-text-muted)', padding: '6px 6px',
+            cursor: running ? 'default' : 'pointer', opacity: running ? 0.5 : 1,
+          }}
+          title={running ? 'stop the simulation to edit' : undefined}
+          onClick={() => { if (!running) setAdding(true) }}
+          onKeyDown={e => {
+            if ((e.key === 'Enter' || e.key === ' ') && !running) { e.preventDefault(); setAdding(true) }
+          }}
+        >
+          + add a service…
+        </div>
+      ))}
     </div>
   )
 }

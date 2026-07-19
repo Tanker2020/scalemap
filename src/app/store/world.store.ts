@@ -8,6 +8,7 @@ import type {
 } from '../../lib/world/types'
 import { planReachability, applyReachabilityPlan } from '../../lib/world/connections'
 import { planSpread } from '../../lib/world/spread'
+import { draftWorkload, draftPorts, type ServiceDraft } from '../../lib/world/serviceDraft'
 import { getPreset } from '../../lib/world/instanceCatalog'
 import {
   createWorld, createRegion, createAz, createServer, createDbServer, createBlueprint, createPlacement,
@@ -101,6 +102,9 @@ interface WorldStore {
     { serverId: string; blueprintId: string; placementId: string }
   /** Replicates a blueprint into each target AZ (reusing a fitting host, else creating one). */
   spreadBlueprint: (blueprintId: string, targetAzIds: string[]) => void
+  /** Authors a NEW global service and places it on this host, in one undo step. */
+  addServiceToServer: (serverId: string, draft: ServiceDraft) =>
+    { blueprintId: string; placementId: string }
   updateServer: (id: string, patch: Partial<Server>) => void
   removeServer: (id: string) => void
   addBlueprint: (name: string) => string
@@ -210,6 +214,25 @@ export const useWorldStore = create<WorldStore>((set, get) => {
         placements: { ...d.placements, [placement.id]: placement },
       }))
       return { serverId: server.id, blueprintId: blueprint.id, placementId: placement.id }
+    },
+    // The "door": authoring a service from a host creates a normal GLOBAL service record and a
+    // placement binding it here. The host is an entry point, not an owner — `ownerServerKind`
+    // stays null (only appliance boxes stamp it), so this service can later be spread, mounted on
+    // other hosts, or edited from any surface. One mutate(): create-and-place is one action to
+    // the user, and undoing it must not strand a blueprint nothing runs.
+    addServiceToServer: (serverId, draft) => {
+      const bp = createBlueprint(draft.name, Object.keys(get().doc.blueprints).length)
+      bp.kind = draft.kind
+      bp.workload = draft.workload ?? draftWorkload(draft.kind, draft.cost, draft.memory)
+      bp.ports = draftPorts(draft)
+      const placement = createPlacement(bp.id, serverId)
+
+      mutate(d => ({
+        ...d,
+        blueprints: { ...d.blueprints, [bp.id]: bp },
+        placements: { ...d.placements, [placement.id]: placement },
+      }))
+      return { blueprintId: bp.id, placementId: placement.id }
     },
     // Applies planSpread's whole plan in ONE mutate(): a half-applied spread — a freshly created
     // host with no placement on it — is not a state undo should be able to land in. Bails BEFORE
