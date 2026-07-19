@@ -117,6 +117,8 @@ interface WorldStore {
   connectServices: (fromBpId: string, target: DependencyTarget, opts: { port: number; protocol: BlueprintDependency['protocol']; autoProvision: boolean }) => string
   disconnectServices: (fromBpId: string, depId: string) => void
   fixReachability: (fromBpId: string, depId: string) => void
+  /** Sets a dependency's read/write split (node-model Phase 3); clamped to [0,1]. */
+  setDependencyWriteFraction: (fromBpId: string, depId: string, writeFraction: number) => void
   setInternetFacing: (bpId: string, port: number, exposed: boolean) => void
   // Connections-editor node layout: store a single dragged node's override (one undo step per
   // drag) or clear every override back to the auto tree-layout ("auto-arrange").
@@ -317,6 +319,15 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       const dep = d.blueprints[fromBpId]?.dependencies.find(x => x.id === depId)
       if (!dep) return d
       return applyReachabilityPlan(d, planReachability(d, dep.target, dep.port, 'internal'))
+    }),
+    setDependencyWriteFraction: (fromBpId, depId, writeFraction) => mutate(d => {
+      const bp = d.blueprints[fromBpId]
+      if (!bp) return d
+      const w = Math.min(1, Math.max(0, writeFraction))
+      return { ...d, blueprints: { ...d.blueprints, [fromBpId]: {
+        ...bp,
+        dependencies: bp.dependencies.map(dep => dep.id === depId ? { ...dep, writeFraction: w } : dep),
+      } } }
     }),
     setInternetFacing: (bpId, port, exposed) => mutate(d => {
       const bp = d.blueprints[bpId]

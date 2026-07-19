@@ -149,6 +149,12 @@ export interface BlueprintDependency {
   port: number
   protocol: 'http' | 'db' | 'event' | 'stream'
   packetTemplateId: number | null
+  // Fraction of this dependency's call volume that MUTATES the target, 0..1 (node-model Phase 3).
+  // Only meaningful when the target is a DB blueprint: writes route to the primary (SQL) / all
+  // nodes (NoSQL), reads to the replicas. Absent ⇒ 0 (pure reads), which for a non-DB target is
+  // the only sensible value and preserves the pre-Phase-3 even fan-out exactly. Optional +
+  // normalized-on-load, like the other additive fields, until Phase 5's format cutover.
+  writeFraction?: number
 }
 
 // What a service IS, as opposed to what it costs to run. Drives which authoring form the user

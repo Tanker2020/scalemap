@@ -2640,3 +2640,52 @@ defaults, port emission), `AddServiceForm.test.tsx` (9 — create+place, name re
 written through, worker hides ports, no db kind offered, Advanced override wins, preset overrides
 a hand-tuned value, closes after adding, edit-lock), `world.store.test.ts` `addServiceToServer`
 block (6), `Drawer.test.tsx` scroll-not-clip case.
+
+## DB read/write routing + SQL/NoSQL fork — node-model Phase 3 core (2026-07-19)
+
+The behavioral heart of the redesign: a DB dependency now carries reads and writes to different
+destinations, and SQL vs NoSQL is the one meaningful fork.
+
+**Data model.** `BlueprintDependency` gained `writeFraction?: number` (0..1, absent ⇒ 0). Optional
++ rides inside `blueprints`, so it round-trips through the serializer with no dedicated handling
+(pinned by a serializer test) and keeps Phase 3 non-breaking until Phase 5's cutover.
+
+**The seam — `worldEngine/flows.ts`.** The even fan-out at the old `share = admitted / candidates.length`
+line is replaced by a pure, exported helper `splitDependencyShares(admitted, candidates, instances,
+targetBp, writeFraction)` returning a per-candidate share array:
+- Non-DB target (or `dbConfig` absent): even split, **byte-identical to pre-Phase-3** — this is
+  what keeps the engine's golden tests unchanged (verified: the whole worldEngine suite passed
+  untouched after the change).
+- SQL: writes → the primary(s); reads → the replicas, or the primary when there are none (reads
+  are never dropped). Writes concentrating on one primary IS the single-writer ceiling — the
+  primary's host CPU (`hostScheduler.admittedScale`) caps them and the SPOF falls out for free;
+  no new capacity subsystem.
+- NoSQL: writes AND reads spread across every node — adding nodes raises write capacity, no SPOF.
+
+The helper is gated so the hot path pays nothing for the common non-DB case (early return before
+any role inspection), which matters because this is inside the per-step BFS the perf bench guards.
+`routing.ts` was deliberately NOT given an `azBlueprintWriteTargets` table (the plan floated one):
+the helper partitions from the candidate paths + live instance roles it already has, so a parallel
+routing table would be redundant surface area.
+
+**Cluster identity, reused from Phase 1.** "The blueprint IS the cluster" — a DB's primary and
+replicas are placements of one blueprint distinguished by `Placement.role`. `spreadBlueprint`
+(Phase 2) already creates replicas with `role: 'replica'`, so spreading a DB across AZs is exactly
+what builds a read-scaling cluster. Phase 3 consumes that role with no new grouping concept.
+
+**Authoring.** `world.store.setDependencyWriteFraction` (clamped, undoable) + a read/write slider
+in `connections/ConnectionsView.tsx`'s `EdgeInspector`, shown ONLY when the edge targets a db-*
+blueprint. The caption names where writes land ("writes go to the primary (single-writer ceiling)"
+for SQL, "spread across every node (scales out)" for NoSQL) so the slider's consequence is legible.
+Verified end to end in the app: dragged web→sql-1, set writes to 30%, confirmed the split.
+
+**Not yet (Phase 3 remainder):** the cloud-managed DB path — a per-provider DB instance-class
+catalog in `cloudRegistry.ts` (class → vCPU/RAM/writeRps/$/hr) and an explicit write-rps ceiling
+applied at the managed terminal in `flows.ts` (managed targets have no capacity model today,
+`flows.ts` `if (path.to.kind === 'managed') continue`). The self-hosted path above is the primary
+story and is complete; the cloud ceiling is separable and deferred.
+
+Tests: `readWriteSplit.test.ts` (8 — the pure share math: even non-DB split, SQL primary/replica
+routing, no-replica and no-primary fallbacks, NoSQL spread, clamping, volume conservation),
+`flows.test.ts` DB block (4 — through real compile+solveFlows), `world.store.test.ts`
+`setDependencyWriteFraction` (3), `serializer.test.ts` writeFraction round-trip.

@@ -10,6 +10,7 @@
 //   depth cap 8; cycles guarded per request chain (visited set carried on each item)
 import type {
   CompiledWorld, WorldDoc, CompiledPath, InstanceId, ServerId, HopClass,
+  ServiceBlueprint, ServiceInstance,
 } from '../world/types'
 import type { HealthState } from './types'
 import type { Rng } from './rng'
@@ -32,6 +33,68 @@ const EPSILON_RPS = 1e-9            // below this, a contribution is dead — do
 // latency samples log-normal with p50 = cpuMsPerRequest and this p99 spread — legacy
 // NODE_SIM_DEFAULTS spreads ran 10-12.5x. SKELETON CONCERNS #5.
 const SERVICE_P99_OVER_P50 = 10
+
+// Splits `admitted` rps across a dependency's compiled candidate paths (node-model Phase 3).
+//
+// The pre-Phase-3 behavior — and still the behavior for every NON-DB dependency — is an even
+// split across all candidates. This function only diverges when the target is a DB blueprint,
+// where the call volume carries reads and writes with different destinations:
+//
+//   SQL   — writes → the primary(s); reads → the replicas (or the primary when there are none,
+//           so a single-node DB still serves its reads). Writes concentrating on one primary is
+//           the single-writer ceiling: the primary's host CPU (hostScheduler.admittedScale) caps
+//           them, and the SPOF falls out for free.
+//   NoSQL — writes AND reads → every node. Adding nodes raises write capacity; no write SPOF.
+//
+// Returns a share per candidate, aligned to `candidates` order, summing to `admitted` (given at
+// least one eligible target in each non-empty pool). Blocked candidates are included and get their
+// share like today — the caller can't see the misconfig, so the attempt is still made and refused.
+export function splitDependencyShares(
+  admitted: number,
+  candidates: CompiledPath[],
+  instances: Record<InstanceId, ServiceInstance>,
+  targetBp: ServiceBlueprint | undefined,
+  writeFraction: number,
+): number[] {
+  const n = candidates.length
+  const even = admitted / n
+
+  // Non-DB target (or unknown): even split, exactly as before Phase 3. writeFraction is
+  // meaningless without primary/replica semantics, so it is ignored here.
+  const engine = targetBp?.dbConfig?.engine
+  if (!engine) return candidates.map(() => even)
+
+  const w = Math.min(1, Math.max(0, writeFraction))
+
+  if (engine === 'nosql') {
+    // Every node is both a read and a write target, so each candidate's total is just the even
+    // share — but the write/read SPLIT is what downstream capacity accounting cares about.
+    return candidates.map(() => even)
+  }
+
+  // SQL: partition by role. roleOf falls back to 'primary' for a managed target (a cloud DB has
+  // no primary/replica instances here) or a stale id — treating it as writable is the safe default.
+  const isPrimary = candidates.map(p =>
+    p.to.kind === 'instance' ? (instances[p.to.instanceId]?.role ?? 'primary') === 'primary' : true)
+  const primaryCount = isPrimary.filter(Boolean).length
+  const replicaCount = n - primaryCount
+
+  // A candidate is a WRITE target if it's a primary — or, in the degenerate no-primary case,
+  // every candidate is (writes must land somewhere). A candidate is a READ target if it's a
+  // replica — or, when there are no replicas, the primaries serve reads too.
+  const noPrimary = primaryCount === 0
+  const noReplica = replicaCount === 0
+  const isWriteTarget = (i: number): boolean => noPrimary || isPrimary[i]
+  const isReadTarget = (i: number): boolean => noReplica ? isWriteTarget(i) : !isPrimary[i]
+
+  const writeCount = noPrimary ? n : primaryCount
+  const readCount = noReplica ? (noPrimary ? n : primaryCount) : replicaCount
+  const writeEach = w <= 0 ? 0 : (admitted * w) / writeCount
+  const readEach = w >= 1 ? 0 : (admitted * (1 - w)) / readCount
+
+  return candidates.map((_, i) =>
+    (isWriteTarget(i) ? writeEach : 0) + (isReadTarget(i) ? readEach : 0))
+}
 
 export interface FlowInput {
   compiled: CompiledWorld
@@ -187,12 +250,17 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
       }
       const candidates = byDep?.get(dep.id)
       if (!candidates || candidates.length === 0) continue   // dangling dep: compile emitted nothing
-      // Call-per-request: the dependency sees the FULL admitted rps, split evenly across
-      // ALL compiled targets — blocked ones included (the caller can't see the misconfig).
-      const share = admitted / candidates.length
-      if (share <= EPSILON_RPS) continue
+      // Call-per-request: the dependency sees the FULL admitted rps. For a non-DB target this is
+      // an even split across ALL compiled targets (blocked ones included — the caller can't see
+      // the misconfig); for a DB target it partitions into writes→primary / reads→replicas.
+      const targetBp = dep.target.kind === 'blueprint' ? doc.blueprints[dep.target.blueprintId] : undefined
+      const shares = splitDependencyShares(admitted, candidates, compiled.instances, targetBp, dep.writeFraction ?? 0)
 
-      for (const path of candidates) {
+      for (let ci = 0; ci < candidates.length; ci++) {
+        const path = candidates[ci]
+        const share = shares[ci]
+        if (share <= EPSILON_RPS) continue   // this target received no traffic (e.g. reads-only DB primary)
+
         const target = path.to.kind === 'instance'
           ? { toInstanceId: path.to.instanceId }
           : { toManagedServiceId: path.to.managedServiceId }

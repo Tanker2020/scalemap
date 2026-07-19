@@ -210,16 +210,29 @@ export function ConnectionsView({ open, onClose }: ConnectionsViewProps): ReactE
             )}
           </div>
 
-          {selectedEdge && (
-            <EdgeInspector edge={selectedEdge} nodeById={nodeById}
-              onFix={() => store.fixReachability(selectedEdge.fromId, selectedEdge.id)}
-              onRemove={() => {
-                if (selectedEdge.fromId === INTERNET_NODE) store.setInternetFacing(selectedEdge.toId, selectedEdge.port, false)
-                else store.disconnectServices(selectedEdge.fromId, selectedEdge.id)
-                setSelectedEdgeId(null)
-              }}
-              onClose={() => setSelectedEdgeId(null)} />
-          )}
+          {selectedEdge && (() => {
+            // The read/write control appears only when the edge points AT a DB blueprint — that
+            // is the only target where the primary/replica split means anything. Its current value
+            // and the setter come from here (where the doc is in scope), keeping EdgeInspector a
+            // pure presentational component.
+            const targetBp = doc.blueprints[selectedEdge.toId]
+            const dbTarget = targetBp?.kind === 'db-sql' || targetBp?.kind === 'db-nosql'
+            const currentDep = doc.blueprints[selectedEdge.fromId]?.dependencies.find(x => x.id === selectedEdge.id)
+            return (
+              <EdgeInspector edge={selectedEdge} nodeById={nodeById}
+                dbTarget={dbTarget}
+                dbEngine={targetBp?.dbConfig?.engine ?? null}
+                writeFraction={currentDep?.writeFraction ?? 0}
+                onWriteFraction={w => store.setDependencyWriteFraction(selectedEdge.fromId, selectedEdge.id, w)}
+                onFix={() => store.fixReachability(selectedEdge.fromId, selectedEdge.id)}
+                onRemove={() => {
+                  if (selectedEdge.fromId === INTERNET_NODE) store.setInternetFacing(selectedEdge.toId, selectedEdge.port, false)
+                  else store.disconnectServices(selectedEdge.fromId, selectedEdge.id)
+                  setSelectedEdgeId(null)
+                }}
+                onClose={() => setSelectedEdgeId(null)} />
+            )
+          })()}
         </div>
 
         {draft && (
@@ -316,10 +329,13 @@ function DraftBar({ draft, nodeById, onChange, onCommit, onCancel }: {
   )
 }
 
-function EdgeInspector({ edge, nodeById, onFix, onRemove, onClose }: {
-  edge: ConnEdge; nodeById: Record<string, ConnNode>; onFix: () => void; onRemove: () => void; onClose: () => void
+function EdgeInspector({ edge, nodeById, dbTarget, dbEngine, writeFraction, onWriteFraction, onFix, onRemove, onClose }: {
+  edge: ConnEdge; nodeById: Record<string, ConnNode>
+  dbTarget: boolean; dbEngine: 'sql' | 'nosql' | null; writeFraction: number; onWriteFraction: (w: number) => void
+  onFix: () => void; onRemove: () => void; onClose: () => void
 }) {
   const fixable = edge.fromId !== INTERNET_NODE && (edge.status === 'blocked' || edge.status === 'partial')
+  const writePct = Math.round(writeFraction * 100)
   return (
     <div style={{ width: 240, borderLeft: '1px solid var(--color-node-border)', padding: 14, background: 'var(--color-surface)', overflow: 'auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -332,6 +348,28 @@ function EdgeInspector({ edge, nodeById, onFix, onRemove, onClose }: {
         {edge.totalPaths > 0 && edge.status !== 'permitted' && ` (${edge.blockedPaths}/${edge.totalPaths} blocked)`}
       </div>
       {edge.blockReason && <div style={{ marginTop: 6, fontSize: 10, color: 'var(--color-text-secondary)' }}>{edge.blockReason.detail}</div>}
+      {dbTarget && (
+        // Read/write split (node-model Phase 3): writes route to the primary (SQL) or all nodes
+        // (NoSQL), reads to the replicas. The caption names where writes land so the consequence
+        // of the slider is legible — for SQL that primary is the single-writer bottleneck.
+        <div style={{ marginTop: 12, borderTop: '1px solid var(--color-node-border)', paddingTop: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--color-text-secondary)' }}>
+            <span>reads {100 - writePct}%</span>
+            <span>writes {writePct}%</span>
+          </div>
+          <input
+            type="range" min={0} max={100} step={5} value={writePct}
+            aria-label="write fraction"
+            style={{ width: '100%', marginTop: 4 }}
+            onChange={e => onWriteFraction(Number(e.target.value) / 100)}
+          />
+          <div style={{ marginTop: 4, fontSize: 9.5, color: 'var(--color-text-muted)' }}>
+            {dbEngine === 'nosql'
+              ? 'writes spread across every node (scales out)'
+              : 'writes go to the primary (single-writer ceiling)'}
+          </div>
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 6, marginTop: 14, flexWrap: 'wrap' }}>
         {fixable && <button data-testid="conn-fix" style={{ ...smallBtn, color: 'var(--color-success)' }} onClick={onFix}>Open firewall (fix)</button>}
         <button data-testid="conn-remove" style={{ ...smallBtn, color: 'var(--color-danger)' }} onClick={onRemove}>

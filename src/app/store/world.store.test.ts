@@ -134,6 +134,43 @@ describe('world.store — addServiceToServer', () => {
   })
 })
 
+describe('world.store — setDependencyWriteFraction', () => {
+  function apiDepDb() {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const srv = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const apiId = useWorldStore.getState().addBlueprint('api')
+    const dbId = useWorldStore.getState().addBlueprint('db')
+    useWorldStore.getState().addPlacement(apiId, srv)
+    const depId = useWorldStore.getState().connectServices(apiId, { kind: 'blueprint', blueprintId: dbId }, { port: 5432, protocol: 'db', autoProvision: false })
+    return { apiId, dbId, depId }
+  }
+
+  it('sets the write fraction on the dependency', () => {
+    const { apiId, depId } = apiDepDb()
+    useWorldStore.getState().setDependencyWriteFraction(apiId, depId, 0.25)
+    const dep = useWorldStore.getState().doc.blueprints[apiId].dependencies.find(d => d.id === depId)
+    expect(dep?.writeFraction).toBe(0.25)
+  })
+
+  it('clamps into [0,1]', () => {
+    const { apiId, depId } = apiDepDb()
+    useWorldStore.getState().setDependencyWriteFraction(apiId, depId, 5)
+    expect(useWorldStore.getState().doc.blueprints[apiId].dependencies[0].writeFraction).toBe(1)
+    useWorldStore.getState().setDependencyWriteFraction(apiId, depId, -3)
+    expect(useWorldStore.getState().doc.blueprints[apiId].dependencies[0].writeFraction).toBe(0)
+  })
+
+  it('marks the file dirty and is undoable', () => {
+    const { apiId, depId } = apiDepDb()
+    useFileStore.getState().setDirty(false)
+    useWorldStore.getState().setDependencyWriteFraction(apiId, depId, 0.5)
+    expect(useFileStore.getState().dirty).toBe(true)
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc.blueprints[apiId].dependencies[0].writeFraction ?? 0).toBe(0)
+  })
+})
+
 describe('world.store — spread', () => {
   function seedTwoAzWorld() {
     const regionId = useWorldStore.getState().addRegion('us-east-1')

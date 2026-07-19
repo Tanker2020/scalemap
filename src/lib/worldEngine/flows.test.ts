@@ -288,3 +288,85 @@ describe('solveFlows — byte totals and latency', () => {
     expect(l2).toBeCloseTo(l1 * 2, 9)
   })
 })
+
+// ─── DB read/write routing (node-model Phase 3) ──────────────────────────────
+// A DB cluster is one blueprint with a primary placement and replica placements. Writes route to
+// the primary, reads to the replicas — driven by BlueprintDependency.writeFraction. These tests
+// go through the REAL compile + solveFlows, complementing readWriteSplit.test.ts's unit coverage
+// of the share math.
+describe('solveFlows — DB read/write routing', () => {
+  // Build an api that depends on a SQL DB cluster: 1 primary instance + `replicas` replica
+  // instances (each its own placement on the shared server), with the given writeFraction.
+  function apiToSqlCluster(writeFraction: number, replicas: number, engine: 'sql' | 'nosql' = 'sql') {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+
+    const db = createBlueprint('db', 1)
+    db.kind = engine === 'nosql' ? 'db-nosql' : 'db-sql'
+    db.dbConfig = { engine, storageGb: 100 }
+    doc.blueprints[db.id] = db
+
+    const primaryPl = createPlacement(db.id, server.id)   // role 'primary' by default
+    doc.placements[primaryPl.id] = primaryPl
+    const primaryIid = instanceId(primaryPl.id, 0)
+
+    const replicaIids: string[] = []
+    for (let i = 0; i < replicas; i++) {
+      const rp = createPlacement(db.id, server.id)
+      rp.role = 'replica'
+      doc.placements[rp.id] = rp
+      replicaIids.push(instanceId(rp.id, 0))
+    }
+
+    api.bp.dependencies = [{ ...dep('d-db', db.id), writeFraction }]
+    return { doc, api, primaryIid, replicaIids }
+  }
+
+  it('routes SQL writes to the primary and reads to the replica', () => {
+    const { doc, api, primaryIid, replicaIids } = apiToSqlCluster(0.2, 1)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 1000 }))
+    // 200 writes → primary; 800 reads → the single replica.
+    expect(flows[primaryIid].offeredRps).toBeCloseTo(200)
+    expect(flows[replicaIids[0]].offeredRps).toBeCloseTo(800)
+  })
+
+  it('spreads reads across multiple SQL replicas while the primary takes only writes', () => {
+    const { doc, api, primaryIid, replicaIids } = apiToSqlCluster(0.1, 2)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 1000 }))
+    expect(flows[primaryIid].offeredRps).toBeCloseTo(100)             // 10% writes
+    expect(flows[replicaIids[0]].offeredRps).toBeCloseTo(450)         // 900 reads / 2
+    expect(flows[replicaIids[1]].offeredRps).toBeCloseTo(450)
+  })
+
+  // The SQL single-writer ceiling: NoSQL spreads writes across every node, so the same cluster
+  // puts LESS load on any one node than SQL does on its lone primary.
+  it('spreads NoSQL writes across every node instead of concentrating on one', () => {
+    const { doc, api, primaryIid, replicaIids } = apiToSqlCluster(0.5, 2, 'nosql')
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 900 }))
+    // Every node (primary + 2 replicas) gets an equal 300 total; no single write bottleneck.
+    expect(flows[primaryIid].offeredRps).toBeCloseTo(300)
+    expect(flows[replicaIids[0]].offeredRps).toBeCloseTo(300)
+    expect(flows[replicaIids[1]].offeredRps).toBeCloseTo(300)
+  })
+
+  // A dependency with no writeFraction (undefined) on a DB target means pure reads — the primary
+  // is spared entirely when replicas exist.
+  it('treats an absent writeFraction as pure reads', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const db = createBlueprint('db', 1)
+    db.kind = 'db-sql'; db.dbConfig = { engine: 'sql', storageGb: 100 }
+    doc.blueprints[db.id] = db
+    const primaryPl = createPlacement(db.id, server.id)
+    doc.placements[primaryPl.id] = primaryPl
+    const replicaPl = createPlacement(db.id, server.id); replicaPl.role = 'replica'
+    doc.placements[replicaPl.id] = replicaPl
+    api.bp.dependencies = [dep('d-db', db.id)]   // no writeFraction
+
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 500 }))
+    // A zero-traffic instance gets no flow record at all (as any idle instance does today),
+    // so read it defensively — the point is the primary saw no load.
+    expect(flows[instanceId(primaryPl.id, 0)]?.offeredRps ?? 0).toBeCloseTo(0)
+    expect(flows[instanceId(replicaPl.id, 0)].offeredRps).toBeCloseTo(500)
+  })
+})

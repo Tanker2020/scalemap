@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { serializeWorld, deserializeWorld } from './serializer'
-import { createWorld, createRegion, createAz, createServer, createRack } from './world/factories'
+import { createWorld, createRegion, createAz, createServer, createRack, createBlueprint } from './world/factories'
 
 describe('scalemap v2 serializer', () => {
   it('round-trips a world document with meta and viewState', () => {
@@ -120,6 +120,21 @@ describe('scalemap v2 serializer', () => {
     const parsed = deserializeWorld(raw)
     expect(parsed.world.packets).toEqual(world.packets)
     expect(parsed.world).toEqual(world)
+  })
+
+  // node-model Phase 3: writeFraction rides inside a blueprint's dependency, so it needs no
+  // dedicated serializer handling — but pin the round-trip so a future serializer change can't
+  // silently drop it.
+  it('round-trips a dependency writeFraction', () => {
+    const world = createWorld()
+    const bp = createBlueprint('api', 0)
+    bp.dependencies = [{
+      id: 'dep-1', target: { kind: 'blueprint', blueprintId: 'bp-db' },
+      port: 5432, protocol: 'db', packetTemplateId: null, writeFraction: 0.35,
+    }]
+    world.blueprints[bp.id] = bp
+    const parsed = deserializeWorld(serializeWorld(world, 'wf', '2026-07-19T00:00:00.000Z'))
+    expect(parsed.world.blueprints[bp.id].dependencies[0].writeFraction).toBe(0.35)
   })
 
   it('round-trips racks and a null server.rack', () => {
