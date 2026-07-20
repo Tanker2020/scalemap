@@ -77,6 +77,25 @@ describe('computeWorldCost', () => {
     expect(computeWorldCost(doc, null).monthlyUsd).toBeGreaterThan(0)
   })
 
+  // node-model Phase 3: a cloud DB's instance class drives its price. A store-authored dbSql is
+  // born on sql.small ($0.10/hr → ~$73/mo) + 100GB storage — the class-based path, not the
+  // registry's flat instanceHourly rate.
+  it('prices a cloud DB from its instance class, and replicas raise it', () => {
+    useWorldStore.getState().newWorld()
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const msId = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'az', azId }, 5432, 'aws')
+
+    const base = computeWorldCost(useWorldStore.getState().doc, null).monthlyUsd
+    // sql.small $0.10/hr × 730 + 100GB × $0.115 = 73 + 11.5 = 84.5.
+    expect(base).toBeCloseTo(0.10 * 730 + 100 * 0.115, 1)
+
+    useWorldStore.getState().updateManagedService(msId, { replicaCount: 2 })
+    const withReplicas = computeWorldCost(useWorldStore.getState().doc, null).monthlyUsd
+    // 3 instances now (primary + 2 replicas): compute triples, storage unchanged.
+    expect(withReplicas).toBeCloseTo(0.10 * 730 * 3 + 100 * 0.115, 1)
+  })
+
   it('prices an authored regional load balancer at aws LB-hours, folded into its region', () => {
     const { doc, regionId } = twoServerWorld()
     const baseline = computeWorldCost(doc, null)

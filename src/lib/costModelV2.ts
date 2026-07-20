@@ -1,8 +1,13 @@
 // World-level monthly cost projection (spec decision 8): Σ server hourlyUsd×730 + managed
 // service pricing (reused from cloudRegistry) + egress from live WorldMetrics byte rates.
-import type { WorldDoc, RegionId, AzId } from './world/types'
+import type { WorldDoc, RegionId, AzId, ManagedService } from './world/types'
 import type { WorldMetrics } from './worldEngine/types'
 import { getServiceSpec, egressMonthlyCost, type CloudProvider } from './cloudRegistry'
+import { getDbInstanceClass } from './dbInstanceClasses'
+
+// Provisioned-storage rate for a cloud-managed DB ($/GB-month) — the gp3-class rate the dbSql
+// registry entry already uses. A single rate (not a tier ladder) matches how DB storage is priced.
+const DB_STORAGE_USD_PER_GB_MONTH = 0.115
 
 export const HOURS_PER_MONTH = 730
 const CROSS_AZ_USD_PER_GB = 0.01
@@ -47,8 +52,19 @@ function loadBalancerMonthlyUsd(): number {
   return usd
 }
 
-function managedServiceMonthlyUsd(nodeType: string, provider: CloudProvider): number {
-  const spec = getServiceSpec(MANAGED_TYPE_ALIASES[nodeType] ?? nodeType, provider)
+function managedServiceMonthlyUsd(ms: ManagedService): number {
+  // Cloud-managed DB with a chosen instance class (node-model Phase 3): the class fixes the base
+  // hourly, replicas add proportional cost, and provisioned storage is billed per GB. This wins
+  // over the registry's flat rate because the class IS the sizing decision.
+  const dbClass = getDbInstanceClass(ms.instanceClassId)
+  if (dbClass) {
+    const instances = 1 + (ms.replicaCount ?? 0) + (ms.multiAz ? 1 : 0)   // primary + replicas + standby
+    const compute = dbClass.hourlyUsd * instances * HOURS_PER_MONTH
+    const storage = (ms.storageGb ?? 0) * DB_STORAGE_USD_PER_GB_MONTH
+    return compute + storage
+  }
+
+  const spec = getServiceSpec(MANAGED_TYPE_ALIASES[ms.nodeType] ?? ms.nodeType, ms.provider)
   if (!spec) return 0   // 'generic' provider or unmapped nodeType — documented Phase-2 $0
   let usd = 0
   for (const c of spec.pricing) {
@@ -73,7 +89,7 @@ export function computeWorldCost(doc: WorldDoc, world: WorldMetrics | null): Wor
   }
 
   for (const ms of Object.values(doc.managedServices)) {
-    const usd = managedServiceMonthlyUsd(ms.nodeType, ms.provider)
+    const usd = managedServiceMonthlyUsd(ms)
     if (usd === 0) continue
     if (ms.scope.kind === 'az') {
       bump(byAzMap, ms.scope.azId, usd)

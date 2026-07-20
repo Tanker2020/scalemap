@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { splitDependencyShares } from './flows'
-import type { CompiledPath, ServiceBlueprint, ServiceInstance, InstanceId } from '../world/types'
+import { splitDependencyShares, managedDbRefusedRps } from './flows'
+import type { CompiledPath, ServiceBlueprint, ServiceInstance, InstanceId, ManagedService } from '../world/types'
 
 // Minimal fakes: splitDependencyShares only reads role off instances and kind/engine off the
 // target blueprint, so a full compile is unnecessary here (solveFlows integration lives in
@@ -114,5 +114,56 @@ describe('splitDependencyShares', () => {
     expect(byTarget(candidates, over).p).toBeCloseTo(500)   // treated as 1
     const under = splitDependencyShares(500, candidates, instances, bp('db-sql'), -2)
     expect(byTarget(candidates, under).r1).toBeCloseTo(500)  // treated as 0
+  })
+})
+
+
+// The cloud-managed DB write ceiling: a managed DB has no host, so its capacity comes from the
+// chosen instance class. Demand over the ceiling is refused (throttled), like a too-small RDS.
+describe('managedDbRefusedRps', () => {
+  function db(nodeType: string, instanceClassId: string | null, over: Partial<ManagedService> = {}): ManagedService {
+    return { id: 'ms', label: 'db', nodeType, scope: { kind: 'region', regionId: 'r' }, provider: 'aws', port: 5432, instanceClassId, ...over }
+  }
+
+  it('refuses nothing when the managed service is not a DB', () => {
+    expect(managedDbRefusedRps(9999, 1, db('queue', 'sql.small'))).toBe(0)
+  })
+
+  it('refuses nothing when no instance class is set (back-compat: uncapped)', () => {
+    expect(managedDbRefusedRps(9999, 1, db('dbSql', null))).toBe(0)
+  })
+
+  it('admits writes under the class write ceiling', () => {
+    // sql.small writeRps = 500. 300 writes < 500 → nothing refused.
+    expect(managedDbRefusedRps(300, 1, db('dbSql', 'sql.small'))).toBeCloseTo(0)
+  })
+
+  it('refuses SQL writes above the single-writer ceiling', () => {
+    // sql.small writeRps = 500. 800 writes → 300 refused. Reads (0 here) irrelevant.
+    expect(managedDbRefusedRps(800, 1, db('dbSql', 'sql.small'))).toBeCloseTo(300)
+  })
+
+  // SQL replicas add READ capacity, not write capacity — the single-writer ceiling is unmoved.
+  it('does not raise the SQL write ceiling with replicas', () => {
+    expect(managedDbRefusedRps(800, 1, db('dbSql', 'sql.small', { replicaCount: 3 }))).toBeCloseTo(300)
+  })
+
+  // NoSQL scales writes with nodes: 2 replicas → 3 nodes → 3× the per-node ceiling.
+  it('raises the NoSQL write ceiling with nodes', () => {
+    // nosql.small writeRps = 1000/node. 3 nodes → 3000 ceiling. 2500 writes → 0 refused.
+    expect(managedDbRefusedRps(2500, 1, db('dbNoSql', 'nosql.small', { replicaCount: 2 }))).toBeCloseTo(0)
+    // 3500 writes → 500 refused.
+    expect(managedDbRefusedRps(3500, 1, db('dbNoSql', 'nosql.small', { replicaCount: 2 }))).toBeCloseTo(500)
+  })
+
+  it('refuses reads above the read ceiling (replicas raise it)', () => {
+    // sql.small readRps = 2500. Pure reads (w=0) of 6000 with 1 replica → ceiling 5000 → 1000 refused.
+    expect(managedDbRefusedRps(6000, 0, db('dbSql', 'sql.small', { replicaCount: 1 }))).toBeCloseTo(1000)
+  })
+
+  it('sums write and read overflow independently', () => {
+    // sql.small: writeRps 500, readRps 2500. 1000 total, w=0.6 → 600 writes / 400 reads.
+    // writes 600 > 500 → 100 refused; reads 400 < 2500 → 0. Total 100.
+    expect(managedDbRefusedRps(1000, 0.6, db('dbSql', 'sql.small'))).toBeCloseTo(100)
   })
 })

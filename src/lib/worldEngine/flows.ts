@@ -10,12 +10,14 @@
 //   depth cap 8; cycles guarded per request chain (visited set carried on each item)
 import type {
   CompiledWorld, WorldDoc, CompiledPath, InstanceId, ServerId, HopClass,
-  ServiceBlueprint, ServiceInstance,
+  ServiceBlueprint, ServiceInstance, ManagedService,
 } from '../world/types'
+import { managedDbEngine } from '../world/types'
 import type { HealthState } from './types'
 import type { Rng } from './rng'
 import { sampleLatencyMs } from './latency'
 import { pathKey } from './breakers'
+import { getDbInstanceClass } from '../dbInstanceClasses'
 
 // 2KB per request in EACH direction (request out + response back, so every hop books
 // 2 x 2048 bytes per request). A deliberately simple Phase-2 constant — packet templates
@@ -94,6 +96,33 @@ export function splitDependencyShares(
 
   return candidates.map((_, i) =>
     (isWriteTarget(i) ? writeEach : 0) + (isReadTarget(i) ? readEach : 0))
+}
+
+// How much of `share` rps a cloud-managed DB REFUSES because it exceeds the instance class's
+// capacity (node-model Phase 3). A managed DB has no host, so unlike a self-hosted DB its ceiling
+// is not emergent from host CPU — the chosen class carries it explicitly. Returns 0 for a non-DB
+// managed service or one with no class set (back-compat: uncapped, the pre-Phase-3 behavior).
+//
+//   SQL   — writeRps is a SINGLE-writer ceiling; replicas add read capacity only, never write.
+//   NoSQL — writeRps is per-node, so nodes (1 primary + replicas) multiply it.
+//   Both  — replicas raise the read ceiling. multiAz is a failover standby: cost, not capacity.
+//
+// Writes and reads overflow INDEPENDENTLY (a write-bound workload can throttle while reads have
+// headroom, and vice-versa), so the refused amounts sum.
+export function managedDbRefusedRps(share: number, writeFraction: number, ms: ManagedService): number {
+  const engine = managedDbEngine(ms.nodeType)
+  if (!engine) return 0
+  const cls = getDbInstanceClass(ms.instanceClassId)
+  if (!cls) return 0   // uncapped until a class is chosen
+
+  const replicas = Math.max(0, ms.replicaCount ?? 0)
+  const writeCeiling = engine === 'nosql' ? cls.writeRps * (1 + replicas) : cls.writeRps
+  const readCeiling = cls.readRps * (1 + replicas)
+
+  const w = Math.min(1, Math.max(0, writeFraction))
+  const refusedWrite = Math.max(0, share * w - writeCeiling)
+  const refusedRead = Math.max(0, share * (1 - w) - readCeiling)
+  return refusedWrite + refusedRead
 }
 
 export interface FlowInput {
@@ -272,10 +301,28 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
           continue   // refused attempts carry no payload and reach nothing
         }
 
+        if (path.to.kind === 'managed') {
+          // Cloud-managed DB capacity (node-model Phase 3): the instance class caps writes/reads;
+          // over-ceiling demand is throttled — refused on the caller and shown as a blocked row,
+          // while the admitted remainder carries bytes. A non-DB managed target (or one with no
+          // class) refuses nothing, so this is byte-identical to before for everything else.
+          const ms = doc.managedServices[path.to.managedServiceId]
+          const refused = ms ? managedDbRefusedRps(share, dep.writeFraction ?? 0, ms) : 0
+          const admittedToMs = share - refused
+          if (admittedToMs > EPSILON_RPS) {
+            addDownstream(flow, dep.id, target, admittedToMs, path.hopClass, false)
+            bucketBytes(path.hopClass, admittedToMs)
+          }
+          if (refused > EPSILON_RPS) {
+            flow.refusedRps += refused
+            addDownstream(flow, dep.id, target, refused, path.hopClass, true)
+          }
+          continue   // managed targets are terminal — no capacity subtree to propagate into
+        }
+
         addDownstream(flow, dep.id, target, share, path.hopClass, false)
         bucketBytes(path.hopClass, share)
 
-        if (path.to.kind === 'managed') continue   // no capacity model in Phase 2
         const toId = path.to.instanceId
         if (item.visited.has(toId)) continue        // cycle guard: row recorded, no re-entry
         const visited = new Set(item.visited)

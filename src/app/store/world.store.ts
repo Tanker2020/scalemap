@@ -10,6 +10,8 @@ import { planReachability, applyReachabilityPlan } from '../../lib/world/connect
 import { planSpread } from '../../lib/world/spread'
 import { draftWorkload, draftPorts, type ServiceDraft } from '../../lib/world/serviceDraft'
 import { getPreset } from '../../lib/world/instanceCatalog'
+import { managedDbEngine } from '../../lib/world/types'
+import { defaultDbClassId } from '../../lib/dbInstanceClasses'
 import {
   createWorld, createRegion, createAz, createServer, createDbServer, createBlueprint, createPlacement,
   createPopulation, createRack, createLoadBalancer, nextWorldId, type InstancePresetLike,
@@ -128,6 +130,8 @@ interface WorldStore {
   updatePlacement: (id: string, patch: Partial<Placement>) => void
   removePlacement: (id: string) => void
   addManagedService: (nodeType: string, label: string, scope: ManagedScope, port: number, provider?: ManagedService['provider']) => string
+  /** Patches a managed service (e.g. a cloud DB's instance class / replicas / storage). */
+  updateManagedService: (id: string, patch: Partial<ManagedService>) => void
   removeManagedService: (id: string) => void
   addPopulation: (label: string, lat: number, lon: number) => string
   updatePopulation: (id: string, patch: Partial<ClientPopulation>) => void
@@ -362,9 +366,21 @@ export const useWorldStore = create<WorldStore>((set, get) => {
 
     addManagedService: (nodeType, label, scope, port, provider = 'generic') => {
       const id = nextWorldId('ms')
-      mutate(d => ({ ...d, managedServices: { ...d.managedServices, [id]: { id, label, nodeType, scope, provider, port } } }))
+      // A cloud-managed DB is born on the smallest class of its engine (node-model Phase 3), so its
+      // capacity ceiling and realistic pricing are live immediately — the user sizes up from there.
+      // Non-DB managed services carry none of these fields.
+      const engine = managedDbEngine(nodeType)
+      const dbFields = engine
+        ? { instanceClassId: defaultDbClassId(engine), replicaCount: 0, multiAz: false, storageGb: 100 }
+        : {}
+      mutate(d => ({ ...d, managedServices: { ...d.managedServices, [id]: { id, label, nodeType, scope, provider, port, ...dbFields } } }))
       return id
     },
+    updateManagedService: (id, patch) => mutate(d => {
+      const existing = d.managedServices[id]
+      if (!existing) return d
+      return { ...d, managedServices: { ...d.managedServices, [id]: { ...existing, ...patch, id } } }
+    }),
     removeManagedService: (id) => mutate(d => {
       const managedServices = { ...d.managedServices }
       delete managedServices[id]

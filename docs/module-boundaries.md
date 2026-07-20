@@ -2689,3 +2689,46 @@ Tests: `readWriteSplit.test.ts` (8 — the pure share math: even non-DB split, S
 routing, no-replica and no-primary fallbacks, NoSQL spread, clamping, volume conservation),
 `flows.test.ts` DB block (4 — through real compile+solveFlows), `world.store.test.ts`
 `setDependencyWriteFraction` (3), `serializer.test.ts` writeFraction round-trip.
+
+## Cloud-managed DB instance classes + write ceiling — node-model Phase 3 remainder (2026-07-19)
+
+Completes Phase 3. A self-hosted DB gets its write ceiling for free from the host CPU model; a
+cloud-managed DB (a ManagedService) has no host, so `flows.ts`'s managed terminal had NO capacity
+model and always admitted. This gives it one, sourced from a chosen instance class.
+
+**`lib/dbInstanceClasses.ts` (new, pure).** `DB_INSTANCE_CLASSES` — a per-engine ladder (sql.small
+… sql.xlarge, nosql.small … nosql.large) where each class fixes both a write/read ceiling AND an
+hourly price, so a bigger box costs more and lifts the write bottleneck in one decision. Provider-
+agnostic (modelling AWS/GCP/Azure DB naming three times over teaches nothing the ladder doesn't).
+`getDbInstanceClass` / `defaultDbClassId` accessors.
+
+**Model.** `ManagedService` gained optional `instanceClassId` / `replicaCount` / `multiAz` /
+`storageGb` (additive; absent ⇒ pre-Phase-3 black-box behavior). `types.ts` also exports
+`MANAGED_DB_NODE_TYPES` and `managedDbEngine(nodeType)` (dbSql→sql, dbNoSql→nosql) so every consumer
+agrees on what a managed DB is.
+
+**Engine — `worldEngine/flows.ts`.** New pure export `managedDbRefusedRps(share, writeFraction, ms)`
+returns how much of the demand a managed DB throttles: SQL `writeRps` is a single-writer ceiling
+(replicas add reads only); NoSQL `writeRps` is per-node so nodes multiply it; replicas raise the
+read ceiling for both; multiAz is failover cost, not capacity. Writes and reads overflow
+independently and the refused amounts sum. Wired at the managed terminal: the admitted remainder
+carries bytes as before, the over-ceiling excess becomes caller `refusedRps` + a blocked row — so a
+non-DB managed target (or an unclassed DB) refuses nothing and is byte-identical to before
+(the whole worldEngine suite passed untouched).
+
+**Cost — `costModelV2.ts`.** `managedServiceMonthlyUsd` now takes the whole `ManagedService`: a DB
+with a class prices as `class.hourlyUsd × (1 + replicaCount + (multiAz?1:0)) × 730 + storageGb ×
+$0.115/GB-mo`, winning over the registry's flat rate. Verified in-app: upgrading a DB sql.small →
+sql.large moved world cost by exactly (0.48−0.10)×730 = $277.40/mo.
+
+**Store + UI.** `addManagedService` births a DB on the smallest class of its engine (so cost +
+ceiling are live immediately); new `updateManagedService` patches class/replicas/etc.
+`PlacementPanel`'s managed rows became `ManagedServiceRow`, which shows an instance-class picker +
+replica count for DB types only (other managed services keep the plain label+delete). PlacementPanel
+retires in Phase 5, so this authoring surface is deliberately minimal.
+
+Tests: `dbInstanceClasses.test.ts` (7 — ladder monotonicity, resolvers, defaults),
+`readWriteSplit.test.ts` managedDbRefusedRps block (8 — non-DB/unclassed no-op, SQL single-writer,
+NoSQL node scaling, read ceiling, independent overflow), `flows.test.ts` managed-ceiling block
+(3 — through solveFlows: admit under ceiling, throttle over, uncapped when unclassed),
+`costModelV2.test.ts` class-pricing + replica scaling.

@@ -4,6 +4,8 @@
 import { useState } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import type { ManagedService, Placement, PlacementRole, PlacementRuntime } from '../../../lib/world/types'
+import { managedDbEngine } from '../../../lib/world/types'
+import { DB_INSTANCE_CLASSES } from '../../../lib/dbInstanceClasses'
 import { SectionHeader, EdgeRow, Segmented } from '../ui/kit'
 import { sectionLabel, field, smallBtn, dangerBtn, row } from './panelStyles'
 
@@ -90,11 +92,40 @@ export function PlacementPanel() {
         }}>+ Add</button>
       </div>
       {Object.values(doc.managedServices).map(ms => (
-        <EdgeRow key={ms.id} trailing={<button className="kit-press" style={dangerBtn} onClick={() => store.removeManagedService(ms.id)}>×</button>}>
-          {ms.label} <span style={{ color: 'var(--color-text-muted)' }}>:{ms.port}</span>
-        </EdgeRow>
+        <ManagedServiceRow key={ms.id} ms={ms} />
       ))}
     </div>
+  )
+}
+
+// A managed-service row. For a cloud DB (node-model Phase 3) it also exposes the instance-class
+// picker + read-replica count that drive the write ceiling and pricing; other managed services
+// keep the plain label + delete they always had.
+function ManagedServiceRow({ ms }: { ms: ManagedService }) {
+  const store = useWorldStore.getState()
+  const engine = managedDbEngine(ms.nodeType)
+  const classes = engine ? DB_INSTANCE_CLASSES.filter(c => c.engine === engine) : []
+  return (
+    <EdgeRow trailing={<button className="kit-press" style={dangerBtn} onClick={() => store.removeManagedService(ms.id)}>×</button>}>
+      <div>{ms.label} <span style={{ color: 'var(--color-text-muted)' }}>:{ms.port}</span></div>
+      {engine && (
+        <div style={{ ...row, marginTop: 4 }}>
+          <select
+            aria-label={`db-class-${ms.id}`} style={{ ...field, flex: 1, marginBottom: 0 }}
+            value={ms.instanceClassId ?? ''}
+            onChange={e => store.updateManagedService(ms.id, { instanceClassId: e.target.value })}
+          >
+            {classes.map(c => <option key={c.id} value={c.id}>{c.label} · {c.writeRps} w/s</option>)}
+          </select>
+          <input
+            aria-label={`db-replicas-${ms.id}`} type="number" min={0} style={{ ...field, width: 52, marginBottom: 0 }}
+            value={ms.replicaCount ?? 0}
+            onChange={e => store.updateManagedService(ms.id, { replicaCount: Math.max(0, Number(e.target.value)) })}
+          />
+          <span style={{ color: 'var(--color-text-muted)', fontSize: 9.5, alignSelf: 'center' }}>replicas</span>
+        </div>
+      )}
+    </EdgeRow>
   )
 }
 

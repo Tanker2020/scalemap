@@ -225,6 +225,25 @@ export interface ManagedService {
   scope: ManagedScope
   provider: 'generic' | 'aws' | 'gcp' | 'azure'
   port: number       // endpoint port, participates in path semantics
+  // Cloud-managed DB config (node-model Phase 3), meaningful only when nodeType is a DB. The
+  // instance class (dbInstanceClasses.ts) fixes both the write/read ceiling AND the base hourly
+  // price; replicas add read capacity + cost; multiAz adds a failover standby (cost, no capacity);
+  // storageGb is provisioned storage (cost). All optional + additive — absent ⇒ the pre-Phase-3
+  // black-box behavior (always admits, flat priced).
+  instanceClassId?: string | null
+  replicaCount?: number
+  multiAz?: boolean
+  storageGb?: number
+}
+
+// The CLOUD_REGISTRY nodeType keys that ARE databases — the ones the instance-class ceiling and
+// pricing apply to. Kept beside ManagedService so every consumer agrees on what "a managed DB" is.
+export const MANAGED_DB_NODE_TYPES = ['dbSql', 'dbNoSql'] as const
+
+export function managedDbEngine(nodeType: string): DbEngine | null {
+  if (nodeType === 'dbSql') return 'sql'
+  if (nodeType === 'dbNoSql') return 'nosql'
+  return null
 }
 
 // ─── Regional load balancer (accurate ALB/NLB) ───────────────────────────────

@@ -370,3 +370,52 @@ describe('solveFlows — DB read/write routing', () => {
     expect(flows[instanceId(replicaPl.id, 0)].offeredRps).toBeCloseTo(500)
   })
 })
+
+// ─── Cloud-managed DB write ceiling (node-model Phase 3) ─────────────────────
+describe('solveFlows — cloud-managed DB ceiling', () => {
+  // api → a managed SQL DB with a chosen instance class. Returns the api iid + the ms id.
+  function apiToManagedDb(instanceClassId: string | null, writeFraction: number, over: Record<string, unknown> = {}) {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const msId = 'ms-db'
+    doc.managedServices[msId] = {
+      id: msId, label: 'orders-db', nodeType: 'dbSql',
+      scope: { kind: 'az', azId: Object.keys(doc.azs)[0] }, provider: 'aws', port: 5432,
+      instanceClassId, ...over,
+    }
+    api.bp.dependencies = [{
+      id: 'd-db', target: { kind: 'managed', managedServiceId: msId },
+      port: 5432, protocol: 'db', packetTemplateId: null, writeFraction,
+    }]
+    return { doc, api, msId }
+  }
+
+  function managedRow(flow: { downstream: Array<{ toManagedServiceId?: string; rps: number; blocked: boolean }> }, msId: string, blocked: boolean) {
+    return flow.downstream.filter(d => d.toManagedServiceId === msId && d.blocked === blocked).reduce((a, d) => a + d.rps, 0)
+  }
+
+  it('admits all traffic to a managed DB under its ceiling', () => {
+    // sql.small writeRps 500. 300 writes (w=1) < 500 → nothing refused.
+    const { doc, api, msId } = apiToManagedDb('sql.small', 1)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 300 }))
+    expect(flows[api.iid].refusedRps).toBeCloseTo(0)
+    expect(managedRow(flows[api.iid], msId, false)).toBeCloseTo(300)
+  })
+
+  it('throttles managed-DB writes above the class ceiling, refusing the excess on the caller', () => {
+    // sql.small writeRps 500. 800 writes → 300 refused, 500 admitted.
+    const { doc, api, msId } = apiToManagedDb('sql.small', 1)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 800 }))
+    expect(flows[api.iid].refusedRps).toBeCloseTo(300)
+    expect(managedRow(flows[api.iid], msId, false)).toBeCloseTo(500)   // admitted
+    expect(managedRow(flows[api.iid], msId, true)).toBeCloseTo(300)    // throttled row
+  })
+
+  // Back-compat: a managed DB with no class chosen keeps the pre-Phase-3 always-admit behavior.
+  it('leaves an unclassed managed DB uncapped', () => {
+    const { doc, api, msId } = apiToManagedDb(null, 1)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 99999 }))
+    expect(flows[api.iid].refusedRps).toBeCloseTo(0)
+    expect(managedRow(flows[api.iid], msId, false)).toBeCloseTo(99999)
+  })
+})
