@@ -27,7 +27,7 @@ import {
 import { solveFlows, type InstanceFlow, BYTES_PER_REQUEST_EACH_WAY } from './flows'
 import {
   createFailoverState, setOutage as failoverSetOutage, computeHealth, probeInstant, promoteReplicas,
-  drainFactor, beginDrain, clearDrain, DEFAULT_HYSTERESIS, type FailoverState,
+  drainFactor, beginDrain, clearDrain, DEFAULT_HYSTERESIS, effectiveRoleResolver, type FailoverState,
 } from './failover'
 import {
   createMetricsState, accumulateStep, buildBatch, type MetricsState, type RoutingSnapshot,
@@ -356,9 +356,13 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       transition(b, simMs)
       return !admitRequest(b)
     }
+    // Effective roles carry the promotion overlay committed at the END of a PRIOR step
+    // (promoteReplicas below), so once a primary has failed over, this step's writes route to the
+    // promoted replica. Built from engine state only — the doc is never touched.
+    const roleOf = effectiveRoleResolver(compiled, s.failover.promotedAt)
     const { flows, totals } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
-      breakerOpen, healthOf: healthOfInstance, rng: s.rng,
+      breakerOpen, healthOf: healthOfInstance, roleOf, rng: s.rng,
     })
 
     // ── 7. NIC caps (per-server byte accounting from this step's flows) ──

@@ -2,7 +2,7 @@
 // AZ drain ramp, and stateful replica promotion. Spec decision 7 (and decision 2 for the
 // hysteresis port), docs/superpowers/specs/2026-07-08-phase2-substrate-engine-design.md.
 // Emits contract EngineEvents; the facade (Task 12) owns id re-sequencing and observation.
-import type { AzId, PlacementId, InstanceId, CompiledWorld, WorldDoc } from '../world/types'
+import type { AzId, PlacementId, InstanceId, CompiledWorld, WorldDoc, PlacementRole } from '../world/types'
 import type { EngineEvent, HealthState } from './types'
 
 const DRAIN_MS = 2000               // existing traffic on a downed AZ ramps out over 2s (spec decision 7)
@@ -167,9 +167,45 @@ export function computeHealth(
   return next
 }
 
+// The promoted-role OVERLAY (node-model Phase 4). Promotion must be REAL — writes have to fail
+// over to the promoted replica — but it must NOT mutate the WorldDoc: `compiled` is derived from
+// the doc, and world.store's mutate() pushes undo history and marks the file dirty, so a running
+// simulation writing the document would corrupt both. Instead the engine holds the promotion in
+// `promotedAt` (set by promoteReplicas) and the flow solver consults THIS resolver for the
+// EFFECTIVE role, leaving the compiled role — and the doc — untouched.
+//
+//   promoted replica  → 'primary'  (writes route to it)
+//   failed original   → 'replica'  (demoted; it's down, so it serves nothing until it recovers)
+//   everything else   → its compiled role
+//
+// Fast path: with no promotions (the overwhelming common case) this is just a compiled-role
+// lookup, so a healthy sim pays nothing for the overlay.
+export function effectiveRoleResolver(
+  compiled: CompiledWorld,
+  promotedAt: Map<PlacementId, number>,
+): (instanceId: InstanceId) => PlacementRole {
+  if (promotedAt.size === 0) {
+    return (id) => compiled.instances[id]?.role ?? 'primary'
+  }
+
+  // Clusters ('blueprintId|regionId') that have a promotion, and the placements that were promoted.
+  const promotedClusters = new Set<string>()
+  for (const inst of Object.values(compiled.instances)) {
+    if (promotedAt.has(inst.placementId)) promotedClusters.add(`${inst.blueprintId}|${inst.regionId}`)
+  }
+
+  return (id) => {
+    const inst = compiled.instances[id]
+    if (!inst) return 'primary'
+    if (promotedAt.has(inst.placementId)) return 'primary'
+    if (inst.role === 'primary' && promotedClusters.has(`${inst.blueprintId}|${inst.regionId}`)) return 'replica'
+    return inst.role
+  }
+}
+
 // Primary down -> promote the oldest same-blueprint, same-region replica (spec decision 7).
-// Visual/event semantics only in Phase 2: no data ownership is modeled. Emits once per
-// (blueprint, region) via the promotedAt guard.
+// The promotion is now REAL: effectiveRoleResolver above flips routing to the promoted replica.
+// Emits once per (blueprint, region) via the promotedAt guard.
 export function promoteReplicas(
   state: FailoverState,
   compiled: CompiledWorld,

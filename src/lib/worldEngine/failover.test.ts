@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   createFailoverState, setOutage, computeHealth, probeInstant, promoteReplicas, drainFactor,
-  beginDrain, DEFAULT_HYSTERESIS,
+  beginDrain, DEFAULT_HYSTERESIS, effectiveRoleResolver,
 } from './failover'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
@@ -125,5 +125,54 @@ describe('probeInstant', () => {
     expect(probeInstant({ errorRate: 0, cpuPressure: 1, manualDown: false })).toBe('degraded')
     expect(probeInstant({ errorRate: 0.5, cpuPressure: 0, manualDown: false })).toBe('down')
     expect(probeInstant({ errorRate: 0, cpuPressure: 2, manualDown: false })).toBe('down')
+  })
+})
+
+describe('effectiveRoleResolver', () => {
+  // Reuse promoteReplicas' fixture shape: a primary in az-a, a replica in az-b of one blueprint.
+  function fixture() {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const azA = createAz(region.id, 'us-east-1a')
+    const azB = createAz(region.id, 'us-east-1b')
+    const sA = createServer(azA.id, getPreset('dedicated-8')!)
+    const sB = createServer(azB.id, getPreset('dedicated-8')!)
+    const bp = createBlueprint('db', 0); bp.kind = 'db-sql'; bp.dbConfig = { engine: 'sql', storageGb: 100 }
+    const primary = createPlacement(bp.id, sA.id)
+    const replica = createPlacement(bp.id, sB.id); replica.role = 'replica'
+    doc.regions[region.id] = region
+    Object.assign(doc.azs, { [azA.id]: azA, [azB.id]: azB })
+    Object.assign(doc.servers, { [sA.id]: sA, [sB.id]: sB })
+    doc.blueprints[bp.id] = bp
+    Object.assign(doc.placements, { [primary.id]: primary, [replica.id]: replica })
+    return { doc, compiled: compileWorld(doc), primaryInst: instanceId(primary.id, 0), replicaInst: instanceId(replica.id, 0) }
+  }
+
+  it('returns compiled roles when nothing has been promoted (fast path)', () => {
+    const f = fixture()
+    const roleOf = effectiveRoleResolver(f.compiled, new Map())
+    expect(roleOf(f.primaryInst)).toBe('primary')
+    expect(roleOf(f.replicaInst)).toBe('replica')
+  })
+
+  // After promotion the overlay flips roles WITHOUT touching the doc: the promoted replica acts as
+  // primary (writes route to it) and the failed original primary is demoted to replica.
+  it('promotes the replica and demotes the down primary once promoted', () => {
+    const f = fixture()
+    const state = createFailoverState()
+    promoteReplicas(state, f.compiled, f.doc, [f.primaryInst], 1000)
+
+    const roleOf = effectiveRoleResolver(f.compiled, state.promotedAt)
+    expect(roleOf(f.replicaInst)).toBe('primary')   // promoted → write target
+    expect(roleOf(f.primaryInst)).toBe('replica')   // demoted
+  })
+
+  it('leaves other clusters untouched', () => {
+    const f = fixture()
+    const state = createFailoverState()
+    promoteReplicas(state, f.compiled, f.doc, [f.primaryInst], 1000)
+    const roleOf = effectiveRoleResolver(f.compiled, state.promotedAt)
+    // An unknown id falls through to a safe default rather than throwing.
+    expect(roleOf('no-such-instance')).toBe('primary')
   })
 })

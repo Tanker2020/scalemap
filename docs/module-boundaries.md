@@ -2732,3 +2732,42 @@ Tests: `dbInstanceClasses.test.ts` (7 — ladder monotonicity, resolvers, defaul
 NoSQL node scaling, read ceiling, independent overflow), `flows.test.ts` managed-ceiling block
 (3 — through solveFlows: admit under ceiling, throttle over, uncapped when unclassed),
 `costModelV2.test.ts` class-pricing + replica scaling.
+
+## Real replica promotion — node-model Phase 4 (2026-07-19)
+
+Promotion was event-only: `failover.ts`'s `promoteReplicas` recorded `promotedAt` and emitted
+`replica_promoted`, but nothing read it, so writes kept routing to the DOWN primary. Phase 4 makes
+it REAL — writes fail over to the promoted replica — under a hard constraint: it must NOT mutate the
+WorldDoc. `compiled` is derived from the doc, and world.store's mutate() pushes undo history + marks
+the file dirty, so a running sim writing the document would corrupt both.
+
+**The overlay — `failover.ts` `effectiveRoleResolver(compiled, promotedAt)`.** A pure resolver that
+returns the EFFECTIVE role per instance from engine state alone: a promoted replica reads back as
+'primary' (writes route to it), the failed original primary as 'replica' (demoted), everything else
+its compiled role. Fast path: with no promotions it's a plain compiled-role lookup, so a healthy sim
+pays nothing. The doc is never touched — the promotion lives entirely in the engine's `promotedAt`
+map, exactly where the sim is allowed to hold mutable state.
+
+**Threading — `flows.ts`.** `splitDependencyShares` now takes a `roleOf` function instead of the
+`instances` map (it reads the effective role, not the compiled one). `FlowInput` gained an optional
+`roleOf`; `solveFlows` defaults it to the compiled role, so every existing caller/test is unchanged.
+`index.ts` builds the resolver from `s.failover.promotedAt` each step and passes it in. Step order
+makes this work: `solveFlows` runs BEFORE `promoteReplicas`, so a promotion committed at the end of
+one step is seen by the next step's routing.
+
+**The write-outage window falls out for free.** Health hysteresis (~3s onset) means a failing
+primary is 'degraded' then 'down' before `promoteReplicas` (which only fires on a 'down' instance)
+runs. During that gap writes route to the failing primary and error; once down + promoted, writes
+route to the healthy new primary. Reads keep flowing off the replicas throughout — nothing in the
+read path depends on the primary.
+
+Verified end to end HEADLESSLY through the real engine: `index.test.ts` builds an api→SQL cluster
+(primary in az-a, replica in az-b), runs the engine, `setOutage`s az-a (the same API the dock's
+"kill AZ" button calls), steps past hysteresis, and asserts the `replica_promoted` event fired AND
+the promoted replica is healthy carrying the DB traffic while the downed primary is erroring. The
+app was also confirmed to run cleanly with the overlay wiring.
+
+Tests: `failover.test.ts` `effectiveRoleResolver` block (3 — fast path, promote+demote, safe
+fallback), `flows.test.ts` promotion-overlay block (2 — writes follow the effective primary),
+`index.test.ts` real-write-failover (the full cycle), plus the `splitDependencyShares` refactor to
+`roleOf` (all prior read/write tests still green).

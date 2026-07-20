@@ -10,7 +10,7 @@
 //   depth cap 8; cycles guarded per request chain (visited set carried on each item)
 import type {
   CompiledWorld, WorldDoc, CompiledPath, InstanceId, ServerId, HopClass,
-  ServiceBlueprint, ServiceInstance, ManagedService,
+  ServiceBlueprint, ManagedService, PlacementRole,
 } from '../world/types'
 import { managedDbEngine } from '../world/types'
 import type { HealthState } from './types'
@@ -54,7 +54,7 @@ const SERVICE_P99_OVER_P50 = 10
 export function splitDependencyShares(
   admitted: number,
   candidates: CompiledPath[],
-  instances: Record<InstanceId, ServiceInstance>,
+  roleOf: (instanceId: InstanceId) => PlacementRole,
   targetBp: ServiceBlueprint | undefined,
   writeFraction: number,
 ): number[] {
@@ -74,10 +74,11 @@ export function splitDependencyShares(
     return candidates.map(() => even)
   }
 
-  // SQL: partition by role. roleOf falls back to 'primary' for a managed target (a cloud DB has
-  // no primary/replica instances here) or a stale id — treating it as writable is the safe default.
+  // SQL: partition by EFFECTIVE role. A managed target (a cloud DB has no primary/replica
+  // instances here) is treated as writable. roleOf carries the Phase-4 promotion overlay, so a
+  // promoted replica reads back as 'primary' here and writes route to it.
   const isPrimary = candidates.map(p =>
-    p.to.kind === 'instance' ? (instances[p.to.instanceId]?.role ?? 'primary') === 'primary' : true)
+    p.to.kind === 'instance' ? roleOf(p.to.instanceId) === 'primary' : true)
   const primaryCount = isPrimary.filter(Boolean).length
   const replicaCount = n - primaryCount
 
@@ -133,6 +134,9 @@ export interface FlowInput {
   latencyMultiplierByServer: Record<ServerId, number>
   breakerOpen: (pathKey: string) => boolean
   healthOf: (instanceId: InstanceId) => HealthState
+  // Effective role per instance (node-model Phase 4 promotion overlay). Optional: absent ⇒ the
+  // compiled role, so callers that don't model promotion (and every existing test) are unchanged.
+  roleOf?: (instanceId: InstanceId) => PlacementRole
   rng: Rng
 }
 
@@ -173,6 +177,8 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
     breakerOpen, healthOf, rng,
   } = input
+  // Default to the compiled role when the caller doesn't supply a promotion overlay.
+  const roleOf = input.roleOf ?? ((id: InstanceId) => compiled.instances[id]?.role ?? 'primary')
 
   // Index candidate paths once: fromInstanceId -> dependencyId -> CompiledPath[]
   // (compiled.paths order is deterministic, so the even split is too).
@@ -283,7 +289,7 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
       // an even split across ALL compiled targets (blocked ones included — the caller can't see
       // the misconfig); for a DB target it partitions into writes→primary / reads→replicas.
       const targetBp = dep.target.kind === 'blueprint' ? doc.blueprints[dep.target.blueprintId] : undefined
-      const shares = splitDependencyShares(admitted, candidates, compiled.instances, targetBp, dep.writeFraction ?? 0)
+      const shares = splitDependencyShares(admitted, candidates, roleOf, targetBp, dep.writeFraction ?? 0)
 
       for (let ci = 0; ci < candidates.length; ci++) {
         const path = candidates[ci]

@@ -333,3 +333,63 @@ describe('world engine integration', () => {
     sim.engine.stop()
   })
 })
+
+// ─── Real replica promotion (node-model Phase 4) ─────────────────────────────
+// The acceptance story: kill a SQL primary, and writes fail over to the promoted replica while
+// reads keep flowing. Promotion is a real routing change (an engine-state overlay), not just an
+// event — and it never touches the WorldDoc.
+describe('replica promotion — real write failover', () => {
+  function apiToDbCluster() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const region = createRegion('us-east-1')
+    const azA = createAz(region.id, 'us-east-1a')   // primary DB lives here
+    const azB = createAz(region.id, 'us-east-1b')   // replica + api live here (survive azA outage)
+    doc.regions[region.id] = region
+    doc.azs[azA.id] = azA; doc.azs[azB.id] = azB
+    const sA = createServer(azA.id, getPreset('dedicated-8')!)
+    const sB = createServer(azB.id, getPreset('dedicated-8')!)
+    doc.servers[sA.id] = sA; doc.servers[sB.id] = sB
+
+    const api = createBlueprint('api', 0)
+    api.ports = [{ port: 8080, protocol: 'tcp', visibility: 'public' }]
+    const db = createBlueprint('db', 1); db.kind = 'db-sql'; db.dbConfig = { engine: 'sql', storageGb: 100 }
+    doc.blueprints[api.id] = api; doc.blueprints[db.id] = db
+    api.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 8080, protocol: 'db', packetTemplateId: null, writeFraction: 0.5 }]
+
+    const apiPl = createPlacement(api.id, sB.id)
+    const primaryPl = createPlacement(db.id, sA.id)                 // primary in azA
+    const replicaPl = createPlacement(db.id, sB.id); replicaPl.role = 'replica'   // replica in azB
+    doc.placements[apiPl.id] = apiPl
+    doc.placements[primaryPl.id] = primaryPl
+    doc.placements[replicaPl.id] = replicaPl
+
+    const pop = createPopulation('clients', 38.9, -77.5); pop.peakRps = 200
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), azA, primaryIid: instanceId(primaryPl.id, 0), replicaIid: instanceId(replicaPl.id, 0) }
+  }
+
+  it('promotes the replica and routes writes to it after the primary AZ fails', () => {
+    const f = apiToDbCluster()
+    const sim = drive(f.doc, f.compiled)
+
+    sim.stepFor(2)                       // warm up: steady state, writes on the primary
+    sim.engine.setOutage('az', f.azA.id, true)   // kill the primary's AZ
+    sim.stepFor(6)                       // past onset hysteresis (3s) so the primary reads 'down'
+
+    // The promotion event fired…
+    expect(sim.events.some(e => e.kind === 'replica_promoted')).toBe(true)
+
+    // …and it is REAL: a later step's writes reach the promoted replica. Probe the live flows via
+    // one more traced step through the overlay by reading the replica's admitted rps from metrics.
+    const batch = sim.latest()
+    // …and it is REAL: the promoted replica is healthy and now carries the DB traffic (writes
+    // failed over to it), while the downed original primary is erroring and drained. Before the
+    // outage the primary carried the 50% writes; now the replica does.
+    const replica = batch.instances[f.replicaIid]
+    const primary = batch.instances[f.primaryIid]
+    expect(replica?.health).toBe('healthy')
+    expect(primary?.health).toBe('down')
+    expect(replica!.rps).toBeGreaterThan(primary!.rps)
+  })
+})

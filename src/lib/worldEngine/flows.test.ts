@@ -419,3 +419,40 @@ describe('solveFlows — cloud-managed DB ceiling', () => {
     expect(managedRow(flows[api.iid], msId, false)).toBeCloseTo(99999)
   })
 })
+
+// ─── Promotion overlay routing (node-model Phase 4) ──────────────────────────
+// solveFlows accepts a roleOf override carrying the promotion overlay. These tests feed it
+// directly (the resolver itself is unit-tested in failover.test.ts, and the end-to-end step
+// wiring in index.test.ts) to prove writes follow the EFFECTIVE primary, not the compiled one.
+describe('solveFlows — promotion overlay', () => {
+  function apiToSqlCluster(writeFraction: number) {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const db = createBlueprint('db', 1); db.kind = 'db-sql'; db.dbConfig = { engine: 'sql', storageGb: 100 }
+    doc.blueprints[db.id] = db
+    const primaryPl = createPlacement(db.id, server.id)
+    doc.placements[primaryPl.id] = primaryPl
+    const replicaPl = createPlacement(db.id, server.id); replicaPl.role = 'replica'
+    doc.placements[replicaPl.id] = replicaPl
+    api.bp.dependencies = [{ ...dep('d-db', db.id), writeFraction }]
+    return { doc, api, primaryIid: instanceId(primaryPl.id, 0), replicaIid: instanceId(replicaPl.id, 0) }
+  }
+
+  it('routes writes to the compiled primary with no overlay', () => {
+    const { doc, api, primaryIid, replicaIid } = apiToSqlCluster(0.3)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 1000 }))
+    expect(flows[primaryIid].offeredRps).toBeCloseTo(300)   // 30% writes → compiled primary
+    expect(flows[replicaIid].offeredRps).toBeCloseTo(700)
+  })
+
+  // With the overlay flipping roles (replica promoted, primary demoted), writes follow the NEW
+  // primary — this is real failover, not an event.
+  it('routes writes to the promoted replica once the overlay flips roles', () => {
+    const { doc, api, primaryIid, replicaIid } = apiToSqlCluster(0.3)
+    // Overlay: the replica is now the effective primary, the old primary demoted.
+    const roleOf = (id: string) => id === replicaIid ? 'primary' as const : id === primaryIid ? 'replica' as const : 'primary' as const
+    const { flows } = solveFlows({ ...baseInput(doc, { [api.iid]: 1000 }), roleOf })
+    expect(flows[replicaIid].offeredRps).toBeCloseTo(300)   // writes now go to the promoted node
+    expect(flows[primaryIid].offeredRps).toBeCloseTo(700)   // demoted node serves reads
+  })
+})
