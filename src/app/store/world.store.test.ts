@@ -580,6 +580,19 @@ describe('world.store', () => {
     expect(doc.managedServices[msId].provider).toBe('aws')
   })
 
+  it('addManagedService merges an optional config over the DB defaults in one undo step', () => {
+    const { azId } = buildChain()
+    const historyBefore = useWorldStore.getState().history.length
+    const msId = useWorldStore.getState().addManagedService(
+      'dbSql', 'SQL DB', { kind: 'az', azId }, 5432, 'aws', { replicaCount: 3, multiAz: true },
+    )
+    const ms = useWorldStore.getState().doc.managedServices[msId]
+    expect(ms.replicaCount).toBe(3)
+    expect(ms.multiAz).toBe(true)
+    expect(ms.instanceClassId).toBeTruthy()   // default from engine, untouched by config
+    expect(useWorldStore.getState().history.length).toBe(historyBefore + 1)   // one undo step
+  })
+
   describe('racks', () => {
     it('updateRack clamps capacity to 4-42 and never below used', () => {
       const { azId } = buildChain()

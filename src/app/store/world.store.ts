@@ -129,7 +129,7 @@ interface WorldStore {
   addPlacement: (blueprintId: string, serverId: string) => string
   updatePlacement: (id: string, patch: Partial<Placement>) => void
   removePlacement: (id: string) => void
-  addManagedService: (nodeType: string, label: string, scope: ManagedScope, port: number, provider?: ManagedService['provider']) => string
+  addManagedService: (nodeType: string, label: string, scope: ManagedScope, port: number, provider?: ManagedService['provider'], config?: Partial<ManagedService>) => string
   /** Patches a managed service (e.g. a cloud DB's instance class / replicas / storage). */
   updateManagedService: (id: string, patch: Partial<ManagedService>) => void
   removeManagedService: (id: string) => void
@@ -364,7 +364,7 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       return { ...d, placements }
     }),
 
-    addManagedService: (nodeType, label, scope, port, provider = 'generic') => {
+    addManagedService: (nodeType, label, scope, port, provider = 'generic', config) => {
       const id = nextWorldId('ms')
       // A cloud-managed DB is born on the smallest class of its engine (node-model Phase 3), so its
       // capacity ceiling and realistic pricing are live immediately — the user sizes up from there.
@@ -373,7 +373,17 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       const dbFields = engine
         ? { instanceClassId: defaultDbClassId(engine), replicaCount: 0, multiAz: false, storageGb: 100 }
         : {}
-      mutate(d => ({ ...d, managedServices: { ...d.managedServices, [id]: { id, label, nodeType, scope, provider, port, ...dbFields } } }))
+      // Merge caller-supplied config over the engine-derived defaults, stripping explicitly-
+      // undefined keys first: on this CREATE path an undefined value in config means "nothing to
+      // set here", not "clear this field" (that distinction only matters on the UPDATE path via
+      // updateManagedService, which is untouched). `id` is re-pinned last so config can never
+      // rewrite the entity's identity, even though draftToConfig should never emit one.
+      const configOverrides = config
+        ? Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined))
+        : {}
+      const record = { id, label, nodeType, scope, provider, port, ...dbFields, ...configOverrides }
+      record.id = id   // re-pin last: config can never rewrite the entity's identity
+      mutate(d => ({ ...d, managedServices: { ...d.managedServices, [id]: record } }))
       return id
     },
     updateManagedService: (id, patch) => mutate(d => {
