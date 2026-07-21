@@ -113,21 +113,19 @@ export function ManagedPanel() {
   )
 }
 
-// A managed-service row: label + port, one muted summary line, and edit/remove actions. Clicking
-// the row itself also opens the editor (mouse convenience); the explicit `edit` button is the
-// keyboard-accessible path, since `EdgeRow` renders a plain, non-interactive `<div>` with no
-// role/tabIndex (kept that way deliberately — adding them would touch every other EdgeRow
-// consumer, out of scope here).
+// A managed-service row: label + port, one muted summary line, and edit/remove actions. Only the
+// explicit `edit` button opens the editor — the row itself is NOT clickable (the original task
+// brief for this component called for "an explicit edit button (rather than making the whole row
+// clickable)" specifically because `EdgeRow` renders a plain, non-interactive `<div>` with no
+// role/tabIndex, a mouse-only affordance concern).
 //
-// stopPropagation() on BOTH `edit` and `×` is load-bearing: EdgeRow puts `onClick` on the row's
-// outer container and renders `trailing` inside that same container, so without it a `×` click
-// would bubble up to the row's onClick and re-open the editor for the service the same click just
-// deleted.
+// stopPropagation() on both `edit` and `×` is retained defensively: `trailing` renders inside
+// EdgeRow's outer container, so if a future change ever puts an onClick back on that container,
+// these two inner buttons won't silently double-fire against it.
 function ManagedServiceRow({ ms, doc, onEdit }: { ms: ManagedService; doc: WorldDoc; onEdit: (id: string) => void }) {
   const store = useWorldStore.getState()
   return (
     <EdgeRow
-      onClick={() => onEdit(ms.id)}
       trailing={
         <div style={{ display: 'flex', gap: 4 }}>
           <button
