@@ -184,29 +184,27 @@ export function draftToConfig(draft: ManagedDraft): Partial<ManagedService> {
   const isDb = engine !== null
   const isStorageCapable = STORAGE_CAPABLE.has(draft.nodeType)
 
-  // DB-specific fields: only emit if this is a DB type
-  if (isDb) {
-    config.instanceClassId = draft.instanceClassId
-    config.replicaCount = draft.replicaCount
-    config.multiAz = draft.multiAz
-    config.capacityMode = draft.capacityMode
-    config.pricing = draft.pricing
-    config.maxConnections = parseNumericInheritable(draft.maxConnections, 1)
-    config.queryTimeoutMs = parseNumericInheritable(draft.queryTimeoutMs, 1)
-    config.replicaLocality = draft.replicaLocality
-    config.promotionTier = parseNumericInheritable(draft.promotionTier, 0)
-  }
+  // DB-specific fields: always assigned so an UPDATE-path merge (world.store.ts's
+  // updateManagedService, which spreads `{ ...existing, ...patch }`) actually clears stale
+  // values when nodeType changes away from a DB — an omitted key would let the old value
+  // survive untouched, but an explicit `undefined` overwrites it. Same idiom as the
+  // '' → undefined clearing above for inherit-capable string fields.
+  config.instanceClassId = isDb ? draft.instanceClassId : undefined
+  config.replicaCount = isDb ? draft.replicaCount : undefined
+  config.multiAz = isDb ? draft.multiAz : undefined
+  config.capacityMode = isDb ? draft.capacityMode : undefined
+  config.pricing = isDb ? draft.pricing : undefined
+  config.maxConnections = isDb ? parseNumericInheritable(draft.maxConnections, 1) : undefined
+  config.queryTimeoutMs = isDb ? parseNumericInheritable(draft.queryTimeoutMs, 1) : undefined
+  config.replicaLocality = isDb ? draft.replicaLocality : undefined
+  config.promotionTier = isDb ? parseNumericInheritable(draft.promotionTier, 0) : undefined
 
-  // Storage fields: only emit if this type is storage-capable
-  if (isStorageCapable) {
-    config.storageGb = parseNumericInheritable(draft.storageGb, 0)
-    config.storageTierId = draft.storageTierId
-  }
+  // Storage fields: always assigned, same reasoning as above.
+  config.storageGb = isStorageCapable ? parseNumericInheritable(draft.storageGb, 0) : undefined
+  config.storageTierId = isStorageCapable ? draft.storageTierId : undefined
 
-  // Non-DB throughput ceiling: only emit if this is NOT a DB
-  if (!isDb) {
-    config.capacityRps = parseNumericInheritable(draft.capacityRps, 0)
-  }
+  // Non-DB throughput ceiling: always assigned, same reasoning as above.
+  config.capacityRps = !isDb ? parseNumericInheritable(draft.capacityRps, 0) : undefined
 
   return config
 }

@@ -217,4 +217,32 @@ describe('computeWorldCost — managed-DB pricing commitment + capacity mode (Ph
     expect(dbCost({ capacityMode: 'serverless', pricing: 'reserved3yr' }))
       .toBeCloseTo(dbCost({ capacityMode: 'serverless', pricing: 'onDemand' }), 5)
   })
+
+  // Defense-in-depth regression (final whole-branch review, Critical fix part (b)): a service
+  // whose nodeType has been switched away from a DB type must never be billed as a provisioned
+  // DB, even if it still happens to carry a stale instanceClassId left over from before the
+  // switch (the scenario draftToConfig's fix in managedDraft.ts now prevents at the source —
+  // this test guards costModelV2.ts's own independent check of managedDbEngine(nodeType) before
+  // trusting ms.instanceClassId, in case a stale value reaches here through any other path).
+  it('does not price a non-DB nodeType as a provisioned DB even with a stale instanceClassId present', () => {
+    const { doc, regionId } = twoServerWorld()
+    doc.managedServices['ms-queue'] = {
+      id: 'ms-queue', label: 'orders-queue', nodeType: 'queue', provider: 'aws',
+      scope: { kind: 'region', regionId }, port: 5672,
+      instanceClassId: 'sql.small', capacityMode: 'provisioned', // stale DB fields
+    } as WorldDoc['managedServices'][string]
+    const withStaleQueue = computeWorldCost(doc, null).monthlyUsd
+
+    const cleanDoc = twoServerWorld().doc
+    cleanDoc.managedServices['ms-queue'] = {
+      id: 'ms-queue', label: 'orders-queue', nodeType: 'queue', provider: 'aws',
+      scope: { kind: 'region', regionId }, port: 5672,
+    } as WorldDoc['managedServices'][string]
+    const withCleanQueue = computeWorldCost(cleanDoc, null).monthlyUsd
+
+    // A 'generic'/aws queue with no registry pricing component prices at $0 — identical to the
+    // clean version. If the stale instanceClassId were wrongly trusted, this would instead price
+    // as a provisioned sql.small instance (tens of dollars/month) and the two would diverge.
+    expect(withStaleQueue).toBeCloseTo(withCleanQueue, 5)
+  })
 })

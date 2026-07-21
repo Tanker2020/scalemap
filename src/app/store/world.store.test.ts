@@ -5,6 +5,7 @@ import { useSimulationStore } from './simulation.store'
 import { getPreset } from '../../lib/world/instanceCatalog'
 import { rackUsedU, RACK_CAPACITY_MIN, RACK_CAPACITY_MAX } from '../../lib/world/rackModel'
 import { defaultDraft, COST_MS, MEMORY_MB } from '../../lib/world/serviceDraft'
+import { draftFromService, applyNodeTypeChange, draftToConfig } from '../../lib/world/managedDraft'
 
 beforeEach(() => useWorldStore.getState().newWorld())
 
@@ -591,6 +592,26 @@ describe('world.store', () => {
     expect(ms.multiAz).toBe(true)
     expect(ms.instanceClassId).toBeTruthy()   // default from engine, untouched by config
     expect(useWorldStore.getState().history.length).toBe(historyBefore + 1)   // one undo step
+  })
+
+  it('updateManagedService with a nodeType-switched draftToConfig clears stale DB fields (final-review regression)', () => {
+    const { azId } = buildChain()
+    const msId = useWorldStore.getState().addManagedService(
+      'dbSql', 'orders-db', { kind: 'az', azId }, 5432, 'aws',
+      { instanceClassId: 'sql.small', capacityMode: 'provisioned' },
+    )
+    const existing = useWorldStore.getState().doc.managedServices[msId]
+    expect(existing.instanceClassId).toBe('sql.small')
+
+    const draft = draftFromService(existing)
+    const switchedDraft = applyNodeTypeChange(draft, 'queue')
+    const patch = draftToConfig(switchedDraft)
+    useWorldStore.getState().updateManagedService(msId, patch)
+
+    const updated = useWorldStore.getState().doc.managedServices[msId]
+    expect(updated.nodeType).toBe('queue')
+    expect(updated.instanceClassId).toBeUndefined()
+    expect(updated.capacityMode).toBeUndefined()
   })
 
   describe('racks', () => {

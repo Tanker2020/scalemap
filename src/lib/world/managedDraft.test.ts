@@ -444,6 +444,49 @@ describe('managedDraft', () => {
     })
   })
 
+  describe('draftToConfig explicitly clears stale type-gated fields on nodeType switch (UPDATE-path regression)', () => {
+    // world.store.ts's updateManagedService merges via `{ ...existing, ...patch, id }` — a key
+    // that is simply OMITTED from patch survives untouched from the pre-edit record, but a key
+    // explicitly set to `undefined` overwrites it. draftToConfig must therefore always assign
+    // every type-gated field (present with value undefined when its gate is false), not just
+    // omit the assignment — this test proves that for the exact repro scenario: an existing
+    // dbSql service edited to a non-DB type must clear instanceClassId/capacityMode explicitly.
+    it('clears instanceClassId/capacityMode to explicit undefined when a dbSql draft is switched to queue', () => {
+      const existingDbService: ManagedService = {
+        id: 'ms-1',
+        label: 'orders-db',
+        nodeType: 'dbSql',
+        scope: { kind: 'region', regionId: 'us-east-1' },
+        provider: 'aws',
+        port: 5432,
+        instanceClassId: 'sql.small',
+        capacityMode: 'provisioned',
+        replicaCount: 2,
+        multiAz: true,
+        storageGb: 100,
+      }
+
+      const draft = draftFromService(existingDbService)
+      const switchedDraft = applyNodeTypeChange(draft, 'queue')
+      const config = draftToConfig(switchedDraft)
+
+      // Not just absent — genuinely present as an own key with value undefined, which is what
+      // actually clears the stale value through updateManagedService's spread-merge.
+      expect(Object.prototype.hasOwnProperty.call(config, 'instanceClassId')).toBe(true)
+      expect(config.instanceClassId).toBeUndefined()
+      expect(Object.prototype.hasOwnProperty.call(config, 'capacityMode')).toBe(true)
+      expect(config.capacityMode).toBeUndefined()
+      expect(Object.prototype.hasOwnProperty.call(config, 'replicaCount')).toBe(true)
+      expect(config.replicaCount).toBeUndefined()
+      expect(Object.prototype.hasOwnProperty.call(config, 'multiAz')).toBe(true)
+      expect(config.multiAz).toBeUndefined()
+      // storageGb: queue is not storage-capable, so it should clear too.
+      expect(Object.prototype.hasOwnProperty.call(config, 'storageGb')).toBe(true)
+      expect(config.storageGb).toBeUndefined()
+      expect(config.nodeType).toBe('queue')
+    })
+  })
+
   describe('invalidation rule: changing nodeType re-bases fields', () => {
     it('picks new instance class when switching SQL → NoSQL', () => {
       const sqlDraft: ManagedDraft = {

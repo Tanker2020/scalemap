@@ -4,6 +4,7 @@ import type { WorldDoc, RegionId, AzId, ManagedServiceId, ManagedService } from 
 import type { WorldMetrics, ManagedServiceMetrics } from './worldEngine/types'
 import { getServiceSpec, egressMonthlyCost, PROVIDER_EGRESS, type CloudProvider, type RealProvider } from './cloudRegistry'
 import { getDbInstanceClass } from './dbInstanceClasses'
+import { managedDbEngine } from './world/types'
 
 // Provisioned-storage rate for a cloud-managed DB ($/GB-month) — the gp3-class rate the dbSql
 // registry entry already uses. A single rate (not a tier ladder) matches how DB storage is priced.
@@ -71,7 +72,11 @@ function managedServiceMonthlyUsd(ms: ManagedService, rps = 0): number {
   // Cloud-managed DB with a chosen instance class (node-model Phase 3): the class fixes the base
   // hourly, replicas add proportional cost, and provisioned storage is billed per GB. This wins
   // over the registry's flat rate because the class IS the sizing decision.
-  const dbClass = getDbInstanceClass(ms.instanceClassId)
+  // Also require managedDbEngine(ms.nodeType) to be non-null (mirrors managedDbRuntimeFor /
+  // managedCapacityRps's existing pattern) — a stale instanceClassId left over from a nodeType
+  // switch away from a DB type must not be trusted just because it happens to resolve to a real
+  // class; nodeType is the source of truth for whether this service IS a DB.
+  const dbClass = managedDbEngine(ms.nodeType) ? getDbInstanceClass(ms.instanceClassId) : undefined
   if (dbClass) {
     const instances = 1 + (ms.replicaCount ?? 0) + (ms.multiAz ? 1 : 0)   // primary + replicas + standby
     const storage = (ms.storageGb ?? 0) * DB_STORAGE_USD_PER_GB_MONTH
