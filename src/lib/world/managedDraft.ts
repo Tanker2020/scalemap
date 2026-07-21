@@ -11,8 +11,7 @@
 // PURE: no React, no store — node-env testable, same contract as serviceDraft.ts beside it.
 import type { ManagedService } from './types'
 import { managedDbEngine, MANAGED_DB_NODE_TYPES } from './types'
-import { getDbInstanceClass, defaultDbClassId, DB_INSTANCE_CLASSES } from '../dbInstanceClasses'
-import { getServiceSpec } from '../cloudRegistry'
+import { defaultDbClassId } from '../dbInstanceClasses'
 
 // Types with provisioned storage that drives $/GB-month pricing + the egress free allowance.
 export const STORAGE_CAPABLE = new Set(['objectStorage', 'fileStorage', 'dbSql', 'dbNoSql'])

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { ManagedService } from './types'
+import { DB_INSTANCE_CLASSES } from '../dbInstanceClasses'
 import {
   ManagedDraft,
   MANAGED_TYPES,
@@ -458,9 +459,12 @@ describe('managedDraft', () => {
 
       expect(nosqlDraft.nodeType).toBe('dbNoSql')
       expect(nosqlDraft.port).toBe(27017) // NoSQL default port
-      // Instance class should be re-based to a NoSQL class
+      // Instance class should be re-based to an actual NoSQL class (not just "not sql.small")
       expect(nosqlDraft.instanceClassId).toBeDefined()
       expect(nosqlDraft.instanceClassId).not.toBe('sql.small')
+      const rebasedClass = DB_INSTANCE_CLASSES.find(c => c.id === nosqlDraft.instanceClassId)
+      expect(rebasedClass).toBeDefined()
+      expect(rebasedClass?.engine).toBe('nosql')
       expect(nosqlDraft.label).toBe('orders-db') // Label should be preserved
     })
 
