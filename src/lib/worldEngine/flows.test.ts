@@ -420,6 +420,54 @@ describe('solveFlows — cloud-managed DB ceiling', () => {
   })
 })
 
+describe('solveFlows — non-DB managed capacity (Phase 5.2)', () => {
+  function apiToManaged(nodeType: string, over: Record<string, unknown> = {}) {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const msId = 'ms-q'
+    doc.managedServices[msId] = {
+      id: msId, label: 'q', nodeType,
+      scope: { kind: 'az', azId: Object.keys(doc.azs)[0] }, provider: 'aws', port: 5672, ...over,
+    }
+    api.bp.dependencies = [{
+      id: 'd-q', target: { kind: 'managed', managedServiceId: msId },
+      port: 5672, protocol: 'event', packetTemplateId: null,
+    }]
+    return { doc, api, msId }
+  }
+  const row = (flow: { downstream: Array<{ toManagedServiceId?: string; rps: number; blocked: boolean }> }, msId: string, blocked: boolean) =>
+    flow.downstream.filter(d => d.toManagedServiceId === msId && d.blocked === blocked).reduce((a, d) => a + d.rps, 0)
+
+  it('refuses non-DB traffic above the per-type default ceiling (queue = 5000 rps)', () => {
+    const { doc, api, msId } = apiToManaged('queue')
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 8000 }))
+    expect(flows[api.iid].refusedRps).toBeCloseTo(3000)                  // 8000 − 5000
+    expect(row(flows[api.iid], msId, false)).toBeCloseTo(5000)           // admitted at ceiling
+    expect(row(flows[api.iid], msId, true)).toBeCloseTo(3000)            // throttled row
+  })
+
+  it('honors a per-service capacityRps override', () => {
+    const { doc, api, msId } = apiToManaged('queue', { capacityRps: 1000 })
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 1500 }))
+    expect(flows[api.iid].refusedRps).toBeCloseTo(500)
+    expect(row(flows[api.iid], msId, false)).toBeCloseTo(1000)
+  })
+
+  it('leaves a type with no default ceiling uncapped', () => {
+    const { doc, api } = apiToManaged('someUnmappedType')
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 999_999 }))
+    expect(flows[api.iid].refusedRps).toBeCloseTo(0)
+  })
+
+  it('refuses ALL traffic to a manually-downed managed service (Phase 5.2 outage)', () => {
+    const { doc, api, msId } = apiToManaged('queue')
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 3000 }, { managedDown: (id) => id === msId }))
+    expect(flows[api.iid].refusedRps).toBeCloseTo(3000)          // whole call volume fails
+    expect(row(flows[api.iid], msId, true)).toBeCloseTo(3000)    // all on the blocked row
+    expect(row(flows[api.iid], msId, false)).toBeCloseTo(0)      // nothing admitted
+  })
+})
+
 // ─── Promotion overlay routing (node-model Phase 4) ──────────────────────────
 // solveFlows accepts a roleOf override carrying the promotion overlay. These tests feed it
 // directly (the resolver itself is unit-tested in failover.test.ts, and the end-to-end step

@@ -13,7 +13,7 @@ import { useCompiledWorld } from './useCompiledWorld'
 import { WORLD_REGIONS } from '../../lib/regionConfig'
 import { computeWorldCost } from '../../lib/costModelV2'
 import type { RoutingPolicyKind, ServerId } from '../../lib/world/types'
-import { azShares, ribbonAlert, replicaRailPairs } from './region/regionData'
+import { azShares, ribbonAlert, replicaRailPairs, regionManagedServices } from './region/regionData'
 import { AlertRibbon } from './region/AlertRibbon'
 import { SplitLines } from './region/SplitLines'
 import { AzRow, type AzRowDbEndpoint } from './region/AzRow'
@@ -45,6 +45,7 @@ export function RegionView() {
   const live = useSimulationStore(selectLive)
   const events = useSimulationStore(s => s.events)
   const isDown = useSimulationStore(s => s.healthOverrides[regionId ?? ''] ?? false)
+  const healthOverrides = useSimulationStore(s => s.healthOverrides)
   const setOutage = useSimulationStore(s => s.setOutage)
   const [hoveredServerId, setHoveredServerId] = useState<ServerId | null>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
@@ -63,7 +64,12 @@ export function RegionView() {
 
   const shares = azShares(regionId, doc, batch)
   const alert = ribbonAlert(regionId, doc, events, batch?.simMs ?? 0)
-  const costs = computeWorldCost(doc, batch?.world ?? null)
+  const costs = computeWorldCost(doc, batch?.world ?? null, batch?.managedServices ?? null)
+  // node-model Phase 5.1/5.2: cloud-managed services have no hardware, so they never appear among
+  // the servers below. AZ-scoped ones now show in their AZ card (regionAzManaged); this strip is for
+  // the REGION-scoped ones (not tied to an AZ) — listed even at rest, with live rps + throttle + kill
+  // once the sim runs.
+  const managedEntries = regionManagedServices(regionId, doc, batch).filter(e => e.scope === 'region')
   const rowsHeight = Math.max(140, azs.length * ROW_HEIGHT_ESTIMATE)
 
   // Replica rail + per-az db-endpoint tagging, computed ONCE here and threaded down (the same
@@ -128,6 +134,64 @@ export function RegionView() {
           setTimeout(() => el.classList.remove('region-timeline-flash'), 1200)
         }}
       />
+
+      {managedEntries.length > 0 && (
+        <div
+          data-testid="region-managed-strip"
+          style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, margin: '8px 0 2px' }}
+        >
+          <span style={{ color: 'var(--color-text-muted)', fontSize: 10 }}>managed services:</span>
+          {managedEntries.map(e => {
+            const down = healthOverrides[e.id] ?? false
+            const troubled = down || e.refusedRps > 0.5 || e.health === 'down'
+            const tint = troubled ? 'var(--color-danger)' : e.health === 'degraded' ? 'var(--color-warning)' : 'var(--color-success)'
+            return (
+              <span
+                key={e.id} data-testid={`region-managed-${e.id}`} title="region-wide"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  border: `1px solid ${down ? 'var(--color-danger)' : 'var(--color-node-border)'}`, borderRadius: 6,
+                  background: 'var(--color-node-base)', padding: '3px 8px', fontSize: 10,
+                }}
+              >
+                <span aria-hidden>🗄</span>
+                <span style={{ color: 'var(--color-text-primary)' }}>{e.label}</span>
+                <span style={{ color: 'var(--color-text-muted)' }}>{e.nodeType}</span>
+                {/* Utilization bar (node-model Phase 5.3): live load ÷ ceiling, tinted by health —
+                    the "metric bar" the region view was missing for managed services. */}
+                {live && !down && (
+                  <span
+                    data-testid={`region-managed-bar-${e.id}`}
+                    style={{ width: 46, height: 5, borderRadius: 3, background: '#1a202b', overflow: 'hidden', position: 'relative', display: 'inline-block' }}
+                  >
+                    <span style={{ position: 'absolute', inset: '0 auto 0 0', width: `${Math.max(2, Math.round(e.utilization * 100))}%`, background: tint, height: '100%', display: 'block' }} />
+                  </span>
+                )}
+                {down
+                  ? <span style={{ color: 'var(--color-danger)' }}>down</span>
+                  : live
+                    ? <span style={{ color: tint, fontVariantNumeric: 'tabular-nums' }}>
+                        {Math.round(e.rps).toLocaleString('en-US')} rps{troubled ? ' ⚠' : ''}
+                      </span>
+                    : <span style={{ color: 'var(--color-text-muted)' }}>idle</span>}
+                {running && (
+                  <button
+                    type="button" aria-label={`${down ? 'restore' : 'kill'} ${e.label}`}
+                    onClick={() => setOutage('managed', e.id, !down)}
+                    style={{
+                      font: '9px var(--font-mono)', cursor: 'pointer', padding: '0 5px', borderRadius: 3,
+                      border: `1px solid ${down ? 'var(--color-success)' : 'var(--color-danger)'}`,
+                      background: '#10141bee', color: down ? 'var(--color-success)' : 'var(--color-danger)',
+                    }}
+                  >
+                    {down ? '✓' : 'kill'}
+                  </button>
+                )}
+              </span>
+            )
+          })}
+        </div>
+      )}
 
       {azs.length === 0 ? (
         <div style={{ color: 'var(--color-text-muted)', font: '12px var(--font-mono)' }}>

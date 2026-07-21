@@ -234,6 +234,13 @@ export interface ManagedService {
   replicaCount?: number
   multiAz?: boolean
   storageGb?: number
+  // Provisioned-storage tier id (node-model Phase 5.2) — a StorageTier from cloudRegistry.ts
+  // (S3_TIERS/GCS_TIERS/BLOB_TIERS), meaningful for objectStorage; absent ⇒ the type's first/default
+  // tier. Drives the $/GB-month rate.
+  storageTierId?: string | null
+  // Throughput ceiling override in rps (node-model Phase 5.2), for NON-DB managed services (a DB's
+  // ceiling comes from its instance class). Absent ⇒ the per-type default in managedCapacity.ts.
+  capacityRps?: number
 }
 
 // The CLOUD_REGISTRY nodeType keys that ARE databases — the ones the instance-class ceiling and

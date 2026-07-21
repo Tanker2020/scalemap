@@ -292,4 +292,14 @@ describe('AzConfigTab', () => {
     render(<AzConfigTab azId={azId} />)
     expect(screen.getByTestId('az-config-tab')).toHaveTextContent(/no servers/i)
   })
+
+  // node-model Phase 5.3: managed services present in the AZ show in the slat list.
+  it('lists az-scoped and region-scoped managed services in the SERVERS list', () => {
+    const { regionId, azId } = seedAz()
+    const azMs = useWorldStore.getState().addManagedService('redis', 'Cache', { kind: 'az', azId }, 6379)
+    const regionMs = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'region', regionId }, 5432)
+    render(<AzConfigTab azId={azId} />)
+    expect(screen.getByTestId(`az-managed-${azMs}`)).toBeTruthy()
+    expect(screen.getByTestId(`az-managed-${regionMs}`)).toHaveTextContent(/region/)
+  })
 })

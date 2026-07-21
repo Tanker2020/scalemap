@@ -144,3 +144,102 @@ describe('metrics pyramid', () => {
     expect(strata[0]).toMatchObject({ instanceId: f.i1, blueprintId: f.bp.id })
   })
 })
+
+// node-model Phase 5.1: managed services receive real solver rps (downstream[].toManagedServiceId)
+// that never surfaced anywhere. buildBatch now aggregates it into batch.managedServices.
+describe('metrics: managed-service received traffic', () => {
+  const vps = { steal: 0, effectiveVcpuFactor: 1, creditsFraction: null } as VpsPublish
+  // sql.small ceilings: write 500 + read 2500 → total capacity 3000 rps.
+  function addManagedDb(f: ReturnType<typeof fixture>, over: Record<string, unknown> = {}) {
+    const ms = {
+      id: 'ms-1', label: 'SQL DB', nodeType: 'dbSql', scope: { kind: 'region' as const, regionId: f.region.id },
+      provider: 'aws' as const, port: 5432, instanceClassId: 'sql.small', replicaCount: 0, ...over,
+    }
+    f.doc.managedServices[ms.id] = ms as (typeof f.doc.managedServices)[string]
+    return ms
+  }
+  const dsRow = (msId: string, rps: number, blocked = false): NonNullable<InstanceFlow['downstream']>[number] =>
+    ({ dependencyId: 'dep-1', toManagedServiceId: msId, rps, hopClass: 'same-az', blocked })
+
+  it('surfaces admitted rps reaching a managed DB, healthy under ceiling', () => {
+    const f = fixture()
+    const ms = addManagedDb(f)
+    const state = createMetricsState()
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state, { [f.i1]: flow(f.i1, 100, { downstream: [dsRow(ms.id, 300)] }) },
+        { [f.s1.id]: host() }, { [f.s1.id]: vps }, { [f.s1.id]: nic }, healthy, s * 100)
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    expect(batch.managedServices![ms.id].rps).toBeCloseTo(300, 1)
+    expect(batch.managedServices![ms.id].refusedRps).toBeCloseTo(0, 1)
+    expect(batch.managedServices![ms.id].utilization).toBeCloseTo(300 / 3000, 2)
+    expect(batch.managedServices![ms.id].health).toBe('healthy')
+  })
+
+  it('sums received rps across callers and reports blocked (over-ceiling) rows as refusedRps', () => {
+    const f = fixture()
+    const ms = addManagedDb(f)
+    const state = createMetricsState()
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state, {
+        [f.i1]: flow(f.i1, 100, { downstream: [dsRow(ms.id, 200)] }),
+        [f.i2]: flow(f.i2, 100, { downstream: [dsRow(ms.id, 100), dsRow(ms.id, 50, true)] }),
+      }, { [f.s1.id]: host(), [f.s2.id]: host() }, { [f.s1.id]: vps, [f.s2.id]: vps },
+        { [f.s1.id]: nic, [f.s2.id]: nic }, healthy, s * 100)
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 200), totals, 1000)
+    expect(batch.managedServices![ms.id].rps).toBeCloseTo(300, 1)         // 200 + 100 admitted
+    expect(batch.managedServices![ms.id].refusedRps).toBeCloseTo(50, 1)   // the blocked row
+  })
+
+  it('bands health to down when the managed DB is throttling ≥ half its offered load', () => {
+    const f = fixture()
+    const ms = addManagedDb(f)
+    const state = createMetricsState()
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state, { [f.i1]: flow(f.i1, 100, { downstream: [dsRow(ms.id, 1000), dsRow(ms.id, 1000, true)] }) },
+        { [f.s1.id]: host() }, { [f.s1.id]: vps }, { [f.s1.id]: nic }, healthy, s * 100)
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    expect(batch.managedServices![ms.id].refusedRps).toBeCloseTo(1000, 1)
+    expect(batch.managedServices![ms.id].health).toBe('down')            // refusalFraction 0.5
+  })
+
+  it('gauges utilization for a non-DB type against its flat ceiling (Phase 5.2)', () => {
+    // objectStorage default ceiling 5500 rps → 999 rps ≈ 0.18 utilization.
+    const f = fixture()
+    const ms = addManagedDb(f, { nodeType: 'objectStorage', instanceClassId: null })
+    const state = createMetricsState()
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state, { [f.i1]: flow(f.i1, 100, { downstream: [dsRow(ms.id, 999)] }) },
+        { [f.s1.id]: host() }, { [f.s1.id]: vps }, { [f.s1.id]: nic }, healthy, s * 100)
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    expect(batch.managedServices![ms.id].rps).toBeCloseTo(999, 1)
+    expect(batch.managedServices![ms.id].utilization).toBeCloseTo(999 / 5500, 2)
+    expect(batch.managedServices![ms.id].health).toBe('healthy')
+  })
+
+  it('surfaces per-service egress bytes/sec from the engine totals (Phase 5.2)', () => {
+    const f = fixture()
+    const ms = addManagedDb(f, { nodeType: 'objectStorage', instanceClassId: null })
+    const state = createMetricsState()
+    // Egress is accumulated by the engine into totals.managedEgressBytes and read by buildBatch.
+    const totalsWithEgress = { ...totals, managedEgressBytes: { [ms.id]: 2_000_000 } }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 0), totalsWithEgress, 1000)
+    expect(batch.managedServices![ms.id].egressBytesPerSec).toBeCloseTo(2_000_000, 0)   // first window seeds
+  })
+
+  it('leaves a type with no default ceiling uncapped (utilization 0)', () => {
+    const f = fixture()
+    const ms = addManagedDb(f, { nodeType: 'someUnmappedType', instanceClassId: null })
+    const state = createMetricsState()
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state, { [f.i1]: flow(f.i1, 100, { downstream: [dsRow(ms.id, 999)] }) },
+        { [f.s1.id]: host() }, { [f.s1.id]: vps }, { [f.s1.id]: nic }, healthy, s * 100)
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    expect(batch.managedServices![ms.id].utilization).toBe(0)
+    expect(batch.managedServices![ms.id].health).toBe('healthy')
+  })
+})

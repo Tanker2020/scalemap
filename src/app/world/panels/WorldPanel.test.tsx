@@ -139,21 +139,19 @@ describe('WorldPanel signature headers (Polish 3 T7)', () => {
     const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
     const bpId = useWorldStore.getState().addBlueprint('api')
     useWorldStore.getState().addPlacement(bpId, serverId)
+    useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'region', regionId }, 5432, 'aws')
     useWorldStore.getState().addPopulation('nyc', 40.7, -74)
 
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
 
-    // 1-of-each fixture (1 region/AZ/server/blueprint/placement/population) doubles as the
+    // 1-of-each fixture (1 region/AZ/server/managed service/population) doubles as the
     // singular-aware-grammar exercise (review fix wave, Polish 3 T7) — every count below is
     // exactly 1, so the singular branch of each `${n}${n===1?'':'s'}` must be hit.
     fireEvent.click(screen.getByText('Topology'))
     expect(screen.getByTestId('signature-header')).toHaveTextContent('1 region · 1 AZ · 1 server')
 
-    fireEvent.click(screen.getByText('Blueprints'))
-    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 blueprint')
-
-    fireEvent.click(screen.getByText('Placements'))
-    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 placement')
+    fireEvent.click(screen.getByText('Managed'))
+    expect(screen.getByTestId('signature-header')).toHaveTextContent('1 managed service')
 
     fireEvent.click(screen.getByText('Traffic'))
     expect(screen.getByTestId('signature-header')).toHaveTextContent('1 population · routed by latency')
@@ -168,10 +166,13 @@ describe('WorldPanel signature headers (Polish 3 T7)', () => {
     expect(screen.getByTestId('signature-header')).toHaveTextContent(/\$\d+\.\d{2}\/hr/)
   })
 
-  it('all seven tab-header accents are distinct CSS var tokens (light-mode collision fix)', () => {
+  it('the distinct-accent tab headers use distinct CSS var tokens (light-mode collision fix)', () => {
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
 
-    const labels = ['Topology', 'Blueprints', 'Placements', 'Traffic', 'Analysis', 'Events', 'Cost']
+    // Connections/Traffic/Routes deliberately share --kit-cat-network, so they are excluded here;
+    // the remaining six world tabs must each ride a distinct accent (node-model Phase 5 dropped
+    // Blueprints/Placements, which had carried two of the previously-seven distinct hues).
+    const labels = ['Topology', 'Managed', 'Traffic', 'Analysis', 'Events', 'Cost']
     const accents = labels.map(label => {
       fireEvent.click(screen.getByText(label))
       const header = screen.getByTestId('signature-header')
@@ -180,7 +181,7 @@ describe('WorldPanel signature headers (Polish 3 T7)', () => {
       return match![0]
     })
 
-    expect(new Set(accents).size).toBe(7)
+    expect(new Set(accents).size).toBe(6)
   })
 
   it('cost header uses the price color', () => {
@@ -219,9 +220,9 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
     expect(screen.getByTestId('scope-pill-world')).toBeInTheDocument()
   })
 
-  it('world scope keeps all seven existing tabs', () => {
+  it('world scope keeps the full world-only tab set', () => {
     render(<WorldPanel running={false} placeMode={false} onTogglePlaceMode={() => {}} selectedPopulationId={null} openSettings={() => {}} openConnections={() => {}} />)
-    for (const label of ['Topology', 'Blueprints', 'Placements', 'Traffic', 'Analysis', 'Events', 'Cost']) {
+    for (const label of ['Topology', 'Managed', 'Connections', 'Traffic', 'Routes', 'Analysis', 'Events', 'Cost']) {
       expect(screen.getByText(label)).toBeInTheDocument()
     }
     expect(screen.queryByText('Config')).not.toBeInTheDocument()
@@ -235,8 +236,8 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
 
     expect(screen.getByText('Config')).toBeInTheDocument()
     expect(screen.queryByText('Topology')).not.toBeInTheDocument()
-    expect(screen.queryByText('Blueprints')).not.toBeInTheDocument()
-    expect(screen.queryByText('Placements')).not.toBeInTheDocument()
+    expect(screen.queryByText('Managed')).not.toBeInTheDocument()
+    expect(screen.queryByText('Connections')).not.toBeInTheDocument()
     expect(screen.queryByText('Traffic')).not.toBeInTheDocument()
     // Tab persistence (D2): the world default ('topology') doesn't exist at region scope, so it
     // falls back to the new scope's first tab, Config — region scope's REAL Config body (T2:
@@ -255,7 +256,7 @@ describe('WorldPanel scope (Polish 4 T1)', () => {
 
     expect(screen.getByText('Config')).toBeInTheDocument()
     expect(screen.queryByText('Topology')).not.toBeInTheDocument()
-    expect(screen.queryByText('Blueprints')).not.toBeInTheDocument()
+    expect(screen.queryByText('Managed')).not.toBeInTheDocument()
     // AZ scope's REAL Config body (T3: FloorPlanHeader + AzConfigTab, not the generic
     // "coming soon" placeholder — that stays server-only now).
     expect(screen.getByTestId('floor-plan-header')).toBeInTheDocument()

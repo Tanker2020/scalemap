@@ -8,7 +8,7 @@ import { sectionLabel, row } from './panels/panelStyles'
 export function CostTab() {
   const doc = useWorldStore(s => s.doc)
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
-  const cost = computeWorldCost(doc, batch?.world ?? null)
+  const cost = computeWorldCost(doc, batch?.world ?? null, batch?.managedServices ?? null)
 
   return (
     <div>

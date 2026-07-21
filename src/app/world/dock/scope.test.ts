@@ -83,7 +83,7 @@ describe('deriveScope', () => {
 describe('scopeTabs', () => {
   it('returns the world tab ids, in the current dock order, for world scope', () => {
     expect(scopeTabs({ kind: 'world' })).toEqual([
-      'topology', 'blueprints', 'placements', 'connections', 'traffic', 'routes', 'analysis', 'events', 'cost',
+      'topology', 'managed', 'connections', 'traffic', 'routes', 'analysis', 'events', 'cost',
     ])
   })
 

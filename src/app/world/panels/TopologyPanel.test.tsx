@@ -163,4 +163,15 @@ describe('TopologyPanel — instrument restyle', () => {
     expect(dot.className).not.toMatch(/kit-ripple/)
     useSimulationStore.setState({ running: false, latestBatch: null })
   })
+  // node-model Phase 5.3: managed services surface in the region tree.
+  it('lists managed services in the region tree — region-scoped and az-scoped', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const regionMs = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'region', regionId }, 5432)
+    const azMs = useWorldStore.getState().addManagedService('redis', 'Cache', { kind: 'az', azId }, 6379)
+    render(<TopologyPanel />)
+    expect(screen.getByTestId(`topology-managed-${regionMs}`)).toBeTruthy()
+    expect(screen.getByTestId(`topology-managed-${azMs}`)).toBeTruthy()
+    expect(screen.getByTestId(`topology-managed-${regionMs}`).textContent).toContain('region-wide')
+  })
 })

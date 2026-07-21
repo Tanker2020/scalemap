@@ -115,7 +115,7 @@ interface EngineState {
   tracer: Tracer
 
   prevFlows: Record<InstanceId, InstanceFlow>
-  windowTotals: { crossAzBytes: number; crossRegionBytes: number; internetBytes: number }
+  windowTotals: { crossAzBytes: number; crossRegionBytes: number; internetBytes: number; managedEgressBytes: Record<string, number> }
   lastRoutingSnapshot: RoutingSnapshot
   popRegion: Map<PopulationId, RegionId>
   pendingFailover: Map<PopulationId, RegionId>
@@ -363,6 +363,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const { flows, totals } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       breakerOpen, healthOf: healthOfInstance, roleOf, rng: s.rng,
+      // Manual managed-service outages (node-model Phase 5.2): a downed managed service fails every
+      // call to it. Read straight from the manual-outage set — managed ids aren't in the per-step
+      // health recompute, so healthByScope would go stale on restore.
+      managedDown: (id) => s.failover.manualOutages.has(id),
     })
 
     // ── 7. NIC caps (per-server byte accounting from this step's flows) ──
@@ -454,6 +458,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     s.windowTotals.crossAzBytes += totals.crossAzBytes * stepSec
     s.windowTotals.crossRegionBytes += totals.crossRegionBytes * stepSec
     s.windowTotals.internetBytes += totals.internetBytes * stepSec
+    for (const [msId, bytes] of Object.entries(totals.managedEgressBytes)) {
+      s.windowTotals.managedEgressBytes[msId] = (s.windowTotals.managedEgressBytes[msId] ?? 0) + bytes * stepSec
+    }
     s.prevFlows = flows
 
     // ── 11. 1 Hz batch + replay + trace ──
@@ -463,7 +470,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
       s.tracer.sample(flows, compiled, doc, simMs, entryId => populationForEntry(entryId))
-      s.windowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0 }
+      s.windowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} }
     }
   }
 
@@ -716,7 +723,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         vpsStates: new Map(Object.values(doc.servers).map(sv => [sv.id, createVpsState(sv)])),
         vpsFactor: new Map(), breakers: new Map(), metrics: createMetricsState(),
         events: createEventRing(500), replay: createReplayBuffer(300), tracer: createTracer(createRng(seed ^ 0x1234)),
-        prevFlows: {}, windowTotals: { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0 },
+        prevFlows: {}, windowTotals: { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} },
         lastRoutingSnapshot: { populationRoutes: [] }, popRegion: new Map(), pendingFailover: new Map(),
         popPrevRegion: new Map(),
         checkFailedPrev: new Map(), probePrev: new Map(), instanceHealth: new Map(), oomRestartAt: new Map(), refusedRateLimit: new Map(),

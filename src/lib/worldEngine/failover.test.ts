@@ -35,6 +35,18 @@ describe('setOutage', () => {
     expect(state.manualOutages.has('r-1')).toBe(false)
     expect(setOutage(state, 'region', 'r-1', false, 6000)).toEqual([]) // already cleared
   })
+
+  // node-model Phase 5.2: managed services can be taken down. Same set/clear machinery; the flow
+  // solver reads state.manualOutages directly to fail traffic to a down managed service.
+  it('takes a managed service down and restores it (managed scope)', () => {
+    const state = createFailoverState()
+    const down = setOutage(state, 'managed', 'ms-queue', true, 1000)
+    expect(down[0]).toMatchObject({ kind: 'outage_triggered', affected: ['ms-queue'] })
+    expect(state.manualOutages.has('ms-queue')).toBe(true)
+    const up = setOutage(state, 'managed', 'ms-queue', false, 2000)
+    expect(up[0]).toMatchObject({ kind: 'outage_cleared', affected: ['ms-queue'] })
+    expect(state.manualOutages.has('ms-queue')).toBe(false)
+  })
 })
 
 describe('computeHealth — hysteresis', () => {

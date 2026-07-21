@@ -76,7 +76,7 @@ interface SimulationStoreV2 {
   // frames from a world that no longer exists (see ScrubberV2.tsx's latestBatch gate).
   resetSession: () => void
   setTimeScale: (scale: number) => void
-  setOutage: (scope: 'server' | 'az' | 'region', id: string, down: boolean) => void
+  setOutage: (scope: 'server' | 'az' | 'region' | 'managed', id: string, down: boolean) => void
   setScrubIndex: (i: number | null) => void
   attachRenderer: (scope: RenderScope, onFrame: (p: FramePayload) => void) => DetachFn
   getReplayFrames: () => ReplayFrame[]

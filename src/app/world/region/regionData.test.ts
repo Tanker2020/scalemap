@@ -7,7 +7,7 @@ import { getPreset } from '../../../lib/world/instanceCatalog'
 import { compileWorld } from '../../../lib/world/compileWorld'
 import {
   azShares, ribbonAlert, regionEvents, replicationPairs, crossAzEntries, sparklineSeries, dominantBlueprintColor,
-  dotStreamParams, replicaRailPairs,
+  dotStreamParams, replicaRailPairs, regionManagedServices, regionAzManaged,
 } from './regionData'
 import type { MetricsBatch, EngineEvent, AzMetrics, RegionMetrics, ReplayFrame } from '../../../lib/worldEngine/types'
 
@@ -323,5 +323,59 @@ describe('dominantBlueprintColor', () => {
 
     const compiled = compileWorld(doc)
     expect(dominantBlueprintColor(server.id, doc, compiled)).toBe(major.color)
+  })
+})
+
+describe('regionManagedServices', () => {
+  function world() {
+    const doc = createWorld()
+    const rA = createRegion('us-east-1')
+    const rB = createRegion('eu-west-1')
+    const azA = createAz(rA.id, 'us-east-1a')
+    const azX = createAz(rB.id, 'eu-west-1a')
+    doc.regions[rA.id] = rA; doc.regions[rB.id] = rB
+    doc.azs[azA.id] = azA; doc.azs[azX.id] = azX
+    doc.managedServices['m-region'] = { id: 'm-region', label: 'SQL', nodeType: 'dbSql', scope: { kind: 'region', regionId: rA.id }, provider: 'aws', port: 5432 } as never
+    doc.managedServices['m-az'] = { id: 'm-az', label: 'Redis', nodeType: 'redis', scope: { kind: 'az', azId: azA.id }, provider: 'aws', port: 6379 } as never
+    doc.managedServices['m-other'] = { id: 'm-other', label: 'Queue', nodeType: 'queue', scope: { kind: 'az', azId: azX.id }, provider: 'aws', port: 5672 } as never
+    return { doc, rA }
+  }
+
+  it('includes region-scoped + in-region az-scoped services, excludes other regions, sorted by label', () => {
+    const { doc, rA } = world()
+    const entries = regionManagedServices(rA.id, doc, null)
+    expect(entries.map(e => e.id)).toEqual(['m-az', 'm-region'])   // 'Redis' < 'SQL'
+    expect(entries.find(e => e.id === 'm-az')!.azLabel).toBe('us-east-1a')
+    expect(entries.find(e => e.id === 'm-region')!.scope).toBe('region')
+    expect(entries.every(e => e.rps === 0)).toBe(true)             // no batch → at-rest 0
+  })
+
+  it('reads live rps/refused/health from batch.managedServices', () => {
+    const { doc, rA } = world()
+    const batch = fakeBatch(1000)
+    batch.managedServices = {
+      'm-region': { managedServiceId: 'm-region', rps: 300, refusedRps: 40, utilization: 0.9, health: 'degraded', egressBytesPerSec: 0 },
+    }
+    const entries = regionManagedServices(rA.id, doc, batch)
+    const sql = entries.find(e => e.id === 'm-region')!
+    expect(sql.rps).toBe(300)
+    expect(sql.refusedRps).toBe(40)
+    expect(sql.health).toBe('degraded')
+  })
+})
+
+describe('regionAzManaged', () => {
+  it('returns only the az-scoped managed services in that AZ, with a non-DB capacity', () => {
+    const doc = createWorld()
+    const r = createRegion('us-east-1')
+    const azA = createAz(r.id, 'us-east-1a')
+    const azB = createAz(r.id, 'us-east-1b')
+    doc.regions[r.id] = r; doc.azs[azA.id] = azA; doc.azs[azB.id] = azB
+    doc.managedServices['q-a'] = { id: 'q-a', label: 'Q', nodeType: 'queue', scope: { kind: 'az', azId: azA.id }, provider: 'aws', port: 5672 } as never
+    doc.managedServices['q-b'] = { id: 'q-b', label: 'Q2', nodeType: 'queue', scope: { kind: 'az', azId: azB.id }, provider: 'aws', port: 5672 } as never
+    doc.managedServices['r-wide'] = { id: 'r-wide', label: 'CDN', nodeType: 'cdn', scope: { kind: 'region', regionId: r.id }, provider: 'aws', port: 443 } as never
+    const entries = regionAzManaged(azA.id, doc, null)
+    expect(entries.map(e => e.id)).toEqual(['q-a'])   // az-A only; az-B + region-wide excluded
+    expect(entries[0].capacityRps).toBe(5000)         // queue per-type default ceiling
   })
 })

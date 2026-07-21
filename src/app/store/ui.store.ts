@@ -21,7 +21,10 @@ import type { ServerId } from '../../lib/world/types'
 // header-toggled overlay, reachable only from a button that looked like a mode switch. It is now
 // a first-class world tab whose dock body lists every edge (source → target, port, status) and
 // opens the full-screen canvas on demand.
-export type PanelTab = 'topology' | 'blueprints' | 'placements' | 'connections' | 'traffic' | 'routes' | 'analysis' | 'events' | 'cost' | 'config'
+// 2026-07-19 (node-model Phase 5): dropped 'blueprints' and 'placements' — the generic-blueprint
+// authoring model was retired. Services are now authored via the VPS door (AddServiceForm) + the
+// Connections tab; managed cloud appliances get their own 'managed' tab (ManagedPanel).
+export type PanelTab = 'topology' | 'managed' | 'connections' | 'traffic' | 'routes' | 'analysis' | 'events' | 'cost' | 'config'
 
 export interface SceneOverlayTarget { kind: 'region' | 'population'; id: string }
 

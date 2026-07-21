@@ -1,8 +1,8 @@
 // World-level monthly cost projection (spec decision 8): Σ server hourlyUsd×730 + managed
 // service pricing (reused from cloudRegistry) + egress from live WorldMetrics byte rates.
-import type { WorldDoc, RegionId, AzId, ManagedService } from './world/types'
-import type { WorldMetrics } from './worldEngine/types'
-import { getServiceSpec, egressMonthlyCost, type CloudProvider } from './cloudRegistry'
+import type { WorldDoc, RegionId, AzId, ManagedServiceId, ManagedService } from './world/types'
+import type { WorldMetrics, ManagedServiceMetrics } from './worldEngine/types'
+import { getServiceSpec, egressMonthlyCost, PROVIDER_EGRESS, type CloudProvider, type RealProvider } from './cloudRegistry'
 import { getDbInstanceClass } from './dbInstanceClasses'
 
 // Provisioned-storage rate for a cloud-managed DB ($/GB-month) — the gp3-class rate the dbSql
@@ -15,10 +15,11 @@ const CROSS_REGION_USD_PER_GB = 0.02
 const BYTES_PER_GB = 1024 ** 3
 const SECONDS_PER_MONTH = 2_630_000   // spec decision 8's documented ~30.4-day constant
 
-// PlacementPanel.tsx's managed-service picker now authors new services with CLOUD_REGISTRY keys
-// directly (D12). This alias table bridges LEGACY `.scalemap` documents saved with old nodeType
-// values ('rds', 's3', 'sqs') so they still price correctly when loaded; new documents never use
-// aliases. Every alias below will eventually become a no-op as legacy documents age out.
+// ManagedPanel.tsx's managed-service picker authors new services with CLOUD_REGISTRY keys
+// directly (D12). This alias table bridged LEGACY `.scalemap` documents saved with old nodeType
+// values ('rds', 's3', 'sqs'). As of node-model Phase 5 those documents are v2 and rejected on
+// load outright, so the aliases below are now effectively unreachable — kept only as a harmless
+// identity/defensive mapping (removing them is a separate cleanup, not part of the cutover).
 const MANAGED_TYPE_ALIASES: Record<string, string> = {
   rds: 'dbSql', s3: 'objectStorage', sqs: 'queue',
   redis: 'redis', cdn: 'cdn', apiGateway: 'apiGateway', lambda: 'lambda',
@@ -34,6 +35,10 @@ export interface WorldCostResult {
   // as an itemization line for the Cost tab, NOT a second addend.
   loadBalancerUsd: number
   loadBalancerCount: number
+  // Per-service internet egress of storage/CDN managed services (node-model Phase 5.2) — already
+  // folded into byRegion/byAz/monthlyUsd (each is region- or az-scoped); exposed as an itemization
+  // line, not a second addend.
+  managedEgressUsd: number
 }
 
 // LBs carry no provider field, so their LB-hours price at the aws default — the same
@@ -70,16 +75,42 @@ function managedServiceMonthlyUsd(ms: ManagedService): number {
   for (const c of spec.pricing) {
     if (c.kind === 'instanceHourly') usd += c.defaultRateUsdHr * c.defaultCount * HOURS_PER_MONTH
     else if (c.kind === 'fixedMonthly') usd += c.usd
-    // requestsPerMillion / storageGbMonth / computeResource / egress: skipped in Phase 2 — no
-    // per-service traffic volume or provisioned capacity is modeled on ManagedService yet.
+    else if (c.kind === 'storageGbMonth') {
+      // node-model Phase 5.2: provisioned storage for object/file storage is now billed — the
+      // chosen tier's $/GB-month × configured GB (default = the first/standard tier).
+      const tier = c.tiers.find(t => t.id === ms.storageTierId) ?? c.tiers[0]
+      usd += (ms.storageGb ?? 0) * (tier?.storageGbMonth ?? 0)
+    }
+    // requestsPerMillion / computeResource / egress: still skipped here — request-volume pricing
+    // isn't modeled; egress is priced per-service from live metrics (managedEgressUsd, below).
   }
   return usd
 }
 
-export function computeWorldCost(doc: WorldDoc, world: WorldMetrics | null): WorldCostResult {
+// Per-service internet egress for a storage/CDN managed service (node-model Phase 5.2). Served
+// bytes come from live metrics; the free allowance is the provider's base free tier PLUS its
+// free-egress-per-stored-GB grant (the Backblaze model — 0 for aws/gcp/azure today) × provisioned
+// storage. Priced at the service's OWN provider schedule (fixing the world line's aws-for-all
+// simplification for these services). 0 for a generic-provider or zero-traffic service.
+function managedEgressUsd(ms: ManagedService, egressBytesPerSec: number): number {
+  if (ms.provider === 'generic' || egressBytesPerSec <= 0) return 0
+  const provider = ms.provider as RealProvider
+  const gbMonth = (egressBytesPerSec * SECONDS_PER_MONTH) / BYTES_PER_GB
+  const storageFreeGb = PROVIDER_EGRESS[provider].freeEgressPerStoredGb * (ms.storageGb ?? 0)
+  // egressMonthlyCost subtracts the provider's base freeGbMonth itself; pre-subtract the
+  // storage-based allowance so the total free egress = base + storage grant.
+  return egressMonthlyCost(provider, Math.max(0, gbMonth - storageFreeGb))
+}
+
+export function computeWorldCost(
+  doc: WorldDoc,
+  world: WorldMetrics | null,
+  managed: Record<ManagedServiceId, ManagedServiceMetrics> | null = null,
+): WorldCostResult {
   const byRegionMap = new Map<RegionId, number>()
   const byAzMap = new Map<AzId, number>()
   const bump = (map: Map<string, number>, key: string, usd: number) => map.set(key, (map.get(key) ?? 0) + usd)
+  let managedEgressTotal = 0
 
   for (const server of Object.values(doc.servers)) {
     const usd = server.hourlyUsd * HOURS_PER_MONTH
@@ -89,7 +120,9 @@ export function computeWorldCost(doc: WorldDoc, world: WorldMetrics | null): Wor
   }
 
   for (const ms of Object.values(doc.managedServices)) {
-    const usd = managedServiceMonthlyUsd(ms)
+    const egr = managed ? managedEgressUsd(ms, managed[ms.id]?.egressBytesPerSec ?? 0) : 0
+    managedEgressTotal += egr
+    const usd = managedServiceMonthlyUsd(ms) + egr
     if (usd === 0) continue
     if (ms.scope.kind === 'az') {
       bump(byAzMap, ms.scope.azId, usd)
@@ -135,5 +168,6 @@ export function computeWorldCost(doc: WorldDoc, world: WorldMetrics | null): Wor
     egress: { crossAzUsd, crossRegionUsd, internetUsd },
     loadBalancerUsd,
     loadBalancerCount,
+    managedEgressUsd: managedEgressTotal,
   }
 }

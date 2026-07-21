@@ -3,8 +3,8 @@
 // class (method + path) that client populations emit via their request mix (Traffic tab) and a
 // regional L7 load balancer's listener rules match on (Region config). Backed by the revived
 // packet registry (doc.packets, an HttpTemplate per route); every edit routes through the
-// world.store addRoute/updateRoute/removeRoute mutate() actions (undo/dirty for free). Modeled on
-// BlueprintPanel.tsx — presentation only, all dispatch is store actions.
+// world.store addRoute/updateRoute/removeRoute mutate() actions (undo/dirty for free).
+// Presentation only, all dispatch is store actions.
 import { useState } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { listRoutes, routeIdOf } from '../../../lib/nodeConfig'

@@ -1,4 +1,4 @@
-// Shared v2 file flows for HomeScreen and WorldShell.
+// Shared v3 file flows for HomeScreen and WorldShell.
 import { saveDiagram, loadDiagram, openFileDialog, saveFileDialog } from '../../lib/tauri'
 import { serializeWorld, deserializeWorld } from '../../lib/serializer'
 import { useWorldStore } from '../store/world.store'

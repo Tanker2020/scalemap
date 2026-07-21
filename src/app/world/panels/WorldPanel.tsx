@@ -1,7 +1,6 @@
 import { useState, useMemo, useEffect, useLayoutEffect, useRef, type CSSProperties } from 'react'
 import { TopologyPanel } from './TopologyPanel'
-import { BlueprintPanel } from './BlueprintPanel'
-import { PlacementPanel } from './PlacementPanel'
+import { ManagedPanel } from './ManagedPanel'
 import { ConnectionsPanel } from './ConnectionsPanel'
 import { isEntryBlueprint } from '../../../lib/world/connections'
 import { TrafficPanel } from './TrafficPanel'
@@ -63,7 +62,7 @@ function SignatureHeader({ glyph, accent, summary, summaryColor }: SignatureHead
 }
 
 const TAB_LABELS: Record<PanelTab, string> = {
-  topology: 'Topology', blueprints: 'Blueprints', placements: 'Placements',
+  topology: 'Topology', managed: 'Managed',
   connections: 'Connections', traffic: 'Traffic',
   routes: 'Routes', analysis: 'Analysis', events: 'Events', cost: 'Cost', config: 'Config',
 }
@@ -139,7 +138,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
     [scope, doc, compiled, events, displayBatch],
   )
   const scopedCostResult = useMemo(
-    () => scopedCost(scope, doc, displayBatch?.world ?? null),
+    () => scopedCost(scope, doc, displayBatch?.world ?? null, displayBatch?.managedServices ?? null),
     [scope, doc, displayBatch],
   )
 
@@ -164,11 +163,11 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
 
   // Per-tab signature header config — computed only for the ACTIVE tab (glyph/accent are
   // static per tab; the summary is the one live-derived piece). Each tab rides a distinct
-  // hue that stays distinct in BOTH themes (review fix wave, Polish 3 T7): topology and
-  // blueprints previously both resolved to #3F6DAC in light mode (--color-accent's light
-  // value equals compute's foreground.light) — blueprints moved onto --kit-cat-storage to
-  // break the collision. The four CATEGORY_COLORS-sourced tabs ride the --kit-cat-* vars
-  // (ui/kit.tsx), which already swap dark/light for exactly this token family.
+  // hue that stays distinct in BOTH themes (review fix wave, Polish 3 T7): topology rides
+  // --color-accent, while the managed tab uses --kit-cat-storage to stay clear of it in light
+  // mode (--color-accent's light value equals compute's foreground.light). The CATEGORY_COLORS-
+  // sourced tabs ride the --kit-cat-* vars (ui/kit.tsx), which already swap dark/light for
+  // exactly this token family.
   // Nullable now that 'config' (non-world scopes) is a valid tab id with no generic
   // SignatureHeader — its instrument-specific header (atlas/floor-plan/faceplate) is later-task
   // territory (D3); T1 renders no header for it rather than inventing one that'd be thrown away.
@@ -184,14 +183,9 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
       }
       break
     }
-    case 'blueprints': {
-      const nBlueprints = Object.keys(doc.blueprints).length
-      header = { glyph: '⌬', accent: 'var(--kit-cat-storage)', summary: `${nBlueprints} blueprint${nBlueprints === 1 ? '' : 's'}` }
-      break
-    }
-    case 'placements': {
-      const nPlacements = Object.keys(doc.placements).length
-      header = { glyph: '◎', accent: 'var(--kit-cat-messaging)', summary: `${nPlacements} placement${nPlacements === 1 ? '' : 's'}` }
+    case 'managed': {
+      const nManaged = Object.keys(doc.managedServices).length
+      header = { glyph: '🗄', accent: 'var(--kit-cat-storage)', summary: `${nManaged} managed service${nManaged === 1 ? '' : 's'}` }
       break
     }
     case 'connections': {
@@ -291,7 +285,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
       </div>
       {header && <SignatureHeader {...header} />}
       {/* Native fieldset-disabled cascades into every descendant button/input/select with zero
-          changes to TopologyPanel/BlueprintPanel/PlacementPanel. The events tab is exempt
+          changes to TopologyPanel/ManagedPanel/etc. The events tab is exempt
           (2026-07-12): it's a READ surface — the history browser's expand/page buttons must
           work mid-run (WAL readers never block the writer), and its one destructive control
           (clear history) carries its own `disabled={running}` + edit-lock title. */}
@@ -301,8 +295,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
         {scope.kind === 'world' ? (
           <>
             {tab === 'topology' && <TopologyPanel />}
-            {tab === 'blueprints' && <BlueprintPanel />}
-            {tab === 'placements' && <PlacementPanel />}
+            {tab === 'managed' && <ManagedPanel />}
             {tab === 'connections' && <ConnectionsPanel onOpenGraph={openConnections} />}
             {tab === 'traffic' && (
               <TrafficPanel placeMode={placeMode} onTogglePlaceMode={onTogglePlaceMode} selectedPopulationId={selectedPopulationId} />

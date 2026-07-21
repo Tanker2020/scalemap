@@ -5,7 +5,7 @@
 // batch, findings, world metrics) comes in as an argument, matching scope.ts's contract so both
 // stay node-env testable without jsdom/Zustand.
 import type { WorldDoc, CompiledWorld, CompileFinding } from '../../../lib/world/types'
-import type { EngineEvent, MetricsBatch, WorldMetrics } from '../../../lib/worldEngine/types'
+import type { EngineEvent, MetricsBatch, WorldMetrics, ManagedServiceMetrics } from '../../../lib/worldEngine/types'
 import type { AnalysisFinding } from '../../../lib/analysis/types'
 import { computeWorldCost, HOURS_PER_MONTH } from '../../../lib/costModelV2'
 import { regionEvents } from '../region/regionData'
@@ -116,13 +116,14 @@ export function scopedFindings(
 // note: the cost model attributes egress at AZ/region/world level only, never per-server.
 export function scopedCost(
   scope: DockScope, doc: WorldDoc, world: WorldMetrics | null,
+  managed: Record<string, ManagedServiceMetrics> | null = null,
 ): { hourlyUsd: number; monthlyUsd: number; egressNote: string | null } {
   if (scope.kind === 'server') {
     const hourlyUsd = doc.servers[scope.serverId]?.hourlyUsd ?? 0
     return { hourlyUsd, monthlyUsd: hourlyUsd * HOURS_PER_MONTH, egressNote: 'egress is attributed at the AZ level' }
   }
 
-  const cost = computeWorldCost(doc, world)
+  const cost = computeWorldCost(doc, world, managed)
   if (scope.kind === 'world') {
     return { hourlyUsd: cost.monthlyUsd / HOURS_PER_MONTH, monthlyUsd: cost.monthlyUsd, egressNote: null }
   }

@@ -49,15 +49,14 @@ export function deriveScope(nav: NavSnapshot, selectedServerId: string | null, d
   return { kind: 'world' }
 }
 
-// D2: world scope keeps today's full seven-tab dock; every narrower scope collapses to the
-// same four-tab set (Config/Analysis/Events/Cost) — Blueprints/Traffic/Placements are
-// inherently world-only and fold into the world pill instead of showing global data in a local
-// frame. Returns a fresh array each call so a caller can't mutate a shared constant out from
-// under future callers.
-// 'connections' sits directly after the two tabs that describe WHAT services are (blueprints) and
-// WHERE they run (placements), because it answers the third question about the same set — how they
-// talk to each other. It was previously reachable only via a header toggle (node-model Phase 2).
-const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'placements', 'connections', 'traffic', 'routes', 'analysis', 'events', 'cost']
+// D2: world scope keeps the full world-only dock; every narrower scope collapses to the
+// same four-tab set (Config/Analysis/Events/Cost) — the world-only tabs fold into the world pill
+// instead of showing global data in a local frame. Returns a fresh array each call so a caller
+// can't mutate a shared constant out from under future callers.
+// node-model Phase 5: the generic 'blueprints'/'placements' tabs were removed (services are now
+// authored via the VPS door + the Connections tab). 'managed' holds the cloud-managed appliances
+// that have no floor-node home; 'connections' answers how services talk to each other.
+const WORLD_TABS: PanelTab[] = ['topology', 'managed', 'connections', 'traffic', 'routes', 'analysis', 'events', 'cost']
 const SCOPED_TABS: PanelTab[] = ['config', 'analysis', 'events', 'cost']
 
 export function scopeTabs(scope: DockScope): PanelTab[] {

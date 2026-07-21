@@ -63,8 +63,9 @@ Core systems that exist today:
   costed off live simulated byte rates.
 - **Global Settings** (⚙ button, `SettingsModal.tsx`) — the app's dark/light theme toggle (now
   actually reachable from the UI) and the LLM endpoint configuration above.
-- **`.scalemap` v2 file persistence** via Tauri commands, with a `localStorage`-backed mock for
-  browser-only dev, plus a 30-second dirty-triggered autosave snapshot.
+- **`.scalemap` v3 file persistence** via Tauri commands, with a `localStorage`-backed mock for
+  browser-only dev, plus a 30-second dirty-triggered autosave snapshot. (v3 is node-model Phase 5's
+  clean-break bump; v1 and v2 files are rejected on load.)
 - **Durable simulation event log** — every engine event of every run is appended to SQLite
   (WAL) at `<app_data_dir>/events.db` in 1 Hz batches (`event_log_*` commands; in-memory map
   under `tauriMock` in browser dev). The store's in-memory `events` list is a 500-entry
@@ -158,15 +159,18 @@ src/
                                     # constellation), FloorPlanHeader (az minimap,
                                     # AzConfigTab), ServerFaceplate (+ drawers/: Hardware/
                                     # Firewall/Services/Placement, one open at a time)
-      panels/                       # WorldPanel dock tabs — world scope only: Topology,
-                                    # Blueprints, Placements, Traffic, Analysis
-                                    # (+ AiReviewSection), Events, Cost. Region/AZ/server scope
+      panels/                       # WorldPanel dock tabs — world scope only: Topology, Managed,
+                                    # Connections, Traffic, Routes, Analysis (+ AiReviewSection),
+                                    # Events, Cost. (Blueprints/Placements tabs were removed in
+                                    # node-model Phase 5 — services are authored via the VPS door
+                                    # (dock/drawers/AddServiceForm) + Connections; ManagedPanel
+                                    # holds the cloud-managed appliances.) Region/AZ/server scope
                                     # show a narrower Config/Analysis/Events/Cost set instead,
                                     # with Config rendered by dock/'s instrument components above
                                     # (see docs/module-boundaries.md §S-§V)
       fileOps.ts, Breadcrumb.tsx, SimControls.tsx, EventsTab.tsx, useCompiledWorld.ts
   lib/
-    world/                        # Pure document model + compiler — the schema of .scalemap v2
+    world/                        # Pure document model + compiler — the schema of .scalemap v3
       types.ts                     # WorldDoc entities + CompiledWorld output types
       factories.ts, instanceCatalog.ts, regionGeo.ts, populationLabel.ts
       rackModel.ts                 # Pure rack capacity/placement model (Polish 3): Rack/
@@ -190,7 +194,7 @@ src/
     llmReview.ts                  # LLM review context builder + schema-validated, retrying
                                    # request client
     costModelV2.ts, cloudRegistry.ts, regionConfig.ts
-    serializer.ts                 # .scalemap v2 (de)serialization
+    serializer.ts                 # .scalemap v3 (de)serialization (v1/v2 rejected on load)
     nodeConfig.ts                 # Packet-template types + route-catalog helpers. The canvas-era
                                    # NODE_CONFIG icon registry / node-edge sim-config types were
                                    # removed 2026-07-12; the surviving PacketRegistry was REVIVED
@@ -317,13 +321,17 @@ app.
 
 ## Diagram File Format
 
-`.scalemap` files are JSON, version `"2"` (`src/lib/serializer.ts` — the v1 canvas-era format
-was removed with the legacy app in Phase 2 and is explicitly rejected on load with a dedicated
-error message):
+`.scalemap` files are JSON, version `"3"` (`src/lib/serializer.ts`). Two older formats are
+explicitly rejected on load, each with its own dedicated error message: the v1 canvas-era format
+(removed with the legacy app in Phase 2) and — as of **node-model Phase 5's clean breaking
+change** — the v2 pre-typed-node format (node-based services/DBs have no faithful auto-migration
+from a generic-blueprint world, so v2 files are refused at the version gate, mirroring the v1
+rejection). The `world` shape below is otherwise unchanged from v2 — only the version string
+bumped:
 
 ```json
 {
-  "version": "2",
+  "version": "3",
   "meta": { "name": "", "created": "", "modified": "" },
   "world": {
     "routing": { "policy": "latency", "weights": {}, "priorityOrder": [], "healthCheckIntervalMs": 10000, "healthCheckFailureThreshold": 3, "dnsTtlSec": 30 },
@@ -346,11 +354,14 @@ error message):
 (`regions`/`azs`/`servers`/`blueprints`/`placements`/`managedServices`/`populations`/
 `loadBalancers`/`racks`) plus `routing` config and the `packets` route catalog, keyed by id.
 (The `traffic`/auto-baseline config was removed 2026-07-15 — traffic comes only from authored
-populations.) `deserializeWorld` validates that `meta` and the 8 required top-level collections
+populations.) `deserializeWorld` first gates on `version` — v1 and v2 are rejected with their own
+messages (see above), only `"3"` proceeds — then validates that `meta` and the 8 required
+top-level collections
 (`routing`/`populations`/`regions`/`azs`/`servers`/`blueprints`/`placements`/`managedServices`)
 are present and non-null before accepting a file, throwing a single "missing or malformed world
-document" error otherwise; `loadBalancers`/`racks`/`packets` are additive-normalized (defaulted
-when absent). `packets` now lives inside `world` (Phase 2 route system); a legacy TOP-LEVEL
+document" error otherwise; `loadBalancers`/`racks`/`packets`/`connectionLayout` are
+additive-normalized (defaulted when absent — defensive insurance for a hand-authored v3 file,
+since the serializer itself always writes the full `WorldDoc`). `packets` now lives inside `world` (Phase 2 route system); a legacy TOP-LEVEL
 `packets` slot in an older file is migrated into `world.packets` on load (see Key Architecture
 Decisions for the packet system's current, reduced
 role). `viewState` is optional — `{ level, regionId?, azId?, serverId? }`, the nav focus at save

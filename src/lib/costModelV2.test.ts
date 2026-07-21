@@ -134,4 +134,34 @@ describe('computeWorldCost', () => {
     // rds alias → dbSql contributes a nonzero instanceHourly cost.
     expect(withMs.monthlyUsd).toBeGreaterThan(withoutMs.monthlyUsd)
   })
+
+  // node-model Phase 5.2: object-storage provisioned storage + per-service egress.
+  it('prices object-storage provisioned storage by its tier', () => {
+    const { doc, azId } = twoServerWorld()
+    doc.managedServices['s3'] = {
+      id: 's3', label: 'assets', nodeType: 'objectStorage', provider: 'aws',
+      scope: { kind: 'az', azId }, port: 443, storageGb: 1000, storageTierId: 'standard',
+    }
+    const withStore = computeWorldCost(doc, null)
+    const without = computeWorldCost({ ...doc, managedServices: {} }, null)
+    // aws S3 Standard = $0.023/GB-month × 1000 GB = $23/mo (request + egress lines are $0 here).
+    expect(withStore.monthlyUsd - without.monthlyUsd).toBeCloseTo(23, 1)
+  })
+
+  it('prices per-service storage egress from live metrics at the provider schedule', () => {
+    const { doc, azId } = twoServerWorld()
+    doc.managedServices['s3'] = {
+      id: 's3', label: 'assets', nodeType: 'objectStorage', provider: 'aws',
+      scope: { kind: 'az', azId }, port: 443, storageGb: 0,
+    }
+    const BYTES_PER_GB = 1024 ** 3
+    const SECONDS_PER_MONTH = 2_630_000
+    const gbMonth = 500
+    const egressBytesPerSec = (gbMonth * BYTES_PER_GB) / SECONDS_PER_MONTH
+    const managed = { s3: { managedServiceId: 's3', rps: 0, refusedRps: 0, utilization: 0, health: 'healthy' as const, egressBytesPerSec } }
+    const result = computeWorldCost(doc, null, managed)
+    // (500 GB − 100 GB aws free) × $0.09/GB = $36
+    expect(result.managedEgressUsd).toBeCloseTo((500 - 100) * 0.09, 1)
+    expect(result.byAz.find(a => a.azId === azId)!.monthlyUsd).toBeGreaterThan(0)
+  })
 })

@@ -47,7 +47,7 @@ const SEVERITY: Record<HealthState, number> = { healthy: 0, degraded: 1, down: 2
 
 function outageEvent(
   kind: 'outage_triggered' | 'outage_cleared',
-  scope: 'server' | 'az' | 'region',
+  scope: 'server' | 'az' | 'region' | 'managed',
   id: string,
   simMs: number,
 ): EngineEvent {
@@ -79,7 +79,7 @@ export function drainFactor(state: FailoverState, azId: AzId, simMs: number): nu
 // Idempotent manual switch: an event is returned ONLY when the outage set actually changes.
 export function setOutage(
   state: FailoverState,
-  scope: 'server' | 'az' | 'region',
+  scope: 'server' | 'az' | 'region' | 'managed',
   id: string,
   down: boolean,
   simMs = 0,

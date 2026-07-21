@@ -92,6 +92,16 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
     [racks, rackedByRack, freePool],
   )
 
+  // Managed cloud services present in this AZ (node-model Phase 5.3): az-scoped here, plus
+  // region-scoped ones (which render on every AZ's floor). Shown in the slat list so a cloud
+  // appliance reads as part of the AZ, matching the floor box — even though it has no hardware.
+  const managedHere = useMemo(
+    () => Object.values(doc.managedServices).filter(m =>
+      (m.scope.kind === 'az' && m.scope.azId === azId) ||
+      (m.scope.kind === 'region' && m.scope.regionId === az?.regionId)),
+    [doc.managedServices, azId, az?.regionId],
+  )
+
   // Motion budget (D3): the dock's ONE ambient stroke at AZ scope — a single blinking LED for
   // the single busiest server by live mean CPU, running only, never reduced-motion. Reuses the
   // floor's own `MAX_ANIMATED_LEDS`-style ranking shape (DatacenterFloor.tsx), just capped at a
@@ -112,7 +122,7 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
   // dedupes the two call sites and makes module-boundaries.md's "reads the SAME helper" claim
   // true. `regionId` is only read by scopedCost's server branch, so `az?.regionId ?? ''` is safe
   // here too (FloorPlanHeader's own precedent, scopeData.ts's az branch never touches it).
-  const azCost = scopedCost({ kind: 'az', regionId: az?.regionId ?? '', azId }, doc, batch?.world ?? null)
+  const azCost = scopedCost({ kind: 'az', regionId: az?.regionId ?? '', azId }, doc, batch?.world ?? null, batch?.managedServices ?? null)
 
   // "+ rack" ghost (D5): hidden while running, same precedent as the floor's own ghost rack
   // (DatacenterFloor.tsx's `{ghostCell && !running && (...)}`).
@@ -232,6 +242,28 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
                   </span>
                 )}
                 <span style={{ marginLeft: 'auto', color: 'var(--color-text-muted)', fontSize: 9 }}>{meta}</span>
+              </div>
+            )
+          })}
+          {/* Managed cloud services (node-model Phase 5.3) — not selectable (no floor server to
+              tap), shown so the appliance is visibly part of the AZ, with its live rps + health. */}
+          {managedHere.map(m => {
+            const mm = batch?.managedServices?.[m.id]
+            const health = mm?.health ?? 'healthy'
+            const regionWide = m.scope.kind === 'region'
+            return (
+              <div key={m.id} data-testid={`az-managed-${m.id}`} className="dockfp-slat" style={{ cursor: 'default' }}>
+                <span
+                  aria-hidden
+                  style={{
+                    width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
+                    background: HEALTH_LED_COLOR[health], boxShadow: `0 0 4px ${HEALTH_LED_COLOR[health]}`,
+                  }}
+                />
+                <span style={{ color: 'var(--color-text-primary)' }}>🗄 {m.label}</span>
+                <span style={{ marginLeft: 'auto', color: 'var(--color-text-muted)', fontSize: 9 }}>
+                  {mm ? `${Math.round(mm.rps)} rps · ` : ''}{m.nodeType} · managed{regionWide ? ' · region' : ''}
+                </span>
               </div>
             )
           })}

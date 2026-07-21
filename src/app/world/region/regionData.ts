@@ -2,8 +2,9 @@
 // Pure region-page selectors (Phase 4 D3): everything the Level-2 flow page renders is derived
 // here from doc/compiled/batch/events — no store access, no JSX, no randomness. Mirrors the
 // server board's boardLayout.ts precedent (Phase 3 §L): one pure data module per composed view.
-import type { WorldDoc, CompiledWorld, RegionId, AzId, ServerId, BlueprintId } from '../../../lib/world/types'
-import type { MetricsBatch, EngineEvent, ReplayFrame } from '../../../lib/worldEngine/types'
+import type { WorldDoc, CompiledWorld, RegionId, AzId, ServerId, BlueprintId, ManagedServiceId } from '../../../lib/world/types'
+import type { MetricsBatch, EngineEvent, ReplayFrame, HealthState } from '../../../lib/worldEngine/types'
+import { managedCapacityRps } from '../../../lib/managedCapacity'
 
 export interface AzShare { azId: AzId; fraction: number; rps: number; down: boolean }
 
@@ -258,4 +259,76 @@ export function dominantBlueprintColor(serverId: ServerId, doc: WorldDoc, compil
     if (count > bestCount) { bestCount = count; bestId = id }
   }
   return (bestId && doc.blueprints[bestId]?.color) || 'var(--color-text-muted)'
+}
+
+// node-model Phase 5.1: every cloud-managed service ANCHORED in this region — region-scoped ones,
+// plus az-scoped ones whose AZ lives here — with the live traffic reaching it (batch.managedServices).
+// Managed services have no hardware, so they never appear among the region's servers; the region
+// page's Managed strip is how they surface here at all. `rps`/`refusedRps`/`utilization`/`health`
+// default to the at-rest 0/healthy when there's no batch (so the strip still LISTS them pre-run).
+export interface RegionManagedEntry {
+  id: ManagedServiceId
+  label: string
+  nodeType: string
+  scope: 'region' | 'az'
+  azLabel: string | null      // the AZ it lives in, for an az-scoped service
+  rps: number
+  refusedRps: number
+  utilization: number
+  health: HealthState
+}
+
+// The managed services anchored in ONE availability zone (az-scoped only) with their live load +
+// ceiling (node-model Phase 5.2), for the region page's AZ cards. Region-scoped services aren't
+// tied to an AZ — they stay in the region-level strip (regionManagedServices). capacityRps is the
+// flat non-DB ceiling (null for a DB, whose ceiling is its instance class); the usage bar uses the
+// metric utilization regardless, so it works for both.
+export interface RegionAzManagedEntry {
+  id: ManagedServiceId
+  label: string
+  nodeType: string
+  rps: number
+  refusedRps: number
+  utilization: number
+  health: HealthState
+  capacityRps: number | null
+}
+
+export function regionAzManaged(azId: AzId, doc: WorldDoc, batch: MetricsBatch | null): RegionAzManagedEntry[] {
+  const entries: RegionAzManagedEntry[] = []
+  for (const ms of Object.values(doc.managedServices)) {
+    if (ms.scope.kind !== 'az' || ms.scope.azId !== azId) continue
+    const mm = batch?.managedServices?.[ms.id]
+    const cap = managedCapacityRps(ms)
+    entries.push({
+      id: ms.id, label: ms.label, nodeType: ms.nodeType,
+      rps: mm?.rps ?? 0, refusedRps: mm?.refusedRps ?? 0,
+      utilization: mm?.utilization ?? 0, health: mm?.health ?? 'healthy',
+      capacityRps: cap != null && Number.isFinite(cap) ? cap : null,
+    })
+  }
+  return entries.sort((a, b) => a.label.localeCompare(b.label))
+}
+
+export function regionManagedServices(regionId: RegionId, doc: WorldDoc, batch: MetricsBatch | null): RegionManagedEntry[] {
+  const entries: RegionManagedEntry[] = []
+  for (const ms of Object.values(doc.managedServices)) {
+    let inRegion: boolean
+    let azLabel: string | null = null
+    if (ms.scope.kind === 'region') {
+      inRegion = ms.scope.regionId === regionId
+    } else {
+      const az = doc.azs[ms.scope.azId]
+      inRegion = az?.regionId === regionId
+      azLabel = az?.label ?? null
+    }
+    if (!inRegion) continue
+    const mm = batch?.managedServices?.[ms.id]
+    entries.push({
+      id: ms.id, label: ms.label, nodeType: ms.nodeType, scope: ms.scope.kind, azLabel,
+      rps: mm?.rps ?? 0, refusedRps: mm?.refusedRps ?? 0,
+      utilization: mm?.utilization ?? 0, health: mm?.health ?? 'healthy',
+    })
+  }
+  return entries.sort((a, b) => a.label.localeCompare(b.label))
 }

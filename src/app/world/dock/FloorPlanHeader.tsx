@@ -114,7 +114,7 @@ export function FloorPlanHeader({ azId }: FloorPlanHeaderProps): ReactElement {
 
   // Cost/rps headline (D5): `scopedCost`'s az branch never reads `regionId`, so a possibly-empty
   // fallback here is harmless — kept only to satisfy DockScope's shape.
-  const cost = scopedCost({ kind: 'az', regionId: az?.regionId ?? '', azId }, doc, batch?.world ?? null)
+  const cost = scopedCost({ kind: 'az', regionId: az?.regionId ?? '', azId }, doc, batch?.world ?? null, batch?.managedServices ?? null)
   const rps = Math.round(batch?.azs[azId]?.rps ?? 0)
 
   const selectCabinet = (rack: Rack) => {

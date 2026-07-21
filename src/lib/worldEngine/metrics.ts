@@ -3,13 +3,16 @@
 // populated — no field is ever left undefined.
 import type {
   MetricsBatch, InstanceMetrics, ServerMetrics, AzMetrics, RegionMetrics, WorldMetrics,
-  HealthState,
+  ManagedServiceMetrics, HealthState,
 } from './types'
 import type { InstanceFlow } from './flows'
+import { managedDbCeilings } from './flows'
+import { managedCapacityRps } from '../managedCapacity'
 import type { HostStepResult } from './hostScheduler'
 import type { NicState } from './networkRuntime'
 import type {
-  WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, ServiceInstance,
+  WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, ManagedServiceId,
+  ServiceInstance,
 } from '../world/types'
 
 const EMA_ALPHA = 0.3
@@ -37,9 +40,15 @@ interface InstanceWindow {
 
 interface ServerWindow { inBytes: number; outBytes: number }
 
+// Received traffic reaching a managed service, summed across every caller's downstream rows and
+// windowed like the instance metrics. `steps` counts only steps where it received ≥1 row (matching
+// the instance-window convention: an idle-that-step service isn't averaged down toward zero).
+interface ManagedWindow { steps: number; admittedSum: number; refusedSum: number }
+
 export interface MetricsState {
   window: Map<InstanceId, InstanceWindow>
   serverWindow: Map<ServerId, ServerWindow>
+  managedWindow: Map<ManagedServiceId, ManagedWindow>
   // EMA-published values, keyed per entity. Missing key = first window seeds directly.
   published: Map<string, number>
   // Latest step's side-channel values, retained for buildBatch (its skeleton signature
@@ -53,6 +62,7 @@ export function createMetricsState(): MetricsState {
   return {
     window: new Map(),
     serverWindow: new Map(),
+    managedWindow: new Map(),
     published: new Map(),
     lastHost: {},
     lastVps: {},
@@ -69,6 +79,10 @@ export function accumulateStep(
   health: (id: string) => HealthState,
   _simMs: number,
 ): void {
+  // Managed-service received traffic THIS step, summed across every caller's downstream rows
+  // (a managed service can be a dependency of several instances). Folded into the window below.
+  const msAdmitted = new Map<ManagedServiceId, number>()
+  const msRefused = new Map<ManagedServiceId, number>()
   for (const f of Object.values(flows)) {
     let w = state.window.get(f.instanceId)
     if (!w) {
@@ -79,6 +93,21 @@ export function accumulateStep(
     w.admittedSum += f.admittedRps
     w.errorSum += f.errorRps + f.refusedRps
     w.latencies.push(f.serviceLatencyMs)
+    for (const row of f.downstream) {
+      if (!row.toManagedServiceId) continue
+      const map = row.blocked ? msRefused : msAdmitted   // blocked managed row = over-ceiling refusal
+      map.set(row.toManagedServiceId, (map.get(row.toManagedServiceId) ?? 0) + row.rps)
+    }
+  }
+  for (const id of new Set([...msAdmitted.keys(), ...msRefused.keys()])) {
+    let mw = state.managedWindow.get(id)
+    if (!mw) {
+      mw = { steps: 0, admittedSum: 0, refusedSum: 0 }
+      state.managedWindow.set(id, mw)
+    }
+    mw.steps++
+    mw.admittedSum += msAdmitted.get(id) ?? 0
+    mw.refusedSum += msRefused.get(id) ?? 0
   }
   for (const [serverId, n] of Object.entries(nic)) {
     let sw = state.serverWindow.get(serverId)
@@ -113,7 +142,7 @@ export function buildBatch(
   doc: WorldDoc,
   compiled: CompiledWorld,
   routingSnapshot: RoutingSnapshot,
-  totals: { crossAzBytes: number; crossRegionBytes: number; internetBytes: number },
+  totals: { crossAzBytes: number; crossRegionBytes: number; internetBytes: number; managedEgressBytes?: Record<string, number> },
   simMs: number,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
@@ -239,6 +268,36 @@ export function buildBatch(
     }
   }
 
+  // ── Managed services (node-model Phase 5.1) ──
+  // Load REACHING each managed service. utilization gauges offered ÷ total class capacity (a
+  // documented reads+writes sum — writes/reads overflow independently, so refusedRps is the exact
+  // over-capacity signal while utilization is the pre-refusal "how full" gauge). health bands off
+  // both, reusing the healthy/degraded/down LED language.
+  const managedServices: Record<ManagedServiceId, ManagedServiceMetrics> = {}
+  for (const ms of Object.values(doc.managedServices)) {
+    const mw = state.managedWindow.get(ms.id) ?? { steps: 1, admittedSum: 0, refusedSum: 0 }
+    const rps = ema(state, `m:${ms.id}:rps`, mw.admittedSum / Math.max(1, mw.steps))
+    const refusedRps = ema(state, `m:${ms.id}:ref`, mw.refusedSum / Math.max(1, mw.steps))
+    // Capacity for the utilization gauge: a DB's write+read ceiling, else the flat per-type ceiling
+    // (node-model Phase 5.2 — non-DB types are no longer uncapped). 0 ⇒ genuinely uncapped.
+    const ceilings = managedDbCeilings(ms)
+    const flatCap = managedCapacityRps(ms)
+    const capacity = ceilings
+      ? ceilings.writeCeiling + ceilings.readCeiling
+      : (flatCap != null && Number.isFinite(flatCap) ? flatCap : 0)
+    const offered = rps + refusedRps
+    const utilization = capacity > 0 ? Math.min(1, offered / capacity) : 0
+    const refusalFraction = offered > 0 ? refusedRps / offered : 0
+    const health: HealthState =
+      refusalFraction >= 0.5 ? 'down'
+        : (refusedRps > 1e-6 || utilization >= 0.9) ? 'degraded'
+          : 'healthy'
+    // Served bytes/sec for a storage/CDN service (node-model Phase 5.2) — the window holds ~1s of
+    // accumulated served bytes, EMA-smoothed to a rate like the world byte totals below.
+    const egressBytesPerSec = ema(state, `m:${ms.id}:egr`, totals.managedEgressBytes?.[ms.id] ?? 0)
+    managedServices[ms.id] = { managedServiceId: ms.id, rps, refusedRps, utilization, health, egressBytesPerSec }
+  }
+
   // ── World ──
   const totalRps = Object.values(regions).reduce((s, r) => s + r.rps, 0)
   const errWeighted = Object.values(regions).reduce((s, r) => s + r.errorRate * r.rps, 0)
@@ -254,6 +313,7 @@ export function buildBatch(
   // Reset windows for the next second.
   state.window.clear()
   state.serverWindow.clear()
+  state.managedWindow.clear()
 
-  return { simMs, instances, servers, azs, regions, world }
+  return { simMs, instances, servers, azs, regions, world, managedServices }
 }

@@ -10,9 +10,11 @@
 //   depth cap 8; cycles guarded per request chain (visited set carried on each item)
 import type {
   CompiledWorld, WorldDoc, CompiledPath, InstanceId, ServerId, HopClass,
-  ServiceBlueprint, ManagedService, PlacementRole,
+  ServiceBlueprint, ManagedService, ManagedServiceId, PlacementRole,
 } from '../world/types'
 import { managedDbEngine } from '../world/types'
+import { managedCapacityRps } from '../managedCapacity'
+import { MANAGED_RESPONSE_KB } from '../cloudRegistry'
 import type { HealthState } from './types'
 import type { Rng } from './rng'
 import { sampleLatencyMs } from './latency'
@@ -110,20 +112,40 @@ export function splitDependencyShares(
 //
 // Writes and reads overflow INDEPENDENTLY (a write-bound workload can throttle while reads have
 // headroom, and vice-versa), so the refused amounts sum.
-export function managedDbRefusedRps(share: number, writeFraction: number, ms: ManagedService): number {
+// The write/read ceilings a cloud-managed DB's instance class implies. Single source for BOTH the
+// flow solver's refusal math (below) and the metrics pyramid's utilization gauge (metrics.ts) —
+// extracted node-model Phase 5.1 so the two can never drift on what a class's capacity is. Returns
+// null for a non-DB managed service or one with no class chosen (uncapped, pre-Phase-3 behavior).
+export function managedDbCeilings(ms: ManagedService): { writeCeiling: number; readCeiling: number } | null {
   const engine = managedDbEngine(ms.nodeType)
-  if (!engine) return 0
+  if (!engine) return null
   const cls = getDbInstanceClass(ms.instanceClassId)
-  if (!cls) return 0   // uncapped until a class is chosen
-
+  if (!cls) return null
   const replicas = Math.max(0, ms.replicaCount ?? 0)
   const writeCeiling = engine === 'nosql' ? cls.writeRps * (1 + replicas) : cls.writeRps
   const readCeiling = cls.readRps * (1 + replicas)
+  return { writeCeiling, readCeiling }
+}
+
+export function managedDbRefusedRps(share: number, writeFraction: number, ms: ManagedService): number {
+  const ceilings = managedDbCeilings(ms)
+  if (!ceilings) return 0   // non-DB or uncapped until a class is chosen
 
   const w = Math.min(1, Math.max(0, writeFraction))
-  const refusedWrite = Math.max(0, share * w - writeCeiling)
-  const refusedRead = Math.max(0, share * (1 - w) - readCeiling)
+  const refusedWrite = Math.max(0, share * w - ceilings.writeCeiling)
+  const refusedRead = Math.max(0, share * (1 - w) - ceilings.readCeiling)
   return refusedWrite + refusedRead
+}
+
+// How much of `share` rps ANY managed service refuses over its ceiling (node-model Phase 5.2).
+// A DB uses its instance-class write/read split (above); every other type uses a single flat
+// throughput ceiling (managedCapacity.ts) — so a queue/cache/object store is no longer an infinite
+// sink. Returns 0 for an uncapped service (a DB with no class, or a type with no default).
+export function managedRefusedRps(share: number, writeFraction: number, ms: ManagedService): number {
+  if (managedDbCeilings(ms)) return managedDbRefusedRps(share, writeFraction, ms)
+  const cap = managedCapacityRps(ms)
+  if (cap == null || !Number.isFinite(cap)) return 0
+  return Math.max(0, share - cap)
 }
 
 export interface FlowInput {
@@ -134,6 +156,10 @@ export interface FlowInput {
   latencyMultiplierByServer: Record<ServerId, number>
   breakerOpen: (pathKey: string) => boolean
   healthOf: (instanceId: InstanceId) => HealthState
+  // Manual-outage predicate for managed services (node-model Phase 5.2). A managed service can't
+  // be reached through instance health (it has no instance), so its manual down-state is passed
+  // directly. Optional: absent ⇒ never down (existing callers/tests unchanged).
+  managedDown?: (managedServiceId: string) => boolean
   // Effective role per instance (node-model Phase 4 promotion overlay). Optional: absent ⇒ the
   // compiled role, so callers that don't model promotion (and every existing test) are unchanged.
   roleOf?: (instanceId: InstanceId) => PlacementRole
@@ -163,6 +189,10 @@ export interface FlowTotals {
   crossAzBytes: number
   crossRegionBytes: number
   internetBytes: number
+  // Per-service served bytes for storage/CDN managed services (node-model Phase 5.2). These are
+  // attributed here INSTEAD of the world cross-zone buckets above, so the cost model can price each
+  // storage service's egress against its own provider schedule + storage free allowance.
+  managedEgressBytes: Record<ManagedServiceId, number>
 }
 
 interface QueueItem {
@@ -179,6 +209,7 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
   } = input
   // Default to the compiled role when the caller doesn't supply a promotion overlay.
   const roleOf = input.roleOf ?? ((id: InstanceId) => compiled.instances[id]?.role ?? 'primary')
+  const managedDown = input.managedDown ?? (() => false)
 
   // Index candidate paths once: fromInstanceId -> dependencyId -> CompiledPath[]
   // (compiled.paths order is deterministic, so the even split is too).
@@ -195,7 +226,7 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
   }
 
   const flows: Record<InstanceId, InstanceFlow> = {}
-  const totals: FlowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0 }
+  const totals: FlowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} }
 
   // First-touch flow record; serviceLatencyMs is sampled exactly once per instance, in
   // BFS creation order (deterministic under a seeded rng).
@@ -308,16 +339,34 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
         }
 
         if (path.to.kind === 'managed') {
-          // Cloud-managed DB capacity (node-model Phase 3): the instance class caps writes/reads;
-          // over-ceiling demand is throttled — refused on the caller and shown as a blocked row,
-          // while the admitted remainder carries bytes. A non-DB managed target (or one with no
-          // class) refuses nothing, so this is byte-identical to before for everything else.
+          // Manual outage (node-model Phase 5.2): a downed managed service refuses its ENTIRE call
+          // volume — a real dependency failure the caller sees as refused (like a blocked path),
+          // no admitted remainder, no bytes. Checked before capacity, since down beats throttled.
+          if (managedDown(path.to.managedServiceId)) {
+            flow.refusedRps += share
+            addDownstream(flow, dep.id, target, share, path.hopClass, true)
+            continue
+          }
+          // Managed capacity (node-model Phase 3 for DBs, Phase 5.2 for every other type): the
+          // service's ceiling caps admitted rps; over-ceiling demand is throttled — refused on the
+          // caller and shown as a blocked row, while the admitted remainder carries bytes. A DB uses
+          // its instance-class write/read split; other types use a flat throughput ceiling.
           const ms = doc.managedServices[path.to.managedServiceId]
-          const refused = ms ? managedDbRefusedRps(share, dep.writeFraction ?? 0, ms) : 0
+          const refused = ms ? managedRefusedRps(share, dep.writeFraction ?? 0, ms) : 0
           const admittedToMs = share - refused
           if (admittedToMs > EPSILON_RPS) {
             addDownstream(flow, dep.id, target, admittedToMs, path.hopClass, false)
-            bucketBytes(path.hopClass, admittedToMs)
+            // Storage/CDN services serve large responses: attribute those served bytes to the
+            // service (priced per-service with a storage free allowance) INSTEAD of the world
+            // cross-zone bucket, so nothing is double-counted. Every other managed type keeps the
+            // cross-zone byte accounting — it's internal transfer, not storage egress.
+            const responseKb = MANAGED_RESPONSE_KB[ms?.nodeType ?? '']
+            if (responseKb != null) {
+              const msId = path.to.managedServiceId
+              totals.managedEgressBytes[msId] = (totals.managedEgressBytes[msId] ?? 0) + admittedToMs * responseKb * 1024
+            } else {
+              bucketBytes(path.hopClass, admittedToMs)
+            }
           }
           if (refused > EPSILON_RPS) {
             flow.refusedRps += refused

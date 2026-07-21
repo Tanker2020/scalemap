@@ -65,6 +65,8 @@ export function DatacenterFloor() {
   const compiled = useCompiledWorld()
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const running = useSimulationStore(s => s.running)
+  const healthOverrides = useSimulationStore(s => s.healthOverrides)
+  const setOutage = useSimulationStore(s => s.setOutage)
   // Flow traces + LED blink march only while the sim is actively ticking; a paused/ended/scrubbed
   // run freezes them (the batch stays non-zero, so a rate-only gate would keep marching).
   const live = useSimulationStore(selectLive)
@@ -546,10 +548,25 @@ export function DatacenterFloor() {
               const cell = plan.appliances[m.id]
               if (!cell) return null
               const box = isoBox(cell.x, cell.y, plan.cols, APPLIANCE_HEIGHT_PX, 0.5)
+              // Live traffic reaching this managed service (node-model Phase 5.1): the box was a
+              // static shell — it now tints warning/danger when the DB is at/over its instance-class
+              // ceiling, and reads solid (vs. dashed-idle) while it's actively serving. teal stays
+              // the healthy resting colour, matching the server-LED green-until-trouble language.
+              const mm = live ? batch?.managedServices?.[m.id] : undefined
+              const activeRps = mm ? mm.rps : 0
+              // Manually taken down (node-model Phase 5.2) reads red at rest, independent of traffic.
+              const manuallyDown = healthOverrides[m.id] ?? false
+              const accent = manuallyDown || mm?.health === 'down' ? 'var(--color-danger)'
+                : mm?.health === 'degraded' ? 'var(--color-warning)'
+                  : 'var(--az-teal)'
               return (
-                <g key={m.id} data-testid={`appliance-${m.id}`}>
+                <g key={m.id} data-testid={`appliance-${m.id}`} data-managed-rps={Math.round(activeRps)} data-managed-down={manuallyDown ? 'true' : 'false'}>
                   <polygon points={box.side} fill="url(#az-rackside)" stroke="#232b38" />
-                  <polygon points={box.front} fill="url(#az-rackfront)" stroke="var(--az-teal)" strokeDasharray="2 3" />
+                  <polygon
+                    points={box.front} fill="url(#az-rackfront)" stroke={accent}
+                    strokeWidth={activeRps > 0.5 || manuallyDown ? 1.5 : 1}
+                    strokeDasharray={activeRps > 0.5 && !manuallyDown ? undefined : '2 3'}
+                  />
                   <polygon points={box.top} fill="url(#az-racktop)" stroke="#333d4d" />
                 </g>
               )
@@ -589,9 +606,33 @@ export function DatacenterFloor() {
           {managed.map(m => {
             const r = placedLabels.get(`managed:${m.id}`)
             if (!r) return null
+            // Show the LIVE received rps (node-model Phase 5.1) so a managed DB that IS taking
+            // traffic no longer looks dead; a ⚠ flags when it's throttling over its ceiling; a
+            // kill/restore control (node-model Phase 5.2) takes the whole service down mid-run.
+            const mm = live ? batch?.managedServices?.[m.id] : undefined
+            const showRps = mm && mm.rps > 0.5
+            const throttling = mm && mm.refusedRps > 0.5
+            const manuallyDown = healthOverrides[m.id] ?? false
+            const color = manuallyDown ? 'var(--color-danger)' : throttling ? 'var(--color-warning)' : 'var(--az-teal)'
             return (
-              <div key={m.id} style={{ ...lblStyle, left: r.x, top: r.y, color: 'var(--az-teal)', borderColor: '#3fc7b83a' }}>
-                {m.label} <small>· {m.nodeType}</small>
+              <div
+                key={m.id}
+                style={{ ...lblStyle, left: r.x, top: r.y, color, borderColor: '#3fc7b83a', pointerEvents: running ? 'auto' : 'none', display: 'flex', alignItems: 'center', gap: 5 }}
+              >
+                <span>{m.label} <small>· {m.nodeType}{manuallyDown ? ' · down' : showRps ? ` · ${Math.round(mm!.rps).toLocaleString('en-US')} rps` : ''}{throttling && !manuallyDown ? ' ⚠' : ''}</small></span>
+                {running && (
+                  <button
+                    type="button" aria-label={`${manuallyDown ? 'restore' : 'kill'} ${m.label}`}
+                    onClick={() => setOutage('managed', m.id, !manuallyDown)}
+                    style={{
+                      font: '8px var(--font-mono)', cursor: 'pointer', padding: '0 4px', borderRadius: 3,
+                      border: `1px solid ${manuallyDown ? 'var(--color-success)' : 'var(--color-danger)'}`,
+                      background: '#0d1014', color: manuallyDown ? 'var(--color-success)' : 'var(--color-danger)',
+                    }}
+                  >
+                    {manuallyDown ? '✓' : 'kill'}
+                  </button>
+                )}
               </div>
             )
           })}

@@ -15,7 +15,7 @@ import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { getPreset } from '../../../lib/world/instanceCatalog'
-import { dominantBlueprintColor } from './regionData'
+import { dominantBlueprintColor, regionAzManaged } from './regionData'
 import type { AzId, RegionId, ServerId } from '../../../lib/world/types'
 import type { HealthState } from '../../../lib/worldEngine/types'
 import './r3Styles'
@@ -64,7 +64,11 @@ export function AzRow({
   const running = useSimulationStore(s => s.running)
   const events = useSimulationStore(s => s.events)
   const isManuallyDown = useSimulationStore(s => s.healthOverrides[azId] ?? false)
+  const healthOverrides = useSimulationStore(s => s.healthOverrides)
   const setOutage = useSimulationStore(s => s.setOutage)
+  // Managed cloud services scoped to THIS az (node-model Phase 5.2) — shown as usage rows below the
+  // servers, since they have no hardware but still take load and can be taken down.
+  const managedHere = regionAzManaged(azId, doc, batch)
 
   const az = doc.azs[azId]
   const servers = Object.values(doc.servers).filter(s => s.azId === azId)
@@ -188,6 +192,42 @@ export function AzRow({
                   >
                     {role === 'primary' ? '◆ PRIMARY' : '◇ REPLICA'}
                   </span>
+                )}
+              </div>
+            )
+          })}
+          {managedHere.map(m => {
+            const down = healthOverrides[m.id] ?? false
+            const pct = down ? 100 : Math.max(2, Math.round(m.utilization * 100))
+            const barColor = down ? 'var(--color-danger)' : HEALTH_COLOR[m.health]
+            const capLabel = m.capacityRps != null ? `${Math.round(m.rps)}/${m.capacityRps}` : `${Math.round(m.rps)}`
+            return (
+              <div
+                key={m.id} data-managed-row={m.id} title={`${m.label} · ${m.nodeType} (managed)`}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, fontSize: 10, color: 'var(--color-text-secondary)',
+                  padding: '3px 6px', borderRadius: 4, borderLeft: `2px solid ${barColor}`,
+                }}
+              >
+                <span style={{ width: 108, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>🗄 {m.label}</span>
+                <span style={{ flex: 1, height: 5, borderRadius: 3, background: '#1a202b', overflow: 'hidden', position: 'relative', display: 'block' }}>
+                  <span style={{ position: 'absolute', inset: '0 auto 0 0', width: `${pct}%`, background: barColor, height: '100%', display: 'block' }} />
+                </span>
+                <span style={{ width: 82, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: down ? 'var(--color-danger)' : undefined }}>
+                  {down ? 'down' : `${capLabel} rps`}{m.refusedRps > 0.5 && !down ? ' ⚠' : ''}
+                </span>
+                {running && (
+                  <button
+                    type="button" aria-label={`${down ? 'restore' : 'kill'} ${m.label}`}
+                    onClick={() => setOutage('managed', m.id, !down)}
+                    style={{
+                      font: '9px var(--font-mono)', cursor: 'pointer', padding: '1px 6px', borderRadius: 3,
+                      border: `1px solid ${down ? 'var(--color-success)' : 'var(--color-danger)'}`,
+                      background: '#10141bee', color: down ? 'var(--color-success)' : 'var(--color-danger)',
+                    }}
+                  >
+                    {down ? '✓ restore' : 'kill'}
+                  </button>
                 )}
               </div>
             )

@@ -2,7 +2,7 @@
 // docs/superpowers/specs/2026-07-08-world-engine-contracts.md. Do not redefine/reshape;
 // additive-optional extension only. Governs every module in src/lib/worldEngine/.
 import type {
-  InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
+  InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId, ManagedServiceId,
   CompiledWorld, WorldDoc,
 } from '../world/types'
 
@@ -86,6 +86,23 @@ export interface WorldMetrics {
   internetEgressBytesPerSec: number
 }
 
+// Live traffic REACHING a cloud-managed service (node-model Phase 5.1). Managed services have no
+// instance/server, so they never appeared in the pyramid above — yet the flow solver routes real
+// rps to them (InstanceFlow.downstream[].toManagedServiceId). This surfaces that received load so
+// the AZ floor / region view can show it. Managed services stay black boxes: this is traffic
+// INTO them, not a simulated internal engine.
+export interface ManagedServiceMetrics {
+  managedServiceId: ManagedServiceId
+  rps: number          // admitted requests/sec reaching it (EMA-smoothed, summed across callers)
+  refusedRps: number   // over-ceiling requests/sec throttled away (EMA)
+  utilization: number  // 0..1 offered ÷ ceiling (DB class or the flat per-type ceiling); 0 if uncapped
+  health: HealthState  // banded off refusal + utilization; reuses the LED colour language
+  // Served bytes/sec for a storage/CDN service (node-model Phase 5.2) — its egress, priced
+  // per-service in the cost model against its provider schedule + storage free allowance. 0 for
+  // non-storage types (their transfer stays in the world cross-zone buckets).
+  egressBytesPerSec: number
+}
+
 export interface MetricsBatch {
   simMs: number
   instances: Record<InstanceId, InstanceMetrics>
@@ -93,6 +110,9 @@ export interface MetricsBatch {
   azs: Record<AzId, AzMetrics>
   regions: Record<RegionId, RegionMetrics>
   world: WorldMetrics
+  // Additive-optional (frozen-contract rule): buildBatch always populates it, but older/test-built
+  // batches may omit it — read as `batch.managedServices?.[id]`. See contract-drift.md §PHASE 5.1.
+  managedServices?: Record<ManagedServiceId, ManagedServiceMetrics>
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────
@@ -183,7 +203,7 @@ export interface WorldEngineApi {
   isRunning: () => boolean
   setTimeScale: (scale: number) => void
   // Manual failure switches (spec D8). Idempotent; emit outage_triggered/cleared.
-  setOutage: (scope: 'server' | 'az' | 'region', id: string, down: boolean) => void
+  setOutage: (scope: 'server' | 'az' | 'region' | 'managed', id: string, down: boolean) => void
   attachRenderer: (scope: RenderScope, onFrame: (p: FramePayload) => void) => DetachFn
   // Replay: scope-aware 1 Hz snapshots, ring buffer of 300 (5 min).
   getReplayFrames: () => ReplayFrame[]

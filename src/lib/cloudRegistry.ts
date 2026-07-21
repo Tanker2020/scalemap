@@ -5,7 +5,7 @@
 //   1. CLOUD_REGISTRY      — per nodeType × provider: serviceName, pricing[]
 //   2. PROVIDER_EGRESS     — tiered internet-egress $/GB + free allowances per provider
 //
-// Consumed by costModelV2.ts (managed-service pricing + egress) and PlacementPanel.tsx.
+// Consumed by costModelV2.ts (managed-service pricing + egress) and ManagedPanel.tsx.
 // Rates below are representative public list prices (us-east-1 / East US / us-central1,
 // 2026) and are meant to be user-overridable.
 
@@ -43,15 +43,31 @@ export interface CloudServiceSpec {
 // Tiers are cumulative ceilings; the last tier's rate applies to anything beyond it.
 export const PROVIDER_EGRESS: Record<RealProvider, {
   freeGbMonth: number
+  // GB of free internet egress granted per GB of provisioned storage (node-model Phase 5.2). The
+  // Backblaze-B2 pricing model (3× stored data free). AWS/GCP/Azure don't offer this, so it's 0
+  // here — the mechanism exists and a provider that does would set e.g. 3.
+  freeEgressPerStoredGb: number
   tiers: { uptoGb: number; usdPerGb: number }[]
 }> = {
-  aws:   { freeGbMonth: 100, tiers: [{ uptoGb: 10_240, usdPerGb: 0.09 }] },
-  azure: { freeGbMonth: 5,   tiers: [{ uptoGb: 5_120,  usdPerGb: 0.087 }] },
-  gcp:   { freeGbMonth: 0,   tiers: [
+  aws:   { freeGbMonth: 100, freeEgressPerStoredGb: 0, tiers: [{ uptoGb: 10_240, usdPerGb: 0.09 }] },
+  azure: { freeGbMonth: 5,   freeEgressPerStoredGb: 0, tiers: [{ uptoGb: 5_120,  usdPerGb: 0.087 }] },
+  gcp:   { freeGbMonth: 0,   freeEgressPerStoredGb: 0, tiers: [
     { uptoGb: 1_024,           usdPerGb: 0.12 },
     { uptoGb: 10_240,          usdPerGb: 0.11 },
     { uptoGb: Number.POSITIVE_INFINITY, usdPerGb: 0.08 },
   ] },
+}
+
+// Average served-response size per request for storage/CDN managed services (node-model Phase 5.2).
+// Only these types produce meaningful egress (data served OUT); the flow solver attributes their
+// served bytes to the service (costed per-service against its provider's egress schedule + storage
+// free allowance) instead of the world cross-zone bucket. A type absent here keeps the old
+// cross-zone byte accounting — it's internal transfer, not storage egress.
+export const MANAGED_RESPONSE_KB: Record<string, number> = {
+  objectStorage: 256,
+  fileStorage: 128,
+  cdn: 128,
+  cdnCache: 64,
 }
 
 // Cost of egressing `gbMonth` GB through a provider's tiered schedule, after the free tier.

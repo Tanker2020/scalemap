@@ -370,4 +370,58 @@ describe('DatacenterFloor — lines survive racking (2026-07-12 follow-up)', () 
     fireEvent.pointerUp(pod, { clientX: 200, clientY: 200, pointerId: 1 })
     expect(useUiStore.getState().selectedServerId).toBe(serverId)
   })
+
+  // node-model Phase 5.1 — a managed service that IS receiving traffic used to look dead.
+  it('shows live received rps on a managed-service box', () => {
+    const { azId } = seedAz()
+    const msId = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'az', azId }, 5432)
+    const sid = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const batch = makeBatch({}, [sid])
+    batch.managedServices = { [msId]: { managedServiceId: msId, rps: 420, refusedRps: 0, utilization: 0.14, health: 'healthy', egressBytesPerSec: 0 } }
+    useSimulationStore.setState({ running: true, latestBatch: batch })
+
+    render(<DatacenterFloor />)
+    expect(screen.getByTestId(`appliance-${msId}`).getAttribute('data-managed-rps')).toBe('420')
+    expect(screen.getByText(/420 rps/)).toBeTruthy()
+  })
+
+  it('flags a throttling (over-ceiling) managed DB', () => {
+    const { azId } = seedAz()
+    const msId = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'az', azId }, 5432)
+    const sid = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const batch = makeBatch({}, [sid])
+    batch.managedServices = { [msId]: { managedServiceId: msId, rps: 2500, refusedRps: 900, utilization: 1, health: 'down', egressBytesPerSec: 0 } }
+    useSimulationStore.setState({ running: true, latestBatch: batch })
+
+    render(<DatacenterFloor />)
+    expect(screen.getByText(/⚠/)).toBeTruthy()
+  })
+
+  it('kill / restore takes a managed service down and reflects it on the box (Phase 5.2)', () => {
+    const { azId } = seedAz()
+    const msId = useWorldStore.getState().addManagedService('queue', 'Q', { kind: 'az', azId }, 5672)
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useSimulationStore.setState({ running: true, latestBatch: makeBatch({}, []) })
+
+    render(<DatacenterFloor />)
+    fireEvent.click(screen.getByLabelText('kill Q'))
+    expect(useSimulationStore.getState().healthOverrides[msId]).toBe(true)
+    expect(screen.getByTestId(`appliance-${msId}`).getAttribute('data-managed-down')).toBe('true')
+    // now a restore control is offered
+    fireEvent.click(screen.getByLabelText('restore Q'))
+    expect(useSimulationStore.getState().healthOverrides[msId]).toBe(false)
+  })
+
+  it('leaves a managed box static (no rps) when the sim is not live', () => {
+    const { azId } = seedAz()
+    const msId = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'az', azId }, 5432)
+    const sid = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const batch = makeBatch({}, [sid])
+    batch.managedServices = { [msId]: { managedServiceId: msId, rps: 420, refusedRps: 0, utilization: 0.14, health: 'healthy', egressBytesPerSec: 0 } }
+    useSimulationStore.setState({ running: false, latestBatch: batch })   // not live → frozen
+
+    render(<DatacenterFloor />)
+    expect(screen.getByTestId(`appliance-${msId}`).getAttribute('data-managed-rps')).toBe('0')
+    expect(screen.queryByText(/420 rps/)).toBeNull()
+  })
 })

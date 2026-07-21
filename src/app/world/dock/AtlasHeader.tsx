@@ -176,7 +176,7 @@ export function AtlasHeader({ regionId }: AtlasHeaderProps): ReactElement {
     if (!displayBatch) {
       headline = `${regionCount} region${regionCount === 1 ? '' : 's'} · ${serverCount} server${serverCount === 1 ? '' : 's'} · ${cityCount} population${cityCount === 1 ? '' : 's'}`
     } else {
-      const cost = scopedCost({ kind: 'world' }, doc, displayBatch.world)
+      const cost = scopedCost({ kind: 'world' }, doc, displayBatch.world, displayBatch.managedServices ?? null)
       headline = (
         <>
           Handling <b style={{ color: HEADLINE_STRONG, fontVariantNumeric: 'tabular-nums' }}>{Math.round(rolledRps).toLocaleString('en-US')} rps</b>
@@ -186,7 +186,7 @@ export function AtlasHeader({ regionId }: AtlasHeaderProps): ReactElement {
     }
   } else {
     const region = doc.regions[regionId]
-    const cost = scopedCost({ kind: 'region', regionId }, doc, displayBatch?.world ?? null)
+    const cost = scopedCost({ kind: 'region', regionId }, doc, displayBatch?.world ?? null, displayBatch?.managedServices ?? null)
     headline = (
       <>
         {region?.catalogId ?? regionId} · {Math.round(rolledRps).toLocaleString('en-US')} rps{' '}

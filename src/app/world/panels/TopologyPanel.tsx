@@ -9,7 +9,7 @@ import { useSimulationStore } from '../../store/simulation.store'
 import { WORLD_REGIONS } from '../../../lib/regionConfig'
 import { INSTANCE_CATALOG, getPreset, type InstancePreset } from '../../../lib/world/instanceCatalog'
 import { nextWorldId } from '../../../lib/world/factories'
-import type { Region, Server } from '../../../lib/world/types'
+import type { Region, Server, ManagedService } from '../../../lib/world/types'
 import { SectionHeader, EdgeRow, ChipValue, MicroBars, PresetCardGrid, type EdgeRowStatus } from '../ui/kit'
 import { field, smallBtn, dangerBtn, row } from './panelStyles'
 import { healthWord } from '../ui/derived'
@@ -72,7 +72,7 @@ export function TopologyPanel() {
   // Region cost rollup (D4's "meta line with price") — computed once for the whole panel, not
   // per-region-row, and reuses the SAME computeWorldCost/HOURS_PER_MONTH primitives every other
   // $/hr readout in the app already uses (no new cost math).
-  const worldCost = computeWorldCost(doc, displayBatch?.world ?? null)
+  const worldCost = computeWorldCost(doc, displayBatch?.world ?? null, displayBatch?.managedServices ?? null)
 
   const nextAzLabel = (catalogId: string, regionId: string) => {
     const count = Object.values(doc.azs).filter(a => a.regionId === regionId).length
@@ -176,12 +176,53 @@ export function TopologyPanel() {
                       expanded={expandedServer === server.id}
                       onToggle={() => setExpandedServer(e => e === server.id ? null : server.id)} />
                   ))}
+                  {/* AZ-scoped managed services (node-model Phase 5.3): shown here so a cloud
+                      appliance reads as part of the AZ even though it has no hardware. */}
+                  {Object.values(doc.managedServices)
+                    .filter(m => m.scope.kind === 'az' && m.scope.azId === az.id)
+                    .map(m => <ManagedRow key={m.id} ms={m} />)}
                 </div>
               )
             })}
+
+            {/* Region-scoped managed services (node-model Phase 5.3): not tied to one AZ, listed
+                once at the region level below its AZs. */}
+            {Object.values(doc.managedServices)
+              .filter(m => m.scope.kind === 'region' && m.scope.regionId === region.id)
+              .map(m => <ManagedRow key={m.id} ms={m} regionWide />)}
           </div>
         )
       })}
+    </div>
+  )
+}
+
+// A cloud-managed service in the region tree — no hardware, so it's a lighter row than ServerRow:
+// name/type, live rps + health, and a delete. Region-wide ones carry a tag so they don't read as
+// AZ-local. Reads batch.managedServices (node-model Phase 5.1 metric).
+function ManagedRow({ ms, regionWide = false }: { ms: ManagedService; regionWide?: boolean }) {
+  const store = useWorldStore.getState()
+  const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
+  const mm = displayBatch?.managedServices?.[ms.id]
+  const health = mm?.health ?? 'healthy'
+  return (
+    <div
+      data-testid={`topology-managed-${ms.id}`}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 6, marginTop: 4, padding: '3px 6px',
+        borderRadius: 4, borderLeft: `2px solid ${HEALTH_COLOR[health]}`, background: '#e0a5520a', fontSize: 10,
+      }}
+    >
+      <span aria-hidden style={{ fontSize: 11 }}>🗄</span>
+      <span style={{ color: 'var(--color-text-primary)' }}>{ms.label}</span>
+      <span style={{ color: 'var(--color-text-muted)', fontSize: 9 }}>
+        {ms.nodeType} · managed{regionWide ? ' · region-wide' : ''}
+      </span>
+      <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+        {mm && <span style={{ color: 'var(--kit-accent)', fontSize: 10, fontVariantNumeric: 'tabular-nums' }}>{Math.round(mm.rps)} rps</span>}
+        <span style={{ fontSize: 9, color: HEALTH_COLOR[health] }}>{mm ? `● ${health}` : '● —'}</span>
+        <button className="kit-press" style={dangerBtn} onClick={() => store.removeManagedService(ms.id)}>×</button>
+      </span>
     </div>
   )
 }

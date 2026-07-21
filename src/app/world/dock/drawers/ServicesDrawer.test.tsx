@@ -85,6 +85,28 @@ describe('ServicesDrawer', () => {
     expect(screen.getByLabelText('decrease db count')).toBeDisabled()
   })
 
+  it('the ✎ on a chip toggles the inline service editor (node-model Phase 5)', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('db')
+    useWorldStore.getState().addPlacement(bpId, serverId)
+    render(<ServicesDrawer server={currentServer(serverId)} doc={currentDoc()} compiled={compileWorld(currentDoc())} running={false} />)
+    // Closed by default.
+    expect(screen.queryByLabelText('service name')).toBeNull()
+    fireEvent.click(screen.getByLabelText('edit db'))
+    expect(screen.getByLabelText('service name')).toHaveValue('db')
+    // Toggles shut again.
+    fireEvent.click(screen.getByLabelText('edit db'))
+    expect(screen.queryByLabelText('service name')).toBeNull()
+  })
+
+  it('the ✎ edit affordance is locked while running', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('db')
+    useWorldStore.getState().addPlacement(bpId, serverId)
+    render(<ServicesDrawer server={currentServer(serverId)} doc={currentDoc()} compiled={compileWorld(currentDoc())} running />)
+    expect(screen.getByLabelText('edit db')).toBeDisabled()
+  })
+
   it('"+ mount a blueprint…" expands to a select, and choosing one dispatches addPlacement(blueprintId, serverId)', () => {
     const serverId = seedServer()
     const bpId = useWorldStore.getState().addBlueprint('cache')

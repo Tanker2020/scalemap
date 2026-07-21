@@ -15,6 +15,7 @@
 import { useState, type ReactElement } from 'react'
 import { SpreadControl } from './SpreadControl'
 import { AddServiceForm } from './AddServiceForm'
+import { EditServiceForm } from './EditServiceForm'
 import { useWorldStore } from '../../../store/world.store'
 import { HEALTH_COLOR } from '../../server/healthColor'
 import { isDbServerKind } from '../../../../lib/world/types'
@@ -44,6 +45,7 @@ export interface ServicesDrawerProps {
 export function ServicesDrawer({ server, doc, compiled, running, liveInstances }: ServicesDrawerProps): ReactElement {
   const [mounting, setMounting] = useState(false)
   const [adding, setAdding] = useState(false)
+  const [editingBp, setEditingBp] = useState<string | null>(null)
   // An appliance box (a DB) owns exactly one service and accepts no others, so it offers no way
   // to author or mount another — the same rule spread's canHost() enforces on the model side.
   const isAppliance = isDbServerKind(server.kind)
@@ -109,6 +111,13 @@ export function ServicesDrawer({ server, doc, compiled, running, liveInstances }
             </span>
             <span style={{ marginLeft: 'auto', display: 'flex', gap: 3 }}>
               <button
+                type="button" className="kit-press" aria-label={`edit ${bp?.name ?? 'service'}`}
+                disabled={running} title={running ? 'stop the simulation to edit' : 'edit this service'}
+                style={stepBtnStyle} onClick={() => setEditingBp(id => id === pl.blueprintId ? null : pl.blueprintId)}
+              >
+                ✎
+              </button>
+              <button
                 type="button" className="kit-press" aria-label={`decrease ${bp?.name ?? 'placement'} count`}
                 disabled={running} title={running ? 'stop the simulation to edit' : undefined}
                 style={stepBtnStyle} onClick={() => step(pl, -1)}
@@ -127,6 +136,14 @@ export function ServicesDrawer({ server, doc, compiled, running, liveInstances }
               ×{pl.count}
             </span>
           </div>
+          {/* Post-creation editor (node-model Phase 5): the ✎ on the chip opens the service's
+              name/port/workload/stateful fields inline — the editing path the retired BlueprintPanel
+              used to own. Dependencies stay in the Connections tab, not here. */}
+          {editingBp === pl.blueprintId && (
+            <div style={{ padding: '0 6px 4px' }}>
+              <EditServiceForm blueprintId={pl.blueprintId} running={running} onDone={() => setEditingBp(null)} />
+            </div>
+          )}
           {/* Replication lives beside the service it replicates, not in a separate surface: the
               count stepper above scales this service ON THIS BOX, spread scales it ACROSS AZs. */}
           <div style={{ padding: '0 6px 4px' }}>

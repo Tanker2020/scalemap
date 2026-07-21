@@ -2,14 +2,14 @@ import { describe, it, expect } from 'vitest'
 import { serializeWorld, deserializeWorld } from './serializer'
 import { createWorld, createRegion, createAz, createServer, createRack, createBlueprint } from './world/factories'
 
-describe('scalemap v2 serializer', () => {
+describe('scalemap v3 serializer', () => {
   it('round-trips a world document with meta and viewState', () => {
     const world = createWorld()
     const region = createRegion('us-east-1')
     world.regions[region.id] = region
     const raw = serializeWorld(world, 'my-world', '2026-07-08T00:00:00.000Z', undefined, { level: 'region', regionId: region.id })
     const parsed = deserializeWorld(raw)
-    expect(parsed.version).toBe('2')
+    expect(parsed.version).toBe('3')
     expect(parsed.meta.name).toBe('my-world')
     expect(parsed.meta.created).toBe('2026-07-08T00:00:00.000Z')
     expect(parsed.world.regions[region.id].catalogId).toBe('us-east-1')
@@ -21,14 +21,34 @@ describe('scalemap v2 serializer', () => {
     expect(() => deserializeWorld(v1)).toThrowError(/v1|older/i)
   })
 
+  // node-model Phase 5 — clean breaking change. Every world saved before the typed-node redesign
+  // is version '2' and is rejected outright (no auto-migration), the same way v1 was rejected when
+  // the world model shipped. The message must name the node model so the user understands WHY.
+  it('rejects v2 (pre-typed-node) files with a message that names the node model', () => {
+    const v2 = JSON.stringify({
+      version: '2',
+      meta: { name: 'legacy', created: '2026-07-08T00:00:00.000Z', modified: '2026-07-08T00:00:00.000Z' },
+      world: {
+        routing: { policy: 'latency', weights: {}, priorityOrder: [], healthCheckIntervalMs: 10_000, healthCheckFailureThreshold: 3, dnsTtlSec: 30 },
+        populations: {}, regions: {}, azs: {}, servers: {}, blueprints: {}, placements: {}, managedServices: {},
+        racks: {}, loadBalancers: {},
+      },
+    })
+    // Rejected at the version gate BEFORE the world-shape check — even a structurally-complete v2
+    // world is refused, because v2 predates the typed-node model.
+    expect(() => deserializeWorld(v2)).toThrowError(/v2|node|typed/i)
+  })
+
   it('rejects unknown versions and malformed shapes', () => {
-    expect(() => deserializeWorld(JSON.stringify({ version: '3' }))).toThrowError(/version/i)
-    expect(() => deserializeWorld(JSON.stringify({ version: '2' }))).toThrowError(/world/i)
+    // A version we have never shipped.
+    expect(() => deserializeWorld(JSON.stringify({ version: '4' }))).toThrowError(/version/i)
+    // The current version, but with no world document at all — a shape error, not a version error.
+    expect(() => deserializeWorld(JSON.stringify({ version: '3' }))).toThrowError(/world/i)
     expect(() => deserializeWorld('not json')).toThrow()
   })
 
   it('rejects a world document missing required collections', () => {
-    const malformed = JSON.stringify({ version: '2', meta: { name: 'x', created: '', modified: '' }, world: { regions: {} } })
+    const malformed = JSON.stringify({ version: '3', meta: { name: 'x', created: '', modified: '' }, world: { regions: {} } })
     expect(() => deserializeWorld(malformed)).toThrowError(/world/i)
   })
 
@@ -39,18 +59,19 @@ describe('scalemap v2 serializer', () => {
     expect(parsed.world).toEqual(world)
   })
 
-  it('a v2 file without racks loads with {} and servers without rack load as null', () => {
-    // Simulates a pre-Polish-3 file: no `racks` collection at all, and this server's
-    // `rack` key is entirely absent (not merely null) from its JSON — the shape any file
-    // saved before racks existed would have.
+  // The additive-normalization block survives the v3 cutover as DEFENSIVE insurance for a
+  // hand-authored or partially-constructed v3 file: the serializer itself always writes the full
+  // WorldDoc, so a file it produced can never miss these — but a file authored by hand (or by a
+  // forward-compat tool) that omits an additive collection still loads with sensible defaults
+  // rather than crashing.
+  it('a v3 file without racks loads with {} and servers without rack load as null', () => {
     const raw = JSON.stringify({
-      version: '2',
-      meta: { name: 'legacy', created: '2020-01-01T00:00:00.000Z', modified: '2020-01-01T00:00:00.000Z' },
+      version: '3',
+      meta: { name: 'partial', created: '2026-07-19T00:00:00.000Z', modified: '2026-07-19T00:00:00.000Z' },
       world: {
         routing: { policy: 'latency', weights: {}, priorityOrder: [], healthCheckIntervalMs: 10_000, healthCheckFailureThreshold: 3, dnsTtlSec: 30 },
-        traffic: { autoBaseline: true, baselineTotalRps: 1000 },
         populations: {}, regions: {}, azs: {},
-        servers: { 's1': { id: 's1', label: 'legacy-server', azId: 'az-1' } },
+        servers: { 's1': { id: 's1', label: 'bare-server', azId: 'az-1' } },
         blueprints: {}, placements: {}, managedServices: {},
         // no `racks` key
       },
@@ -60,15 +81,12 @@ describe('scalemap v2 serializer', () => {
     expect(parsed.world.servers['s1'].rack).toBeNull()
   })
 
-  it('a v2 file without loadBalancers loads with {} (pre-LB back-compat)', () => {
-    // Simulates a file saved before the regional load balancer existed: no `loadBalancers`
-    // key. compileWorld synthesizes a default LB per region, so behavior is unchanged.
+  it('a v3 file without loadBalancers loads with {}', () => {
     const raw = JSON.stringify({
-      version: '2',
-      meta: { name: 'legacy', created: '2020-01-01T00:00:00.000Z', modified: '2020-01-01T00:00:00.000Z' },
+      version: '3',
+      meta: { name: 'partial', created: '2026-07-19T00:00:00.000Z', modified: '2026-07-19T00:00:00.000Z' },
       world: {
         routing: { policy: 'latency', weights: {}, priorityOrder: [], healthCheckIntervalMs: 10_000, healthCheckFailureThreshold: 3, dnsTtlSec: 30 },
-        traffic: { autoBaseline: true, baselineTotalRps: 1000 },
         populations: {}, regions: {}, azs: {}, servers: {}, blueprints: {}, placements: {}, managedServices: {},
         racks: {},
         // no `loadBalancers` key
@@ -78,13 +96,12 @@ describe('scalemap v2 serializer', () => {
     expect(parsed.world.loadBalancers).toEqual({})
   })
 
-  it('a v2 file without packets loads with an empty registry (pre-route back-compat)', () => {
+  it('a v3 file without packets loads with an empty registry', () => {
     const raw = JSON.stringify({
-      version: '2',
-      meta: { name: 'legacy', created: '2020-01-01T00:00:00.000Z', modified: '2020-01-01T00:00:00.000Z' },
+      version: '3',
+      meta: { name: 'partial', created: '2026-07-19T00:00:00.000Z', modified: '2026-07-19T00:00:00.000Z' },
       world: {
         routing: { policy: 'latency', weights: {}, priorityOrder: [], healthCheckIntervalMs: 10_000, healthCheckFailureThreshold: 3, dnsTtlSec: 30 },
-        traffic: { autoBaseline: true, baselineTotalRps: 1000 },
         populations: {}, regions: {}, azs: {}, servers: {}, blueprints: {}, placements: {}, managedServices: {},
         racks: {}, loadBalancers: {},
         // no `packets` key
@@ -92,25 +109,6 @@ describe('scalemap v2 serializer', () => {
     })
     const parsed = deserializeWorld(raw)
     expect(parsed.world.packets).toEqual({ mode: 'generic', templates: {}, nextId: 1 })
-  })
-
-  it('folds a legacy top-level packets slot into world.packets', () => {
-    // Any file that DID carry the vestigial top-level `packets` sibling must not lose its routes.
-    const legacyPackets = { mode: 'custom', templates: { 5: { id: 5, name: 'api', protocol: 'http', sizeKb: 2, method: 'GET', path: '/api/*', statusCode: 200 } }, nextId: 6 }
-    const raw = JSON.stringify({
-      version: '2',
-      meta: { name: 'legacy', created: '2020-01-01T00:00:00.000Z', modified: '2020-01-01T00:00:00.000Z' },
-      packets: legacyPackets,
-      world: {
-        routing: { policy: 'latency', weights: {}, priorityOrder: [], healthCheckIntervalMs: 10_000, healthCheckFailureThreshold: 3, dnsTtlSec: 30 },
-        traffic: { autoBaseline: true, baselineTotalRps: 1000 },
-        populations: {}, regions: {}, azs: {}, servers: {}, blueprints: {}, placements: {}, managedServices: {},
-        racks: {}, loadBalancers: {},
-        // no world.packets — the legacy top-level slot is the only carrier
-      },
-    })
-    const parsed = deserializeWorld(raw)
-    expect(parsed.world.packets).toEqual(legacyPackets)
   })
 
   it('round-trips a world.packets route catalog', () => {
