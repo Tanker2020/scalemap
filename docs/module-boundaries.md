@@ -2993,3 +2993,44 @@ before the hard ceiling, exactly as designed. At 3200 rps, provisioned read sat 
 0 refused. Reserved-3yr cut the DB's monthly compute by the expected 60 %. A killed multi-AZ DB
 auto-recovered (`replica_promoted`, traffic back to 1201 rps, kill-flag cleared); a single-AZ one
 stayed down.
+
+---
+
+## Managed-service edit modal — node-model modal plan (2026-07-21)
+
+Closes out the plan that replaced `ManagedPanel.tsx`'s inline managed-service config fields
+(type/scope/provider only — no way to touch DB or storage/capacity settings without editing raw
+state) with a proper add/edit modal. Four tasks; three are new module boundaries worth recording
+here (Task 4's `ManagedPanel.tsx` row-summary swap is mechanical, not a new boundary).
+
+**1 — `addManagedService`'s 6th param.** `world.store.ts`'s `addManagedService` gained a 6th,
+optional `config?: Partial<ManagedService>` parameter (`c735dc0`) — the same additive
+trailing-param pattern as the existing `provider?` addition documented at §M, line 439 (Phase 4
+Task 7): both widen the same action, both stay backward-compatible for every pre-existing call
+site because the new param is optional and last. `config` merges over the engine-derived DB
+defaults, with explicitly-`undefined` keys stripped first (CREATE-path semantics only —
+`updateManagedService`'s own clear-vs-nothing distinction is untouched), and `id` is re-pinned
+after the spread so `config` can never override the entity's identity.
+
+**2 — `src/lib/world/managedDraft.ts` (new).** Pure, no React/store imports, node-testable —
+sibling to `serviceDraft.ts` (the VPS-door service-authoring draft module, §"Service authoring
+form" 2026-07-18) in the same directory, same shape: a draft type plus pure conversion functions
+between it and the concrete document record. Exports the `ManagedDraft` type, `MANAGED_TYPES`,
+`PROVIDERS`, `STORAGE_CAPABLE`, `scopeToKey`/`scopeFromKey`, `defaultManagedDraft`,
+`draftFromService`, `draftToConfig` — plus two invalidation helpers beyond the plan's original
+export list: `applyNodeTypeChange` (re-bases type-derived fields when the node type changes, the
+same idiom as `AddServiceForm.tsx`'s `pickKind`) and `applyProviderChange` (clears
+`storageTierId` on a provider change, since tier ids are provider-specific and `generic` has
+none).
+
+**3 — Portal-vs-fieldset edit-lock (a general law for future modals).** `WorldPanel.tsx` locks
+its whole dock body with one dock-wide `<fieldset disabled={running}>` (line 294) that every
+existing dock tab relies on for free. A `createPortal(..., document.body)` modal renders OUTSIDE
+that React tree entirely — its DOM lands as a sibling of the app root, not a descendant — so the
+dock's fieldset never reaches it, and `running` has no effect on its controls unless the modal
+declares its own. `ManagedServiceModal.tsx` is the first real instance of this pattern in the
+codebase: it wraps only its editable field sections in their own `<fieldset disabled={running}>`,
+deliberately leaving Close/Cancel/Submit outside that wrapper so there is always an escape hatch
+even mid-run. Any future portal-rendered modal that must respect the simulation running-lock
+needs this same self-contained fieldset — inheriting the dock's lock is not an option once a
+component is rendered through a portal.
