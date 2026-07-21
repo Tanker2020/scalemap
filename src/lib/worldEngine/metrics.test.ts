@@ -7,6 +7,7 @@ import type { InstanceFlow } from './flows'
 import type { HostStepResult } from './hostScheduler'
 import type { NicState } from './networkRuntime'
 import type { HealthState } from './types'
+import { managedDbRuntimeFor } from '../managedDbRuntime'
 
 // 1 region / 1 AZ / 2 servers / 1 blueprint / 2 single-count placements → 2 instances.
 function fixture() {
@@ -241,5 +242,69 @@ describe('metrics: managed-service received traffic', () => {
     const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
     expect(batch.managedServices![ms.id].utilization).toBe(0)
     expect(batch.managedServices![ms.id].health).toBe('healthy')
+  })
+})
+
+// node-model Phase 5.4: the managed-DB failure model publishes its own gauges, and a query TIMEOUT
+// is reported separately from a throughput/connection THROTTLE.
+describe('metrics: managed-DB runtime gauges (Phase 5.4)', () => {
+  const vps = { steal: 0, effectiveVcpuFactor: 1, creditsFraction: null } as VpsPublish
+  function addManagedDb(f: ReturnType<typeof fixture>, over: Record<string, unknown> = {}) {
+    const ms = {
+      id: 'ms-1', label: 'SQL DB', nodeType: 'dbSql', scope: { kind: 'region' as const, regionId: f.region.id },
+      provider: 'aws' as const, port: 5432, instanceClassId: 'sql.small', replicaCount: 0, ...over,
+    }
+    f.doc.managedServices[ms.id] = ms as (typeof f.doc.managedServices)[string]
+    return ms
+  }
+  const dsRow = (msId: string, rps: number, blocked = false, failure?: 'throttled' | 'timeout'): NonNullable<InstanceFlow['downstream']>[number] =>
+    ({ dependencyId: 'dep-1', toManagedServiceId: msId, rps, hopClass: 'same-az', blocked, ...(failure ? { failure } : {}) })
+
+  it('publishes p50/p99/connections/saturation from the runtime', () => {
+    const f = fixture()
+    const ms = addManagedDb(f)
+    const state = createMetricsState()
+    const runtime = managedDbRuntimeFor(f.doc.managedServices[ms.id], 2000, 0)!
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state, { [f.i1]: flow(f.i1, 100, { downstream: [dsRow(ms.id, 2000)] }) },
+        { [f.s1.id]: host() }, { [f.s1.id]: vps }, { [f.s1.id]: nic }, healthy, s * 100,
+        { [ms.id]: runtime })
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    const m = batch.managedServices![ms.id]
+    expect(m.p50Ms).toBeCloseTo(runtime.p50Ms, 1)
+    expect(m.p99Ms).toBeGreaterThan(m.p50Ms!)
+    expect(m.connections).toBeCloseTo(runtime.connections, 0)
+    expect(m.saturation).toBeCloseTo(runtime.saturation, 2)
+  })
+
+  it('reports timeout rows as errorRps, not refusedRps', () => {
+    const f = fixture()
+    const ms = addManagedDb(f)
+    const state = createMetricsState()
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state, {
+        [f.i1]: flow(f.i1, 100, {
+          downstream: [dsRow(ms.id, 400), dsRow(ms.id, 100, true, 'throttled'), dsRow(ms.id, 60, true, 'timeout')],
+        }),
+      }, { [f.s1.id]: host() }, { [f.s1.id]: vps }, { [f.s1.id]: nic }, healthy, s * 100)
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    const m = batch.managedServices![ms.id]
+    expect(m.rps).toBeCloseTo(400, 1)
+    expect(m.refusedRps).toBeCloseTo(100, 1)   // throttle only
+    expect(m.errorRps).toBeCloseTo(60, 1)      // timeouts split out
+  })
+
+  it('defaults the new gauges to 0 when no runtime is supplied (back-compat)', () => {
+    const f = fixture()
+    const ms = addManagedDb(f)
+    const state = createMetricsState()
+    accumulateStep(state, { [f.i1]: flow(f.i1, 100, { downstream: [dsRow(ms.id, 300)] }) },
+      { [f.s1.id]: host() }, { [f.s1.id]: vps }, { [f.s1.id]: nic }, healthy, 0)
+    const m = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000).managedServices![ms.id]
+    expect(m.p50Ms).toBe(0)
+    expect(m.connections).toBe(0)
+    expect(m.errorRps).toBe(0)
   })
 })

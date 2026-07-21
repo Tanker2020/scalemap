@@ -101,6 +101,16 @@ export interface ManagedServiceMetrics {
   // per-service in the cost model against its provider schedule + storage free allowance. 0 for
   // non-storage types (their transfer stays in the world cross-zone buckets).
   egressBytesPerSec: number
+  // ── Managed-DB failure-model gauges (node-model Phase 5.4) ────────────────
+  // Additive-optional (frozen-contract rule): buildBatch always populates them, but older/test-built
+  // batches may omit them — read as `m.p50Ms ?? 0`. Populated only for capacity-modelled DBs
+  // (managedDbRuntime.ts); 0 for every other managed type. See contract-drift.md §PHASE 5.4.
+  saturation?: number   // 0..1+ on the BINDING axis (max of write/read utilization), pre-refusal
+  p50Ms?: number        // effective service latency under load — base / (1 − saturation)
+  p99Ms?: number
+  connections?: number  // live connections ≈ admitted rps × latency (Little's law) vs maxConnections
+  errorRps?: number     // requests/sec failing on queryTimeoutMs — the SOFT failure, distinct from
+                        // refusedRps (throughput/connection throttling)
 }
 
 export interface MetricsBatch {

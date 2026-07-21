@@ -3,6 +3,7 @@
 // hysteresis port), docs/superpowers/specs/2026-07-08-phase2-substrate-engine-design.md.
 // Emits contract EngineEvents; the facade (Task 12) owns id re-sequencing and observation.
 import type { AzId, PlacementId, InstanceId, CompiledWorld, WorldDoc, PlacementRole } from '../world/types'
+import { managedDbEngine } from '../world/types'
 import type { EngineEvent, HealthState } from './types'
 
 const DRAIN_MS = 2000               // existing traffic on a downed AZ ramps out over 2s (spec decision 7)
@@ -30,6 +31,9 @@ export interface FailoverState {
   promotedAt: Map<PlacementId, number>
   onsetPendingSince: Map<string, number>
   recoveryUntil: Map<string, number>
+  // When each currently-down managed service went down (node-model Phase 5.4), so a multi-AZ DB
+  // can auto-recover once its failover window elapses. Cleared on recovery or manual restore.
+  managedDownSince: Map<string, number>
 }
 
 export function createFailoverState(): FailoverState {
@@ -40,6 +44,7 @@ export function createFailoverState(): FailoverState {
     promotedAt: new Map(),
     onsetPendingSince: new Map(),
     recoveryUntil: new Map(),
+    managedDownSince: new Map(),
   }
 }
 
@@ -89,14 +94,55 @@ export function setOutage(
     state.manualOutages.add(id)
     state.healthByScope.set(id, 'down')
     if (scope === 'az') beginDrain(state, id, simMs)
+    // Phase 5.4: start the failover clock so a multi-AZ managed DB can promote its standby.
+    if (scope === 'managed') state.managedDownSince.set(id, simMs)
     return [outageEvent('outage_triggered', scope, id, simMs)]
   }
   if (!down && already) {
     state.manualOutages.delete(id)
     if (scope === 'az') clearDrain(state, id)
+    if (scope === 'managed') state.managedDownSince.delete(id)
     return [outageEvent('outage_cleared', scope, id, simMs)]
   }
   return []
+}
+
+// How long a multi-AZ managed DB takes to promote its standby and come back (node-model Phase 5.4).
+// Real RDS/Cloud SQL multi-AZ failovers land in the tens of seconds; this is the sim's equivalent.
+export const MANAGED_FAILOVER_WINDOW_MS = 15_000
+// Each promotion tier above 0 waits this much longer — the ordering knob made observable, since a
+// managed DB's replicas are anonymous (the lightweight locality model has no per-replica entities).
+export const MANAGED_PROMOTION_TIER_STEP_MS = 5_000
+
+// Multi-AZ managed DBs recover on their own: the standby promotes after the failover window, so
+// killing one is a blip rather than a permanent outage. A SINGLE-AZ DB has nothing to promote and
+// stays down until manually restored — which is precisely what makes multiAz worth paying for.
+// Only managed DBs participate; other managed types have no standby model.
+export function recoverMultiAzManagedDbs(
+  state: FailoverState,
+  doc: WorldDoc,
+  simMs: number,
+): EngineEvent[] {
+  const events: EngineEvent[] = []
+  for (const [id, since] of [...state.managedDownSince]) {
+    const ms = doc.managedServices[id]
+    if (!ms || !managedDbEngine(ms.nodeType) || !ms.multiAz) continue
+    const window = MANAGED_FAILOVER_WINDOW_MS
+      + Math.max(0, ms.promotionTier ?? 0) * MANAGED_PROMOTION_TIER_STEP_MS
+    if (simMs - since < window) continue
+    state.manualOutages.delete(id)
+    state.managedDownSince.delete(id)
+    state.healthByScope.set(id, 'healthy')
+    events.push({
+      id: `managed-promote-${id}-${simMs}`,
+      simMs,
+      kind: 'replica_promoted',
+      severity: 'warning',
+      message: `${ms.label} promoted its multi-AZ standby after failover`,
+      affected: [id],
+    })
+  }
+  return events
 }
 
 /** The raw signal a health-check probe observes for a scope: manual outage or the scope's own

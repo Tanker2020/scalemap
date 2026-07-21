@@ -165,3 +165,56 @@ describe('computeWorldCost', () => {
     expect(result.byAz.find(a => a.azId === azId)!.monthlyUsd).toBeGreaterThan(0)
   })
 })
+
+// node-model Phase 5.4: a managed DB's price now responds to its commitment term and capacity mode
+// — the two knobs that change what a given class actually costs.
+describe('computeWorldCost — managed-DB pricing commitment + capacity mode (Phase 5.4)', () => {
+  function withDb(over: Record<string, unknown>) {
+    const { doc, regionId } = twoServerWorld()
+    doc.managedServices['ms-db'] = {
+      id: 'ms-db', label: 'orders-db', nodeType: 'dbSql', provider: 'aws',
+      scope: { kind: 'region', regionId }, port: 5432,
+      instanceClassId: 'sql.small', storageGb: 0, ...over,
+    } as WorldDoc['managedServices'][string]
+    return doc
+  }
+  const baseline = computeWorldCost(twoServerWorld().doc, null).monthlyUsd
+  const dbCost = (over: Record<string, unknown>, managed: Parameters<typeof computeWorldCost>[2] = null) =>
+    computeWorldCost(withDb(over), null, managed).monthlyUsd - baseline
+
+  it('discounts a 1-year reserved commitment below on-demand', () => {
+    const onDemand = dbCost({ pricing: 'onDemand' })
+    const reserved = dbCost({ pricing: 'reserved1yr' })
+    expect(onDemand).toBeGreaterThan(0)
+    expect(reserved).toBeLessThan(onDemand)
+    expect(reserved).toBeCloseTo(onDemand * 0.6, 5)   // 40% off
+  })
+
+  it('discounts a 3-year commitment more than a 1-year one', () => {
+    expect(dbCost({ pricing: 'reserved3yr' })).toBeLessThan(dbCost({ pricing: 'reserved1yr' }))
+  })
+
+  it('defaults to on-demand pricing when no commitment is set', () => {
+    expect(dbCost({})).toBeCloseTo(dbCost({ pricing: 'onDemand' }), 5)
+  })
+
+  it('prices a serverless DB per-request from live rps instead of a flat hourly', () => {
+    const managed = {
+      'ms-db': {
+        managedServiceId: 'ms-db', rps: 500, refusedRps: 0, utilization: 0.2,
+        health: 'healthy' as const, egressBytesPerSec: 0,
+      },
+    }
+    const idle = dbCost({ capacityMode: 'serverless' }, {
+      ...managed, 'ms-db': { ...managed['ms-db'], rps: 0 },
+    })
+    const busy = dbCost({ capacityMode: 'serverless' }, managed)
+    expect(busy).toBeGreaterThan(idle)     // usage-priced: traffic costs money
+    expect(idle).toBeLessThan(dbCost({ capacityMode: 'provisioned' }))   // idle serverless is cheaper
+  })
+
+  it('does not apply a reserved discount to a serverless DB (no commitment to make)', () => {
+    expect(dbCost({ capacityMode: 'serverless', pricing: 'reserved3yr' }))
+      .toBeCloseTo(dbCost({ capacityMode: 'serverless', pricing: 'onDemand' }), 5)
+  })
+})

@@ -302,4 +302,47 @@ describe('AzConfigTab', () => {
     expect(screen.getByTestId(`az-managed-${azMs}`)).toBeTruthy()
     expect(screen.getByTestId(`az-managed-${regionMs}`)).toHaveTextContent(/region/)
   })
+
+  // node-model Phase 5.4: the row showed rps text only, so a DB pinned at its ceiling read exactly
+  // like an idle one. It now carries a saturation bar plus latency/connection numbers.
+  it('shows the managed-DB saturation readout (sat% / p50 / connections) when the runtime publishes it', () => {
+    const { regionId, azId } = seedAz()
+    const msId = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'region', regionId }, 5432)
+    useWorldStore.getState().updateManagedService(msId, { instanceClassId: 'sql.small' })
+    const batch = {
+      simMs: 1000, instances: {}, servers: {}, azs: {}, regions: {},
+      world: { totalRps: 0, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
+      managedServices: {
+        [msId]: {
+          managedServiceId: msId, rps: 2274, refusedRps: 931, utilization: 0.9, health: 'degraded' as const,
+          egressBytesPerSec: 0, saturation: 0.91, p50Ms: 78.2, p99Ms: 234.6, connections: 104, errorRps: 0,
+        },
+      },
+    } as unknown as MetricsBatch
+    act(() => { useSimulationStore.setState({ latestBatch: batch }) })
+    render(<AzConfigTab azId={azId} />)
+    const row = screen.getByTestId(`az-managed-${msId}`)
+    expect(row).toHaveTextContent(/2274 rps/)
+    expect(row).toHaveTextContent(/91%/)      // saturation on the binding axis
+    expect(row).toHaveTextContent(/78ms/)     // queueing latency
+    expect(row).toHaveTextContent(/104c/)     // live connections
+  })
+
+  it('flags a managed DB that is erroring on its query timeout', () => {
+    const { regionId, azId } = seedAz()
+    const msId = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'region', regionId }, 5432)
+    const batch = {
+      simMs: 1000, instances: {}, servers: {}, azs: {}, regions: {},
+      world: { totalRps: 0, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
+      managedServices: {
+        [msId]: {
+          managedServiceId: msId, rps: 1672, refusedRps: 0, utilization: 0.63, health: 'degraded' as const,
+          egressBytesPerSec: 0, saturation: 0.66, p50Ms: 9.8, p99Ms: 29.4, connections: 17, errorRps: 228,
+        },
+      },
+    } as unknown as MetricsBatch
+    act(() => { useSimulationStore.setState({ latestBatch: batch }) })
+    render(<AzConfigTab azId={azId} />)
+    expect(screen.getByTestId(`az-managed-${msId}`)).toHaveTextContent('⚠')
+  })
 })

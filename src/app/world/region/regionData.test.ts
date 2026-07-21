@@ -10,6 +10,7 @@ import {
   dotStreamParams, replicaRailPairs, regionManagedServices, regionAzManaged,
 } from './regionData'
 import type { MetricsBatch, EngineEvent, AzMetrics, RegionMetrics, ReplayFrame } from '../../../lib/worldEngine/types'
+import type { WorldDoc } from '../../../lib/world/types'
 
 function emptyWorldMetrics(): MetricsBatch['world'] {
   return { totalRps: 0, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 }
@@ -365,7 +366,9 @@ describe('regionManagedServices', () => {
 })
 
 describe('regionAzManaged', () => {
-  it('returns only the az-scoped managed services in that AZ, with a non-DB capacity', () => {
+  // Phase 5.4 changed this deliberately: an AZ card now also lists the REGION-scoped services
+  // (they serve every AZ, and the AZ floor has always drawn them). Other AZs' services stay out.
+  it('returns this AZ\'s services plus the region-wide ones, with a non-DB capacity', () => {
     const doc = createWorld()
     const r = createRegion('us-east-1')
     const azA = createAz(r.id, 'us-east-1a')
@@ -375,7 +378,74 @@ describe('regionAzManaged', () => {
     doc.managedServices['q-b'] = { id: 'q-b', label: 'Q2', nodeType: 'queue', scope: { kind: 'az', azId: azB.id }, provider: 'aws', port: 5672 } as never
     doc.managedServices['r-wide'] = { id: 'r-wide', label: 'CDN', nodeType: 'cdn', scope: { kind: 'region', regionId: r.id }, provider: 'aws', port: 443 } as never
     const entries = regionAzManaged(azA.id, doc, null)
-    expect(entries.map(e => e.id)).toEqual(['q-a'])   // az-A only; az-B + region-wide excluded
-    expect(entries[0].capacityRps).toBe(5000)         // queue per-type default ceiling
+    expect(entries.map(e => e.id).sort()).toEqual(['q-a', 'r-wide'])   // az-B's service excluded
+    expect(entries.find(e => e.id === 'q-a')!.capacityRps).toBe(5000)  // queue per-type default ceiling
+    expect(entries.find(e => e.id === 'r-wide')!.scope).toBe('region')
+  })
+})
+
+// node-model Phase 5.4: region-SCOPED managed services were missing from the AZ cards entirely —
+// they only appeared in the region strip, so an AZ card and the AZ floor disagreed about what is
+// in the AZ. They are region-wide, so they now appear in EVERY AZ card of that region, tagged.
+describe('regionAzManaged — region-scoped services + runtime metrics (Phase 5.4)', () => {
+  function world() {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az1 = createAz(region.id, 'us-east-1a')
+    const az2 = createAz(region.id, 'us-east-1b')
+    doc.regions[region.id] = region
+    doc.azs[az1.id] = az1
+    doc.azs[az2.id] = az2
+    doc.managedServices['ms-az'] = {
+      id: 'ms-az', label: 'az-cache', nodeType: 'redis', provider: 'aws',
+      scope: { kind: 'az', azId: az1.id }, port: 6379,
+    } as WorldDoc['managedServices'][string]
+    doc.managedServices['ms-region'] = {
+      id: 'ms-region', label: 'orders-db', nodeType: 'dbSql', provider: 'aws',
+      scope: { kind: 'region', regionId: region.id }, port: 5432, instanceClassId: 'sql.small',
+    } as WorldDoc['managedServices'][string]
+    return { doc, region, az1, az2 }
+  }
+
+  it('includes region-scoped services in every AZ card of the region', () => {
+    const { doc, az1, az2 } = world()
+    expect(regionAzManaged(az1.id, doc, null).map(e => e.id).sort()).toEqual(['ms-az', 'ms-region'])
+    expect(regionAzManaged(az2.id, doc, null).map(e => e.id)).toEqual(['ms-region'])
+  })
+
+  it('tags which entries are region-scoped so the card can mark them', () => {
+    const { doc, az1 } = world()
+    const byId = Object.fromEntries(regionAzManaged(az1.id, doc, null).map(e => [e.id, e]))
+    expect(byId['ms-region'].scope).toBe('region')
+    expect(byId['ms-az'].scope).toBe('az')
+  })
+
+  it('carries the Phase 5.4 DB gauges through to the card', () => {
+    const { doc, az1 } = world()
+    const batch = {
+      simMs: 1000, instances: {}, servers: {}, azs: {}, regions: {},
+      world: { totalRps: 0, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
+      managedServices: {
+        'ms-region': {
+          managedServiceId: 'ms-region', rps: 900, refusedRps: 20, utilization: 0.4,
+          health: 'degraded' as const, egressBytesPerSec: 0,
+          saturation: 0.62, p50Ms: 7.9, p99Ms: 23.7, connections: 71, errorRps: 12,
+        },
+      },
+    } as unknown as MetricsBatch
+    const e = regionAzManaged(az1.id, doc, batch).find(x => x.id === 'ms-region')!
+    expect(e.saturation).toBeCloseTo(0.62)
+    expect(e.p50Ms).toBeCloseTo(7.9)
+    expect(e.connections).toBe(71)
+    expect(e.errorRps).toBe(12)
+  })
+
+  it('defaults the gauges to 0 for a service with no metrics', () => {
+    const { doc, az1 } = world()
+    const e = regionAzManaged(az1.id, doc, null).find(x => x.id === 'ms-az')!
+    expect(e.saturation).toBe(0)
+    expect(e.p50Ms).toBe(0)
+    expect(e.connections).toBe(0)
+    expect(e.errorRps).toBe(0)
   })
 })

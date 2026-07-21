@@ -127,7 +127,20 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
         pendingEvents.push(event)
         set((s) => {
           const next = s.events.length >= EVENT_WINDOW ? [...s.events.slice(s.events.length - EVENT_WINDOW + 1), event] : [...s.events, event]
-          return event.kind === 'engine_degraded' ? { events: next, degraded: true } : { events: next }
+          if (event.kind === 'engine_degraded') return { events: next, degraded: true }
+          // A multi-AZ managed DB clears its OWN outage inside the engine once its standby promotes
+          // (node-model Phase 5.4, failover.ts's recoverMultiAzManagedDbs). healthOverrides is the
+          // UI's copy of that kill switch — without this the DB serves traffic again while the dock
+          // still renders it "down" and offers a restore button for something already restored.
+          if (event.kind === 'replica_promoted') {
+            const recovered = event.affected.filter(id => s.healthOverrides[id])
+            if (recovered.length > 0) {
+              const overrides = { ...s.healthOverrides }
+              for (const id of recovered) delete overrides[id]
+              return { events: next, healthOverrides: overrides }
+            }
+          }
+          return { events: next }
         })
       },
       onHealthChange: () => {},

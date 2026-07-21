@@ -198,23 +198,37 @@ export function AzRow({
           })}
           {managedHere.map(m => {
             const down = healthOverrides[m.id] ?? false
-            const pct = down ? 100 : Math.max(2, Math.round(m.utilization * 100))
+            // Phase 5.4: a capacity-modelled DB reports a real saturation on its BINDING axis —
+            // prefer it over the coarse reads+writes utilization gauge when it exists.
+            const fill = m.saturation > 0 ? Math.min(1, m.saturation) : m.utilization
+            const pct = down ? 100 : Math.max(2, Math.round(fill * 100))
             const barColor = down ? 'var(--color-danger)' : HEALTH_COLOR[m.health]
             const capLabel = m.capacityRps != null ? `${Math.round(m.rps)}/${m.capacityRps}` : `${Math.round(m.rps)}`
+            // The DB readout: how full, how slow, how many connections. Only shown for a DB with a
+            // live runtime (p50 > 0); everything else keeps the plain rps line.
+            const dbReadout = m.p50Ms > 0
+              ? `${Math.round(fill * 100)}% · ${m.p50Ms < 10 ? m.p50Ms.toFixed(1) : Math.round(m.p50Ms)}ms · ${Math.round(m.connections)}c`
+              : null
             return (
               <div
-                key={m.id} data-managed-row={m.id} title={`${m.label} · ${m.nodeType} (managed)`}
+                key={m.id} data-managed-row={m.id}
+                title={`${m.label} · ${m.nodeType} (managed${m.scope === 'region' ? ', region-wide' : ''})`
+                  + (m.p50Ms > 0 ? ` — p50 ${m.p50Ms.toFixed(1)}ms · ${Math.round(m.connections)} connections` : '')
+                  + (m.errorRps > 0.5 ? ` · ${Math.round(m.errorRps)} rps timing out` : '')}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, fontSize: 10, color: 'var(--color-text-secondary)',
                   padding: '3px 6px', borderRadius: 4, borderLeft: `2px solid ${barColor}`,
                 }}
               >
-                <span style={{ width: 108, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>🗄 {m.label}</span>
+                <span style={{ width: 108, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {m.label}{m.scope === 'region' ? <span style={{ color: 'var(--color-text-muted)' }}> · rgn</span> : ''}
+                </span>
                 <span style={{ flex: 1, height: 5, borderRadius: 3, background: '#1a202b', overflow: 'hidden', position: 'relative', display: 'block' }}>
                   <span style={{ position: 'absolute', inset: '0 auto 0 0', width: `${pct}%`, background: barColor, height: '100%', display: 'block' }} />
                 </span>
-                <span style={{ width: 82, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: down ? 'var(--color-danger)' : undefined }}>
-                  {down ? 'down' : `${capLabel} rps`}{m.refusedRps > 0.5 && !down ? ' ⚠' : ''}
+                <span style={{ width: 132, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: down ? 'var(--color-danger)' : undefined }}>
+                  {down ? 'down' : (dbReadout ?? `${capLabel} rps`)}
+                  {!down && (m.refusedRps > 0.5 || m.errorRps > 0.5) ? ' ⚠' : ''}
                 </span>
                 {running && (
                   <button

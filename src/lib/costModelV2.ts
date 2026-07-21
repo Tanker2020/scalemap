@@ -57,15 +57,34 @@ function loadBalancerMonthlyUsd(): number {
   return usd
 }
 
-function managedServiceMonthlyUsd(ms: ManagedService): number {
+// Commitment discounts on a PROVISIONED managed DB (node-model Phase 5.4). Committing to a term
+// buys the same capacity cheaper — the classic reserved-instance trade, and the reason a stable
+// workload is priced very differently from a spiky one.
+const RESERVED_DISCOUNT: Record<string, number> = { onDemand: 0, reserved1yr: 0.4, reserved3yr: 0.6 }
+
+// Serverless/on-demand request price (node-model Phase 5.4). A serverless DB bills per request
+// instead of per instance-hour: idle costs (almost) nothing, saturation costs more than the box
+// would have. Indicative-realistic, like the rest of this model.
+const SERVERLESS_USD_PER_MILLION_REQUESTS = 0.25
+
+function managedServiceMonthlyUsd(ms: ManagedService, rps = 0): number {
   // Cloud-managed DB with a chosen instance class (node-model Phase 3): the class fixes the base
   // hourly, replicas add proportional cost, and provisioned storage is billed per GB. This wins
   // over the registry's flat rate because the class IS the sizing decision.
   const dbClass = getDbInstanceClass(ms.instanceClassId)
   if (dbClass) {
     const instances = 1 + (ms.replicaCount ?? 0) + (ms.multiAz ? 1 : 0)   // primary + replicas + standby
-    const compute = dbClass.hourlyUsd * instances * HOURS_PER_MONTH
     const storage = (ms.storageGb ?? 0) * DB_STORAGE_USD_PER_GB_MONTH
+    // Phase 5.4 — capacity mode decides the SHAPE of the compute bill:
+    //   serverless  → no instance-hours at all; pay per request off live traffic. A commitment
+    //                 discount cannot apply, because there is no provisioned capacity to commit to.
+    //   provisioned → instance-hours as before, discounted by the commitment term.
+    if (ms.capacityMode === 'serverless') {
+      const requestsPerMonth = Math.max(0, rps) * SECONDS_PER_MONTH
+      return (requestsPerMonth / 1_000_000) * SERVERLESS_USD_PER_MILLION_REQUESTS + storage
+    }
+    const discount = RESERVED_DISCOUNT[ms.pricing ?? 'onDemand'] ?? 0
+    const compute = dbClass.hourlyUsd * instances * HOURS_PER_MONTH * (1 - discount)
     return compute + storage
   }
 
@@ -122,7 +141,8 @@ export function computeWorldCost(
   for (const ms of Object.values(doc.managedServices)) {
     const egr = managed ? managedEgressUsd(ms, managed[ms.id]?.egressBytesPerSec ?? 0) : 0
     managedEgressTotal += egr
-    const usd = managedServiceMonthlyUsd(ms) + egr
+    // Live rps feeds serverless per-request pricing (Phase 5.4); ignored for provisioned classes.
+    const usd = managedServiceMonthlyUsd(ms, managed?.[ms.id]?.rps ?? 0) + egr
     if (usd === 0) continue
     if (ms.scope.kind === 'az') {
       bump(byAzMap, ms.scope.azId, usd)

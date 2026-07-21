@@ -5,6 +5,9 @@ import { createWorld, createRegion, createAz, createServer, createBlueprint, cre
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
 import type { InstanceFlow } from './flows'
+import { MANAGED_SERVICE_LATENCY_MS } from './flows'
+import { managedDbRuntimeFor } from '../managedDbRuntime'
+import type { WorldDoc } from '../world/types'
 import type { MetricsBatch, ReplayFrame } from './types'
 
 const emptyBatch = (simMs: number): MetricsBatch => ({
@@ -124,5 +127,46 @@ describe('scopeKey', () => {
     expect(scopeKey({ level: 'region', regionId: 'r1' })).toBe('region:r1')
     expect(scopeKey({ level: 'az', azId: 'a1' })).toBe('az:a1')
     expect(scopeKey({ level: 'server', serverId: 's1' })).toBe('server:s1')
+  })
+})
+
+// node-model Phase 5.4: a managed DB hop used a flat 3ms constant, so a traced request through a
+// saturated DB reported ~3ms while the metrics pyramid reported hundreds. The runtime's p50 is now
+// threaded through so replay and live metrics agree.
+describe('tracer — managed-DB hop latency (Phase 5.4)', () => {
+  function managedFixture() {
+    const f = tracedFixture()
+    const msId = 'ms-db'
+    f.doc.managedServices[msId] = {
+      id: msId, label: 'orders-db', nodeType: 'dbSql',
+      scope: { kind: 'az', azId: f.az.id }, provider: 'aws', port: 5432, instanceClassId: 'sql.small',
+    } as WorldDoc['managedServices'][string]
+    f.flows[f.apiInst].downstream = [
+      { dependencyId: 'dep-db', toManagedServiceId: msId, rps: 100, hopClass: 'same-az', blocked: false },
+    ]
+    // The api no longer feeds pg, so pg would qualify as a second (hopless) entry and the tracer
+    // could pick it. Drop it — this fixture is about the api → managed hop.
+    delete f.flows[f.pgInst]
+    return { ...f, msId }
+  }
+
+  it('uses the flat managed constant when no runtime is supplied', () => {
+    const f = managedFixture()
+    const tracer = createTracer(createRng(42))
+    tracer.sample(f.flows, f.compiled, f.doc, 1000)
+    const hop = tracer.getTraced({ level: 'az', azId: f.az.id })[0].hops[0]
+    expect(hop.latencyMs).toBeGreaterThan(0)
+    expect(hop.latencyMs).toBeLessThan(MANAGED_SERVICE_LATENCY_MS + 5)   // + a small network hop
+  })
+
+  it('books the runtime p50 for a saturated managed DB', () => {
+    const f = managedFixture()
+    // 2400 rps of reads against a 2500 read ceiling ⇒ deep queueing, p50 far above 3ms.
+    const rt = managedDbRuntimeFor(f.doc.managedServices[f.msId], 2400, 0)!
+    expect(rt.p50Ms).toBeGreaterThan(50)
+    const tracer = createTracer(createRng(42))
+    tracer.sample(f.flows, f.compiled, f.doc, 1000, undefined, { [f.msId]: rt })
+    const hop = tracer.getTraced({ level: 'az', azId: f.az.id })[0].hops[0]
+    expect(hop.latencyMs).toBeGreaterThan(rt.p50Ms)   // service time + the network hop
   })
 })

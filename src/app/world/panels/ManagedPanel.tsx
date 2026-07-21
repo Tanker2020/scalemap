@@ -14,7 +14,8 @@ import { useState } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import type { ManagedService } from '../../../lib/world/types'
 import { managedDbEngine } from '../../../lib/world/types'
-import { DB_INSTANCE_CLASSES } from '../../../lib/dbInstanceClasses'
+import type { ManagedCapacityMode, ManagedPricingCommitment, ReplicaLocality } from '../../../lib/world/types'
+import { DB_INSTANCE_CLASSES, getDbInstanceClass } from '../../../lib/dbInstanceClasses'
 import { MANAGED_DEFAULT_CAPACITY_RPS } from '../../../lib/managedCapacity'
 import { getServiceSpec, type StorageTier } from '../../../lib/cloudRegistry'
 
@@ -137,6 +138,64 @@ function ManagedServiceRow({ ms }: { ms: ManagedService }) {
             />
             multi-AZ
           </label>
+        </div>
+      )}
+      {/* Stress-test knobs (node-model Phase 5.4). Each one changes what the sim DOES: capacity
+          mode moves the ceiling and the bill's shape, the timeout makes the DB fail BELOW its rps
+          ceiling, connections add a second saturation axis, locality taxes read latency, and the
+          promotion tier sets how fast a multi-AZ standby takes over. */}
+      {engine && (
+        <div style={{ ...row, marginTop: 4, flexWrap: 'wrap' }}>
+          <select
+            aria-label={`db-capacity-mode-${ms.id}`} style={{ ...field, width: 96, marginBottom: 0 }}
+            value={ms.capacityMode ?? 'provisioned'}
+            onChange={e => store.updateManagedService(ms.id, { capacityMode: e.target.value as ManagedCapacityMode })}
+          >
+            <option value="provisioned">provisioned</option>
+            <option value="serverless">serverless</option>
+          </select>
+          <select
+            aria-label={`db-pricing-${ms.id}`} style={{ ...field, width: 92, marginBottom: 0 }}
+            value={ms.pricing ?? 'onDemand'}
+            onChange={e => store.updateManagedService(ms.id, { pricing: e.target.value as ManagedPricingCommitment })}
+            // A serverless DB has no provisioned capacity to commit to, so the discount can't apply.
+            disabled={ms.capacityMode === 'serverless'}
+            title={ms.capacityMode === 'serverless' ? 'serverless has no commitment term' : 'commitment term'}
+          >
+            <option value="onDemand">on-demand</option>
+            <option value="reserved1yr">reserved 1yr</option>
+            <option value="reserved3yr">reserved 3yr</option>
+          </select>
+          <input
+            aria-label={`db-max-connections-${ms.id}`} type="number" min={1} style={{ ...field, width: 62, marginBottom: 0 }}
+            placeholder={`${getDbInstanceClass(ms.instanceClassId)?.maxConnections ?? '—'}`}
+            value={ms.maxConnections ?? ''}
+            onChange={e => store.updateManagedService(ms.id, { maxConnections: e.target.value === '' ? undefined : Math.max(1, Number(e.target.value)) })}
+          />
+          <span style={{ color: 'var(--color-text-muted)', fontSize: 9.5, alignSelf: 'center' }}>conns</span>
+          <input
+            aria-label={`db-query-timeout-${ms.id}`} type="number" min={1} style={{ ...field, width: 62, marginBottom: 0 }}
+            placeholder="none"
+            value={ms.queryTimeoutMs ?? ''}
+            onChange={e => store.updateManagedService(ms.id, { queryTimeoutMs: e.target.value === '' ? undefined : Math.max(1, Number(e.target.value)) })}
+          />
+          <span style={{ color: 'var(--color-text-muted)', fontSize: 9.5, alignSelf: 'center' }}>ms timeout</span>
+          <select
+            aria-label={`db-replica-locality-${ms.id}`} style={{ ...field, width: 104, marginBottom: 0 }}
+            value={ms.replicaLocality ?? 'sameAz'}
+            onChange={e => store.updateManagedService(ms.id, { replicaLocality: e.target.value as ReplicaLocality })}
+          >
+            <option value="sameAz">replicas same-AZ</option>
+            <option value="multiAz">replicas multi-AZ</option>
+            <option value="crossRegion">replicas cross-rgn</option>
+          </select>
+          <input
+            aria-label={`db-promotion-tier-${ms.id}`} type="number" min={0} style={{ ...field, width: 48, marginBottom: 0 }}
+            placeholder="0"
+            value={ms.promotionTier ?? ''}
+            onChange={e => store.updateManagedService(ms.id, { promotionTier: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
+          />
+          <span style={{ color: 'var(--color-text-muted)', fontSize: 9.5, alignSelf: 'center' }}>tier</span>
         </div>
       )}
       {/* Non-DB throughput ceiling (node-model Phase 5.2): a DB's ceiling is its instance class, but

@@ -292,12 +292,25 @@ export interface RegionAzManagedEntry {
   utilization: number
   health: HealthState
   capacityRps: number | null
+  // Which scope the service is authored at (node-model Phase 5.4). Region-scoped services appear in
+  // EVERY AZ card of their region — they serve the whole region, and omitting them made the card
+  // disagree with the AZ floor, which has always drawn them. The card marks them so the user can
+  // tell "in this AZ" from "region-wide, shown here too".
+  scope: 'az' | 'region'
+  // Phase 5.4 managed-DB failure-model gauges; 0 for non-DB services and when no metrics exist yet.
+  saturation: number
+  p50Ms: number
+  connections: number
+  errorRps: number
 }
 
 export function regionAzManaged(azId: AzId, doc: WorldDoc, batch: MetricsBatch | null): RegionAzManagedEntry[] {
   const entries: RegionAzManagedEntry[] = []
+  const regionId = doc.azs[azId]?.regionId
   for (const ms of Object.values(doc.managedServices)) {
-    if (ms.scope.kind !== 'az' || ms.scope.azId !== azId) continue
+    const inAz = ms.scope.kind === 'az' && ms.scope.azId === azId
+    const inRegion = ms.scope.kind === 'region' && regionId != null && ms.scope.regionId === regionId
+    if (!inAz && !inRegion) continue
     const mm = batch?.managedServices?.[ms.id]
     const cap = managedCapacityRps(ms)
     entries.push({
@@ -305,6 +318,11 @@ export function regionAzManaged(azId: AzId, doc: WorldDoc, batch: MetricsBatch |
       rps: mm?.rps ?? 0, refusedRps: mm?.refusedRps ?? 0,
       utilization: mm?.utilization ?? 0, health: mm?.health ?? 'healthy',
       capacityRps: cap != null && Number.isFinite(cap) ? cap : null,
+      scope: inAz ? 'az' : 'region',
+      saturation: mm?.saturation ?? 0,
+      p50Ms: mm?.p50Ms ?? 0,
+      connections: mm?.connections ?? 0,
+      errorRps: mm?.errorRps ?? 0,
     })
   }
   return entries.sort((a, b) => a.label.localeCompare(b.label))

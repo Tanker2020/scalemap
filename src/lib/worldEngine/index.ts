@@ -25,9 +25,11 @@ import {
   getBreaker, recordResult, transition, admitRequest, pathKey, type Breaker,
 } from './breakers'
 import { solveFlows, type InstanceFlow, BYTES_PER_REQUEST_EACH_WAY } from './flows'
+import { managedDbRuntime } from '../managedDbRuntime'
 import {
   createFailoverState, setOutage as failoverSetOutage, computeHealth, probeInstant, promoteReplicas,
   drainFactor, beginDrain, clearDrain, DEFAULT_HYSTERESIS, effectiveRoleResolver, type FailoverState,
+  recoverMultiAzManagedDbs,
 } from './failover'
 import {
   createMetricsState, accumulateStep, buildBatch, type MetricsState, type RoutingSnapshot,
@@ -360,6 +362,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // (promoteReplicas below), so once a primary has failed over, this step's writes route to the
     // promoted replica. Built from engine state only — the doc is never touched.
     const roleOf = effectiveRoleResolver(compiled, s.failover.promotedAt)
+    // Managed-DB failure model (node-model Phase 5.4) from the PREVIOUS step's flows. Queueing
+    // latency, Little's-law connections and the timeout fraction are all functions of a DB's
+    // AGGREGATE load, which the solver's per-dependency loop cannot see — so it is computed once
+    // here and both the solver and the metrics window read the same entries. One-step lag, exactly
+    // like admittedScale.
+    const managedDbRt = managedDbRuntime(s.prevFlows, doc, compiled)
     const { flows, totals } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       breakerOpen, healthOf: healthOfInstance, roleOf, rng: s.rng,
@@ -367,6 +375,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // call to it. Read straight from the manual-outage set — managed ids aren't in the per-step
       // health recompute, so healthByScope would go stale on restore.
       managedDown: (id) => s.failover.manualOutages.has(id),
+      managedDbRuntime: managedDbRt,
     })
 
     // ── 7. NIC caps (per-server byte accounting from this step's flows) ──
@@ -439,6 +448,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     }
     const downInstances = Object.values(compiled.instances).filter(i => healthOfInstance(i.id) === 'down').map(i => i.id)
     for (const e of promoteReplicas(s.failover, compiled, doc, downInstances, simMs)) emitEvent(e)
+    // Phase 5.4: a multi-AZ managed DB promotes its standby and clears its own outage once the
+    // failover window elapses; a single-AZ one stays down until manually restored.
+    for (const e of recoverMultiAzManagedDbs(s.failover, doc, simMs)) emitEvent(e)
 
     // rate-limited connection_refused (blocked/breaker attempts are live failures, spec D6)
     for (const f of Object.values(flows)) {
@@ -454,7 +466,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     }
 
     // ── 10. metrics accumulate ──
-    accumulateStep(s.metrics, flows, hostResults, vpsPublish, nicByServer, healthOfAny, simMs)
+    accumulateStep(s.metrics, flows, hostResults, vpsPublish, nicByServer, healthOfAny, simMs, managedDbRt)
     s.windowTotals.crossAzBytes += totals.crossAzBytes * stepSec
     s.windowTotals.crossRegionBytes += totals.crossRegionBytes * stepSec
     s.windowTotals.internetBytes += totals.internetBytes * stepSec
@@ -469,7 +481,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs)
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
-      s.tracer.sample(flows, compiled, doc, simMs, entryId => populationForEntry(entryId))
+      s.tracer.sample(flows, compiled, doc, simMs, entryId => populationForEntry(entryId), managedDbRt)
       s.windowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} }
     }
   }

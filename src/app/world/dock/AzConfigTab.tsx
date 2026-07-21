@@ -260,9 +260,32 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
                     background: HEALTH_LED_COLOR[health], boxShadow: `0 0 4px ${HEALTH_LED_COLOR[health]}`,
                   }}
                 />
-                <span style={{ color: 'var(--color-text-primary)' }}>🗄 {m.label}</span>
+                <span style={{ color: 'var(--color-text-primary)' }}>{m.label}</span>
+                {/* Phase 5.4 saturation bar: the list showed rps text only, so a DB could be pinned
+                    at its ceiling and read the same as an idle one. Fills on the DB's binding-axis
+                    saturation when the runtime publishes it, else the coarse utilization gauge. */}
+                {mm && (
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 34, height: 4, borderRadius: 2, marginLeft: 6, flexShrink: 0,
+                      background: 'var(--color-surface)', overflow: 'hidden', display: 'block', position: 'relative',
+                    }}
+                  >
+                    <span style={{
+                      position: 'absolute', inset: '0 auto 0 0', height: '100%', display: 'block',
+                      width: `${Math.max(2, Math.round(Math.min(1, (mm.saturation ?? 0) > 0 ? mm.saturation! : mm.utilization) * 100))}%`,
+                      background: HEALTH_LED_COLOR[health],
+                    }} />
+                  </span>
+                )}
                 <span style={{ marginLeft: 'auto', color: 'var(--color-text-muted)', fontSize: 9 }}>
-                  {mm ? `${Math.round(mm.rps)} rps · ` : ''}{m.nodeType} · managed{regionWide ? ' · region' : ''}
+                  {mm ? `${Math.round(mm.rps)} rps · ` : ''}
+                  {mm && (mm.p50Ms ?? 0) > 0
+                    ? `${Math.round(Math.min(1, mm.saturation ?? 0) * 100)}% · ${mm.p50Ms! < 10 ? mm.p50Ms!.toFixed(1) : Math.round(mm.p50Ms!)}ms · ${Math.round(mm.connections ?? 0)}c · `
+                    : ''}
+                  {m.nodeType} · managed{regionWide ? ' · region' : ''}
+                  {mm && (mm.errorRps ?? 0) > 0.5 ? ' ⚠' : ''}
                 </span>
               </div>
             )

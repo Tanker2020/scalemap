@@ -5,6 +5,7 @@ import type { ReplayFrame, TracedRequest, RenderScope } from './types'
 import type { Rng } from './rng'
 import type { InstanceFlow } from './flows'
 import { MANAGED_SERVICE_LATENCY_MS } from './flows'
+import type { ManagedDbRuntime } from '../managedDbRuntime'
 import { hopLatencyMs } from './networkRuntime'
 import { REGION_GEO } from '../world/regionGeo'
 import type { WorldDoc, CompiledWorld, InstanceId, PopulationId } from '../world/types'
@@ -46,6 +47,10 @@ export interface Tracer {
     doc: WorldDoc,
     simMs: number,
     populationOf?: (entryInstanceId: InstanceId) => PopulationId | null,
+    // Phase 5.4 managed-DB failure model for THIS step. A managed hop used to book a flat 3ms, so a
+    // trace through a saturated DB disagreed with the metrics pyramid by orders of magnitude.
+    // Optional: absent ⇒ the flat constant (non-DB managed services keep it regardless).
+    managedDbRuntime?: ManagedDbRuntime,
   ): void
   getTraced(scope: RenderScope): TracedRequest[]
 }
@@ -65,7 +70,7 @@ export function createTracer(rng: Rng): Tracer {
   }
 
   return {
-    sample(flows, compiled, doc, simMs, populationOf) {
+    sample(flows, compiled, doc, simMs, populationOf, managedDbRuntime) {
       // Entry instances: offered demand and nothing upstream feeding them.
       const fedByOthers = new Set<string>()
       for (const f of Object.values(flows)) {
@@ -90,7 +95,8 @@ export function createTracer(rng: Rng): Tracer {
           const fromRegionCatalogId = doc.regions[compiled.instances[cur]?.regionId]?.catalogId ?? null
           const downstreamServiceMs = row.toInstanceId
             ? (flows[row.toInstanceId]?.serviceLatencyMs ?? 1)
-            : MANAGED_SERVICE_LATENCY_MS
+            : (row.toManagedServiceId ? managedDbRuntime?.[row.toManagedServiceId]?.p50Ms : undefined)
+              ?? MANAGED_SERVICE_LATENCY_MS
           const toRegionCatalogId = row.toInstanceId
             ? (doc.regions[compiled.instances[row.toInstanceId]?.regionId]?.catalogId ?? null)
             : null

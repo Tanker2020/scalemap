@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest'
 import {
   createFailoverState, setOutage, computeHealth, probeInstant, promoteReplicas, drainFactor,
   beginDrain, DEFAULT_HYSTERESIS, effectiveRoleResolver,
+  recoverMultiAzManagedDbs, MANAGED_FAILOVER_WINDOW_MS,
 } from './failover'
+import type { WorldDoc } from '../world/types'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
 } from '../world/factories'
@@ -186,5 +188,72 @@ describe('effectiveRoleResolver', () => {
     const roleOf = effectiveRoleResolver(f.compiled, state.promotedAt)
     // An unknown id falls through to a safe default rather than throwing.
     expect(roleOf('no-such-instance')).toBe('primary')
+  })
+})
+
+// ─── Multi-AZ managed-DB auto-recovery (node-model Phase 5.4) ────────────────
+// A multi-AZ managed DB has a standby that promotes on its own — so an outage is a blip, not a
+// permanent kill. A single-AZ one has nothing to promote and stays down until manually restored.
+describe('recoverMultiAzManagedDbs', () => {
+  function docWith(over: Record<string, unknown>): WorldDoc {
+    const doc = createWorld()
+    doc.managedServices['ms-db'] = {
+      id: 'ms-db', label: 'orders-db', nodeType: 'dbSql',
+      scope: { kind: 'region', regionId: 'r1' }, provider: 'aws', port: 5432,
+      instanceClassId: 'sql.small', ...over,
+    } as WorldDoc['managedServices'][string]
+    return doc
+  }
+
+  it('auto-recovers a multi-AZ managed DB after the failover window', () => {
+    const doc = docWith({ multiAz: true })
+    const state = createFailoverState()
+    setOutage(state, 'managed', 'ms-db', true, 0)
+    expect(state.manualOutages.has('ms-db')).toBe(true)
+
+    // Still inside the window — the standby has not taken over yet.
+    expect(recoverMultiAzManagedDbs(state, doc, 1000)).toEqual([])
+    expect(state.manualOutages.has('ms-db')).toBe(true)
+
+    const events = recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS + 1)
+    expect(events.map(e => e.kind)).toContain('replica_promoted')
+    expect(state.manualOutages.has('ms-db')).toBe(false)
+  })
+
+  it('leaves a single-AZ managed DB down indefinitely', () => {
+    const doc = docWith({ multiAz: false })
+    const state = createFailoverState()
+    setOutage(state, 'managed', 'ms-db', true, 0)
+    expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS * 10)).toEqual([])
+    expect(state.manualOutages.has('ms-db')).toBe(true)
+  })
+
+  it('does not touch a non-DB managed service', () => {
+    const doc = docWith({ nodeType: 'queue', multiAz: true })
+    const state = createFailoverState()
+    setOutage(state, 'managed', 'ms-db', true, 0)
+    expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS * 10)).toEqual([])
+    expect(state.manualOutages.has('ms-db')).toBe(true)
+  })
+
+  it('promotes only once per outage, and re-arms after a fresh kill', () => {
+    const doc = docWith({ multiAz: true })
+    const state = createFailoverState()
+    setOutage(state, 'managed', 'ms-db', true, 0)
+    expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS + 1)).toHaveLength(1)
+    expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS + 2)).toEqual([])
+
+    setOutage(state, 'managed', 'ms-db', true, 100_000)
+    expect(recoverMultiAzManagedDbs(state, doc, 100_000 + 1)).toEqual([])   // window restarts
+    expect(recoverMultiAzManagedDbs(state, doc, 100_000 + MANAGED_FAILOVER_WINDOW_MS + 1)).toHaveLength(1)
+  })
+
+  it('delays recovery for a higher promotion tier', () => {
+    const doc = docWith({ multiAz: true, promotionTier: 2 })
+    const state = createFailoverState()
+    setOutage(state, 'managed', 'ms-db', true, 0)
+    // Tier 2 is still waiting when a tier-0 standby would already have promoted.
+    expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS + 1)).toEqual([])
+    expect(state.manualOutages.has('ms-db')).toBe(true)
   })
 })

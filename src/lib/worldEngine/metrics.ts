@@ -8,6 +8,7 @@ import type {
 import type { InstanceFlow } from './flows'
 import { managedDbCeilings } from './flows'
 import { managedCapacityRps } from '../managedCapacity'
+import type { ManagedDbRuntime } from '../managedDbRuntime'
 import type { HostStepResult } from './hostScheduler'
 import type { NicState } from './networkRuntime'
 import type {
@@ -43,7 +44,13 @@ interface ServerWindow { inBytes: number; outBytes: number }
 // Received traffic reaching a managed service, summed across every caller's downstream rows and
 // windowed like the instance metrics. `steps` counts only steps where it received ≥1 row (matching
 // the instance-window convention: an idle-that-step service isn't averaged down toward zero).
-interface ManagedWindow { steps: number; admittedSum: number; refusedSum: number }
+// (Phase 5.4) errorSum splits query TIMEOUTS out of refusedSum — both are blocked rows, but a
+// timeout means "too slow" and a refusal means "too much", and the UI must not conflate them. The
+// runtime sums are the per-step failure-model gauges, averaged over the window like everything else.
+interface ManagedWindow {
+  steps: number; admittedSum: number; refusedSum: number; errorSum: number
+  runtimeSteps: number; latencySum: number; p99Sum: number; connectionsSum: number; saturationSum: number
+}
 
 export interface MetricsState {
   window: Map<InstanceId, InstanceWindow>
@@ -78,11 +85,15 @@ export function accumulateStep(
   nic: Record<ServerId, NicState>,
   health: (id: string) => HealthState,
   _simMs: number,
+  // This step's managed-DB failure model (node-model Phase 5.4). Optional: absent ⇒ the new gauges
+  // stay 0, so existing callers and tests are unchanged.
+  managedRuntime?: ManagedDbRuntime,
 ): void {
   // Managed-service received traffic THIS step, summed across every caller's downstream rows
   // (a managed service can be a dependency of several instances). Folded into the window below.
   const msAdmitted = new Map<ManagedServiceId, number>()
   const msRefused = new Map<ManagedServiceId, number>()
+  const msErrored = new Map<ManagedServiceId, number>()
   for (const f of Object.values(flows)) {
     let w = state.window.get(f.instanceId)
     if (!w) {
@@ -95,19 +106,30 @@ export function accumulateStep(
     w.latencies.push(f.serviceLatencyMs)
     for (const row of f.downstream) {
       if (!row.toManagedServiceId) continue
-      const map = row.blocked ? msRefused : msAdmitted   // blocked managed row = over-ceiling refusal
+      // A blocked managed row is a refusal — EXCEPT a Phase 5.4 timeout row, which reached the
+      // service and failed there. Untagged blocked rows stay refusals (pre-5.4 behavior).
+      const map = !row.blocked ? msAdmitted : row.failure === 'timeout' ? msErrored : msRefused
       map.set(row.toManagedServiceId, (map.get(row.toManagedServiceId) ?? 0) + row.rps)
     }
   }
-  for (const id of new Set([...msAdmitted.keys(), ...msRefused.keys()])) {
+  for (const id of new Set([...msAdmitted.keys(), ...msRefused.keys(), ...msErrored.keys(), ...Object.keys(managedRuntime ?? {})])) {
     let mw = state.managedWindow.get(id)
     if (!mw) {
-      mw = { steps: 0, admittedSum: 0, refusedSum: 0 }
+      mw = { steps: 0, admittedSum: 0, refusedSum: 0, errorSum: 0, runtimeSteps: 0, latencySum: 0, p99Sum: 0, connectionsSum: 0, saturationSum: 0 }
       state.managedWindow.set(id, mw)
     }
     mw.steps++
     mw.admittedSum += msAdmitted.get(id) ?? 0
     mw.refusedSum += msRefused.get(id) ?? 0
+    mw.errorSum += msErrored.get(id) ?? 0
+    const rt = managedRuntime?.[id]
+    if (rt) {
+      mw.runtimeSteps++
+      mw.latencySum += rt.p50Ms
+      mw.p99Sum += rt.p99Ms
+      mw.connectionsSum += rt.connections
+      mw.saturationSum += rt.saturation
+    }
   }
   for (const [serverId, n] of Object.entries(nic)) {
     let sw = state.serverWindow.get(serverId)
@@ -275,9 +297,11 @@ export function buildBatch(
   // both, reusing the healthy/degraded/down LED language.
   const managedServices: Record<ManagedServiceId, ManagedServiceMetrics> = {}
   for (const ms of Object.values(doc.managedServices)) {
-    const mw = state.managedWindow.get(ms.id) ?? { steps: 1, admittedSum: 0, refusedSum: 0 }
+    const mw = state.managedWindow.get(ms.id)
+      ?? { steps: 1, admittedSum: 0, refusedSum: 0, errorSum: 0, runtimeSteps: 0, latencySum: 0, p99Sum: 0, connectionsSum: 0, saturationSum: 0 }
     const rps = ema(state, `m:${ms.id}:rps`, mw.admittedSum / Math.max(1, mw.steps))
     const refusedRps = ema(state, `m:${ms.id}:ref`, mw.refusedSum / Math.max(1, mw.steps))
+    const errorRps = ema(state, `m:${ms.id}:err`, mw.errorSum / Math.max(1, mw.steps))
     // Capacity for the utilization gauge: a DB's write+read ceiling, else the flat per-type ceiling
     // (node-model Phase 5.2 — non-DB types are no longer uncapped). 0 ⇒ genuinely uncapped.
     const ceilings = managedDbCeilings(ms)
@@ -285,17 +309,31 @@ export function buildBatch(
     const capacity = ceilings
       ? ceilings.writeCeiling + ceilings.readCeiling
       : (flatCap != null && Number.isFinite(flatCap) ? flatCap : 0)
-    const offered = rps + refusedRps
+    const offered = rps + refusedRps + errorRps
     const utilization = capacity > 0 ? Math.min(1, offered / capacity) : 0
-    const refusalFraction = offered > 0 ? refusedRps / offered : 0
+    // Phase 5.4: timeouts are failures too — a DB erroring half its calls is down even if it
+    // refused nothing, which is exactly the soft-failure case the query timeout models.
+    const failed = refusedRps + errorRps
+    const refusalFraction = offered > 0 ? failed / offered : 0
     const health: HealthState =
       refusalFraction >= 0.5 ? 'down'
-        : (refusedRps > 1e-6 || utilization >= 0.9) ? 'degraded'
+        : (failed > 1e-6 || utilization >= 0.9) ? 'degraded'
           : 'healthy'
     // Served bytes/sec for a storage/CDN service (node-model Phase 5.2) — the window holds ~1s of
     // accumulated served bytes, EMA-smoothed to a rate like the world byte totals below.
     const egressBytesPerSec = ema(state, `m:${ms.id}:egr`, totals.managedEgressBytes?.[ms.id] ?? 0)
-    managedServices[ms.id] = { managedServiceId: ms.id, rps, refusedRps, utilization, health, egressBytesPerSec }
+    // Phase 5.4 failure-model gauges, averaged over the steps that actually carried a runtime entry
+    // (a non-DB service never does, and stays 0 across the board).
+    const rtSteps = Math.max(1, mw.runtimeSteps)
+    const had = mw.runtimeSteps > 0
+    managedServices[ms.id] = {
+      managedServiceId: ms.id, rps, refusedRps, utilization, health, egressBytesPerSec,
+      errorRps,
+      saturation: had ? mw.saturationSum / rtSteps : 0,
+      p50Ms: had ? mw.latencySum / rtSteps : 0,
+      p99Ms: had ? mw.p99Sum / rtSteps : 0,
+      connections: had ? mw.connectionsSum / rtSteps : 0,
+    }
   }
 
   // ── World ──

@@ -20,6 +20,12 @@ export interface DbInstanceClass {
   ramMb: number
   writeRps: number   // sustained write ceiling — the SQL single-writer bottleneck / NoSQL per-node
   readRps: number    // read ceiling (always ≥ writeRps; reads are cheaper than writes)
+  // Live-connection cap (node-model Phase 5.4) — the SECOND saturation axis. A DB can be
+  // throughput-fine yet connection-drowned: live connections ≈ rps × latency (Little's law), so
+  // latency growth alone can exhaust this while rps sits under the ceiling. Scales with RAM (each
+  // connection costs memory); SQL runs far lower than NoSQL, whose request model is connectionless
+  // in practice. Overridable per service via ManagedService.maxConnections.
+  maxConnections: number
   hourlyUsd: number  // base instance price; ×(1 + replicaCount) for the read replicas
 }
 
@@ -27,13 +33,13 @@ export interface DbInstanceClass {
 // NoSQL classes: writeRps is PER-NODE — the engine multiplies by node count, so these look
 // similar per-box but scale out. Ladders are strictly increasing in price ⇒ writeRps.
 export const DB_INSTANCE_CLASSES: DbInstanceClass[] = [
-  { id: 'sql.small',   label: 'SQL Small (2 vCPU / 8 GB)',    engine: 'sql',   vcpu: 2,  ramMb: 8192,   writeRps: 500,   readRps: 2500,   hourlyUsd: 0.10 },
-  { id: 'sql.medium',  label: 'SQL Medium (4 vCPU / 16 GB)',  engine: 'sql',   vcpu: 4,  ramMb: 16384,  writeRps: 1200,  readRps: 6000,   hourlyUsd: 0.24 },
-  { id: 'sql.large',   label: 'SQL Large (8 vCPU / 32 GB)',   engine: 'sql',   vcpu: 8,  ramMb: 32768,  writeRps: 2800,  readRps: 14000,  hourlyUsd: 0.48 },
-  { id: 'sql.xlarge',  label: 'SQL XLarge (16 vCPU / 64 GB)', engine: 'sql',   vcpu: 16, ramMb: 65536,  writeRps: 6000,  readRps: 30000,  hourlyUsd: 0.96 },
-  { id: 'nosql.small', label: 'NoSQL Small (2 vCPU / 8 GB)',  engine: 'nosql', vcpu: 2,  ramMb: 8192,   writeRps: 1000,  readRps: 4000,   hourlyUsd: 0.09 },
-  { id: 'nosql.medium',label: 'NoSQL Medium (4 vCPU / 16 GB)',engine: 'nosql', vcpu: 4,  ramMb: 16384,  writeRps: 2500,  readRps: 10000,  hourlyUsd: 0.20 },
-  { id: 'nosql.large', label: 'NoSQL Large (8 vCPU / 32 GB)', engine: 'nosql', vcpu: 8,  ramMb: 32768,  writeRps: 6000,  readRps: 24000,  hourlyUsd: 0.40 },
+  { id: 'sql.small',   label: 'SQL Small (2 vCPU / 8 GB)',    engine: 'sql',   vcpu: 2,  ramMb: 8192,   writeRps: 500,   readRps: 2500,   maxConnections: 200,  hourlyUsd: 0.10 },
+  { id: 'sql.medium',  label: 'SQL Medium (4 vCPU / 16 GB)',  engine: 'sql',   vcpu: 4,  ramMb: 16384,  writeRps: 1200,  readRps: 6000,   maxConnections: 400,  hourlyUsd: 0.24 },
+  { id: 'sql.large',   label: 'SQL Large (8 vCPU / 32 GB)',   engine: 'sql',   vcpu: 8,  ramMb: 32768,  writeRps: 2800,  readRps: 14000,  maxConnections: 800,  hourlyUsd: 0.48 },
+  { id: 'sql.xlarge',  label: 'SQL XLarge (16 vCPU / 64 GB)', engine: 'sql',   vcpu: 16, ramMb: 65536,  writeRps: 6000,  readRps: 30000,  maxConnections: 1600, hourlyUsd: 0.96 },
+  { id: 'nosql.small', label: 'NoSQL Small (2 vCPU / 8 GB)',  engine: 'nosql', vcpu: 2,  ramMb: 8192,   writeRps: 1000,  readRps: 4000,   maxConnections: 800,  hourlyUsd: 0.09 },
+  { id: 'nosql.medium',label: 'NoSQL Medium (4 vCPU / 16 GB)',engine: 'nosql', vcpu: 4,  ramMb: 16384,  writeRps: 2500,  readRps: 10000,  maxConnections: 1600, hourlyUsd: 0.20 },
+  { id: 'nosql.large', label: 'NoSQL Large (8 vCPU / 32 GB)', engine: 'nosql', vcpu: 8,  ramMb: 32768,  writeRps: 6000,  readRps: 24000,  maxConnections: 3200, hourlyUsd: 0.40 },
 ]
 
 export function getDbInstanceClass(id: string | null | undefined): DbInstanceClass | undefined {

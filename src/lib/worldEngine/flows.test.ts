@@ -8,6 +8,7 @@ import {
 } from '../world/factories'
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
+import { managedDbRuntime } from '../managedDbRuntime'
 import type { WorldDoc, BlueprintDependency } from '../world/types'
 import type { HealthState } from './types'
 
@@ -502,5 +503,94 @@ describe('solveFlows — promotion overlay', () => {
     const { flows } = solveFlows({ ...baseInput(doc, { [api.iid]: 1000 }), roleOf })
     expect(flows[replicaIid].offeredRps).toBeCloseTo(300)   // writes now go to the promoted node
     expect(flows[primaryIid].offeredRps).toBeCloseTo(700)   // demoted node serves reads
+  })
+})
+
+// ─── Aggregate managed-DB runtime (node-model Phase 5.4) ─────────────────────
+// The per-caller ceiling path could not see total load: N callers each got N x the capacity.
+// solveFlows now applies ONE aggregate refusal fraction computed by managedDbRuntime from the
+// PREVIOUS step's flows (the same one-step lag as admittedScale).
+describe('solveFlows — aggregate managed-DB runtime (Phase 5.4)', () => {
+  function twoCallersToManagedDb(over: Record<string, unknown> = {}) {
+    const { doc, server } = oneServerWorld()
+    const a = addService(doc, 'api-a', server.id, 0)
+    const b = addService(doc, 'api-b', server.id, 1)
+    const msId = 'ms-db'
+    doc.managedServices[msId] = {
+      id: msId, label: 'orders-db', nodeType: 'dbSql',
+      scope: { kind: 'az', azId: Object.keys(doc.azs)[0] }, provider: 'aws', port: 5432,
+      instanceClassId: 'sql.small', ...over,
+    }
+    const d = (id: string) => ({
+      id, target: { kind: 'managed' as const, managedServiceId: msId },
+      port: 5432, protocol: 'db' as const, packetTemplateId: null, writeFraction: 1,
+    })
+    a.bp.dependencies = [d('d-db')]
+    b.bp.dependencies = [d('d-db')]
+    return { doc, a, b, msId }
+  }
+
+  const rowOf = (flow: { downstream: Array<{ toManagedServiceId?: string; rps: number; blocked: boolean }> }, msId: string, blocked: boolean) =>
+    flow.downstream.filter(d => d.toManagedServiceId === msId && d.blocked === blocked).reduce((a, d) => a + d.rps, 0)
+
+  it('throttles two callers proportionally against the AGGREGATE ceiling', () => {
+    // sql.small writeRps 500. Two callers x 400 rps = 800 aggregate. Neither exceeds 500 alone,
+    // so the old per-caller path admitted all 800 — the bug this fixes.
+    const { doc, a, b, msId } = twoCallersToManagedDb()
+    const compiled = compileWorld(doc)
+    const demand = { [a.iid]: 400, [b.iid]: 400 }
+
+    const first = solveFlows(baseInput(doc, demand))
+    expect(first.flows[a.iid].refusedRps).toBeCloseTo(0)   // step 1: no history yet
+
+    const runtime = managedDbRuntime(first.flows, doc, compiled)
+    expect(runtime[msId].totalRps).toBeCloseTo(800)
+    expect(runtime[msId].refusalFraction).toBeCloseTo(300 / 800, 5)
+
+    const { flows } = solveFlows(baseInput(doc, demand, { managedDbRuntime: runtime }))
+    expect(flows[a.iid].refusedRps).toBeCloseTo(150)       // 400 x 0.375, proportional
+    expect(flows[b.iid].refusedRps).toBeCloseTo(150)
+    const admitted = rowOf(flows[a.iid], msId, false) + rowOf(flows[b.iid], msId, false)
+    expect(admitted).toBeCloseTo(500)                       // the aggregate ceiling, at last
+  })
+
+  it('propagates query-timeout errors to the caller below the rps ceiling', () => {
+    // 1900 rps of reads is only 76% of the 2500 read ceiling — nothing is throttled for
+    // throughput — but a 10ms timeout still makes a share of calls fail.
+    const { doc, a, msId } = twoCallersToManagedDb({ queryTimeoutMs: 10 })
+    a.bp.dependencies[0].writeFraction = 0
+    const compiled = compileWorld(doc)
+    const demand = { [a.iid]: 1900 }
+
+    const runtime = managedDbRuntime(solveFlows(baseInput(doc, demand)).flows, doc, compiled)
+    expect(runtime[msId].ceilingRefusedRps).toBe(0)
+    expect(runtime[msId].timeoutErrorFraction).toBeGreaterThan(0)
+
+    const { flows } = solveFlows(baseInput(doc, demand, { managedDbRuntime: runtime }))
+    expect(flows[a.iid].refusedRps).toBeGreaterThan(0)
+    expect(rowOf(flows[a.iid], msId, true)).toBeGreaterThan(0)
+    // Tagged so the metric can tell a timeout apart from a throughput throttle.
+    expect(flows[a.iid].downstream.some(d => d.failure === 'timeout')).toBe(true)
+  })
+
+  it('propagates connection-ceiling refusal to the caller', () => {
+    const { doc, a, msId } = twoCallersToManagedDb({ maxConnections: 2 })
+    a.bp.dependencies[0].writeFraction = 0
+    const compiled = compileWorld(doc)
+    const demand = { [a.iid]: 2000 }
+
+    const runtime = managedDbRuntime(solveFlows(baseInput(doc, demand)).flows, doc, compiled)
+    expect(runtime[msId].connectionRefusedRps).toBeGreaterThan(0)
+
+    const { flows } = solveFlows(baseInput(doc, demand, { managedDbRuntime: runtime }))
+    expect(flows[a.iid].refusedRps).toBeGreaterThan(0)
+    expect(rowOf(flows[a.iid], msId, false)).toBeLessThan(2000)
+  })
+
+  it('falls back to the per-caller ceiling when no runtime is supplied (back-compat)', () => {
+    const { doc, a, msId } = twoCallersToManagedDb()
+    const { flows } = solveFlows(baseInput(doc, { [a.iid]: 800 }))
+    expect(flows[a.iid].refusedRps).toBeCloseTo(300)        // 800 − 500, exactly as before 5.4
+    expect(rowOf(flows[a.iid], msId, false)).toBeCloseTo(500)
   })
 })

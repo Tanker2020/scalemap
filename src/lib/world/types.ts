@@ -241,7 +241,30 @@ export interface ManagedService {
   // Throughput ceiling override in rps (node-model Phase 5.2), for NON-DB managed services (a DB's
   // ceiling comes from its instance class). Absent ⇒ the per-type default in managedCapacity.ts.
   capacityRps?: number
+  // ── Managed-DB stress-test config (node-model Phase 5.4) ───────────────────
+  // All optional + additive: absent ⇒ the class default (maxConnections), "never" (queryTimeoutMs),
+  // or the pre-5.4 behavior. Each knob exists only because the sim can SHOW its effect — a second
+  // saturation axis, a soft failure below the rps ceiling, a lifted ceiling, or a price change.
+  // Interpreted by managedDbRuntime.ts; meaningful only when nodeType is a DB.
+  maxConnections?: number          // live-connection cap (Little's law); absent ⇒ the class's default
+  queryTimeoutMs?: number          // queries slower than this error out; absent ⇒ no timeout
+  capacityMode?: ManagedCapacityMode  // provisioned (fixed class ceiling) vs serverless (bursts, per-request price)
+  pricing?: ManagedPricingCommitment  // reserved commitments discount the provisioned hourly
+  replicaLocality?: ReplicaLocality   // read-replica placement ⇒ read-latency + egress tier
+  promotionTier?: number           // failover promotion order across replicas (lower promotes first)
 }
+
+// Fixed class ceiling that throttles over, vs an on-demand ceiling that bursts and prices
+// per-request (node-model Phase 5.4). Absent ⇒ 'provisioned'.
+export type ManagedCapacityMode = 'provisioned' | 'serverless'
+
+// Commitment term on a PROVISIONED managed DB (node-model Phase 5.4) — discounts the hourly only;
+// orthogonal to capacityMode. Absent ⇒ 'onDemand'.
+export type ManagedPricingCommitment = 'onDemand' | 'reserved1yr' | 'reserved3yr'
+
+// Where a managed DB's read replicas live (node-model Phase 5.4) — the lightweight locality model:
+// a read-latency + egress TIER, not explicit per-AZ pins. Absent ⇒ 'sameAz'.
+export type ReplicaLocality = 'sameAz' | 'multiAz' | 'crossRegion'
 
 // The CLOUD_REGISTRY nodeType keys that ARE databases — the ones the instance-class ceiling and
 // pricing apply to. Kept beside ManagedService so every consumer agrees on what "a managed DB" is.

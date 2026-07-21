@@ -2905,3 +2905,90 @@ No engine/contract changes — pure view additions over the Phase-5.1 metric. Te
 AzConfigTab / RegionView / ManagedPanel render + dispatch cases. Verified: 1118 tests, build clean,
 driven end-to-end (region-scoped SQL DB now shows in topology tree, AZ dock list, and region strip
 with a live metric bar).
+
+---
+
+## Managed-DB stress-test model: queueing, timeouts, connections — node-model Phase 5.4 (2026-07-21)
+
+A cloud-managed DB failed along exactly ONE axis — rps vs its instance-class write/read ceiling — at
+a fixed 3 ms latency, reporting only `rps`/`refusedRps`/`utilization`. You could not stress it to a
+concrete failure throughput, and you could not see WHY it was struggling. This phase gives it a real
+failure model, fixes a long-standing aggregation bug, and surfaces the result. (The 2026-07-20
+section above is labelled Phase 5.3 — that was the visibility pass; this is the separate model pass.)
+
+**A — The model. `src/lib/managedDbRuntime.ts` (NEW, pure — no engine imports).**
+`managedDbRuntimeFor(ms, totalRps, writeFraction)` returns `{ totalRps, saturation, p50Ms, p99Ms,
+connections, timeoutErrorFraction, connectionRefusedRps, ceilingRefusedRps, refusalFraction }`, or
+`null` for a non-DB service / a DB with no instance class (the uncapped pre-Phase-3 behavior). Three
+mechanisms, each chosen because the sim can SHOW its effect:
+- **Queueing latency** — `p50 = base / (1 − min(saturation, 0.98))`, per-engine bases in
+  `DB_BASE_LATENCY_MS` (SQL r3/w6 ms, NoSQL r1.5/w4 ms). `saturation` is the BINDING axis
+  (`max(writeUtil, readUtil)`), not a blend: a write-pinned DB queues even with idle read capacity.
+- **Query timeout** (`queryTimeoutMs`) — past the timeout a growing fraction of admitted calls ERROR.
+  This is the SOFT failure that bites BELOW the rps ceiling, and it is the direct answer to "at what
+  throughput does this DB fall over."
+- **Connection ceiling** (`maxConnections`, new REQUIRED field on `DbInstanceClass`) — live
+  connections ≈ admitted rps × latency (Little's law). A second saturation axis that COMPOUNDS with
+  the first, since latency feeds it.
+Plus `capacityMode` ('serverless' bursts both ceilings ×`SERVERLESS_BURST_MULTIPLIER` = 4) and
+`replicaLocality` (a read-latency tier: same-AZ 0 / multi-AZ +1.5 ms / cross-region +30 ms, applied
+to the READ share only — writes always hit the primary). `aggregateManagedDbLoad()` +
+`managedDbRuntime(prevFlows, doc, compiled)` compose it per step.
+
+**B — The §2.1 decision: per-caller → AGGREGATE refusal (a real bug fix).** `flows.ts` enforced the
+managed ceiling inside its per-dependency loop, where `share` is ONE caller's slice — so two callers
+each sending 60 % of the ceiling were both admitted and the DB silently absorbed 120 %. Every
+mechanism above is a function of AGGREGATE rps, so the direction is now inverted: the runtime
+computes ONE `refusalFraction` per DB from the PREVIOUS step's flows (same one-step lag as
+`admittedScale`) and the solver applies it to each caller's share proportionally. Resolution of the
+two pre-existing ceiling paths (documented in `managedDbRuntime.ts`'s header):
+- `managedDbCeilings()` **survives** as the single source of capacity truth — the runtime CALLS it
+  rather than recomputing, so the solver and the metrics gauge can never disagree.
+- `managedDbRefusedRps()` / `managedRefusedRps()` remain the path for non-DB services, unclassed DBs,
+  and any caller supplying no runtime; a DB WITH a runtime entry no longer reaches them.
+- `managedCapacityRps()` (flat non-DB ceiling, `lib/managedCapacity.ts`) is untouched.
+
+**C — Engine wiring.** `FlowInput.managedDbRuntime?` + `DownstreamFlow.failure?: 'throttled' |
+'timeout'` (both additive-optional; the tag lets metrics split "too much load" from "too slow").
+`ManagedServiceMetrics` gained `saturation?`/`p50Ms?`/`p99Ms?`/`connections?`/`errorRps?`.
+`index.ts` computes the runtime once per step from `s.prevFlows` and feeds the solver, the metrics
+window, AND the tracer. **`replay.ts` caught a latency inconsistency the plan flagged:** a managed hop
+booked the flat `MANAGED_SERVICE_LATENCY_MS` (3 ms), so a traced request through a saturated DB
+disagreed with the metrics pyramid by orders of magnitude — `Tracer.sample` now takes the runtime and
+books its `p50Ms` for DB hops (non-DB managed hops keep the flat constant).
+
+**D — Failover.** `failover.ts` gained `MANAGED_FAILOVER_WINDOW_MS` (15 s),
+`MANAGED_PROMOTION_TIER_STEP_MS` (5 s), `FailoverState.managedDownSince`, and
+`recoverMultiAzManagedDbs()`: a **multi-AZ** managed DB promotes its standby and clears its OWN
+outage after the window (emitting `replica_promoted`); a **single-AZ** one stays down until manually
+restored — which is what makes `multiAz` worth paying for. `promotionTier` delays the window.
+**`simulation.store.ts` reconciles the UI copy:** `healthOverrides` is the store's kill-switch mirror,
+so without clearing it on `replica_promoted` the DB served traffic again while the dock still rendered
+it "down" with a restore button. (Found during runtime verification, not by a test.)
+
+**E — Cost.** `costModelV2.ts`: `RESERVED_DISCOUNT` (onDemand 0 / 1yr 40 % / 3yr 60 %) on the
+provisioned hourly; `capacityMode === 'serverless'` drops instance-hours entirely and prices per
+request off live rps (`SERVERLESS_USD_PER_MILLION_REQUESTS`) — so a commitment discount cannot apply
+to serverless (there is no provisioned capacity to commit to), which the panel enforces by disabling
+the control.
+
+**F — Authoring + visibility.** `ManagedPanel.tsx` DB rows gained capacity-mode / pricing /
+`maxConnections` / `queryTimeoutMs` / replica-locality / promotion-tier controls (placeholders show
+the class default). `regionData.ts`'s `regionAzManaged` now ALSO returns region-scoped services
+(tagged `scope`) so an AZ card matches what the floor draws, plus the new gauges; `AzRow.tsx` renders
+`sat% · p50 · conns` with a ⚠ on timeout errors, and `dock/AzConfigTab.tsx` gained the saturation bar
+it never had. Two pre-existing `🗄` emoji were removed from the rows being rewritten (hard-law 5).
+
+**Model/format.** `ManagedService` gained `maxConnections?`/`queryTimeoutMs?`/`capacityMode?`/
+`pricing?`/`replicaLocality?`/`promotionTier?` + the `ManagedCapacityMode`/`ManagedPricingCommitment`/
+`ReplicaLocality` unions. All optional ⇒ **`.scalemap` stays v3**; pre-5.4 v3 files load unchanged.
+
+**Verification.** 120 test files / 1156 tests green, `npx tsc --noEmit` clean (baseline 119/1118).
+Contract-drift.md logged (Phase 5.4 entry). Driven end-to-end in the running app: a `sql.small` DB at
+1900 rps of reads sat at **66 % of its read ceiling with ZERO throughput refusals yet 228 rps
+erroring**, because queueing pushed p50 to 9.8 ms against a 10 ms timeout — the soft failure landing
+before the hard ceiling, exactly as designed. At 3200 rps, provisioned read sat 0.91 / p50 78 ms /
+104 connections / 931 rps refused, and flipping to serverless dropped it to sat 0.32 / p50 4.4 ms /
+0 refused. Reserved-3yr cut the DB's monthly compute by the expected 60 %. A killed multi-AZ DB
+auto-recovered (`replica_promoted`, traffic back to 1201 rps, kill-flag cleared); a single-AZ one
+stayed down.

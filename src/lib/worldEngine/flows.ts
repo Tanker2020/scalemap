@@ -20,6 +20,9 @@ import type { Rng } from './rng'
 import { sampleLatencyMs } from './latency'
 import { pathKey } from './breakers'
 import { getDbInstanceClass } from '../dbInstanceClasses'
+// Type-only: managedDbRuntime.ts imports managedDbCeilings from here, so a VALUE import would be a
+// runtime cycle. `import type` erases at compile time and keeps the dependency one-way.
+import type { ManagedDbRuntime } from '../managedDbRuntime'
 
 // 2KB per request in EACH direction (request out + response back, so every hop books
 // 2 x 2048 bytes per request). A deliberately simple Phase-2 constant — packet templates
@@ -163,6 +166,13 @@ export interface FlowInput {
   // Effective role per instance (node-model Phase 4 promotion overlay). Optional: absent ⇒ the
   // compiled role, so callers that don't model promotion (and every existing test) are unchanged.
   roleOf?: (instanceId: InstanceId) => PlacementRole
+  // Aggregate managed-DB failure model from the PREVIOUS step (node-model Phase 5.4), keyed by
+  // managed-service id. Queueing latency, Little's-law connections and the timeout fraction are all
+  // functions of TOTAL load, which this per-dependency loop structurally cannot see — so the
+  // aggregate refusal fraction is computed once (managedDbRuntime.ts) and applied to each caller's
+  // share here. Optional: absent ⇒ the pre-5.4 per-caller ceiling path, so existing callers and
+  // tests are unchanged. Same one-step-lag shape as admittedScale.
+  managedDbRuntime?: ManagedDbRuntime
   rng: Rng
 }
 
@@ -173,6 +183,11 @@ export interface DownstreamFlow {
   rps: number
   hopClass: HopClass
   blocked: boolean
+  // Why a blocked managed row failed (node-model Phase 5.4), so the metrics pyramid can split a
+  // throughput/connection THROTTLE from a query TIMEOUT — they look identical as rps but mean
+  // opposite things to the user (too much load vs too slow). Absent on every non-managed row and
+  // on admitted rows, which keeps existing row-equality assertions unchanged.
+  failure?: 'throttled' | 'timeout'
 }
 
 export interface InstanceFlow {
@@ -260,14 +275,16 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     rps: number,
     hopClass: HopClass,
     blocked: boolean,
+    failure?: 'throttled' | 'timeout',
   ): void => {
     const row = f.downstream.find(d =>
       d.dependencyId === dependencyId &&
       d.toInstanceId === target.toInstanceId &&
       d.toManagedServiceId === target.toManagedServiceId &&
-      d.blocked === blocked)
+      d.blocked === blocked &&
+      d.failure === failure)
     if (row) row.rps += rps
-    else f.downstream.push({ dependencyId, ...target, rps, hopClass, blocked })
+    else f.downstream.push({ dependencyId, ...target, rps, hopClass, blocked, ...(failure ? { failure } : {}) })
   }
 
   const bucketBytes = (hopClass: HopClass, rps: number): void => {
@@ -352,7 +369,17 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
           // caller and shown as a blocked row, while the admitted remainder carries bytes. A DB uses
           // its instance-class write/read split; other types use a flat throughput ceiling.
           const ms = doc.managedServices[path.to.managedServiceId]
-          const refused = ms ? managedRefusedRps(share, dep.writeFraction ?? 0, ms) : 0
+          // Phase 5.4: when an aggregate runtime entry exists for this DB, its refusal fraction —
+          // computed from TOTAL load across every caller — throttles this caller's share
+          // proportionally, and its timeout fraction errors a slice of what survived. Without an
+          // entry (non-DB service, unclassed DB, or no runtime supplied) fall back to the
+          // pre-5.4 per-caller ceiling.
+          const rt = ms ? input.managedDbRuntime?.[ms.id] : undefined
+          const throttled = rt
+            ? share * rt.refusalFraction
+            : (ms ? managedRefusedRps(share, dep.writeFraction ?? 0, ms) : 0)
+          const timedOut = rt ? (share - throttled) * rt.timeoutErrorFraction : 0
+          const refused = throttled + timedOut
           const admittedToMs = share - refused
           if (admittedToMs > EPSILON_RPS) {
             addDownstream(flow, dep.id, target, admittedToMs, path.hopClass, false)
@@ -368,9 +395,14 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
               bucketBytes(path.hopClass, admittedToMs)
             }
           }
-          if (refused > EPSILON_RPS) {
-            flow.refusedRps += refused
-            addDownstream(flow, dep.id, target, refused, path.hopClass, true)
+          // Two separate blocked rows so the metric can tell the failure modes apart.
+          if (throttled > EPSILON_RPS) {
+            flow.refusedRps += throttled
+            addDownstream(flow, dep.id, target, throttled, path.hopClass, true, rt ? 'throttled' : undefined)
+          }
+          if (timedOut > EPSILON_RPS) {
+            flow.refusedRps += timedOut
+            addDownstream(flow, dep.id, target, timedOut, path.hopClass, true, 'timeout')
           }
           continue   // managed targets are terminal — no capacity subtree to propagate into
         }
