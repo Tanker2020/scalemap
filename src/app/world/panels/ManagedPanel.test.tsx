@@ -14,51 +14,58 @@ function seedRegionAz() {
 }
 
 describe('ManagedPanel', () => {
-  it('adds a managed service scoped to a region with the aws provider default', () => {
+  // managed-service-modal Task 4: the old inline "+ Add" 3-select row is gone — "+ add service"
+  // opens ManagedServiceModal in add mode (editingId: null) instead.
+  it('"+ add service" opens the modal in add mode', () => {
     seedRegionAz()
     render(<ManagedPanel />)
-    const scopeSelect = screen.getByLabelText('managed scope')
-    fireEvent.change(scopeSelect, { target: { value: scopeSelect.querySelectorAll('option')[1].getAttribute('value') } })
-    fireEvent.click(screen.getByText('+ Add'))
-    const ms = Object.values(useWorldStore.getState().doc.managedServices)
-    expect(ms).toHaveLength(1)
-    expect(ms[0].provider).toBe('aws')
-    // The default type is the first MANAGED_TYPES entry — a cloud SQL DB.
-    expect(ms[0].nodeType).toBe('dbSql')
+    expect(screen.queryByText('Add managed service')).toBeNull()
+    fireEvent.click(screen.getByText('+ add service'))
+    expect(screen.getByText('Add managed service')).toBeInTheDocument()
   })
 
-  it('remove dispatches removeManagedService', () => {
+  it('remove dispatches removeManagedService, and does not also open the editor', () => {
     const { regionId } = seedRegionAz()
     useWorldStore.getState().addManagedService('redis', 'Redis', { kind: 'region', regionId }, 6379, 'aws')
     render(<ManagedPanel />)
     fireEvent.click(screen.getByText('×'))
     expect(Object.values(useWorldStore.getState().doc.managedServices)).toHaveLength(0)
+    // Regression guard: EdgeRow's onClick (row-level, opens the editor) sits on the same outer
+    // container that renders `trailing` — without stopPropagation() on the × button, this click
+    // would bubble up and open the editor for the service the same click just deleted.
+    expect(screen.queryByText('Edit managed service')).toBeNull()
+    expect(screen.queryByText('Add managed service')).toBeNull()
   })
 
-  it('a cloud DB exposes the instance-class + replica pickers that drive the write ceiling', () => {
+  it('a cloud DB row summarizes instance class, replica count, multi-AZ, and capacity mode', () => {
     const { regionId } = seedRegionAz()
     const msId = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'region', regionId }, 5432, 'aws')
+    useWorldStore.getState().updateManagedService(msId, {
+      instanceClassId: 'sql.small', replicaCount: 3, multiAz: true, capacityMode: 'serverless',
+    })
     render(<ManagedPanel />)
-    const classSelect = screen.getByLabelText(`db-class-${msId}`)
-    const firstClass = classSelect.querySelectorAll('option')[0].getAttribute('value')!
-    fireEvent.change(classSelect, { target: { value: firstClass } })
-    expect(useWorldStore.getState().doc.managedServices[msId].instanceClassId).toBe(firstClass)
-    fireEvent.change(screen.getByLabelText(`db-replicas-${msId}`), { target: { value: '3' } })
-    expect(useWorldStore.getState().doc.managedServices[msId].replicaCount).toBe(3)
+    const summary = screen.getByTestId(`ms-summary-${msId}`)
+    expect(summary.textContent).toContain('3 replicas')
+    expect(summary.textContent).toContain('multi-AZ')
+    expect(summary.textContent).toContain('serverless')
   })
 
-  it('a cloud DB exposes the multi-AZ standby toggle (Phase 5.3)', () => {
-    const { regionId } = seedRegionAz()
-    const msId = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'region', regionId }, 5432, 'aws')
-    render(<ManagedPanel />)
-    fireEvent.click(screen.getByLabelText(`db-multiaz-${msId}`))
-    expect(useWorldStore.getState().doc.managedServices[msId].multiAz).toBe(true)
-  })
-
-  it('a non-DB managed service shows no instance-class picker', () => {
+  it('a non-DB managed service row summarizes the effective rps ceiling instead of a class picker', () => {
     const { regionId } = seedRegionAz()
     const msId = useWorldStore.getState().addManagedService('objectStorage', 'Object store', { kind: 'region', regionId }, 443, 'aws')
+    useWorldStore.getState().updateManagedService(msId, { capacityRps: 777 })
     render(<ManagedPanel />)
+    const summary = screen.getByTestId(`ms-summary-${msId}`)
+    expect(summary.textContent).toContain('777 rps')
     expect(screen.queryByLabelText(`db-class-${msId}`)).toBeNull()
+  })
+
+  it('a row\'s edit button opens the editor prefilled for that service', () => {
+    const { regionId } = seedRegionAz()
+    const msId = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'region', regionId }, 5432, 'aws')
+    render(<ManagedPanel />)
+    fireEvent.click(screen.getByLabelText(`edit-${msId}`))
+    expect(screen.getByText('Edit managed service')).toBeInTheDocument()
+    expect(screen.getByLabelText('name')).toHaveValue('SQL DB')
   })
 })
