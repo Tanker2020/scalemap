@@ -3106,3 +3106,18 @@ any single planning pass can track.
 `'inspector editing forms'` describe block, not the `'InspectorRail (read panels)'` block the
 brief's line numbers pointed at) — both deleted with a comment pointing at their new home
 (`FirewallRulesModal.test.tsx`, already covering the same scenarios per Task 1's test suite).
+
+**Second confirmed instance of the portal-vs-fieldset edit-lock pattern.** Where
+`ManagedServiceModal.tsx` is the first real instance of this pattern in the codebase (line 3031
+above), `FirewallRulesModal.tsx` is the second: same `createPortal(..., document.body)` escape
+from `WorldPanel.tsx`'s dock-wide fieldset, same self-contained `<fieldset disabled={running}>`
+wrapped only around its editable field sections, same Close left outside that wrapper as an
+always-available escape hatch. One deliberate deviation from the first instance, though:
+`FirewallRulesModal` has no draft/Save/Cancel staging — every field commits live to the store on
+change, matching the pre-existing `FirewallEditor`/`WorkloadForm`/`RuntimeForm`/`VolumesEditor`
+family in `inspectorForms.tsx` rather than `ManagedServiceModal`'s staged-draft approach. This is
+an intentional per-data-shape choice, not a gap to reconcile toward `ManagedServiceModal`'s
+pattern: firewall rules are an ordered list of independently-valid rows, where no combination of
+field values is ever invalid mid-edit, unlike `ManagedServiceModal`'s single multi-field entity,
+where a half-edited combination frequently IS invalid mid-edit (e.g. changing `nodeType` needing
+to re-derive `instanceClassId`).
