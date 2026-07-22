@@ -2,9 +2,8 @@
 // Polish 4 T4 (spec D6): the FIREWALL drawer body — numbered rule sentences built with the
 // board's EXISTING grammar helpers (`server/ruleSentence.ts`'s `ruleSourceWords`/
 // `rulePortPhrase` — imported, not re-derived, per the brief), `Let`/`Block` colored
-// success/danger. `+ rule` appends `createServer`'s default rule shape (factories.ts)
-// byte-for-byte via `updateServer(id, { firewall: [...] })` — deep rule editing stays on the
-// board (InspectorRail), this drawer only appends/reads.
+// success/danger. `+ rule` opens the rules editor (see the firewall-rules-modal Task 2 note
+// below) — this drawer itself stays read-only, it never dispatches a store write directly.
 //
 // T8 motion/theme audit fix: the source/port id spans originally copied InspectorRail.tsx's
 // exact hardcoded `#DBEAFE` (a light pastel blue calibrated for InspectorRail's OWN
@@ -21,9 +20,12 @@
 // allowed` where N is the server's summed instance rps (ServerFaceplate computes it once,
 // shared with HardwareDrawer's live rps row) — a RATIFIED documented deviation from the mock's
 // `418 allowed/s · 0 blocked` (task-5-brief.md).
+//
+// node-model firewall-rules-modal Task 2: "+ rule" no longer blind-appends a default rule
+// directly — it opens FirewallRulesModal.tsx (server/), the spacious rule editor that replaced
+// the cramped inline FirewallEditor. This drawer stays read-only (numbered sentences) plus one
+// opener button; all editing (add/reorder/remove/per-field edits) now lives in the modal.
 import { type ReactElement } from 'react'
-import { useWorldStore } from '../../../store/world.store'
-import { nextWorldId } from '../../../../lib/world/factories'
 import { ruleSourceWords, rulePortPhrase } from '../../server/ruleSentence'
 import type { Server } from '../../../../lib/world/types'
 
@@ -37,19 +39,14 @@ export function firewallPv(server: Server, liveAllowedRps?: number | null): stri
 export interface FirewallDrawerProps {
   server: Server
   running: boolean
+  // Zero-arg opener — the caller (ServerFaceplate) binds it to this server's id, keeping this
+  // drawer's own prop surface minimal (it never needs to know the id itself for this).
+  onOpenRules: () => void
 }
 
 const SENTENCE_ID_COLOR = 'var(--kit-accent)'
 
-export function FirewallDrawer({ server, running }: FirewallDrawerProps): ReactElement {
-  const addRule = () => {
-    // Byte-for-byte the same default rule shape createServer() (factories.ts) gives a fresh
-    // server: allow · any port · any protocol · internal source. `nextWorldId('fw')` is the
-    // SAME id generator factories.ts already exports and uses for this exact purpose.
-    const rule = { id: nextWorldId('fw'), action: 'allow' as const, port: 'any' as const, protocol: 'any' as const, source: 'internal' }
-    useWorldStore.getState().updateServer(server.id, { firewall: [...server.firewall, rule] })
-  }
-
+export function FirewallDrawer({ server, running, onOpenRules }: FirewallDrawerProps): ReactElement {
   return (
     <div data-testid="firewall-drawer-body">
       {server.firewall.map((r, i) => (
@@ -81,13 +78,13 @@ export function FirewallDrawer({ server, running }: FirewallDrawerProps): ReactE
           }}
           disabled={running}
           title={running ? 'stop the simulation to edit' : undefined}
-          onClick={addRule}
+          onClick={onOpenRules}
         >
           + rule
         </button>
       </div>
       <div style={{ fontSize: 9.5, color: 'var(--color-text-muted)', marginTop: 6 }}>
-        edit rules on the board
+        open rules editor
       </div>
     </div>
   )

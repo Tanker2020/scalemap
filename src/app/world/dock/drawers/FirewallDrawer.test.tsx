@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // Polish 4 T4 (spec D6): FIREWALL drawer — sentence grammar reuse, + rule append, edit-lock.
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { FirewallDrawer, firewallPv } from './FirewallDrawer'
 import { useWorldStore } from '../../../store/world.store'
@@ -47,7 +47,7 @@ describe('firewallPv', () => {
 describe('FirewallDrawer', () => {
   it('renders one numbered sentence per rule, using the shared grammar (Let/Block colored)', () => {
     const serverId = seedServer()
-    render(<FirewallDrawer server={currentServer(serverId)} running={false} />)
+    render(<FirewallDrawer server={currentServer(serverId)} running={false} onOpenRules={() => {}} />)
     const rows = screen.getAllByTestId('firewall-drawer-sentence')
     expect(rows).toHaveLength(1)
     expect(rows[0]).toHaveTextContent('1 ·')
@@ -55,27 +55,35 @@ describe('FirewallDrawer', () => {
     expect(rows[0]).toHaveTextContent('internal traffic')
   })
 
-  it('"+ rule" appends createServer\'s default rule shape via updateServer', () => {
+  // firewall-rules-modal Task 2: "+ rule" no longer blind-appends directly — it opens
+  // FirewallRulesModal.tsx via the onOpenRules callback, and this drawer itself never touches
+  // the store (replaces the old "appends createServer's default rule shape via updateServer" test).
+  it('"+ rule" calls onOpenRules and does not touch the store directly', () => {
     const serverId = seedServer()
-    render(<FirewallDrawer server={currentServer(serverId)} running={false} />)
+    const onOpenRules = vi.fn()
+    const spy = vi.spyOn(useWorldStore.getState(), 'updateServer')
+    render(<FirewallDrawer server={currentServer(serverId)} running={false} onOpenRules={onOpenRules} />)
     fireEvent.click(screen.getByTestId('firewall-add-rule'))
-    const rules = currentServer(serverId).firewall
-    expect(rules).toHaveLength(2)
-    expect(rules[1]).toMatchObject({ action: 'allow', port: 'any', protocol: 'any', source: 'internal' })
+    expect(onOpenRules).toHaveBeenCalledTimes(1)
+    expect(spy).not.toHaveBeenCalled()
+    expect(currentServer(serverId).firewall).toHaveLength(1)   // unchanged — still just the seeded default rule
   })
 
   it('"+ rule" is edit-locked while running', () => {
     const serverId = seedServer()
-    render(<FirewallDrawer server={currentServer(serverId)} running />)
+    render(<FirewallDrawer server={currentServer(serverId)} running onOpenRules={() => {}} />)
     const btn = screen.getByTestId('firewall-add-rule')
     expect(btn).toBeDisabled()
     expect(btn).toHaveAttribute('title', 'stop the simulation to edit')
   })
 
-  it('shows the muted "edit rules on the board" hint', () => {
+  // firewall-rules-modal Task 2: the old "edit rules on the board" hint was only ever true
+  // because blind-append had no other UI — now "+ rule" opens the modal, so the hint is updated
+  // to match.
+  it('shows the muted "open rules editor" hint', () => {
     const serverId = seedServer()
-    render(<FirewallDrawer server={currentServer(serverId)} running={false} />)
-    expect(screen.getByText('edit rules on the board')).toBeTruthy()
+    render(<FirewallDrawer server={currentServer(serverId)} running={false} onOpenRules={() => {}} />)
+    expect(screen.getByText('open rules editor')).toBeTruthy()
   })
 
   // T8 light-theme audit fix: the source/port id spans previously hardcoded InspectorRail's
@@ -84,7 +92,7 @@ describe('FirewallDrawer', () => {
   // token swap so it can't regress back to a literal hex.
   it('sentence id spans (source/port phrases) use the theme-aware --kit-accent token, not a hardcoded hex', () => {
     const serverId = seedServer()
-    render(<FirewallDrawer server={currentServer(serverId)} running={false} />)
+    render(<FirewallDrawer server={currentServer(serverId)} running={false} onOpenRules={() => {}} />)
     const row = screen.getByTestId('firewall-drawer-sentence')
     const idSpans = Array.from(row.querySelectorAll('b')).filter(b => b.textContent !== 'Let' && b.textContent !== 'Block')
     expect(idSpans.length).toBeGreaterThan(0)

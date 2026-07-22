@@ -62,14 +62,14 @@ describe('ServerFaceplate — plate header', () => {
   it('renders the hourly price in the price color (migrated from InspectorV2.test.tsx)', () => {
     const { serverId } = seedServer()
     const hourly = useWorldStore.getState().doc.servers[serverId].hourlyUsd
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     const price = screen.getByText(`$${hourly.toFixed(3)}/hr`)
     expect(price.style.color).toBe('var(--color-price)')
   })
 
   it('renders name, KIND chip, and the rack/health sub-line ("free pool" when unracked)', () => {
     const { serverId } = seedServer()
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     const server = useWorldStore.getState().doc.servers[serverId]
     expect(screen.getByTestId('faceplate-plate')).toHaveTextContent(server.label)
     expect(screen.getByTestId('faceplate-plate')).toHaveTextContent('VPS')
@@ -81,28 +81,28 @@ describe('ServerFaceplate — plate header', () => {
     useWorldStore.getState().addRack(azId)
     const rack = Object.values(useWorldStore.getState().doc.racks)[0]
     useWorldStore.getState().assignServerToRack(serverId, rack.id)
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     expect(screen.getByTestId('faceplate-plate')).toHaveTextContent(`${rack.label} slot 1`)
   })
 
   it('posture line reads "stopped — authoring" at rest, "running — watching" while running', () => {
     const { serverId } = seedServer()
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     expect(screen.getByTestId('faceplate-posture')).toHaveTextContent('stopped — authoring · everything editable')
 
     act(() => { useSimulationStore.setState({ running: true }) })
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     expect(screen.getAllByTestId('faceplate-posture')[1]).toHaveTextContent('running — watching · stop to edit')
   })
 
   it('health word is omitted at rest, shown live while running', () => {
     const { serverId } = seedServer()
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     expect(screen.getByTestId('faceplate-plate')).not.toHaveTextContent('healthy')
 
     const batch = makeBatch({ [serverId]: { health: 'healthy' } })
     act(() => { useSimulationStore.setState({ latestBatch: batch, running: true }) })
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     expect(screen.getAllByTestId('faceplate-plate')[1]).toHaveTextContent('healthy')
   })
 })
@@ -110,7 +110,7 @@ describe('ServerFaceplate — plate header', () => {
 describe('ServerFaceplate — vitals rail', () => {
   it('renders the pulse dot and idle/live caption', () => {
     const { serverId } = seedServer()
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     expect(screen.getByTestId('vitals-pulse')).toBeTruthy()
     expect(screen.getByTestId('vitals-caption')).toHaveTextContent('idle')
   })
@@ -119,20 +119,20 @@ describe('ServerFaceplate — vitals rail', () => {
     const { serverId } = seedServer()
     const batch = makeBatch({ [serverId]: { coreUtilization: [0.4] } })
     act(() => { useSimulationStore.setState({ latestBatch: batch }) })
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     expect(screen.getByTestId('vitals-caption')).toHaveTextContent('live')
   })
 
   it('the pulse is disabled (no ambient class) under reduced motion', () => {
     mockUseReducedMotion.mockReturnValue(true)
     const { serverId } = seedServer()
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     expect(screen.getByTestId('vitals-pulse').className).toBe('')
   })
 
   it('the pulse carries the ambient breathe class when motion is not reduced', () => {
     const { serverId } = seedServer()
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     expect(screen.getByTestId('vitals-pulse').className).toContain('dockfp-vitals-pulse')
   })
 })
@@ -140,7 +140,7 @@ describe('ServerFaceplate — vitals rail', () => {
 describe('ServerFaceplate — drawer spine', () => {
   it('defaults to HARDWARE open, everything else closed', () => {
     const { serverId } = seedServer()
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     const drawers = screen.getAllByTestId('drawer')
     expect(drawers[0]).toHaveAttribute('data-drawer', 'HARDWARE')
     expect(drawers[0]).toHaveAttribute('data-open', 'true')
@@ -149,7 +149,7 @@ describe('ServerFaceplate — drawer spine', () => {
 
   it('opening a different drawer closes the previously-open one (one open at a time)', () => {
     const { serverId } = seedServer()
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     const headers = screen.getAllByTestId('drawer-header')
     fireEvent.click(headers[1])   // FIREWALL
     const drawers = screen.getAllByTestId('drawer')
@@ -159,7 +159,7 @@ describe('ServerFaceplate — drawer spine', () => {
 
   it('clicking the open drawer again closes it (none open)', () => {
     const { serverId } = seedServer()
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     const headers = screen.getAllByTestId('drawer-header')
     fireEvent.click(headers[0])   // HARDWARE, already open
     const drawers = screen.getAllByTestId('drawer')
@@ -168,7 +168,7 @@ describe('ServerFaceplate — drawer spine', () => {
 
   it('all four drawers render in HARDWARE/FIREWALL/SERVICES/PLACEMENT order with their pv readouts', () => {
     const { serverId } = seedServer()
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     const drawers = screen.getAllByTestId('drawer')
     expect(drawers.map(d => d.getAttribute('data-drawer'))).toEqual(['HARDWARE', 'FIREWALL', 'SERVICES', 'PLACEMENT'])
   })
@@ -177,16 +177,16 @@ describe('ServerFaceplate — drawer spine', () => {
 describe('ServerFaceplate — action row', () => {
   it('"enter board ⏎" only renders when showEnter is true', () => {
     const { serverId } = seedServer()
-    const { rerender } = render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    const { rerender } = render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     expect(screen.queryByTestId('faceplate-enter')).toBeNull()
-    rerender(<ServerFaceplate serverId={serverId} showEnter />)
+    rerender(<ServerFaceplate serverId={serverId} showEnter openFirewallRules={() => {}} />)
     expect(screen.getByTestId('faceplate-enter')).toBeTruthy()
   })
 
   it('"enter board ⏎" dispatches goServer with the nav region/az and this server (migrated from InspectorV2.test.tsx)', () => {
     const { regionId, azId, serverId } = seedServer()
     useNavStore.getState().goAz(regionId, azId)
-    render(<ServerFaceplate serverId={serverId} showEnter />)
+    render(<ServerFaceplate serverId={serverId} showEnter openFirewallRules={() => {}} />)
     fireEvent.click(screen.getByTestId('faceplate-enter'))
     const nav = useNavStore.getState()
     expect(nav.level).toBe('server')
@@ -196,14 +196,14 @@ describe('ServerFaceplate — action row', () => {
 
   it('kill is disabled while stopped and dispatches setOutage("server", id, true) while running (migrated from InspectorV2.test.tsx)', () => {
     const { serverId } = seedServer()
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
 
     const kill = screen.getByTestId('faceplate-kill')
     expect(kill).toHaveAttribute('aria-disabled', 'true')
     expect(kill).toHaveAttribute('title', 'start the simulation to break things')
 
     act(() => { useSimulationStore.setState({ running: true }) })
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     const kills = screen.getAllByTestId('faceplate-kill')
     fireEvent.click(kills[kills.length - 1])
     expect(useSimulationStore.getState().healthOverrides[serverId]).toBe(true)
@@ -217,7 +217,7 @@ describe('ServerFaceplate — action row', () => {
     act(() => { useSimulationStore.setState({ running: true }) })
     render(
       <fieldset disabled>
-        <ServerFaceplate serverId={serverId} showEnter={false} />
+        <ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />
       </fieldset>,
     )
     fireEvent.click(screen.getByTestId('faceplate-kill'))
@@ -227,7 +227,7 @@ describe('ServerFaceplate — action row', () => {
   it('"remove…" requires a two-step confirm, then dispatches removeServer + clears selection', () => {
     const { serverId } = seedServer()
     useUiStore.setState({ selectedServerId: serverId })
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     const removeBtn = screen.getByTestId('faceplate-remove')
     expect(removeBtn).toHaveTextContent('remove…')
     fireEvent.click(removeBtn)
@@ -241,7 +241,7 @@ describe('ServerFaceplate — action row', () => {
   it('"remove…" is edit-locked while running', () => {
     const { serverId } = seedServer()
     act(() => { useSimulationStore.setState({ running: true }) })
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     const removeBtn = screen.getByTestId('faceplate-remove')
     expect(removeBtn).toBeDisabled()
     expect(removeBtn).toHaveAttribute('title', 'stop the simulation to edit')
@@ -255,7 +255,7 @@ describe('ServerFaceplate — action row', () => {
   it('"remove…" also navigates up off the board when showEnter is false (reached by standing on the board)', () => {
     const { regionId, azId, serverId } = seedServer()
     useNavStore.getState().goServer(regionId, azId, serverId)
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     const removeBtn = screen.getByTestId('faceplate-remove')
     fireEvent.click(removeBtn)
     fireEvent.click(screen.getByTestId('faceplate-remove'))
@@ -275,7 +275,7 @@ describe('ServerFaceplate — action row', () => {
     const { regionId, azId, serverId } = seedServer()
     useNavStore.getState().goAz(regionId, azId)
     useUiStore.setState({ selectedServerId: serverId })
-    render(<ServerFaceplate serverId={serverId} showEnter />)
+    render(<ServerFaceplate serverId={serverId} showEnter openFirewallRules={() => {}} />)
     const removeBtn = screen.getByTestId('faceplate-remove')
     fireEvent.click(removeBtn)
     fireEvent.click(screen.getByTestId('faceplate-remove'))
@@ -292,7 +292,7 @@ describe('ServerFaceplate — action row', () => {
 describe('ServerFaceplate — unknown server', () => {
   it('renders nothing when the server id does not resolve', () => {
     useWorldStore.getState().newWorld()
-    const { container } = render(<ServerFaceplate serverId="nope" showEnter={false} />)
+    const { container } = render(<ServerFaceplate serverId="nope" showEnter={false} openFirewallRules={() => {}} />)
     expect(container.firstChild).toBeNull()
   })
 })
@@ -302,11 +302,11 @@ describe('ServerFaceplate — unknown server', () => {
 describe('ServerFaceplate — watching mode (T5, spec D7)', () => {
   it('shows the watchband only while running, never at rest', () => {
     const { serverId } = seedServer()
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     expect(screen.queryByTestId('watchband')).toBeNull()
 
     act(() => { useSimulationStore.setState({ running: true }) })
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     expect(screen.getAllByTestId('watchband')[0]).toHaveTextContent('SIMULATION RUNNING — drawers are gauges now.')
   })
 
@@ -320,7 +320,7 @@ describe('ServerFaceplate — watching mode (T5, spec D7)', () => {
     }
     const batch = makeBatch({ [serverId]: { coreUtilization: [0.31], ramUsedMb: 3440, ramTotalMb: 8192 } }, instances)
     act(() => { useSimulationStore.setState({ running: true, latestBatch: batch }) })
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
 
     const drawers = screen.getAllByTestId('drawer')
     const hw = drawers.find(d => d.getAttribute('data-drawer') === 'HARDWARE')!
@@ -350,12 +350,12 @@ describe('ServerFaceplate — watching mode (T5, spec D7)', () => {
 
   it('the vitals pulse carries data-live and quickens to 2.2s while running', () => {
     const { serverId } = seedServer()
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     expect(screen.getByTestId('vitals-pulse')).toHaveAttribute('data-live', 'false')
     expect(screen.getByTestId('vitals-pulse').style.animationDuration).toBe('')
 
     act(() => { useSimulationStore.setState({ running: true } ) })
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     const pulses = screen.getAllByTestId('vitals-pulse')
     expect(pulses[1]).toHaveAttribute('data-live', 'true')
     expect(pulses[1].style.animationDuration).toBe('2.2s')
@@ -369,7 +369,7 @@ describe('ServerFaceplate — watching mode (T5, spec D7)', () => {
     mockUseReducedMotion.mockReturnValue(true)
     const { serverId } = seedServer()
     act(() => { useSimulationStore.setState({ running: true }) })
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
     const pulse = screen.getByTestId('vitals-pulse')
     expect(pulse).toHaveAttribute('data-live', 'true')
     expect(pulse.className).toBe('')
@@ -378,7 +378,7 @@ describe('ServerFaceplate — watching mode (T5, spec D7)', () => {
   it('kill lights up (enabled, active styling) while running — remove… and +-controls stay locked', () => {
     const { serverId } = seedServerWithService()
     act(() => { useSimulationStore.setState({ running: true } ) })
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
 
     const kill = screen.getByTestId('faceplate-kill')
     expect(kill).toHaveAttribute('aria-disabled', 'false')
@@ -399,7 +399,7 @@ describe('ServerFaceplate — watching mode (T5, spec D7)', () => {
     const batch = makeBatch({ [serverId]: { coreUtilization: [0.5], ramUsedMb: 4096, ramTotalMb: 8192 } }, instances)
     // Stopped, no latestBatch — only a scrub batch. Mirrors setScrubIndex's published shape.
     act(() => { useSimulationStore.setState({ running: false, latestBatch: null, scrubBatch: batch, scrubIndex: 0 }) })
-    render(<ServerFaceplate serverId={serverId} showEnter={false} />)
+    render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
 
     expect(screen.queryByTestId('watchband')).toBeNull()
     const hwPv = screen.getAllByTestId('drawer')[0].querySelector('[data-testid="drawer-pv"]')!

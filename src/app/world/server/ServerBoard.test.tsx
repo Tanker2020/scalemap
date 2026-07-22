@@ -122,7 +122,7 @@ describe('ServerBoard (static stage)', () => {
 
   it('header shows specs and rack position', () => {
     seed((d, sid) => { d.servers[sid].rack = { rackId: 'A1', unit: 7, heightU: 1 } })
-    render(<ServerView />)
+    render(<ServerView onOpenFirewallRules={() => {}} />)
     expect(screen.getByText(/web-01/)).toBeInTheDocument()
     // "vCPU" now also appears in HardwarePlatform's SUBSTRATE header line (D8) — assert both exist.
     expect(screen.getAllByText(/vCPU/).length).toBeGreaterThan(0)

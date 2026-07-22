@@ -5,18 +5,13 @@
 import { useState, type ReactElement } from 'react'
 import { useSimulationStore } from '../../store/simulation.store'
 import { useWorldStore } from '../../store/world.store'
-import { nextWorldId } from '../../../lib/world/factories'
-import type { WorkloadProfile, FirewallRule, ComposeVolume } from '../../../lib/world/types'
+import type { WorkloadProfile, ComposeVolume } from '../../../lib/world/types'
 
 const lockNote = { font: '10px var(--font-mono)', color: 'var(--color-text-muted)', marginTop: 4 } as const
 const fs = (running: boolean): React.CSSProperties => ({ border: 'none', margin: 0, padding: 0, opacity: running ? 0.55 : 1 })
 const inp: React.CSSProperties = {
   width: 52, background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
   borderRadius: 4, color: 'var(--color-text-primary)', font: '10px var(--font-mono)', padding: '2px 5px',
-}
-const sel: React.CSSProperties = {
-  background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
-  borderRadius: 4, color: 'var(--color-text-primary)', font: '10.5px var(--font-mono)', padding: '2px 4px',
 }
 
 function NumberField({ label, value, onCommit }: { label: string; value: number; onCommit: (n: number) => void }) {
@@ -78,42 +73,6 @@ export function RuntimeForm({ placementId }: { placementId: string }): ReactElem
           {n.name}
         </label>
       ))}</div>
-      {running && <div style={lockNote}>stop simulation to edit</div>}
-    </fieldset>
-  )
-}
-
-export function FirewallEditor({ serverId }: { serverId: string }): ReactElement {
-  const running = useSimulationStore(s => s.running)
-  const server = useWorldStore(s => s.doc.servers[serverId])
-  const update = useWorldStore(s => s.updateServer)
-  if (!server) return <></>
-  const rules = server.firewall
-  const commit = (next: FirewallRule[]) => update(serverId, { firewall: next })
-  const move = (i: number, dir: -1 | 1) => {
-    const j = i + dir
-    if (j < 0 || j >= rules.length) return
-    const next = [...rules]; [next[i], next[j]] = [next[j], next[i]]; commit(next)
-  }
-  const patch = (i: number, p: Partial<FirewallRule>) => commit(rules.map((r, k) => (k === i ? { ...r, ...p } : r)))
-  return (
-    <fieldset disabled={running} style={fs(running)}>
-      {rules.map((r, i) => (
-        <div key={r.id} style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 4, fontSize: 10.5 }}>
-          <select aria-label="action" style={sel} value={r.action} onChange={e => patch(i, { action: e.target.value as FirewallRule['action'] })}><option value="allow">allow</option><option value="deny">deny</option></select>
-          <input aria-label="port" style={{ ...inp, width: 40 }} value={String(r.port)} onChange={e => {
-            const raw = e.target.value
-            if (raw === 'any' || raw === '') { patch(i, { port: 'any' }); return }
-            const n = Number(raw)
-            patch(i, { port: Number.isFinite(n) && n >= 0 ? n : 'any' })
-          }} />
-          <select aria-label="protocol" style={sel} value={r.protocol} onChange={e => patch(i, { protocol: e.target.value as FirewallRule['protocol'] })}><option value="tcp">tcp</option><option value="udp">udp</option><option value="any">any</option></select>
-          <button aria-label="move rule up" onClick={() => move(i, -1)}>↑</button>
-          <button aria-label="move rule down" onClick={() => move(i, 1)}>↓</button>
-          <button aria-label="remove rule" onClick={() => commit(rules.filter((_, k) => k !== i))}>✕</button>
-        </div>
-      ))}
-      <button aria-label="add rule" style={{ marginTop: 4, fontSize: 10.5 }} onClick={() => commit([...rules, { id: nextWorldId('fw'), action: 'allow', port: 'any', protocol: 'tcp', source: 'any' }])}>+ add rule</button>
       {running && <div style={lockNote}>stop simulation to edit</div>}
     </fieldset>
   )

@@ -13,7 +13,13 @@ import { InspectorRail } from './server/InspectorRail'
 import type { BoardSelection } from './server/selection'
 import type { BlueprintId } from '../../lib/world/types'
 
-export function ServerView(): ReactElement | null {
+export interface ServerViewProps {
+  // Opens the FirewallRulesModal (WorldShell-mounted) for the given server id — threaded down
+  // to InspectorRail's board-scoped "edit rules…" opener.
+  onOpenFirewallRules: (serverId: string) => void
+}
+
+export function ServerView({ onOpenFirewallRules }: ServerViewProps): ReactElement | null {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const serverId = useNavStore(s => s.serverId)
@@ -73,7 +79,10 @@ export function ServerView(): ReactElement | null {
           selection={selection} onSelect={setSelection}
           hoveredBlueprintId={hoveredBlueprintId} onHoverBlueprint={setHoveredBlueprintId}
         />
-        <InspectorRail serverId={serverId} selection={selection} onSelect={setSelection} />
+        <InspectorRail
+          serverId={serverId} selection={selection} onSelect={setSelection}
+          onOpenFirewallRules={() => onOpenFirewallRules(serverId)}
+        />
       </div>
     </div>
   )

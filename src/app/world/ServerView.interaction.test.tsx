@@ -60,7 +60,7 @@ describe('ServerView interaction (selection model + Esc + cross-highlight)', () 
 
     try {
       seed(() => {})
-      render(<ServerView />)
+      render(<ServerView onOpenFirewallRules={() => {}} />)
 
       // Establish a selection via the real UI (click the firewall gate) — InspectorRail should
       // switch off its empty-selection hint.
@@ -92,7 +92,7 @@ describe('ServerView interaction (selection model + Esc + cross-highlight)', () 
       const webPl = createPlacement(web.id, sid); d.placements[webPl.id] = webPl
       const cachePl = createPlacement(cache.id, sid); d.placements[cachePl.id] = cachePl
     })
-    render(<ServerView />)
+    render(<ServerView onOpenFirewallRules={() => {}} />)
 
     // "web"/"cache" now also appear in HardwarePlatform's DIMM legend (D8) — disambiguate to the chip.
     const webChip = screen.getAllByText('web').map(el => el.closest('[data-chip]')).find(Boolean) as HTMLElement

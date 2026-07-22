@@ -11,7 +11,7 @@ import {
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { instanceId, compileWorld } from '../../../lib/world/compileWorld'
 import type { WorldDoc } from '../../../lib/world/types'
-import { WorkloadForm, FirewallEditor, VolumesEditor } from './inspectorForms'
+import { WorkloadForm, VolumesEditor } from './inspectorForms'
 
 function seed(configure: (doc: WorldDoc, serverId: string) => void) {
   const doc = createWorld()
@@ -42,7 +42,7 @@ describe('InspectorRail (read panels)', () => {
     const doc = useWorldStore.getState().doc
     const pl = Object.values(doc.placements)[0]
     const iid = instanceId(pl.id, 0)
-    render(<InspectorRail serverId={serverId} selection={{ kind: 'instance', instanceId: iid }} onSelect={() => {}} />)
+    render(<InspectorRail serverId={serverId} selection={{ kind: 'instance', instanceId: iid }} onSelect={() => {}} onOpenFirewallRules={() => {}} />)
     expect(screen.getByText('api')).toBeInTheDocument()
     expect(screen.getByText(/stack: app/)).toBeInTheDocument()
     expect(screen.getByText(/640/)).toBeInTheDocument()          // mem limit
@@ -56,7 +56,7 @@ describe('InspectorRail (read panels)', () => {
         { id: 'r2', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' },
       ]
     })
-    render(<InspectorRail serverId={serverId} selection={{ kind: 'firewall' }} onSelect={onSelect} />)
+    render(<InspectorRail serverId={serverId} selection={{ kind: 'firewall' }} onSelect={onSelect} onOpenFirewallRules={() => {}} />)
     expect(screen.getByText(/first match wins/i)).toBeInTheDocument()
     const rows = screen.getAllByTestId('fw-rule-row')
     expect(rows).toHaveLength(2)
@@ -72,13 +72,13 @@ describe('InspectorRail (read panels)', () => {
       const pl = createPlacement(pg.id, sid)
       d.placements[pl.id] = pl
     })
-    render(<InspectorRail serverId={serverId} selection={{ kind: 'volume', stackName: 'app', volumeName: 'pgdata' }} onSelect={() => {}} />)
+    render(<InspectorRail serverId={serverId} selection={{ kind: 'volume', stackName: 'app', volumeName: 'pgdata' }} onSelect={() => {}} onOpenFirewallRules={() => {}} />)
     expect(screen.getByText(/postgres/)).toBeInTheDocument()
   })
 
   it('empty selection shows a hint', () => {
     const { serverId } = seed(() => {})
-    render(<InspectorRail serverId={serverId} selection={null} onSelect={() => {}} />)
+    render(<InspectorRail serverId={serverId} selection={null} onSelect={() => {}} onOpenFirewallRules={() => {}} />)
     expect(screen.getByText(/click any element/i)).toBeInTheDocument()
   })
 
@@ -89,7 +89,7 @@ describe('InspectorRail (read panels)', () => {
         { id: 'r2', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' },
       ]
     })
-    render(<InspectorRail serverId={serverId} selection={{ kind: 'firewall' }} onSelect={() => {}} />)
+    render(<InspectorRail serverId={serverId} selection={{ kind: 'firewall' }} onSelect={() => {}} onOpenFirewallRules={() => {}} />)
     expect(screen.getByText(/evaluated top-down · first match wins/)).toBeInTheDocument()
     expect(screen.getByText(/everything else: DENIED/)).toBeInTheDocument()
     const rows = screen.getAllByTestId('fw-rule-row')
@@ -100,52 +100,50 @@ describe('InspectorRail (read panels)', () => {
     expect(rows[1]).toHaveTextContent('anyone')
   })
 
-  it('a server with zero firewall rules still offers the add-rule editor', () => {
+  it('a server with zero firewall rules still offers the "edit rules…" opener', () => {
+    // firewall-rules-modal Task 2: rule-adding no longer needs an empty-list special case —
+    // the opener button is unconditional, so it's reachable from zero rules exactly like from
+    // any other rule count.
     const { serverId } = seed((d, sid) => { d.servers[sid].firewall = [] })
-    render(<InspectorRail serverId={serverId} selection={{ kind: 'firewall' }} onSelect={() => {}} />)
-    expect(screen.getByLabelText('add rule')).toBeInTheDocument()
+    render(<InspectorRail serverId={serverId} selection={{ kind: 'firewall' }} onSelect={() => {}} onOpenFirewallRules={() => {}} />)
+    expect(screen.getByTestId('firewall-open-rules-modal')).toBeInTheDocument()
   })
 
-  it('firewall reorder and remove dispatches are unchanged after the re-voicing', () => {
+  it('the "edit rules…" button calls onOpenFirewallRules and never touches the store directly', () => {
+    const onOpenFirewallRules = vi.fn()
     const spy = vi.spyOn(useWorldStore.getState(), 'updateServer')
     const { serverId } = seed((d, sid) => {
       d.servers[sid].firewall = [
         { id: 'r1', action: 'allow', port: 443, protocol: 'tcp', source: 'any' },
-        { id: 'r2', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' },
       ]
     })
-    render(<InspectorRail serverId={serverId} selection={{ kind: 'rule', ruleId: 'r1' }} onSelect={() => {}} />)
-    expect(screen.getByText('Let')).toBeInTheDocument()                       // sentence read view
-    expect(screen.getByText('postgres :5432')).toBeInTheDocument()            // service word
-    fireEvent.click(screen.getAllByLabelText('move rule down')[0])            // FirewallEditor visible when a rule is selected
-    expect(spy).toHaveBeenCalledWith(serverId, { firewall: [
-      expect.objectContaining({ id: 'r2' }), expect.objectContaining({ id: 'r1' }),
-    ] })
+    render(<InspectorRail serverId={serverId} selection={{ kind: 'firewall' }} onSelect={() => {}} onOpenFirewallRules={onOpenFirewallRules} />)
+    fireEvent.click(screen.getByTestId('firewall-open-rules-modal'))
+    expect(onOpenFirewallRules).toHaveBeenCalledTimes(1)
+    expect(spy).not.toHaveBeenCalled()
   })
 
-  it('inspector strip expands to the existing forms and their dispatches are unchanged', () => {
+  it('inspector strip expands when a rule is selected (outer shell only — no editing form mounts here anymore)', () => {
     // T6 (D8) re-housed ONLY the outer shell (position/sizing) — collapsed when nothing is
     // selected, `data-expanded` flips true and the SAME header()/body branches (byte-identical,
-    // untouched above) render underneath once something is selected.
-    const spy = vi.spyOn(useWorldStore.getState(), 'updateServer')
+    // untouched above) render underneath once something is selected. The FirewallEditor-specific
+    // dispatch assertion this test used to carry moved to FirewallRulesModal.test.tsx
+    // (firewall-rules-modal Task 1/2) along with the editor itself.
     const { serverId } = seed((d, sid) => {
       d.servers[sid].firewall = [
         { id: 'r1', action: 'allow', port: 443, protocol: 'tcp', source: 'any' },
         { id: 'r2', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' },
       ]
     })
-    const { rerender, container } = render(<InspectorRail serverId={serverId} selection={null} onSelect={() => {}} />)
+    const { rerender, container } = render(<InspectorRail serverId={serverId} selection={null} onSelect={() => {}} onOpenFirewallRules={() => {}} />)
     const strip = container.querySelector('[data-inspector-rail]')!
     expect(strip).toHaveAttribute('data-expanded', 'false')
     expect(screen.getByText(/click any element/i)).toBeInTheDocument()
 
-    rerender(<InspectorRail serverId={serverId} selection={{ kind: 'rule', ruleId: 'r1' }} onSelect={() => {}} />)
+    rerender(<InspectorRail serverId={serverId} selection={{ kind: 'rule', ruleId: 'r1' }} onSelect={() => {}} onOpenFirewallRules={() => {}} />)
     expect(strip).toHaveAttribute('data-expanded', 'true')
-    // The existing FirewallEditor form (untouched) still mounts and dispatches exactly as before.
-    fireEvent.click(screen.getAllByLabelText('move rule down')[0])
-    expect(spy).toHaveBeenCalledWith(serverId, { firewall: [
-      expect.objectContaining({ id: 'r2' }), expect.objectContaining({ id: 'r1' }),
-    ] })
+    expect(screen.getByText('Let')).toBeInTheDocument()               // sentence read view unchanged
+    expect(screen.getByTestId('firewall-open-rules-modal')).toBeInTheDocument()
   })
 })
 
@@ -175,20 +173,9 @@ describe('inspector editing forms', () => {
     expect(spy).toHaveBeenCalledWith(bpId, expect.objectContaining({ workload: expect.objectContaining({ cpuMsPerRequest: 12 }) }))
   })
 
-  it('firewall reorder swaps array order', () => {
-    const spy = vi.spyOn(useWorldStore.getState(), 'updateServer')
-    const { serverId } = seed((d, sid) => {
-      d.servers[sid].firewall = [
-        { id: 'r1', action: 'allow', port: 443, protocol: 'tcp', source: 'any' },
-        { id: 'r2', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' },
-      ]
-    })
-    render(<FirewallEditor serverId={serverId} />)
-    fireEvent.click(screen.getAllByLabelText('move rule down')[0])
-    expect(spy).toHaveBeenCalledWith(serverId, { firewall: [
-      expect.objectContaining({ id: 'r2' }), expect.objectContaining({ id: 'r1' }),
-    ] })
-  })
+  // 'firewall reorder swaps array order' (formerly rendered the deleted inline FirewallEditor
+  // directly) moved to FirewallRulesModal.test.tsx ("reorder swaps exact array order",
+  // firewall-rules-modal Task 1) along with the editor component itself.
 
   it('adding an allow rule above the deny unblocks the compiled path', () => {
     // recompiled-fixture assertion (not DOM): allow :5432 above deny → path permitted
@@ -235,14 +222,10 @@ describe('inspector editing forms', () => {
     expect(spy).not.toHaveBeenCalled()
   })
 
-  it('all forms disabled while running', () => {
-    // seed() itself resets `running: false` as part of its simulation.store setup, so it must
-    // run before this test flips `running: true` — otherwise seed() clobbers it back to false.
-    const { serverId } = seed(() => {})
-    useSimulationStore.setState({ running: true })
-    render(<FirewallEditor serverId={serverId} />)
-    expect(screen.getByLabelText('add rule')).toBeDisabled()
-  })
+  // 'all forms disabled while running' (formerly rendered the deleted inline FirewallEditor
+  // directly and asserted its "add rule" edit-lock) moved to FirewallRulesModal.test.tsx
+  // ("edit lock: every table control is disabled while running, close stays enabled",
+  // firewall-rules-modal Task 1).
 
   it('switching the inspected instance remounts WorkloadForm and reseeds the NumberField from stale text', () => {
     // Regression for the NumberField staleness bug: it seeds its text via useState(String(value))
@@ -263,12 +246,12 @@ describe('inspector editing forms', () => {
     const iidB = instanceId(plB.id, 0)
 
     const { rerender } = render(
-      <InspectorRail serverId={serverId} selection={{ kind: 'instance', instanceId: iidA }} onSelect={() => {}} />
+      <InspectorRail serverId={serverId} selection={{ kind: 'instance', instanceId: iidA }} onSelect={() => {}} onOpenFirewallRules={() => {}} />
     )
     expect(screen.getByLabelText('cpuMsPerRequest')).toHaveValue('5')
 
     rerender(
-      <InspectorRail serverId={serverId} selection={{ kind: 'instance', instanceId: iidB }} onSelect={() => {}} />
+      <InspectorRail serverId={serverId} selection={{ kind: 'instance', instanceId: iidB }} onSelect={() => {}} onOpenFirewallRules={() => {}} />
     )
     expect(screen.getByLabelText('cpuMsPerRequest')).toHaveValue('12')
   })

@@ -39,6 +39,9 @@ export interface ServerFaceplateProps {
   // `deriveScope`); the board itself (nav.level === 'server') is already "entered," so no
   // redundant enter action there. WorldPanel.tsx computes this.
   showEnter: boolean
+  // Opens the FirewallRulesModal (WorldShell-mounted) for a server id — threaded down from
+  // WorldShell via WorldPanel. The FIREWALL drawer binds it to THIS server as a zero-arg closure.
+  openFirewallRules: (serverId: string) => void
 }
 
 type DrawerKey = 'hw' | 'fw' | 'svc' | 'pl'
@@ -93,7 +96,7 @@ function GaugeColumn({ label, fraction, color, testId }: { label: string; fracti
   )
 }
 
-export function ServerFaceplate({ serverId, showEnter }: ServerFaceplateProps): ReactElement | null {
+export function ServerFaceplate({ serverId, showEnter, openFirewallRules }: ServerFaceplateProps): ReactElement | null {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const running = useSimulationStore(s => s.running)
@@ -261,7 +264,7 @@ export function ServerFaceplate({ serverId, showEnter }: ServerFaceplateProps): 
             />
           </Drawer>
           <Drawer accent="var(--kit-cat-storage)" title="FIREWALL" readout={fwReadout} open={openDrawer === 'fw'} onToggle={() => toggle('fw')}>
-            <FirewallDrawer server={server} running={running} />
+            <FirewallDrawer server={server} running={running} onOpenRules={() => openFirewallRules(server.id)} />
           </Drawer>
           <Drawer accent="var(--kit-cat-messaging)" title="SERVICES" readout={svcReadout} open={openDrawer === 'svc'} onToggle={() => toggle('svc')}>
             <ServicesDrawer

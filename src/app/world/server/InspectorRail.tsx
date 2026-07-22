@@ -1,18 +1,20 @@
 // src/app/world/server/InspectorRail.tsx
 // HUD inspector rail: a read panel per BoardSelection kind. Reads doc (useWorldStore) + live
-// metrics (useServerDisplayMetrics); each panel mounts its matching edit form from
-// `./inspectorForms.tsx` (WorkloadForm/RuntimeForm/FirewallEditor/VolumesEditor) — those forms own
-// all world-store writes and self-lock via <fieldset disabled={running}> (D9). Rule rows drill
-// into `{kind:'rule'}`. Polish 3 T6 (D8, mockup `.b3insp`) re-housed the outer shell only — see
-// the comment on the returned `<aside>` below; every branch of `body` and `header()` above it is
-// untouched from Phase 3/T4/T5.
+// metrics (useServerDisplayMetrics); the instance/stack panels mount their matching edit form
+// from `./inspectorForms.tsx` (WorkloadForm/RuntimeForm/VolumesEditor) — those forms own all
+// world-store writes and self-lock via <fieldset disabled={running}> (D9). Rule rows drill into
+// `{kind:'rule'}` for highlight only (no editing) — the firewall branch instead offers a single
+// "edit rules…" opener that mounts FirewallRulesModal.tsx (firewall-rules-modal Task 2), which
+// replaced the cramped inline FirewallEditor previously mounted here. Polish 3 T6 (D8, mockup
+// `.b3insp`) re-housed the outer shell only — see the comment on the returned `<aside>` below;
+// every other branch of `body` and `header()` above it is untouched from Phase 3/T4/T5.
 import type { CSSProperties, ReactElement } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { useWorldStore } from '../../store/world.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { useServerDisplayMetrics } from './useServerDisplayMetrics'
 import type { BoardSelection } from './selection'
-import { WorkloadForm, RuntimeForm, FirewallEditor, VolumesEditor } from './inspectorForms'
+import { WorkloadForm, RuntimeForm, VolumesEditor } from './inspectorForms'
 import { SectionHeader, KIT_GLOW_TEXT } from '../ui/kit'
 import { ruleSourceWords, rulePortPhrase } from './ruleSentence'
 import './hwStyles'
@@ -23,13 +25,25 @@ const flowCaption: CSSProperties = {
   textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 9, letterSpacing: '0.1em', margin: '4px 0',
 }
 
+// Matches the rail's always-dark-scene dialect (KIT_GLOW_TEXT accent, not --kit-accent — same
+// carve-out as the header() glyph above, since this button sits on the same hardcoded-dark
+// background regardless of app theme).
+const editRulesBtn: CSSProperties = {
+  display: 'block', width: '100%', marginTop: 6, padding: '4px 8px', fontSize: 10,
+  background: 'transparent', border: `1px solid ${KIT_GLOW_TEXT}55`, borderRadius: 4,
+  color: KIT_GLOW_TEXT, cursor: 'pointer', textAlign: 'center',
+}
+
 export interface InspectorRailProps {
   serverId: string
   selection: BoardSelection | null
   onSelect: (s: BoardSelection | null) => void
+  // Opens FirewallRulesModal (WorldShell-mounted) for this rail's server — the one way in from
+  // the board's firewall/rule selection branch, kept separate from rule-row click-to-highlight.
+  onOpenFirewallRules: () => void
 }
 
-export function InspectorRail({ serverId, selection, onSelect }: InspectorRailProps): ReactElement {
+export function InspectorRail({ serverId, selection, onSelect, onOpenFirewallRules }: InspectorRailProps): ReactElement {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const display = useServerDisplayMetrics(serverId)
@@ -105,10 +119,16 @@ export function InspectorRail({ serverId, selection, onSelect }: InspectorRailPr
             </div>
           )
         })}
-        {/* Editor mounts on a selected rule — or when there are no rules at all, since the
-            rule rows are the only way to reach kind 'rule' and an empty list would otherwise
-            leave "+ add rule" unreachable. */}
-        {(selection.kind === 'rule' || rules.length === 0) && <FirewallEditor key={serverId} serverId={serverId} />}
+        {/* Unconditional (firewall-rules-modal Task 2) — rendered whenever this branch is
+            active regardless of rules.length or which rule (if any) is selected, so rule-adding
+            stays reachable even from zero rules without an empty-list special case. Opens
+            FirewallRulesModal.tsx, which replaced the old inline FirewallEditor mounted here. */}
+        <button
+          type="button" className="kit-press" data-testid="firewall-open-rules-modal"
+          style={editRulesBtn} onClick={onOpenFirewallRules}
+        >
+          edit rules…
+        </button>
         <div style={{ ...flowCaption, color: 'var(--color-danger)' }}>▼ everything else: DENIED ▼</div>
       </div>
     </div>

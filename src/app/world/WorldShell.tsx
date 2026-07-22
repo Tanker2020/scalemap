@@ -19,6 +19,7 @@ import { DatacenterFloor } from './az/DatacenterFloor'
 import { openWorldViaDialog, saveWorld } from './fileOps'
 import { SettingsModal } from './SettingsModal'
 import { ConnectionsView } from './connections/ConnectionsView'
+import { FirewallRulesModal } from './server/FirewallRulesModal'
 
 const hdrBtn: CSSProperties = {
   background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
@@ -38,6 +39,8 @@ export function WorldShell() {
   const running = useSimulationStore(s => s.running)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [connectionsOpen, setConnectionsOpen] = useState(false)
+  const [firewallRulesServerId, setFirewallRulesServerId] = useState<string | null>(null)
+  const openFirewallRules = (serverId: string) => setFirewallRulesServerId(serverId)
   // Lifted here (not into GlobeView) because GlobeView and WorldPanel are SIBLINGS in the flex
   // row below, not parent/child — TrafficPanel (mounted inside WorldPanel) needs to flip the
   // same placeMode boolean GlobeView's GlobeScene reads, so only their common ancestor can own
@@ -118,7 +121,7 @@ export function WorldShell() {
     ) :
     nav.level === 'region' ? <RegionView /> :
     nav.level === 'az' ? <DatacenterFloor /> :
-    <ServerView />
+    <ServerView onOpenFirewallRules={openFirewallRules} />
 
   // Key by full focus path so descending re-animates even within one level.
   const viewKey = `${nav.level}:${nav.regionId ?? ''}:${nav.azId ?? ''}:${nav.serverId ?? ''}`
@@ -171,10 +174,16 @@ export function WorldShell() {
           selectedPopulationId={selectedPopulationId}
           openSettings={() => setSettingsOpen(true)}
           openConnections={() => setConnectionsOpen(true)}
+          openFirewallRules={openFirewallRules}
         />
       </div>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <ConnectionsView open={connectionsOpen} onClose={() => setConnectionsOpen(false)} />
+      <FirewallRulesModal
+        open={firewallRulesServerId !== null}
+        serverId={firewallRulesServerId}
+        onClose={() => setFirewallRulesServerId(null)}
+      />
       <ScrubberV2 />
     </div>
   )

@@ -3034,3 +3034,75 @@ deliberately leaving Close/Cancel/Submit outside that wrapper so there is always
 even mid-run. Any future portal-rendered modal that must respect the simulation running-lock
 needs this same self-contained fieldset — inheriting the dock's lock is not an option once a
 component is rendered through a portal.
+
+---
+
+## Firewall rules modal — wired into both entry points, inline editor retired (2026-07-22)
+
+Follow-on to the "portal-vs-fieldset edit-lock" law just above: `src/app/world/server/
+FirewallRulesModal.tsx` (built standalone, unmounted) is now the ONE firewall-rule editor in the
+app, reachable from two independent trigger trees that both bottom out at a single
+`WorldShell.tsx`-owned mount. The old cramped inline editor (`inspectorForms.tsx`'s
+`FirewallEditor`, 280px-rail-sized) is deleted outright — there is no longer any per-field
+firewall editing UI anywhere except the modal.
+
+**Lifted-state opener, mirroring `settingsOpen`/`openSettings` exactly.** `WorldShell.tsx` gained
+`firewallRulesServerId: string | null` + `openFirewallRules(serverId)` (same shape as the
+existing `settingsOpen` pair, just parameterized by which server) and mounts
+`<FirewallRulesModal open={firewallRulesServerId !== null} serverId={firewallRulesServerId}
+onClose={() => setFirewallRulesServerId(null)} />` alongside `SettingsModal`/`ConnectionsView`.
+Both trigger trees thread the SAME `openFirewallRules` callback down to their leaf, each binding
+it to their own local server id as a zero-arg closure at the last hop (`FirewallDrawer`'s
+`onOpenRules`, `InspectorRail`'s `onOpenFirewallRules`) so the leaf components themselves never
+carry a server id parameter in their opener prop:
+
+- **Dock tree:** `WorldShell` → `WorldPanel` (`openFirewallRules` added to `WorldPanelProps`) →
+  `ServerFaceplate` (`openFirewallRules` added to `ServerFaceplateProps`, bound to
+  `onOpenRules={() => openFirewallRules(server.id)}` on its `<FirewallDrawer>` mount) →
+  `dock/drawers/FirewallDrawer.tsx` (`FirewallDrawerProps` gained `onOpenRules: () => void`; its
+  `+ rule` button's `onClick` now calls `onOpenRules` instead of blind-appending a default rule
+  via `updateServer` — the `addRule` function and its now-unused `useWorldStore`/`nextWorldId`
+  imports are deleted; the drawer no longer writes to the store at all, it's pure read + one
+  opener). Footer hint copy changed from the now-stale "edit rules on the board" to "open rules
+  editor".
+- **Board tree:** `WorldShell` → `ServerView` (gained `ServerViewProps { onOpenFirewallRules:
+  (serverId: string) => void }` — previously had NO props) → `server/InspectorRail.tsx`
+  (`InspectorRailProps` gained `onOpenFirewallRules: () => void`, bound at the `ServerView` mount
+  site as `() => onOpenFirewallRules(serverId)`). Inside InspectorRail's `kind==='firewall' ||
+  'rule'` branch: the inline `<FirewallEditor key={serverId} serverId={serverId} />` mount
+  (previously conditional on `selection.kind === 'rule' || rules.length === 0`) is replaced by an
+  UNCONDITIONAL `data-testid="firewall-open-rules-modal"` "edit rules…" button — unconditional
+  because the modal needs no empty-list special case (no rows to click into to reach `kind:
+  'rule'` matters when there's a permanent, always-rendered opener). Rule-row clicks keep their
+  existing behavior unchanged (toggle `{kind:'firewall'}`/`{kind:'rule', ruleId}` for highlight
+  only) — the new button is a second, independent way in, not an overload of row-click.
+  `ServerBoard.tsx`'s `FirewallGate` `onSelect` wiring needed NO changes (confirmed by reading,
+  not assumed) — it already only dispatches `{kind:'firewall'}` with no `ruleId` and no
+  interactive-editing hook, so the click-to-highlight path both trees still share was never
+  coupled to `FirewallEditor` in the first place.
+
+**`inspectorForms.tsx` shrinks.** `FirewallEditor` deleted entirely, along with the `FirewallRule`
+type import and the `sel`/`nextWorldId` locals that turned out (confirmed by grep, not assumed —
+the brief's own "verify, don't assume" instruction here was correct to include) to have had NO
+other consumer in the file; `noUnusedLocals` would otherwise fail the build. `WorkloadForm`/
+`RuntimeForm`/`VolumesEditor` and the shared `inp`/`fs`/`lockNote`/`NumberField` are untouched —
+those forms' own edit surfaces (instance/stack panels) are out of scope for this change.
+
+**Test-file fallout beyond the two files with the interesting rewrites
+(`InspectorRail.test.tsx`/`FirewallDrawer.test.tsx`).** Any component that gained a new required
+prop needed every one of its `render()` call sites updated, including two files never mentioned in
+this task's own brief but discovered by grepping the actual call sites rather than trusting the
+brief's file list: `ServerFaceplate.test.tsx` (34 render calls) and `WorldPanel.test.tsx` (26
+render calls) both needed a no-op `openFirewallRules={() => {}}`/`openFirewallRules` addition;
+`ServerBoard.test.tsx` had one more `<ServerView />` zero-prop mount beyond the two already known
+in `ServerView.interaction.test.tsx`. General lesson for future prop-threading tasks in this
+codebase: grep for every `<Component` call site directly rather than relying on a brief's
+enumerated list, even a carefully-researched one — test files accumulate mount sites faster than
+any single planning pass can track.
+
+`InspectorRail.test.tsx` also had two MORE tests than the brief's line-range citation
+(`~109-149`) that directly rendered the now-deleted `FirewallEditor` component
+(`'firewall reorder swaps array order'` and `'all forms disabled while running'`, both in the
+`'inspector editing forms'` describe block, not the `'InspectorRail (read panels)'` block the
+brief's line numbers pointed at) — both deleted with a comment pointing at their new home
+(`FirewallRulesModal.test.tsx`, already covering the same scenarios per Task 1's test suite).

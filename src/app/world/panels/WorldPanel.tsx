@@ -75,9 +75,12 @@ export interface WorldPanelProps {
   openSettings: () => void
   /** Opens the full-screen connections canvas from the Connections tab (node-model Phase 2). */
   openConnections: () => void
+  /** Opens the FirewallRulesModal (WorldShell-mounted) for the given server, from the server
+   *  scope's ServerFaceplate FIREWALL drawer. */
+  openFirewallRules: (serverId: string) => void
 }
 
-export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopulationId, openSettings, openConnections }: WorldPanelProps) {
+export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopulationId, openSettings, openConnections, openFirewallRules }: WorldPanelProps) {
   const [tab, setTab] = useState<PanelTab>(() => useUiStore.getState().pendingPanelTab ?? 'topology')
   const pendingPanelTab = useUiStore(s => s.pendingPanelTab)
   useEffect(() => {
@@ -321,7 +324,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
               // selection (deriveScope's OTHER path into 'server' scope, dock/scope.ts) rather
               // than a real board navigation — "enter board" is meaningless once you're already
               // on the board (nav.level === 'server').
-              : scope.kind === 'server' ? <ServerFaceplate serverId={scope.serverId} showEnter={navLevel === 'az'} />
+              : scope.kind === 'server' ? <ServerFaceplate serverId={scope.serverId} showEnter={navLevel === 'az'} openFirewallRules={openFirewallRules} />
               : null
             )}
             {tab === 'analysis' && (
