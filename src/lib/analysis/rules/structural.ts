@@ -82,6 +82,11 @@ const noFailoverRegion: AnalysisRule = {
 const replicasColocated: AnalysisRule = {
   id: 'replicas-colocated', family: 'structural',
   run: ({ doc, compiled }) => {
+    // Audit ISSUE-026: flag EVERY AZ holding ≥2 copies of a stateful blueprint — any subset of
+    // colocated copies is a redundancy SPOF. The old check compared all replicas against
+    // primaries[0]'s AZ only, so partial colocation (2 of 3 replicas sharing an AZ) and clusters
+    // with multiple primaries in different AZs slipped through. Copies count regardless of role:
+    // primary+replica, replica+replica, or primary+primary in one AZ all lose together.
     const byBp = new Map<string, ServiceInstance[]>()
     for (const inst of Object.values(compiled.instances)) {
       const a = byBp.get(inst.blueprintId) ?? []; a.push(inst); byBp.set(inst.blueprintId, a)
@@ -89,21 +94,26 @@ const replicasColocated: AnalysisRule = {
     const out: AnalysisFinding[] = []
     for (const [bpId, insts] of byBp) {
       const bp = doc.blueprints[bpId]
-      if (!bp?.stateful) continue
-      const primaries = insts.filter(i => i.role === 'primary')
-      const replicas = insts.filter(i => i.role === 'replica')
-      if (primaries.length === 0 || replicas.length === 0) continue
-      const primaryAz = primaries[0].azId
-      if (!replicas.every(r => r.azId === primaryAz)) continue
-      const an = doc.azs[primaryAz]?.label ?? primaryAz
-      const instIds = [...primaries.filter(p => p.azId === primaryAz), ...replicas].map(i => i.id)
-      out.push({
-        id: `replicas-colocated:${bpId}`, ruleId: 'replicas-colocated', family: 'structural', severity: 'warning',
-        title: 'Replicas co-located with primary',
-        why: `Stateful ${bp.name}'s primary and all ${replicas.length} replica(s) share AZ ${an}; losing that AZ loses every copy.`,
-        fix: `Move at least one ${bp.name} replica to a different AZ (Placements panel).`,
-        affected: [bpId, primaryAz, ...instIds],
-      })
+      if (!bp?.stateful || insts.length < 2) continue
+      const byAz = new Map<string, ServiceInstance[]>()
+      for (const inst of insts) {
+        const a = byAz.get(inst.azId) ?? []; a.push(inst); byAz.set(inst.azId, a)
+      }
+      for (const [azId, colocated] of byAz) {
+        if (colocated.length < 2) continue
+        const an = doc.azs[azId]?.label ?? azId
+        const roles = colocated.map(i => i.role)
+        const desc = roles.includes('primary')
+          ? `its primary and ${colocated.length - roles.filter(r => r === 'primary').length} replica(s)`
+          : `${colocated.length} of its replicas`
+        out.push({
+          id: `replicas-colocated:${bpId}:${azId}`, ruleId: 'replicas-colocated', family: 'structural', severity: 'warning',
+          title: 'Replica copies co-located',
+          why: `Stateful ${bp.name} has ${desc} sharing AZ ${an}; losing that AZ loses ${colocated.length} cop${colocated.length === 1 ? 'y' : 'ies'} at once.`,
+          fix: `Spread ${bp.name}'s copies so no AZ holds more than one (Placements panel).`,
+          affected: [bpId, azId, ...colocated.map(i => i.id)],
+        })
+      }
     }
     return out
   },

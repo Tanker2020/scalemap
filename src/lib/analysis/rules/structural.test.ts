@@ -112,6 +112,46 @@ describe('structural: replicas-colocated', () => {
     const rep = s.placement(db.id, s.server(a2.id).id); rep.role = 'replica'
     expect(ids(run(s), 'replicas-colocated')).toHaveLength(0)
   })
+
+  // Audit ISSUE-026: PARTIAL colocation fires too — 2 of 3 replicas sharing the primary's AZ is
+  // still a SPOF for those copies, even though one replica is safely elsewhere.
+  it('fires when 2 of 3 replicas share the primary AZ (partial colocation)', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const a1 = s.az(r.id, 'us-east-1a'); const a2 = s.az(r.id, 'us-east-1b')
+    const db = s.blueprint('db'); db.stateful = true
+    s.placement(db.id, s.server(a1.id).id)                                   // primary in a1
+    const r1 = s.placement(db.id, s.server(a1.id).id); r1.role = 'replica'   // colocated
+    const r2 = s.placement(db.id, s.server(a1.id).id); r2.role = 'replica'   // colocated
+    const r3 = s.placement(db.id, s.server(a2.id).id); r3.role = 'replica'   // safe
+    const f = ids(run(s), 'replicas-colocated')
+    expect(f).toHaveLength(1)
+    expect(f[0].affected[0]).toBe(db.id)
+    expect(f[0].affected[1]).toBe(a1.id)
+    expect(f[0].affected.length).toBe(2 + 3)   // bp + az + the 3 colocated copies (not the safe one)
+  })
+
+  it('fires per colocated AZ with multiple primaries in different AZs', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const a1 = s.az(r.id, 'us-east-1a'); const a2 = s.az(r.id, 'us-east-1b')
+    const db = s.blueprint('db'); db.stateful = true
+    s.placement(db.id, s.server(a1.id).id)                                   // primary in a1
+    s.placement(db.id, s.server(a2.id).id)                                   // primary in a2
+    const r1 = s.placement(db.id, s.server(a2.id).id); r1.role = 'replica'   // colocated with p2
+    const f = ids(run(s), 'replicas-colocated')
+    expect(f).toHaveLength(1)
+    expect(f[0].affected[1]).toBe(a2.id)   // the OTHER primary's AZ — not just primaries[0]'s
+  })
+
+  it('silent when copies are fully spread across AZs', () => {
+    const s = scenario()
+    const r = s.region('us-east-1')
+    const a1 = s.az(r.id, 'us-east-1a'); const a2 = s.az(r.id, 'us-east-1b'); const a3 = s.az(r.id, 'us-east-1c')
+    const db = s.blueprint('db'); db.stateful = true
+    s.placement(db.id, s.server(a1.id).id)
+    const r1 = s.placement(db.id, s.server(a2.id).id); r1.role = 'replica'
+    const r2 = s.placement(db.id, s.server(a3.id).id); r2.role = 'replica'
+    expect(ids(run(s), 'replicas-colocated')).toHaveLength(0)
+  })
 })
 
 describe('structural: dependency-cycle', () => {
