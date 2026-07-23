@@ -46,19 +46,32 @@ const singleAzRegion: AnalysisRule = {
 const noFailoverRegion: AnalysisRule = {
   id: 'no-failover-region', family: 'structural',
   run: ({ doc, compiled }) => {
+    // Audit ISSUE-025: base the check on SERVABLE regions — regions actually hosting an
+    // entry-blueprint instance — not on populationRegionOrder, which regionOrderFor fills with
+    // EVERY authored region regardless of capacity (so a second empty region silenced the rule
+    // while providing zero failover). A world with no public-port blueprint at all falls back to
+    // any-instance regions: without port data, any instance-bearing region is potentially
+    // servable, and the geographic-SPOF signal should still fire.
+    const entryBpIds = new Set(
+      Object.values(doc.blueprints)
+        .filter(bp => bp.ports.some(p => p.visibility === 'public'))
+        .map(bp => bp.id))
+    const servable = new Set<string>()
+    for (const inst of Object.values(compiled.instances)) {
+      if (entryBpIds.size === 0 || entryBpIds.has(inst.blueprintId)) servable.add(inst.regionId)
+    }
+    if (servable.size !== 1) return []   // 0 ⇒ nothing serves at all (other rules); ≥2 ⇒ real failover
+    const regionId = [...servable][0]
+    const rn = doc.regions[regionId]?.catalogId ?? regionId
     const out: AnalysisFinding[] = []
     for (const pop of Object.values(doc.populations)) {
-      const order = compiled.routing.populationRegionOrder[pop.id] ?? []
-      if (order.length !== 1) continue
-      const regionId = order[0]
-      const rn = doc.regions[regionId]?.catalogId ?? regionId
       // Population-scoped ⇒ critical (skeleton: "warning; critical when the world has populations" —
-      // a live population with a single-region order is a real geographic SPOF).
+      // a live population whose entry capacity all sits in one region is a real geographic SPOF).
       out.push({
         id: `no-failover-region:${pop.id}`, ruleId: 'no-failover-region', family: 'structural', severity: 'critical',
         title: 'No failover region',
-        why: `Population ${pop.label} routes only to ${rn} with no failover region; a regional outage drops its traffic entirely.`,
-        fix: `Add a second active region and place entry workloads there so ${pop.label} can fail over (Topology + Placements).`,
+        why: `Population ${pop.label} can only be served from ${rn} — no other region hosts entry capacity, so a regional outage drops its traffic entirely.`,
+        fix: `Place entry workloads in a second active region so ${pop.label} can fail over (Topology + Placements).`,
         affected: [pop.id, regionId],
       })
     }

@@ -37,12 +37,57 @@ describe('structural: no-failover-region', () => {
     expect(f[0].severity).toBe('critical')
     expect(f[0].affected).toEqual([pop.id, r.id])
   })
-  it('silent when the population has two regions to route to', () => {
+  it('silent when the population has two SERVABLE regions to route to', () => {
     const s = scenario()
-    const r1 = s.region('us-east-1'); s.az(r1.id, 'us-east-1a')
-    const r2 = s.region('eu-west-1'); s.az(r2.id, 'eu-west-1a')
+    const r1 = s.region('us-east-1'); const a1 = s.az(r1.id, 'us-east-1a')
+    const r2 = s.region('eu-west-1'); const a2 = s.az(r2.id, 'eu-west-1a')
+    const web = s.blueprint('web')
+    s.placement(web.id, s.server(a1.id).id)
+    s.placement(web.id, s.server(a2.id).id)
     s.population('nyc', 40.7, -74)
     expect(ids(run(s), 'no-failover-region')).toHaveLength(0)
+  })
+
+  // Audit ISSUE-025: a second EMPTY region is not failover — the check counts regions that
+  // actually host entry capacity, not authored regions.
+  it('fires when a second region exists but hosts no entry capacity', () => {
+    const s = scenario()
+    const r1 = s.region('us-east-1'); const a1 = s.az(r1.id, 'us-east-1a')
+    s.region('eu-west-1')   // authored but empty — cannot serve failover
+    const web = s.blueprint('web')
+    web.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+    s.placement(web.id, s.server(a1.id).id)
+    const pop = s.population('nyc', 40.7, -74)
+    const f = ids(run(s), 'no-failover-region')
+    expect(f).toHaveLength(1)
+    expect(f[0].severity).toBe('critical')
+    expect(f[0].affected).toEqual([pop.id, r1.id])
+  })
+
+  it('clears once a real entry instance lands in the second region', () => {
+    const s = scenario()
+    const r1 = s.region('us-east-1'); const a1 = s.az(r1.id, 'us-east-1a')
+    const r2 = s.region('eu-west-1'); const a2 = s.az(r2.id, 'eu-west-1a')
+    const web = s.blueprint('web')
+    web.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+    s.placement(web.id, s.server(a1.id).id)
+    s.placement(web.id, s.server(a2.id).id)
+    s.population('nyc', 40.7, -74)
+    expect(ids(run(s), 'no-failover-region')).toHaveLength(0)
+  })
+
+  // An internal-only helper placed in region B does NOT make B servable — only entry capacity does.
+  it('still fires when the second region hosts only non-entry workloads', () => {
+    const s = scenario()
+    const r1 = s.region('us-east-1'); const a1 = s.az(r1.id, 'us-east-1a')
+    const r2 = s.region('eu-west-1'); const a2 = s.az(r2.id, 'eu-west-1a')
+    const web = s.blueprint('web')
+    web.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+    s.placement(web.id, s.server(a1.id).id)
+    const worker = s.blueprint('worker')   // internal ports only (factory default)
+    s.placement(worker.id, s.server(a2.id).id)
+    s.population('nyc', 40.7, -74)
+    expect(ids(run(s), 'no-failover-region')).toHaveLength(1)
   })
 })
 
