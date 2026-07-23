@@ -114,8 +114,14 @@ export function splitDependencyShares(
   // A candidate is a WRITE target if it's a primary — or, in the degenerate no-primary case,
   // every candidate is (writes must land somewhere). A candidate is a READ target if it's a
   // replica — or, when there are no replicas, the primaries serve reads too.
+  // Health-aware pool selection (audit ISSUE-006, asymmetric on purpose): reads SPILL to the
+  // primaries when every replica is down — a primary can always serve reads, and without the
+  // spill a demoted (down) original pins the whole read share as errors, tripping the caller's
+  // breaker against a perfectly healthy promoted primary. Writes never spill to replicas — a
+  // replica can't take writes until promotion flips its role.
   const noPrimary = primaryCount === 0
-  const noReplica = replicaCount === 0
+  const replicaWeight = candidates.reduce((sum, p, i) => sum + (!isPrimary[i] ? weightOf(p) : 0), 0)
+  const noReplica = replicaCount === 0 || (replicaWeight <= 0 && !noPrimary)
   const isWriteTarget = (i: number): boolean => noPrimary || isPrimary[i]
   const isReadTarget = (i: number): boolean => noReplica ? isWriteTarget(i) : !isPrimary[i]
 

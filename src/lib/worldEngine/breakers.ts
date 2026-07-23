@@ -29,7 +29,10 @@ const MIN_SAMPLES_TO_OPEN = 10
 export interface Breaker {
   state: BreakerState
   openedAt: number         // simMs when last opened
-  errorWindow: number[]    // 1 = failure, 0 = success; capped at config.windowSize
+  // Per-sample error FRACTION 0..1 (audit ISSUE-001): each recorded call batch contributes its
+  // observed failure fraction (a boolean recordResult contributes exactly 1 or 0, so the
+  // pre-fix window contents are the degenerate case). Capped at config.windowSize.
+  errorWindow: number[]
   // While half-open: whether the single allowed trial has been claimed (admitRequest) and
   // is in flight. Reset on every entry to/exit from half-open.
   trialPending: boolean
@@ -53,8 +56,15 @@ export function getBreaker(
   return b
 }
 
-export function recordResult(breaker: Breaker, failed: boolean, simMs: number): void {
-  breaker.errorWindow.push(failed ? 1 : 0)
+// Weighted recording (audit ISSUE-001): `errored` of `total` calls in this batch failed. The
+// window stores the batch's error fraction, so a downstream that is down / erroring /
+// CPU-shedding registers as failures even when its caller row isn't `blocked`. A half-open
+// trial resolves against errorThreshold: a mostly-failing trial batch reopens, a mostly-clean
+// one closes (the boolean cases 1 and 0 behave exactly as before).
+export function recordWeighted(breaker: Breaker, errored: number, total: number, simMs: number): void {
+  if (total <= 0) return   // no calls observed — nothing to learn from this batch
+  const fraction = Math.min(1, Math.max(0, errored / total))
+  breaker.errorWindow.push(fraction)
   if (breaker.errorWindow.length > breaker.config.windowSize) {
     breaker.errorWindow.splice(0, breaker.errorWindow.length - breaker.config.windowSize)
   }
@@ -69,7 +79,7 @@ export function recordResult(breaker: Breaker, failed: boolean, simMs: number): 
     }
   } else if (breaker.state === 'half-open') {
     breaker.trialPending = false // the trial resolved one way or the other
-    if (!failed) {
+    if (fraction < breaker.config.errorThreshold) {
       breaker.state = 'closed'
       breaker.errorWindow = []
     } else {
@@ -77,6 +87,10 @@ export function recordResult(breaker: Breaker, failed: boolean, simMs: number): 
       breaker.openedAt = simMs
     }
   }
+}
+
+export function recordResult(breaker: Breaker, failed: boolean, simMs: number): void {
+  recordWeighted(breaker, failed ? 1 : 0, 1, simMs)
 }
 
 export function transition(breaker: Breaker, simMs: number): BreakerState {

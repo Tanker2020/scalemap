@@ -421,6 +421,30 @@ describe('solveFlows — health-aware dependency fan-out (audit ISSUE-006)', () 
     expect(flows[iids[1]]).toMatchObject({ offeredRps: 50, admittedRps: 0, errorRps: 50 })
   })
 
+  it('spills SQL reads to the primary when EVERY replica is down (reads can always be served by a primary; writes never spill to replicas)', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const db = createBlueprint('db', 1)
+    db.kind = 'db-sql'
+    db.dbConfig = { engine: 'sql', storageGb: 100 }
+    doc.blueprints[db.id] = db
+    const primaryPl = createPlacement(db.id, server.id)
+    doc.placements[primaryPl.id] = primaryPl
+    const primaryIid = instanceId(primaryPl.id, 0)
+    const replicaPl = createPlacement(db.id, server.id)
+    replicaPl.role = 'replica'
+    doc.placements[replicaPl.id] = replicaPl
+    const replicaIid = instanceId(replicaPl.id, 0)
+    api.bp.dependencies = [{ ...dep('d-db', db.id), writeFraction: 0.5 }]
+
+    const healthOf = (id: string): HealthState => (id === replicaIid ? 'down' : 'healthy')
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 1000 }, { healthOf }))
+    // The whole call volume (500 writes + 500 spilled reads) lands on the healthy primary.
+    expect(flows[primaryIid].offeredRps).toBeCloseTo(1000)
+    expect(flows[primaryIid].errorRps).toBeCloseTo(0)
+    expect(flows[replicaIid]).toBeUndefined()
+  })
+
   it('shifts SQL reads onto the surviving replicas when one replica is down', () => {
     const { doc, server } = oneServerWorld()
     const api = addService(doc, 'api', server.id, 0)

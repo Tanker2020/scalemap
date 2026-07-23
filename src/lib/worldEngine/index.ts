@@ -22,7 +22,7 @@ import { stepHost, type InstanceLoad, type HostStepResult } from './hostSchedule
 import { createVpsState, stepVps, type VpsState } from './vpsModel'
 import { createNicState, applyNicCap, type NicState } from './networkRuntime'
 import {
-  getBreaker, recordResult, transition, admitRequest, pathKey, type Breaker,
+  getBreaker, recordWeighted, transition, admitRequest, pathKey, type Breaker,
 } from './breakers'
 import { solveFlows, type InstanceFlow, BYTES_PER_REQUEST_EACH_WAY } from './flows'
 import { managedDbRuntime } from '../managedDbRuntime'
@@ -388,13 +388,24 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     }
 
     // ── 8. breaker record + transition ──
+    // Audit ISSUE-001: a down/erroring/CPU-shedding downstream INSTANCE produces a non-blocked
+    // caller row (its subtree is zeroed at the target instead), so recording `row.blocked` as
+    // the outcome logged successes while 100% of the calls failed — the breaker never opened.
+    // Feed the target's observed error fraction (errorRps / offeredRps, fully aggregated across
+    // all callers by the time the solver returns) instead; hard-blocked rows stay fraction 1.
+    const targetErrorFraction = (iid: InstanceId): number => {
+      const tf = flows[iid]
+      if (!tf || tf.offeredRps <= 1e-9) return 0
+      return Math.min(1, tf.errorRps / tf.offeredRps)
+    }
     for (const f of Object.values(flows)) {
       for (const row of f.downstream) {
         if (row.rps <= 0) continue
         const key = pathKey(f.instanceId, row.dependencyId)
         const b = getBreaker(s.breakers, key)
         const from = b.state
-        recordResult(b, row.blocked, simMs)
+        const fraction = row.blocked ? 1 : row.toInstanceId ? targetErrorFraction(row.toInstanceId) : 0
+        recordWeighted(b, row.rps * fraction, row.rps, simMs)
         transition(b, simMs)
         emitBreakerTransition(from, b.state, [f.instanceId, row.toInstanceId ?? row.toManagedServiceId ?? ''], simMs)
       }

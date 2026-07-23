@@ -154,6 +154,55 @@ describe('pause/resume (stop preserves state; resume continues)', () => {
   })
 })
 
+// Audit ISSUE-001: a down downstream produced NON-blocked caller rows (the target's subtree is
+// zeroed instead), so recordResult logged successes and the caller's breaker never opened. Step 8
+// now feeds the breaker the target's observed error fraction.
+describe('breaker trips on a down dependency (audit ISSUE-001)', () => {
+  // 1 region / 1 AZ / 2 servers: web+api on s1, the SINGLE db candidate on s2 — killing s2
+  // leaves the d-db dependency with nothing healthy to route to.
+  function soleDbFixture() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r
+    doc.azs[az.id] = az
+    const s1 = createServer(az.id, getPreset('dedicated-8')!)
+    const s2 = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[s1.id] = s1
+    doc.servers[s2.id] = s2
+    const web = publicBlueprint('web', 0)
+    const api = createBlueprint('api', 1)
+    const db = createBlueprint('db', 2)
+    web.dependencies = [{ id: 'd-api', target: { kind: 'blueprint', blueprintId: api.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+    api.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 8080, protocol: 'db', packetTemplateId: null }]
+    Object.assign(doc.blueprints, { [web.id]: web, [api.id]: api, [db.id]: db })
+    const webPl = createPlacement(web.id, s1.id); doc.placements[webPl.id] = webPl
+    const apiPl = createPlacement(api.id, s1.id); doc.placements[apiPl.id] = apiPl
+    const dbPl = createPlacement(db.id, s2.id); doc.placements[dbPl.id] = dbPl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 120
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), dbServer: s2, dbInst: instanceId(dbPl.id, 0) }
+  }
+
+  it('opens the caller breaker within the window, emits breaker_open, and traffic to the dead dependency decays to ~0', () => {
+    const f = soleDbFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(2)                                     // steady healthy load
+    expect(sim.latest().instances[f.dbInst]?.rps ?? 0).toBeGreaterThan(0)
+    expect(sim.events.some(e => e.kind === 'breaker_open')).toBe(false)
+
+    sim.engine.setOutage('server', f.dbServer.id, true)
+    sim.stepFor(3)                                     // windowSize=20 ticks = 2s; opens ~1s in
+    expect(sim.events.some(e => e.kind === 'breaker_open')).toBe(true)
+
+    sim.stepFor(10)                                    // EMA decays once nothing is admitted
+    expect(sim.latest().instances[f.dbInst]?.rps ?? 0).toBeLessThan(5)
+    sim.engine.stop()
+  })
+})
+
 describe('world engine integration', () => {
   it('flows client rps end-to-end through the compiled world', () => {
     const f = e2eFixture()

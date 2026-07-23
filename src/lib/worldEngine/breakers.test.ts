@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  getBreaker, recordResult, transition, admitRequest, clearBreakers, pathKey,
+  getBreaker, recordResult, recordWeighted, transition, admitRequest, clearBreakers, pathKey,
   DEFAULT_BREAKER_CONFIG,
 } from './breakers'
 import type { Breaker } from './breakers'
@@ -96,5 +96,64 @@ describe('breakers — window behavior', () => {
 
   it('pathKey formats `${fromInstanceId}->${dependencyId}`', () => {
     expect(pathKey('pl-1#0', 'dep-9')).toBe('pl-1#0->dep-9')
+  })
+})
+
+// Audit ISSUE-001: the engine's step 8 feeds the breaker the target's observed ERROR FRACTION
+// (errorRps / offeredRps), not a blocked boolean — a down/erroring/CPU-shedding downstream now
+// registers as failures even though its caller row isn't `blocked`. The window holds one
+// fraction (0..1) per recorded call batch; recordResult stays the boolean special case.
+describe('breakers — weighted error recording (audit ISSUE-001)', () => {
+  it('a fully-failing downstream (fraction 1 on every sample) opens after the 10-sample minimum', () => {
+    const { b } = freshBreaker()
+    for (let i = 0; i < 9; i++) recordWeighted(b, 100, 100, 500)
+    expect(b.state).toBe('closed')
+    recordWeighted(b, 100, 100, 1000)
+    expect(b.state).toBe('open')
+    expect(b.openedAt).toBe(1000)
+  })
+
+  it('partial error fractions accumulate: mean 0.6 opens, mean 0.4 stays closed', () => {
+    const { b } = freshBreaker()
+    for (let i = 0; i < 10; i++) recordWeighted(b, 60, 100, 0)   // fraction 0.6 each
+    expect(b.state).toBe('open')
+
+    const { b: c } = freshBreaker()
+    for (let i = 0; i < 20; i++) recordWeighted(c, 40, 100, 0)   // fraction 0.4 each
+    expect(c.state).toBe('closed')
+  })
+
+  it('ignores an empty sample (total 0) instead of polluting the window', () => {
+    const { b } = freshBreaker()
+    recordWeighted(b, 0, 0, 0)
+    expect(b.errorWindow).toEqual([])
+  })
+
+  it('half-open: a low-fraction trial closes, a high-fraction trial reopens', () => {
+    const { b } = freshBreaker()
+    for (let i = 0; i < 10; i++) recordWeighted(b, 100, 100, 1000)
+    transition(b, 11_001)
+    expect(b.state).toBe('half-open')
+    admitRequest(b)
+    recordWeighted(b, 90, 100, 11_100)     // 90% of the trial batch failed — still broken
+    expect(b.state).toBe('open')
+    expect(b.openedAt).toBe(11_100)
+
+    transition(b, 21_101)
+    admitRequest(b)
+    recordWeighted(b, 5, 100, 21_200)      // 5% errors — recovered
+    expect(b.state).toBe('closed')
+    expect(b.errorWindow).toEqual([])
+  })
+
+  it('recordResult remains the boolean special case of recordWeighted', () => {
+    const { b } = freshBreaker()
+    const { b: c } = freshBreaker()
+    for (let i = 0; i < 10; i++) {
+      recordResult(b, i % 2 === 0, 0)
+      recordWeighted(c, i % 2 === 0 ? 1 : 0, 1, 0)
+    }
+    expect(b.errorWindow).toEqual(c.errorWindow)
+    expect(b.state).toBe(c.state)
   })
 })
