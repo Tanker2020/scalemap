@@ -75,6 +75,41 @@ export function deserializeWorld(raw: string): ScalemapFileV3 {
   // them — default racks to {} and any server missing a `rack` key to the free pool
   // (null) rather than rejecting/leaving the field undefined.
   const result = data as ScalemapFileV3
+
+  // ── Boundary validation (audit ISSUE-012) ──────────────────────────────────
+  // Shape-only checking let a corrupt/hostile file carry poison past the gate: a string
+  // hourlyUsd turns computeWorldCost into NaN, an unknown routing policy left region scores
+  // undefined. Reject values that are PRESENT but invalid; MISSING additive fields keep the
+  // defensive defaults applied below (a hand-authored bare server still loads).
+  const invalid = (msg: string): never => { throw new Error(`Invalid .scalemap file: ${msg}`) }
+  const finiteOrThrow = (v: unknown, what: string): void => {
+    if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v))) {
+      invalid(`${what} must be a finite number`)
+    }
+  }
+  const routing = result.world.routing as unknown as Record<string, unknown>
+  const ROUTING_POLICIES = ['latency', 'geo', 'weighted', 'priority']
+  if (!ROUTING_POLICIES.includes(routing.policy as string)) {
+    invalid(`unknown routing policy "${String(routing.policy)}"`)
+  }
+  // Missing timing fields default to the createWorld() values; present ones must be finite.
+  routing.dnsTtlSec ??= 30
+  routing.healthCheckIntervalMs ??= 10_000
+  routing.healthCheckFailureThreshold ??= 3
+  for (const field of ['dnsTtlSec', 'healthCheckIntervalMs', 'healthCheckFailureThreshold']) {
+    finiteOrThrow(routing[field], `routing.${field}`)
+  }
+  for (const server of Object.values(result.world.servers)) {
+    const s = server as unknown as Record<string, unknown>
+    finiteOrThrow(s.hourlyUsd, `server ${server.id} hourlyUsd`)
+    const specs = s.specs as Record<string, unknown> | null | undefined
+    if (specs != null && typeof specs === 'object') {
+      for (const field of ['vcpu', 'threadsPerCore', 'ramMb', 'diskGb', 'nicMbps']) {
+        finiteOrThrow(specs[field], `server ${server.id} specs.${field}`)
+      }
+    }
+  }
+
   result.world.racks ??= {}
   // Additive-format normalization (Phase 1 regional LB): `loadBalancers` was introduced after
   // v2 shipped, so a pre-LB file won't carry it — default to {}. compileWorld synthesizes a

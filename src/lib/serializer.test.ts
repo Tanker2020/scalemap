@@ -135,6 +135,58 @@ describe('scalemap v3 serializer', () => {
     expect(parsed.world.blueprints[bp.id].dependencies[0].writeFraction).toBe(0.35)
   })
 
+  // audit ISSUE-012: the boundary must reject present-but-invalid values (a string hourlyUsd
+  // poisons computeWorldCost into NaN; an unknown policy left routing scores undefined) while
+  // keeping the defensive leniency for MISSING additive fields tested above.
+  describe('boundary validation (audit ISSUE-012)', () => {
+    function v3With(mutate: (data: { world: Record<string, unknown> }) => void): string {
+      const data = JSON.parse(serializeWorld(createWorld(), 'x', '2026-07-22T00:00:00.000Z')) as { world: Record<string, unknown> }
+      mutate(data)
+      return JSON.stringify(data)
+    }
+    const server = (over: Record<string, unknown>) => ({
+      id: 's1', label: 'bad-server', azId: 'az-1', rack: null,
+      specs: { vcpu: 2, threadsPerCore: 1, ramMb: 2048, diskGb: 40, nicMbps: 1000 },
+      hourlyUsd: 0.04, ...over,
+    })
+
+    it('rejects a server whose hourlyUsd is not a finite number', () => {
+      const raw = v3With(d => { (d.world.servers as Record<string, unknown>)['s1'] = server({ hourlyUsd: 'abc' }) })
+      expect(() => deserializeWorld(raw)).toThrowError(/hourlyUsd/i)
+    })
+
+    it('rejects a server whose specs carry non-finite numbers', () => {
+      const raw = v3With(d => {
+        (d.world.servers as Record<string, unknown>)['s1'] =
+          server({ specs: { vcpu: 2, threadsPerCore: 1, ramMb: 'lots', diskGb: 40, nicMbps: 1000 } })
+      })
+      expect(() => deserializeWorld(raw)).toThrowError(/ramMb/i)
+    })
+
+    it('rejects an unknown routing policy', () => {
+      const raw = v3With(d => { (d.world.routing as Record<string, unknown>).policy = 'nonsense' })
+      expect(() => deserializeWorld(raw)).toThrowError(/policy/i)
+    })
+
+    it('rejects non-finite routing timing fields', () => {
+      const raw = v3With(d => { (d.world.routing as Record<string, unknown>).dnsTtlSec = 'forever' })
+      expect(() => deserializeWorld(raw)).toThrowError(/dnsTtlSec/i)
+    })
+
+    it('defaults missing routing timing fields instead of loading undefined', () => {
+      const raw = v3With(d => {
+        const routing = d.world.routing as Record<string, unknown>
+        delete routing.dnsTtlSec
+        delete routing.healthCheckIntervalMs
+        delete routing.healthCheckFailureThreshold
+      })
+      const parsed = deserializeWorld(raw)
+      expect(parsed.world.routing.dnsTtlSec).toBe(30)
+      expect(parsed.world.routing.healthCheckIntervalMs).toBe(10_000)
+      expect(parsed.world.routing.healthCheckFailureThreshold).toBe(3)
+    })
+  })
+
   it('round-trips racks and a null server.rack', () => {
     const world = createWorld()
     const region = createRegion('us-east-1')
