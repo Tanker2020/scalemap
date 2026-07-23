@@ -168,6 +168,63 @@ describe('computeWorldCost', () => {
 
 // node-model Phase 5.4: a managed DB's price now responds to its commitment term and capacity mode
 // — the two knobs that change what a given class actually costs.
+// Audit ISSUE-003: services whose cost model IS request volume (Lambda, SQS, EventBridge, SNS,
+// API Gateway, CDN requests) billed $0/month regardless of traffic because the registry loop
+// skipped requestsPerMillion/computeResource. A serverless architecture projected ~$0.
+describe('computeWorldCost — request-priced managed services (audit ISSUE-003)', () => {
+  const SECONDS_PER_MONTH = 2_630_000
+  const mkManaged = (id: string, rps: number) => ({
+    [id]: {
+      managedServiceId: id, rps, refusedRps: 0, utilization: 0.2,
+      health: 'healthy' as const, egressBytesPerSec: 0,
+    },
+  })
+  function withService(nodeType: string, id = 'ms-req') {
+    const { doc, regionId } = twoServerWorld()
+    doc.managedServices[id] = {
+      id, label: nodeType, nodeType, provider: 'aws',
+      scope: { kind: 'region', regionId }, port: 443,
+    } as WorldDoc['managedServices'][string]
+    return doc
+  }
+  const baseline = computeWorldCost(twoServerWorld().doc, null).monthlyUsd
+
+  it('bills a Lambda per-invocation from live rps (aws $0.20/M)', () => {
+    const doc = withService('lambda')
+    const usd = computeWorldCost(doc, null, mkManaged('ms-req', 100)).monthlyUsd - baseline
+    expect(usd).toBeCloseTo((100 * SECONDS_PER_MONTH / 1e6) * 0.20, 5)
+  })
+
+  it('request-priced cost scales with rps, and SQS/API Gateway bill > $0 under traffic', () => {
+    for (const nodeType of ['queue', 'apiGateway', 'eventBus', 'pubsub']) {
+      const doc = withService(nodeType)
+      const at100 = computeWorldCost(doc, null, mkManaged('ms-req', 100)).monthlyUsd - baseline
+      const at200 = computeWorldCost(doc, null, mkManaged('ms-req', 200)).monthlyUsd - baseline
+      expect(at100).toBeGreaterThan(0)
+      expect(at200).toBeCloseTo(at100 * 2, 5)
+    }
+  })
+
+  it('a zero-traffic Lambda bills $0 (no fixed component), without dropping other services', () => {
+    const doc = withService('lambda')
+    const usd = computeWorldCost(doc, null, mkManaged('ms-req', 0)).monthlyUsd - baseline
+    expect(usd).toBe(0)
+  })
+
+  it('a zero-traffic DNS service still bills its fixedMonthly component', () => {
+    const doc = withService('dns')
+    const usd = computeWorldCost(doc, null, mkManaged('ms-req', 0)).monthlyUsd - baseline
+    expect(usd).toBeCloseTo(0.50, 5)   // Route 53 hosted zone
+  })
+
+  it('a managed ec2 bills provisioned computeResource even with no traffic', () => {
+    const doc = withService('ec2')
+    const usd = computeWorldCost(doc, null, null).monthlyUsd - baseline
+    // Default sizing 2 vCPU / 4 GiB at aws x86 rates: (2×0.010 + 4×0.0012) × 730.
+    expect(usd).toBeCloseTo((2 * 0.010 + 4 * 0.0012) * 730, 5)
+  })
+})
+
 describe('computeWorldCost — managed-DB pricing commitment + capacity mode (Phase 5.4)', () => {
   function withDb(over: Record<string, unknown>) {
     const { doc, regionId } = twoServerWorld()

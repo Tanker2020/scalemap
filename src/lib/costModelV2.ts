@@ -68,6 +68,12 @@ const RESERVED_DISCOUNT: Record<string, number> = { onDemand: 0, reserved1yr: 0.
 // would have. Indicative-realistic, like the rest of this model.
 const SERVERLESS_USD_PER_MILLION_REQUESTS = 0.25
 
+// Default provisioned sizing for a computeResource-priced managed service (audit ISSUE-003):
+// ManagedService has no vCPU/RAM config fields, so a managed ec2 bills this documented default
+// until a sizing knob exists in the doc model.
+const MANAGED_COMPUTE_DEFAULT_VCPU = 2
+const MANAGED_COMPUTE_DEFAULT_RAM_GIB = 4
+
 function managedServiceMonthlyUsd(ms: ManagedService, rps = 0): number {
   // Cloud-managed DB with a chosen instance class (node-model Phase 3): the class fixes the base
   // hourly, replicas add proportional cost, and provisioned storage is billed per GB. This wins
@@ -105,8 +111,20 @@ function managedServiceMonthlyUsd(ms: ManagedService, rps = 0): number {
       const tier = c.tiers.find(t => t.id === ms.storageTierId) ?? c.tiers[0]
       usd += (ms.storageGb ?? 0) * (tier?.storageGbMonth ?? 0)
     }
-    // requestsPerMillion / computeResource / egress: still skipped here — request-volume pricing
-    // isn't modeled; egress is priced per-service from live metrics (managedEgressUsd, below).
+    // Audit ISSUE-003: request-volume pricing was skipped here, so every service whose cost
+    // model IS request volume (Lambda, SQS, EventBridge, SNS, API Gateway, CDN requests) billed
+    // $0/month regardless of traffic. Billed from live rps, same projection the serverless-DB
+    // path already uses.
+    else if (c.kind === 'requestsPerMillion') {
+      usd += (Math.max(0, rps) * SECONDS_PER_MONTH / 1_000_000) * c.usdPerMillion
+    }
+    // ManagedService carries no provisioned-size fields (there is no vCPU/RAM knob in the doc
+    // model), so computeResource bills a documented default sizing at the x86 rates — the seam
+    // a future sizing knob would replace. Without this, a managed ec2 billed $0 (ISSUE-003).
+    else if (c.kind === 'computeResource') {
+      usd += (MANAGED_COMPUTE_DEFAULT_VCPU * c.vCpuUsdHr + MANAGED_COMPUTE_DEFAULT_RAM_GIB * c.ramGiBUsdHr) * HOURS_PER_MONTH
+    }
+    // egress: priced per-service from live metrics (managedEgressUsd, below), not here.
   }
   return usd
 }
@@ -148,6 +166,9 @@ export function computeWorldCost(
     managedEgressTotal += egr
     // Live rps feeds serverless per-request pricing (Phase 5.4); ignored for provisioned classes.
     const usd = managedServiceMonthlyUsd(ms, managed?.[ms.id]?.rps ?? 0) + egr
+    // Now that request-volume pricing is billed (ISSUE-003), this skip only drops services that
+    // genuinely cost $0 this month (generic provider, or zero-traffic pure-request services) —
+    // bumping 0 into the maps would be a no-op anyway.
     if (usd === 0) continue
     if (ms.scope.kind === 'az') {
       bump(byAzMap, ms.scope.azId, usd)
