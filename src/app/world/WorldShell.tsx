@@ -91,14 +91,14 @@ export function WorldShell() {
         return
       }
       const meta = e.metaKey || e.ctrlKey
-      if (meta && e.shiftKey && e.key.toLowerCase() === 'z') {
-        e.preventDefault()
-        useWorldStore.getState().redo()
-        return
-      }
       if (meta && e.key.toLowerCase() === 'z') {
         e.preventDefault()
-        useWorldStore.getState().undo()
+        // Audit ISSUE-004: undo/redo mirrors the authoring edit-lock. Mid-run, swapping the doc
+        // desyncs every view from the engine (it keeps ticking the doc/compiled snapshotted at
+        // start(), so batch.instances would be keyed by ids the new doc no longer has).
+        if (useSimulationStore.getState().running) return
+        if (e.shiftKey) useWorldStore.getState().redo()
+        else useWorldStore.getState().undo()
         return
       }
     }

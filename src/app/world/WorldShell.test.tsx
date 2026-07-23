@@ -62,6 +62,45 @@ describe('WorldShell — selection-clear effect (Polish 4 T1)', () => {
   })
 })
 
+describe('WorldShell — undo/redo gated on running sim (audit ISSUE-004)', () => {
+  it('Ctrl+Z during a running sim is a no-op — the engine keeps ticking the doc it started with', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    render(<WorldShell />)
+
+    // Mirror the edit-lock: the sim is running (state flag is what the handler reads — the
+    // real engine isn't needed to prove the gate).
+    act(() => { useSimulationStore.setState({ running: true }) })
+    fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })
+
+    expect(useWorldStore.getState().doc.regions[regionId]).toBeDefined()
+  })
+
+  it('Ctrl+Shift+Z during a running sim is a no-op', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc.regions[regionId]).toBeUndefined()
+    render(<WorldShell />)
+
+    act(() => { useSimulationStore.setState({ running: true }) })
+    fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true, shiftKey: true })
+
+    expect(useWorldStore.getState().doc.regions[regionId]).toBeUndefined()
+  })
+
+  it('undo works again once the sim is stopped', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    render(<WorldShell />)
+
+    act(() => { useSimulationStore.setState({ running: true }) })
+    fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })
+    expect(useWorldStore.getState().doc.regions[regionId]).toBeDefined()
+
+    act(() => { useSimulationStore.setState({ running: false }) })
+    fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })
+    expect(useWorldStore.getState().doc.regions[regionId]).toBeUndefined()
+  })
+})
+
 describe('WorldShell — Escape disarms place-mode before nav.up (Polish 4 T7)', () => {
   it('a plain Escape while place-mode is armed disarms it and does NOT call nav.up()', () => {
     render(<WorldShell />)
