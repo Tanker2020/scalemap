@@ -372,6 +372,82 @@ describe('solveFlows — DB read/write routing', () => {
   })
 })
 
+// ─── Health-aware internal fan-out (audit ISSUE-006) ─────────────────────────
+// The entry tier (routingRuntime.distributeToTargets) already excludes down instances; internal
+// service-to-service fan-out did not — a 3-replica group with one down replica kept sending 1/3
+// of calls into the dead node (33% group error, forever). Shares are now weighted by target
+// health: down ⇒ 0, degraded ⇒ ×0.7, renormalized over the survivors.
+describe('solveFlows — health-aware dependency fan-out (audit ISSUE-006)', () => {
+  // api → one service blueprint placed `count` times on the shared server.
+  function apiToGroup(count: number) {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const bp = createBlueprint('svc', 1)
+    doc.blueprints[bp.id] = bp
+    const pl = createPlacement(bp.id, server.id)
+    pl.count = count
+    doc.placements[pl.id] = pl
+    api.bp.dependencies = [dep('d-svc', bp.id)]
+    const iids = Array.from({ length: count }, (_, i) => instanceId(pl.id, i))
+    return { doc, api, iids }
+  }
+
+  it('routes no traffic into a down target — the healthy targets absorb 100% and group errors stay ~0', () => {
+    const { doc, api, iids } = apiToGroup(3)
+    const healthOf = (id: string): HealthState => (id === iids[1] ? 'down' : 'healthy')
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 90 }, { healthOf }))
+    expect(flows[iids[0]].offeredRps).toBeCloseTo(45)
+    expect(flows[iids[2]].offeredRps).toBeCloseTo(45)
+    expect(flows[iids[1]]).toBeUndefined()   // the dead node saw zero traffic
+    const groupErrors = (flows[iids[0]]?.errorRps ?? 0) + (flows[iids[2]]?.errorRps ?? 0)
+    expect(groupErrors).toBeCloseTo(0)
+  })
+
+  it('down-weights a degraded target by its admit factor and renormalizes', () => {
+    const { doc, api, iids } = apiToGroup(2)
+    const healthOf = (id: string): HealthState => (id === iids[1] ? 'degraded' : 'healthy')
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }, { healthOf }))
+    expect(flows[iids[0]].offeredRps).toBeCloseTo(100 * (1 / 1.7))    // weight 1
+    expect(flows[iids[1]].offeredRps).toBeCloseTo(100 * (0.7 / 1.7))  // weight 0.7
+  })
+
+  it('keeps the even split when ALL targets are down, so the attempts still fail live at the targets', () => {
+    const { doc, api, iids } = apiToGroup(2)
+    const healthOf = (id: string): HealthState => (iids.includes(id) ? 'down' : 'healthy')
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }, { healthOf }))
+    // Nothing to route around — the attempts land and error at the dead targets (this is the
+    // 100%-error signal ISSUE-001's breaker feed needs to trip the caller's breaker).
+    expect(flows[iids[0]]).toMatchObject({ offeredRps: 50, admittedRps: 0, errorRps: 50 })
+    expect(flows[iids[1]]).toMatchObject({ offeredRps: 50, admittedRps: 0, errorRps: 50 })
+  })
+
+  it('shifts SQL reads onto the surviving replicas when one replica is down', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const db = createBlueprint('db', 1)
+    db.kind = 'db-sql'
+    db.dbConfig = { engine: 'sql', storageGb: 100 }
+    doc.blueprints[db.id] = db
+    const primaryPl = createPlacement(db.id, server.id)
+    doc.placements[primaryPl.id] = primaryPl
+    const primaryIid = instanceId(primaryPl.id, 0)
+    const replicaIids: string[] = []
+    for (let i = 0; i < 2; i++) {
+      const rp = createPlacement(db.id, server.id)
+      rp.role = 'replica'
+      doc.placements[rp.id] = rp
+      replicaIids.push(instanceId(rp.id, 0))
+    }
+    api.bp.dependencies = [{ ...dep('d-db', db.id), writeFraction: 0.1 }]
+
+    const healthOf = (id: string): HealthState => (id === replicaIids[0] ? 'down' : 'healthy')
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 1000 }, { healthOf }))
+    expect(flows[primaryIid].offeredRps).toBeCloseTo(100)      // writes untouched
+    expect(flows[replicaIids[1]].offeredRps).toBeCloseTo(900)  // ALL reads on the survivor
+    expect(flows[replicaIids[0]]).toBeUndefined()
+  })
+})
+
 // ─── Cloud-managed DB write ceiling (node-model Phase 3) ─────────────────────
 describe('solveFlows — cloud-managed DB ceiling', () => {
   // api → a managed SQL DB with a chosen instance class. Returns the api iid + the ms id.

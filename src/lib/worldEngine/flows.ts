@@ -62,21 +62,45 @@ export function splitDependencyShares(
   roleOf: (instanceId: InstanceId) => PlacementRole,
   targetBp: ServiceBlueprint | undefined,
   writeFraction: number,
+  // Audit ISSUE-006: per-target health weight (down ⇒ 0, degraded ⇒ its admit factor, healthy
+  // ⇒ 1) — mirrors the entry tier's down-exclusion so internal traffic routes around failures
+  // too. Optional: absent ⇒ every target weighs 1, the pre-fix even split (existing callers and
+  // tests unchanged). Managed targets have no instance health and always weigh 1 (their
+  // down-state is the separate managedDown gate).
+  healthWeightOf: (instanceId: InstanceId) => number = () => 1,
 ): number[] {
   const n = candidates.length
-  const even = admitted / n
 
-  // Non-DB target (or unknown): even split, exactly as before Phase 3. writeFraction is
-  // meaningless without primary/replica semantics, so it is ignored here.
+  const weightOf = (p: CompiledPath): number =>
+    p.to.kind === 'instance' ? healthWeightOf(p.to.instanceId) : 1
+
+  // Distribute `amount` across the candidates flagged by `inPool`, proportionally to health
+  // weight. A pool whose every member is down (total weight 0) falls back to the even split —
+  // there is nothing to route around, so the attempts still land and fail LIVE at the dead
+  // targets (the 100%-error signal the caller's breaker feed needs to trip).
+  const distribute = (amount: number, inPool: (i: number) => boolean): number[] => {
+    const weights = candidates.map((p, i) => (inPool(i) ? weightOf(p) : 0))
+    const poolSize = candidates.filter((_, i) => inPool(i)).length
+    const total = weights.reduce((a, b) => a + b, 0)
+    if (total <= 0) return candidates.map((_, i) => (inPool(i) ? amount / poolSize : 0))
+    return weights.map(w => (amount * w) / total)
+  }
+
+  const sum2 = (a: number[], b: number[]): number[] => a.map((v, i) => v + b[i])
+
+  // Non-DB target (or unknown): health-weighted split over all candidates (even when all are
+  // equally healthy — identical to the pre-Phase-3 even split). writeFraction is meaningless
+  // without primary/replica semantics, so it is ignored here.
   const engine = targetBp?.dbConfig?.engine
-  if (!engine) return candidates.map(() => even)
+  if (!engine) return distribute(admitted, () => true)
 
   const w = Math.min(1, Math.max(0, writeFraction))
 
   if (engine === 'nosql') {
-    // Every node is both a read and a write target, so each candidate's total is just the even
-    // share — but the write/read SPLIT is what downstream capacity accounting cares about.
-    return candidates.map(() => even)
+    // Every node is both a read and a write target, so each candidate's total is just its
+    // health-weighted share — but the write/read SPLIT is what downstream capacity accounting
+    // cares about.
+    return distribute(admitted, () => true)
   }
 
   // SQL: partition by EFFECTIVE role. A managed target (a cloud DB has no primary/replica
@@ -95,13 +119,10 @@ export function splitDependencyShares(
   const isWriteTarget = (i: number): boolean => noPrimary || isPrimary[i]
   const isReadTarget = (i: number): boolean => noReplica ? isWriteTarget(i) : !isPrimary[i]
 
-  const writeCount = noPrimary ? n : primaryCount
-  const readCount = noReplica ? (noPrimary ? n : primaryCount) : replicaCount
-  const writeEach = w <= 0 ? 0 : (admitted * w) / writeCount
-  const readEach = w >= 1 ? 0 : (admitted * (1 - w)) / readCount
-
-  return candidates.map((_, i) =>
-    (isWriteTarget(i) ? writeEach : 0) + (isReadTarget(i) ? readEach : 0))
+  // Writes and reads each distribute health-weighted within their own pool.
+  const writeShares = w <= 0 ? candidates.map(() => 0) : distribute(admitted * w, isWriteTarget)
+  const readShares = w >= 1 ? candidates.map(() => 0) : distribute(admitted * (1 - w), isReadTarget)
+  return sum2(writeShares, readShares)
 }
 
 // How much of `share` rps a cloud-managed DB REFUSES because it exceeds the instance class's
@@ -225,6 +246,13 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
   // Default to the compiled role when the caller doesn't supply a promotion overlay.
   const roleOf = input.roleOf ?? ((id: InstanceId) => compiled.instances[id]?.role ?? 'primary')
   const managedDown = input.managedDown ?? (() => false)
+  // Audit ISSUE-006: dependency fan-out weights each candidate by target health (mirroring the
+  // entry tier's down-exclusion), so internal traffic routes around a down replica instead of
+  // erroring 1/N of the group's calls forever.
+  const healthWeightOf = (id: InstanceId): number => {
+    const h = healthOf(id)
+    return h === 'down' ? 0 : h === 'degraded' ? DEGRADED_ADMIT_FACTOR : 1
+  }
 
   // Index candidate paths once: fromInstanceId -> dependencyId -> CompiledPath[]
   // (compiled.paths order is deterministic, so the even split is too).
@@ -337,7 +365,7 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
       // an even split across ALL compiled targets (blocked ones included — the caller can't see
       // the misconfig); for a DB target it partitions into writes→primary / reads→replicas.
       const targetBp = dep.target.kind === 'blueprint' ? doc.blueprints[dep.target.blueprintId] : undefined
-      const shares = splitDependencyShares(admitted, candidates, roleOf, targetBp, dep.writeFraction ?? 0)
+      const shares = splitDependencyShares(admitted, candidates, roleOf, targetBp, dep.writeFraction ?? 0, healthWeightOf)
 
       for (let ci = 0; ci < candidates.length; ci++) {
         const path = candidates[ci]
