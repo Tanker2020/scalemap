@@ -30,7 +30,10 @@ export const HOURS_PER_MONTH = 730
 // CROSS_AZ 0.01 ignored AWS's per-direction billing and priced every provider identically.
 const WORLD_TRANSFER_PROVIDER: RealProvider = 'aws'
 const BYTES_PER_GB = 1024 ** 3
-const SECONDS_PER_MONTH = 2_630_000   // spec decision 8's documented ~30.4-day constant
+// Derived from HOURS_PER_MONTH (audit ISSUE-036): the old literal 2_630_000 disagreed with
+// 730 h × 3600 s = 2_628_000, so instance-hour and egress/serverless lines were billed on
+// slightly different month lengths (0.076% drift). One basis now.
+const SECONDS_PER_MONTH = HOURS_PER_MONTH * 3600
 
 // ManagedPanel.tsx's managed-service picker authors new services with CLOUD_REGISTRY keys
 // directly (D12). This alias table bridged LEGACY `.scalemap` documents saved with old nodeType

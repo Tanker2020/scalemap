@@ -155,7 +155,7 @@ describe('computeWorldCost', () => {
       scope: { kind: 'az', azId }, port: 443, storageGb: 0,
     }
     const BYTES_PER_GB = 1024 ** 3
-    const SECONDS_PER_MONTH = 2_630_000
+    const SECONDS_PER_MONTH = 730 * 3600   // audit ISSUE-036: one month basis, 730 h
     const gbMonth = 500
     const egressBytesPerSec = (gbMonth * BYTES_PER_GB) / SECONDS_PER_MONTH
     const managed = { s3: { managedServiceId: 's3', rps: 0, refusedRps: 0, utilization: 0, health: 'healthy' as const, egressBytesPerSec } }
@@ -172,7 +172,7 @@ describe('computeWorldCost', () => {
 // API Gateway, CDN requests) billed $0/month regardless of traffic because the registry loop
 // skipped requestsPerMillion/computeResource. A serverless architecture projected ~$0.
 describe('computeWorldCost — request-priced managed services (audit ISSUE-003)', () => {
-  const SECONDS_PER_MONTH = 2_630_000
+  const SECONDS_PER_MONTH = 730 * 3600   // audit ISSUE-036: one month basis, 730 h
   const mkManaged = (id: string, rps: number) => ({
     [id]: {
       managedServiceId: id, rps, refusedRps: 0, utilization: 0.2,
@@ -371,10 +371,11 @@ describe('cross-AZ / cross-region egress rates (ISSUE-023)', () => {
 
   it('bills world cross-AZ at the aws per-direction rate ($0.02/wire-GB)', () => {
     const { doc } = twoServerWorld()
-    const result = computeWorldCost(doc, world(GB / 2_628_000 * 1, 0))   // ≈1 GB/month? — use exact math below
-    // Exact: crossAzUsd = bytesPerSec × SECONDS_PER_MONTH / GB × 0.02
+    const result = computeWorldCost(doc, world(GB / 2_628_000 * 1, 0))   // exactly 1 GB/month
+    // Exact: crossAzUsd = bytesPerSec × SECONDS_PER_MONTH / GB × 0.02 (SECONDS_PER_MONTH is
+    // now derived 730 h × 3600 = 2_628_000, audit ISSUE-036)
     const bytesPerSec = GB / 2_628_000
-    const expected = (bytesPerSec * 2_630_000 / GB) * 0.02
+    const expected = (bytesPerSec * 2_628_000 / GB) * 0.02
     expect(result.egress.crossAzUsd).toBeCloseTo(expected, 6)
   })
 

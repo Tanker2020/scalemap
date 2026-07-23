@@ -149,16 +149,16 @@ describe('placementEgressUsdPerHr', () => {
   })
 
   it('stays 0 while under AWS\'s 100 GB/month free egress allowance', () => {
-    // 5 rps * 2048 * 2 each-way * 2_630_000 s/month / 1024^3 ≈ 50.16 GB/month < 100 GB free.
+    // 5 rps * 2048 * 2 each-way * 2_628_000 s/month / 1024^3 ≈ 50.13 GB/month < 100 GB free.
     expect(placementEgressUsdPerHr(5)).toBe(0)
   })
 
   it('matches the hand-derived D9 formula at 500 rps (createPopulation\'s default)', () => {
     // bytesPerSec = 500 * 2048 * 2 = 2,048,000
-    // gbMonth = 2,048,000 * 2,630,000 / 1024^3 = 20,546,875/4096 ≈ 5016.3269 GB/month
-    // billable = 5016.3269 - 100 (aws free tier) ≈ 4916.3269 GB @ $0.09/GB ≈ $442.4694/month
-    // hourly = 442.4694 / 730 ≈ $0.6061/hr
-    expect(placementEgressUsdPerHr(500)).toBeCloseTo(0.6061, 3)
+    // gbMonth = 2,048,000 * 2,628,000 / 1024^3 ≈ 5012.5122 GB/month (audit ISSUE-036 basis)
+    // billable = 5012.5122 - 100 (aws free tier) ≈ 4912.5122 GB @ $0.09/GB ≈ $442.1261/month
+    // hourly = 442.1261 / 730 ≈ $0.6057/hr
+    expect(placementEgressUsdPerHr(500)).toBeCloseTo(0.6057, 3)
   })
 
   it('scales linearly once past the free allowance (no free tier double-counted)', () => {

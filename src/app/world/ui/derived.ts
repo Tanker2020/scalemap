@@ -98,11 +98,12 @@ export function frontlineCapacityRps(doc: WorldDoc, _compiled: CompiledWorld): n
 // treatment as POP_LATENCY_KM_PER_MS above).
 export const PLACEMENT_BYTES_EACH_WAY = 2048
 
-// costModelV2.ts's SECONDS_PER_MONTH (the documented ~30.4-day constant used to turn a live
-// bytes/sec rate into a monthly GB figure) and BYTES_PER_GB are module-private there — mirrored
-// here as literals rather than imported, same never-reach-into-a-private-constant treatment as
-// PLACEMENT_BYTES_EACH_WAY. HOURS_PER_MONTH and egressMonthlyCost ARE exported, and used directly.
-const SECONDS_PER_MONTH = 2_630_000
+// costModelV2.ts's SECONDS_PER_MONTH (used to turn a live bytes/sec rate into a monthly GB
+// figure) and BYTES_PER_GB are module-private there — mirrored here rather than imported, same
+// never-reach-into-a-private-constant treatment as PLACEMENT_BYTES_EACH_WAY. HOURS_PER_MONTH and
+// egressMonthlyCost ARE exported, and used directly. Derived as HOURS_PER_MONTH × 3600 to stay
+// in lockstep with the cost model's single month basis (audit ISSUE-036).
+const SECONDS_PER_MONTH = HOURS_PER_MONTH * 3600
 const BYTES_PER_GB = 1024 ** 3
 
 // What a population placed at `rps` would cost per hour in internet egress — the globe
