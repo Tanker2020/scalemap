@@ -5,7 +5,7 @@
 // a tucked replica rail in the gutter, one alert ribbon above and a failover timeline below.
 // Fully scrub-aware: every metric reads `scrubBatch ?? latestBatch` (D1) and renders a
 // meaningful static state ("—", doc-derived counts) before the sim has ever produced a batch.
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useNavStore } from '../store/nav.store'
 import { useSimulationStore, selectLive } from '../store/simulation.store'
@@ -54,43 +54,64 @@ export function RegionView() {
   // previous region's server id can never light up this region's rail.
   useEffect(() => { setHoveredServerId(null) }, [regionId])
 
-  if (!regionId || !doc.regions[regionId]) return null
-
-  const region = doc.regions[regionId]
-  const azs = Object.values(doc.azs).filter(a => a.regionId === regionId)
-  const servers = Object.values(doc.servers).filter(s => azs.some(a => a.id === s.azId))
-  const instanceCount = Object.values(compiled.instances).filter(i => i.regionId === regionId).length
-  const worldLabel = WORLD_REGIONS.find(r => r.id === region.catalogId)?.label ?? region.catalogId
-
-  const shares = azShares(regionId, doc, batch)
-  const alert = ribbonAlert(regionId, doc, events, batch?.simMs ?? 0)
-  const costs = computeWorldCost(doc, batch?.world ?? null, batch?.managedServices ?? null)
+  // Audit ISSUE-030: every derived value below is memoized with precise deps. The page
+  // re-renders on every 1 Hz batch AND on every hover-state flip; unmemoized, each of those
+  // re-ran computeWorldCost over the whole doc, the full-events filter, and the rail pairing.
+  // Hooks sit ABOVE the null early-return (rules of hooks), keyed on a safe '' region id.
+  const rid = regionId ?? ''
+  const azs = useMemo(() => Object.values(doc.azs).filter(a => a.regionId === rid), [doc.azs, rid])
+  const servers = useMemo(
+    () => Object.values(doc.servers).filter(s => azs.some(a => a.id === s.azId)),
+    [doc.servers, azs])
+  const instanceCount = useMemo(
+    () => Object.values(compiled.instances).filter(i => i.regionId === rid).length,
+    [compiled, rid])
+  const shares = useMemo(() => azShares(rid, doc, batch), [rid, doc, batch])
+  const batchSimMs = batch?.simMs ?? 0
+  const alert = useMemo(() => ribbonAlert(rid, doc, events, batchSimMs), [rid, doc, events, batchSimMs])
+  const worldMetrics = batch?.world ?? null
+  const managedMetrics = batch?.managedServices ?? null
+  const costs = useMemo(
+    () => computeWorldCost(doc, worldMetrics, managedMetrics),
+    [doc, worldMetrics, managedMetrics])
   // node-model Phase 5.1/5.2: cloud-managed services have no hardware, so they never appear among
   // the servers below. AZ-scoped ones now show in their AZ card (regionAzManaged); this strip is for
   // the REGION-scoped ones (not tied to an AZ) — listed even at rest, with live rps + throttle + kill
   // once the sim runs.
-  const managedEntries = regionManagedServices(regionId, doc, batch).filter(e => e.scope === 'region')
-  const rowsHeight = Math.max(140, azs.length * ROW_HEIGHT_ESTIMATE)
+  const managedEntries = useMemo(
+    () => regionManagedServices(rid, doc, batch).filter(e => e.scope === 'region'),
+    [rid, doc, batch])
 
   // Replica rail + per-az db-endpoint tagging, computed ONCE here and threaded down (the same
   // "compute once, thread down" reuse `monthlyUsd` already established for AzRow) rather than
   // each AzRow independently re-deriving a whole-region pairing.
-  const azIndexById = new Map(azs.map((a, i) => [a.id, i]))
-  const railPairs = replicaRailPairs(doc, compiled, regionId)
-  const railEntries: ReplicaRailEntry[] = railPairs.map(p => ({
-    blueprintId: p.blueprintId,
-    primaryServerId: p.primaryServerId,
-    replicaServerId: p.replicaServerId,
-    primaryAzIndex: azIndexById.get(doc.servers[p.primaryServerId]?.azId ?? '') ?? 0,
-    replicaAzIndex: azIndexById.get(doc.servers[p.replicaServerId]?.azId ?? '') ?? 0,
-  }))
-  const dbEndpointsByAz = new Map<string, AzRowDbEndpoint[]>()
-  for (const p of railPairs) {
-    const primaryAzId = doc.servers[p.primaryServerId]?.azId
-    const replicaAzId = doc.servers[p.replicaServerId]?.azId
-    if (primaryAzId) dbEndpointsByAz.set(primaryAzId, [...(dbEndpointsByAz.get(primaryAzId) ?? []), { serverId: p.primaryServerId, role: 'primary' }])
-    if (replicaAzId) dbEndpointsByAz.set(replicaAzId, [...(dbEndpointsByAz.get(replicaAzId) ?? []), { serverId: p.replicaServerId, role: 'replica' }])
-  }
+  const railPairs = useMemo(() => replicaRailPairs(doc, compiled, rid), [doc, compiled, rid])
+  const railEntries: ReplicaRailEntry[] = useMemo(() => {
+    const azIndexById = new Map(azs.map((a, i) => [a.id, i]))
+    return railPairs.map(p => ({
+      blueprintId: p.blueprintId,
+      primaryServerId: p.primaryServerId,
+      replicaServerId: p.replicaServerId,
+      primaryAzIndex: azIndexById.get(doc.servers[p.primaryServerId]?.azId ?? '') ?? 0,
+      replicaAzIndex: azIndexById.get(doc.servers[p.replicaServerId]?.azId ?? '') ?? 0,
+    }))
+  }, [azs, railPairs, doc.servers])
+  const dbEndpointsByAz = useMemo(() => {
+    const m = new Map<string, AzRowDbEndpoint[]>()
+    for (const p of railPairs) {
+      const primaryAzId = doc.servers[p.primaryServerId]?.azId
+      const replicaAzId = doc.servers[p.replicaServerId]?.azId
+      if (primaryAzId) m.set(primaryAzId, [...(m.get(primaryAzId) ?? []), { serverId: p.primaryServerId, role: 'primary' }])
+      if (replicaAzId) m.set(replicaAzId, [...(m.get(replicaAzId) ?? []), { serverId: p.replicaServerId, role: 'replica' }])
+    }
+    return m
+  }, [railPairs, doc.servers])
+
+  if (!regionId || !doc.regions[regionId]) return null
+
+  const region = doc.regions[regionId]
+  const worldLabel = WORLD_REGIONS.find(r => r.id === region.catalogId)?.label ?? region.catalogId
+  const rowsHeight = Math.max(140, azs.length * ROW_HEIGHT_ESTIMATE)
 
   return (
     <div style={{ padding: 18, font: '12px var(--font-mono)' }}>
