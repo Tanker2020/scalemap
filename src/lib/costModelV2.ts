@@ -2,7 +2,7 @@
 // service pricing (reused from cloudRegistry) + egress from live WorldMetrics byte rates.
 import type { WorldDoc, RegionId, AzId, ManagedServiceId, ManagedService } from './world/types'
 import type { WorldMetrics, ManagedServiceMetrics } from './worldEngine/types'
-import { getServiceSpec, egressMonthlyCost, PROVIDER_EGRESS, type CloudProvider, type RealProvider } from './cloudRegistry'
+import { getServiceSpec, egressMonthlyCost, PROVIDER_EGRESS, PROVIDER_INTERZONE, type CloudProvider, type RealProvider } from './cloudRegistry'
 import { getDbInstanceClass } from './dbInstanceClasses'
 import { managedDbEngine } from './world/types'
 
@@ -24,8 +24,11 @@ function dbStorageRate(ms: ManagedService): number {
 }
 
 export const HOURS_PER_MONTH = 730
-const CROSS_AZ_USD_PER_GB = 0.01
-const CROSS_REGION_USD_PER_GB = 0.02
+// Audit ISSUE-023: cross-AZ/cross-region rates come from cloudRegistry's per-provider
+// PROVIDER_INTERZONE table, billed at the same aws default the internet-egress line uses
+// (servers carry no provider field — one documented simplification, one seam). The old flat
+// CROSS_AZ 0.01 ignored AWS's per-direction billing and priced every provider identically.
+const WORLD_TRANSFER_PROVIDER: RealProvider = 'aws'
 const BYTES_PER_GB = 1024 ** 3
 const SECONDS_PER_MONTH = 2_630_000   // spec decision 8's documented ~30.4-day constant
 
@@ -212,8 +215,9 @@ export function computeWorldCost(
     loadBalancerCount += 1
   }
 
-  const crossAzUsd = world ? (world.crossAzBytesPerSec * SECONDS_PER_MONTH / BYTES_PER_GB) * CROSS_AZ_USD_PER_GB : 0
-  const crossRegionUsd = world ? (world.crossRegionBytesPerSec * SECONDS_PER_MONTH / BYTES_PER_GB) * CROSS_REGION_USD_PER_GB : 0
+  const interzone = PROVIDER_INTERZONE[WORLD_TRANSFER_PROVIDER]
+  const crossAzUsd = world ? (world.crossAzBytesPerSec * SECONDS_PER_MONTH / BYTES_PER_GB) * interzone.crossAzUsdPerGb : 0
+  const crossRegionUsd = world ? (world.crossRegionBytesPerSec * SECONDS_PER_MONTH / BYTES_PER_GB) * interzone.crossRegionUsdPerGb : 0
   // Internet egress bills at PROVIDER_EGRESS.aws's tiered schedule regardless of the world's
   // actual provider mix — Phase 2 doesn't yet attribute egress cost per-provider (that requires
   // tracking which provider's traffic produced which bytes, not modeled yet). Documented

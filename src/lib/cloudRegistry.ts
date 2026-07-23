@@ -58,6 +58,30 @@ export const PROVIDER_EGRESS: Record<RealProvider, {
   ] },
 }
 
+// ─── Provider-level inter-zone / inter-region transfer (audit ISSUE-023) ────────
+// $/GB applied to the engine's METERED WIRE BYTES: the flow solver books request + response
+// bytes once each as they cross a boundary, so a metered GB is one GB on the wire (both
+// directions summed). Per-direction billing folds into the rate:
+//   aws   cross-AZ    — $0.01/GB charged in EACH direction (source egress + destination
+//                       ingress), i.e. $0.02 per wire-GB. The old flat 0.01 undercharged 2×.
+//   aws   cross-region — billed once as source-region egress, ~$0.02/GB (us-east↔us-west class;
+//                       real pairs run $0.02–$0.147 — region-pair tables are a future refinement).
+//   gcp   cross-zone  — $0.01/GB charged once (egress only).
+//   gcp   cross-region — representative $0.05/GB (intra-US is cheaper, intercontinental more).
+//   azure cross-AZ    — $0 (Azure retired availability-zone transfer charges).
+//   azure cross-region — ~$0.02/GB intra-continent.
+// Servers carry no provider field, so the world cost line bills at the same aws default the
+// internet-egress line documents; the table is the per-provider seam for when transfer bytes are
+// attributed per provider.
+export const PROVIDER_INTERZONE: Record<RealProvider, {
+  crossAzUsdPerGb: number
+  crossRegionUsdPerGb: number
+}> = {
+  aws:   { crossAzUsdPerGb: 0.02, crossRegionUsdPerGb: 0.02 },
+  gcp:   { crossAzUsdPerGb: 0.01, crossRegionUsdPerGb: 0.05 },
+  azure: { crossAzUsdPerGb: 0,    crossRegionUsdPerGb: 0.02 },
+}
+
 // Average served-response size per request for storage/CDN managed services (node-model Phase 5.2).
 // Only these types produce meaningful egress (data served OUT); the flow solver attributes their
 // served bytes to the service (costed per-service against its provider's egress schedule + storage

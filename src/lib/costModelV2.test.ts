@@ -359,3 +359,31 @@ describe('computeWorldCost — provider-correct DB storage rate (ISSUE-022)', ()
     expect(dbWithStorage('azure') - dbNoStorage('azure')).toBeCloseTo(100 * 0.115, 5)
   })
 })
+
+// Audit ISSUE-023: inter-zone transfer is provider-aware; AWS folds per-direction billing into
+// its wire-GB rate (2× the old flat 0.01), Azure's cross-AZ is free.
+describe('cross-AZ / cross-region egress rates (ISSUE-023)', () => {
+  const GB = 1024 ** 3
+  const world = (crossAz: number, crossRegion: number) => ({
+    totalRps: 0, errorRate: 0, populationRoutes: [],
+    crossAzBytesPerSec: crossAz, crossRegionBytesPerSec: crossRegion, internetEgressBytesPerSec: 0,
+  })
+
+  it('bills world cross-AZ at the aws per-direction rate ($0.02/wire-GB)', () => {
+    const { doc } = twoServerWorld()
+    const result = computeWorldCost(doc, world(GB / 2_628_000 * 1, 0))   // ≈1 GB/month? — use exact math below
+    // Exact: crossAzUsd = bytesPerSec × SECONDS_PER_MONTH / GB × 0.02
+    const bytesPerSec = GB / 2_628_000
+    const expected = (bytesPerSec * 2_630_000 / GB) * 0.02
+    expect(result.egress.crossAzUsd).toBeCloseTo(expected, 6)
+  })
+
+  it('per-provider table differs: same bytes cost differently across providers', async () => {
+    const { PROVIDER_INTERZONE } = await import('./cloudRegistry')
+    expect(PROVIDER_INTERZONE.aws.crossAzUsdPerGb).toBeCloseTo(0.02, 6)     // 2× old flat 0.01
+    expect(PROVIDER_INTERZONE.gcp.crossAzUsdPerGb).toBeCloseTo(0.01, 6)
+    expect(PROVIDER_INTERZONE.azure.crossAzUsdPerGb).toBe(0)                // Azure AZ transfer free
+    expect(PROVIDER_INTERZONE.gcp.crossRegionUsdPerGb)
+      .toBeGreaterThan(PROVIDER_INTERZONE.aws.crossRegionUsdPerGb)
+  })
+})
