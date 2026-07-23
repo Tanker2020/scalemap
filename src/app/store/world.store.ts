@@ -27,8 +27,6 @@ import {
 import { useFileStore } from './file.store'
 import { useSimulationStore } from './simulation.store'
 
-const deepCopy = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T
-
 // ─── Pure cascade helpers ────────────────────────────────────────────────────
 
 function withoutServer(doc: WorldDoc, serverId: string): WorldDoc {
@@ -498,10 +496,16 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       return { ...d, racks, servers }
     }),
 
+    // Audit ISSUE-031: history/future hold doc REFERENCES, not JSON deep clones. Every mutation
+    // already replaces `doc` wholesale with a new structurally-shared immutable value (mutate()'s
+    // contract — nothing in the store edits a doc in place), so the old
+    // JSON.parse(JSON.stringify(doc)) round-trip per keystroke was pure waste: serialize+parse of
+    // the whole world per edit, and up to 100 full-world copies of heap. Sharing references makes
+    // pushHistory O(1) and history memory a small multiple of one doc.
     pushHistory: () => {
       const { doc, history } = get()
       const trimmed = history.length >= 100 ? history.slice(1) : history
-      set({ history: [...trimmed, deepCopy(doc)], future: [] })
+      set({ history: [...trimmed, doc], future: [] })
     },
     undo: () => {
       const { history, doc, future } = get()
@@ -509,7 +513,7 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       set({
         doc: history[history.length - 1],
         history: history.slice(0, -1),
-        future: [deepCopy(doc), ...future],
+        future: [doc, ...future],
       })
       useFileStore.getState().setDirty(true)
     },
@@ -518,7 +522,7 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       if (future.length === 0) return
       set({
         doc: future[0],
-        history: [...history, deepCopy(doc)],
+        history: [...history, doc],
         future: future.slice(1),
       })
       useFileStore.getState().setDirty(true)

@@ -697,3 +697,29 @@ describe('world.store', () => {
     })
   })
 })
+
+// Audit ISSUE-031: history holds doc REFERENCES (mutations are immutable-by-contract), so undo
+// must restore the EXACT prior object — same identity — and pushing history must not clone.
+describe('world.store — reference-sharing history (ISSUE-031)', () => {
+  it('undo restores the exact prior doc object, redo the exact next one', () => {
+    buildChain()
+    const before = useWorldStore.getState().doc
+    useWorldStore.getState().addBlueprint('worker')
+    const after = useWorldStore.getState().doc
+
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc).toBe(before)   // identity, not just deep-equality
+
+    useWorldStore.getState().redo()
+    expect(useWorldStore.getState().doc).toBe(after)
+  })
+
+  it('a long edit run stays undoable back to the exact seed doc', () => {
+    const seed = useWorldStore.getState().doc
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    for (let i = 0; i < 20; i++) useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    for (let i = 0; i < 22; i++) useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc).toBe(seed)
+  })
+})
