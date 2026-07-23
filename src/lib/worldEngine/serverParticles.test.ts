@@ -91,13 +91,15 @@ describe('buildServerParticles', () => {
 
   it('blocked path emits blocked particles', () => {
     // d-blk fails 100% of attempts (port mismatch -> firewall never even reached, since
-    // same-server hops bypass it), so DEFAULT_BREAKER_CONFIG (breakers.ts: 10-sample window,
-    // 100% error rate) trips its breaker open after ~10 steps and flows.ts's documented
-    // short-circuit ("breaker short-circuit: whole call volume refused, no rows") removes the
-    // row from downstream entirely thereafter — by design, not a buildServerParticles bug.
-    // Sample at 0.5s (5 steps), well inside the pre-trip window, to observe the row live.
+    // same-server hops bypass it), so DEFAULT_BREAKER_CONFIG (breakers.ts: request-weighted
+    // window, volume floor 10, 100% error rate — audit ISSUE-015) trips its breaker open once
+    // ~10 failed requests accumulate, and flows.ts's documented short-circuit ("breaker
+    // short-circuit: whole call volume refused, no rows") removes the row from downstream
+    // entirely thereafter — by design, not a buildServerParticles bug. At 200 peak rps the
+    // volume floor fills within the FIRST step, so sample after exactly one step: the rendered
+    // prevFlows still carry that step's live blocked row.
     const f = fixture()
-    const frame = serverFrame(f.doc, f.s1.id, 0.5)
+    const frame = serverFrame(f.doc, f.s1.id, 0.1)
     expect(frame.particles.some(p => p.blocked)).toBe(true)
   })
 

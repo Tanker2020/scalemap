@@ -1,41 +1,53 @@
-// Circuit breaker state machine — a pure port of the legacy
-// src/app/canvas/simulation/particleEngine/circuitBreakers.ts semantics (spec decision 2:
-// ports, not rewrites), with three deliberate changes and NO behavioral ones:
-//   1. keyed per pathKey `${fromInstanceId}->${dependencyId}` instead of per edge id,
-//   2. simMs injected instead of Date.now(),
-//   3. no event emission / node lookups — the facade (Task 12) observes state changes and
-//      emits breaker_open / breaker_half_open / breaker_closed itself.
-// Legacy force-open-on-down and health-gated reset are intentionally not here: flows.ts
-// zeroes a down target's subtree and failover.ts owns health.
+// Circuit breaker state machine — originally a pure port of the legacy
+// src/app/canvas/simulation/particleEngine/circuitBreakers.ts semantics, rebuilt for audit
+// ISSUE-015 with Hystrix/resilience4j-shaped windows:
+//   • time-bucketed, REQUEST-WEIGHTED rolling window (bucketMs × bucketCount) — a 1-rps and a
+//     10 000-rps dependency no longer contribute one sample each; the error rate is
+//     Σfailures/Σtotal over the live window, not an unweighted mean of per-tick fractions.
+//   • hysteresis band — OPEN at errorThreshold (0.5); a half-open probe batch only counts as a
+//     SUCCESS below closeThreshold (0.2). A dependency hovering at ~50% errors opens and stays
+//     open instead of flapping open→half-open→closed→open.
+//   • k consecutive half-open probe successes (halfOpenProbes) are required to close — a single
+//     lucky probe no longer resets everything.
+// Unchanged: keyed per pathKey `${fromInstanceId}->${dependencyId}`, simMs injected (never
+// Date.now), no event emission — the facade observes state changes and emits breaker_* itself.
 
 export type BreakerState = 'closed' | 'open' | 'half-open'
 
 export interface BreakerConfig {
-  errorThreshold: number   // windowed error rate that opens the breaker
-  windowSize: number       // rolling sample window length
+  errorThreshold: number   // windowed weighted error rate that opens the breaker
+  closeThreshold: number   // a half-open probe batch below this error fraction counts as success
+  bucketMs: number         // time-bucket width for the rolling window
+  bucketCount: number      // window = bucketMs × bucketCount
+  minTotalToOpen: number   // weighted call volume the window must hold before the open check trips
+  halfOpenProbes: number   // consecutive successful probe batches required to close
   resetMs: number          // open -> half-open cooldown
 }
 
 export const DEFAULT_BREAKER_CONFIG: BreakerConfig = {
   errorThreshold: 0.5,
-  windowSize: 20,
+  closeThreshold: 0.2,
+  bucketMs: 1_000,
+  bucketCount: 10,
+  minTotalToOpen: 10,
+  halfOpenProbes: 3,
   resetMs: 10_000,
 }
 
-// Legacy guard (circuitBreakers.ts:74): never open on a thin window — at least this many
-// samples must exist before the threshold check can trip.
-const MIN_SAMPLES_TO_OPEN = 10
+interface Bucket {
+  bucketIndex: number   // floor(simMs / bucketMs) — identifies the wall-clock bucket
+  failures: number      // weighted failed calls in this bucket
+  total: number         // weighted total calls in this bucket
+}
 
 export interface Breaker {
   state: BreakerState
   openedAt: number         // simMs when last opened
-  // Per-sample error FRACTION 0..1 (audit ISSUE-001): each recorded call batch contributes its
-  // observed failure fraction (a boolean recordResult contributes exactly 1 or 0, so the
-  // pre-fix window contents are the degenerate case). Capped at config.windowSize.
-  errorWindow: number[]
+  buckets: Bucket[]        // rolling window, oldest first; pruned on every record
   // While half-open: whether the single allowed trial has been claimed (admitRequest) and
   // is in flight. Reset on every entry to/exit from half-open.
   trialPending: boolean
+  halfOpenSuccesses: number // consecutive successful probe batches in the current half-open spell
   config: BreakerConfig
 }
 
@@ -50,43 +62,71 @@ export function getBreaker(
 ): Breaker {
   let b = map.get(key)
   if (!b) {
-    b = { state: 'closed', openedAt: 0, errorWindow: [], trialPending: false, config }
+    b = { state: 'closed', openedAt: 0, buckets: [], trialPending: false, halfOpenSuccesses: 0, config }
     map.set(key, b)
   }
   return b
 }
 
-// Weighted recording (audit ISSUE-001): `errored` of `total` calls in this batch failed. The
-// window stores the batch's error fraction, so a downstream that is down / erroring /
-// CPU-shedding registers as failures even when its caller row isn't `blocked`. A half-open
-// trial resolves against errorThreshold: a mostly-failing trial batch reopens, a mostly-clean
-// one closes (the boolean cases 1 and 0 behave exactly as before).
+function pruneAndBucket(breaker: Breaker, simMs: number): Bucket {
+  const { bucketMs, bucketCount } = breaker.config
+  const index = Math.floor(simMs / bucketMs)
+  const oldest = index - bucketCount + 1
+  breaker.buckets = breaker.buckets.filter(b => b.bucketIndex >= oldest)
+  let bucket = breaker.buckets[breaker.buckets.length - 1]
+  if (!bucket || bucket.bucketIndex !== index) {
+    bucket = { bucketIndex: index, failures: 0, total: 0 }
+    breaker.buckets.push(bucket)
+  }
+  return bucket
+}
+
+function windowRate(breaker: Breaker): { rate: number; total: number } {
+  let failures = 0
+  let total = 0
+  for (const b of breaker.buckets) {
+    failures += b.failures
+    total += b.total
+  }
+  return { rate: total > 0 ? failures / total : 0, total }
+}
+
+// Weighted recording (audit ISSUE-001 + ISSUE-015): `errored` of `total` calls in this batch
+// failed — pass REQUEST COUNTS (rps × stepSec), so the window's volume floor has real units. A
+// half-open trial resolves against closeThreshold: a clean-enough batch is one probe success
+// (halfOpenProbes of them close the breaker), anything else reopens immediately.
 export function recordWeighted(breaker: Breaker, errored: number, total: number, simMs: number): void {
   if (total <= 0) return   // no calls observed — nothing to learn from this batch
-  const fraction = Math.min(1, Math.max(0, errored / total))
-  breaker.errorWindow.push(fraction)
-  if (breaker.errorWindow.length > breaker.config.windowSize) {
-    breaker.errorWindow.splice(0, breaker.errorWindow.length - breaker.config.windowSize)
-  }
+  const failures = Math.min(total, Math.max(0, errored))
+  const fraction = failures / total
 
   if (breaker.state === 'closed') {
-    const errRate =
-      breaker.errorWindow.reduce((s, v) => s + v, 0) / breaker.errorWindow.length
-    if (errRate >= breaker.config.errorThreshold && breaker.errorWindow.length >= MIN_SAMPLES_TO_OPEN) {
+    const bucket = pruneAndBucket(breaker, simMs)
+    bucket.failures += failures
+    bucket.total += total
+    const w = windowRate(breaker)
+    if (w.total >= breaker.config.minTotalToOpen && w.rate >= breaker.config.errorThreshold) {
       breaker.state = 'open'
       breaker.openedAt = simMs
       breaker.trialPending = false
+      breaker.halfOpenSuccesses = 0
     }
   } else if (breaker.state === 'half-open') {
     breaker.trialPending = false // the trial resolved one way or the other
-    if (fraction < breaker.config.errorThreshold) {
-      breaker.state = 'closed'
-      breaker.errorWindow = []
+    if (fraction < breaker.config.closeThreshold) {
+      breaker.halfOpenSuccesses += 1
+      if (breaker.halfOpenSuccesses >= breaker.config.halfOpenProbes) {
+        breaker.state = 'closed'
+        breaker.buckets = []
+        breaker.halfOpenSuccesses = 0
+      }
     } else {
       breaker.state = 'open'
       breaker.openedAt = simMs
+      breaker.halfOpenSuccesses = 0
     }
   }
+  // open: no calls flow (admitRequest refuses), so nothing to record.
 }
 
 export function recordResult(breaker: Breaker, failed: boolean, simMs: number): void {
@@ -97,13 +137,14 @@ export function transition(breaker: Breaker, simMs: number): BreakerState {
   if (breaker.state === 'open' && simMs - breaker.openedAt > breaker.config.resetMs) {
     breaker.state = 'half-open'
     breaker.trialPending = false // fresh half-open window — no trial claimed yet
+    breaker.halfOpenSuccesses = 0
   }
   return breaker.state
 }
 
 // May a request proceed through this breaker right now? closed: always. open: never.
-// half-open: exactly once — the first caller claims the trial (side effect: sets
-// trialPending), everyone else is refused until recordResult resolves it.
+// half-open: exactly once per unresolved trial — the first caller claims it (side effect: sets
+// trialPending), everyone else is refused until recordWeighted resolves it.
 // This is the gate flows.ts's breakerOpen callback inverts. SKELETON CONCERNS #6.
 export function admitRequest(breaker: Breaker): boolean {
   if (breaker.state === 'closed') return true

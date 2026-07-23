@@ -443,7 +443,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         const b = getBreaker(s.breakers, key)
         const from = b.state
         const fraction = row.blocked ? 1 : row.toInstanceId ? targetErrorFraction(row.toInstanceId) : 0
-        recordWeighted(b, row.rps * fraction, row.rps, simMs)
+        // Audit ISSUE-015: record REQUEST COUNTS (rps × stepSec), not rates — the breaker's
+        // time-bucketed window weighs a 10 000-rps dependency 10 000× a 1-rps one, and its
+        // volume floor (minTotalToOpen) gets real request units.
+        recordWeighted(b, row.rps * fraction * stepSec, row.rps * stepSec, simMs)
         transition(b, simMs)
         emitBreakerTransition(from, b.state, [f.instanceId, row.toInstanceId ?? row.toManagedServiceId ?? ''], simMs)
       }
