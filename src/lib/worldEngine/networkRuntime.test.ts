@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { hopLatencyMs, applyNicCap, createNicState, refusedAttemptRate } from './networkRuntime'
+import { hopLatencyMs, applyNicCap, createNicState, addNicBytes, settleNic, refusedAttemptRate } from './networkRuntime'
 import { createRng } from './rng'
 import { createServer } from '../world/factories'
 import { getPreset } from '../world/instanceCatalog'
@@ -105,6 +105,51 @@ describe('applyNicCap', () => {
     const second = applyNicCap(state, server(), CAP * 0.7, 0, 100)
     expect(second.deliveredFraction).toBe(1)
     expect(second.queuedLatencyMs).toBeCloseTo(40, 5) // cumulative 1.4x cap -> (0.4)*100ms
+  })
+})
+
+// Audit ISSUE-002: the NIC gained a persistent send buffer. settleNic evaluates the step's
+// cumulative bytes PLUS last step's backlog, carries the un-transmitted remainder (bounded at
+// one step's cap — beyond 2x cap is shed, not queued) into the next step, and resets the
+// per-step counters. A saturated NIC now drains over several ticks instead of resetting.
+describe('settleNic — persistent send buffer (audit ISSUE-002)', () => {
+  const server = () => createServer('az-1', getPreset('vps-medium')!)
+  const CAP = 12_500_000   // vps-medium 1000 Mbps → bytes per 100ms step
+
+  it('under cap: full delivery, no backlog carried, counters reset', () => {
+    const state = createNicState()
+    addNicBytes(state, CAP * 0.4, CAP * 0.4)
+    expect(settleNic(state, server(), 100)).toEqual({ deliveredFraction: 1, queuedLatencyMs: 0 })
+    expect(state.backlogBytes).toBe(0)
+    expect(state.inBytesThisStep).toBe(0)
+    expect(state.outBytesThisStep).toBe(0)
+  })
+
+  it('a saturated step carries backlog that drains on the next (idle) step', () => {
+    const state = createNicState()
+    addNicBytes(state, 0, CAP * 1.5)
+    const r1 = settleNic(state, server(), 100)
+    expect(r1.deliveredFraction).toBe(1)
+    expect(r1.queuedLatencyMs).toBeCloseTo(50, 5)          // (1.5 − 1) × 100ms
+    expect(state.backlogBytes).toBeCloseTo(CAP * 0.5, 0)   // the queued excess
+
+    const r2 = settleNic(state, server(), 100)             // idle step: only the backlog
+    expect(r2).toEqual({ deliveredFraction: 1, queuedLatencyMs: 0 })
+    expect(state.backlogBytes).toBe(0)                     // drained, not reset
+  })
+
+  it('backlog is bounded at one step-cap (excess beyond 2x cap is shed) and adds to next step load', () => {
+    const state = createNicState()
+    addNicBytes(state, 0, CAP * 4)
+    const r1 = settleNic(state, server(), 100)
+    expect(r1.deliveredFraction).toBeCloseTo(0.5, 5)       // 2 / 4
+    expect(state.backlogBytes).toBeCloseTo(CAP, 0)         // capped at one step's budget
+
+    addNicBytes(state, 0, CAP * 0.6)                       // 0.6 new + 1.0 backlog = 1.6× cap
+    const r2 = settleNic(state, server(), 100)
+    expect(r2.deliveredFraction).toBe(1)
+    expect(r2.queuedLatencyMs).toBeCloseTo(60, 5)          // still congested from the carryover
+    expect(state.backlogBytes).toBeCloseTo(CAP * 0.6, 0)
   })
 })
 

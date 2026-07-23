@@ -47,7 +47,7 @@ function host(vcpu = 4): HostStepResult {
 }
 
 const healthy: (id: string) => HealthState = () => 'healthy'
-const nic: NicState = { inBytesThisStep: 125_000, outBytesThisStep: 250_000 }
+const nic: NicState = { inBytesThisStep: 125_000, outBytesThisStep: 250_000, backlogBytes: 0 }
 
 function accumulate1s(state: ReturnType<typeof createMetricsState>, f: ReturnType<typeof fixture>, rps1: number, rps2: number, health = healthy, errorRps = 0) {
   for (let step = 0; step < 10; step++) {

@@ -184,6 +184,10 @@ export interface FlowInput {
   entryDemand: Record<InstanceId, number>          // rps landed on entry instances this step (from routing)
   admittedScaleByServer: Record<ServerId, number>  // from host scheduler (previous sub-step)
   latencyMultiplierByServer: Record<ServerId, number>
+  // Additive per-server latency (audit ISSUE-002): the previous step's NIC queued-latency
+  // settlement, added on top of the multiplied service latency. Optional: absent ⇒ 0 extra,
+  // so existing callers and tests are unchanged.
+  extraLatencyMsByServer?: Record<ServerId, number>
   breakerOpen: (pathKey: string) => boolean
   healthOf: (instanceId: InstanceId) => HealthState
   // Manual-outage predicate for managed services (node-model Phase 5.2). A managed service can't
@@ -286,13 +290,14 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
       const bp = inst ? doc.blueprints[inst.blueprintId] : undefined
       const p50 = Math.max(0.1, bp?.workload.cpuMsPerRequest ?? 1)
       const multiplier = inst ? (latencyMultiplierByServer[inst.serverId] ?? 1) : 1
+      const extraMs = inst ? (input.extraLatencyMsByServer?.[inst.serverId] ?? 0) : 0
       f = {
         instanceId: id,
         offeredRps: 0,
         admittedRps: 0,
         errorRps: 0,
         refusedRps: 0,
-        serviceLatencyMs: sampleLatencyMs(p50, p50 * SERVICE_P99_OVER_P50, rng) * multiplier,
+        serviceLatencyMs: sampleLatencyMs(p50, p50 * SERVICE_P99_OVER_P50, rng) * multiplier + extraMs,
         downstream: [],
       }
       flows[id] = f

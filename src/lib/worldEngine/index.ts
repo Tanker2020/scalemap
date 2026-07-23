@@ -20,11 +20,11 @@ import {
 } from './routingRuntime'
 import { stepHost, type InstanceLoad, type HostStepResult } from './hostScheduler'
 import { createVpsState, stepVps, type VpsState } from './vpsModel'
-import { createNicState, applyNicCap, type NicState } from './networkRuntime'
+import { createNicState, addNicBytes, settleNic, NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES, type NicState } from './networkRuntime'
 import {
   getBreaker, recordWeighted, transition, admitRequest, pathKey, type Breaker,
 } from './breakers'
-import { solveFlows, type InstanceFlow, BYTES_PER_REQUEST_EACH_WAY } from './flows'
+import { solveFlows, type InstanceFlow } from './flows'
 import { managedDbRuntime } from '../managedDbRuntime'
 import {
   createFailoverState, setOutage as failoverSetOutage, computeHealth, probeInstant, promoteReplicas,
@@ -110,6 +110,11 @@ interface EngineState {
   failover: FailoverState
   vpsStates: Map<ServerId, VpsState | null>
   vpsFactor: Map<ServerId, number>           // previous step's effective vCPU factor
+  // Persistent NIC send buffers (audit ISSUE-002) + the previous step's settlement, which
+  // feeds THIS step's admits/latency — the same one-step lag as vpsFactor/admittedScale.
+  nics: Map<ServerId, NicState>
+  nicDeliveredFraction: Map<ServerId, number>
+  nicQueuedLatencyMs: Map<ServerId, number>
   breakers: Map<string, Breaker>
   metrics: MetricsState
   events: EventRing
@@ -302,6 +307,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // ── 4/5. host scheduling (prev-step load) + VPS ──
     const admittedScaleByServer: Record<ServerId, number> = {}
     const latencyMultiplierByServer: Record<ServerId, number> = {}
+    const extraLatencyMsByServer: Record<ServerId, number> = {}
     const hostResults: Record<ServerId, HostStepResult> = {}
     const vpsPublish: Record<ServerId, VpsPublish> = {}
     const nicByServer: Record<ServerId, NicState> = {}
@@ -328,9 +334,18 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const effectiveVcpu = server.specs.vcpu * (s.vpsFactor.get(server.id) ?? 1)
       const host = stepHost(server, loads, effectiveVcpu, s.rng)
       hostResults[server.id] = host
-      admittedScaleByServer[server.id] = host.admittedScale
+      // Audit ISSUE-002: last step's NIC settlement gates this step's admits (like the CPU's
+      // admittedScale) and adds its queued latency on top of the multiplied service latency.
+      admittedScaleByServer[server.id] = host.admittedScale * (s.nicDeliveredFraction.get(server.id) ?? 1)
       latencyMultiplierByServer[server.id] = host.latencyMultiplier
-      nicByServer[server.id] = createNicState()
+      const queuedMs = s.nicQueuedLatencyMs.get(server.id) ?? 0
+      if (queuedMs > 0) extraLatencyMsByServer[server.id] = queuedMs
+      let nic = s.nics.get(server.id)
+      if (!nic) {
+        nic = createNicState()
+        s.nics.set(server.id, nic)
+      }
+      nicByServer[server.id] = nic
 
       if (host.oomVictim && !s.oomRestartAt.has(host.oomVictim)) {
         s.oomRestartAt.set(host.oomVictim, simMs + OOM_RESTART_MS)
@@ -370,6 +385,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const managedDbRt = managedDbRuntime(s.prevFlows, doc, compiled)
     const { flows, totals } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
+      extraLatencyMsByServer,
       breakerOpen, healthOf: healthOfInstance, roleOf, rng: s.rng,
       // Manual managed-service outages (node-model Phase 5.2): a downed managed service fails every
       // call to it. Read straight from the manual-outage set — managed ids aren't in the per-step
@@ -378,13 +394,15 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       managedDbRuntime: managedDbRt,
     })
 
-    // ── 7. NIC caps (per-server byte accounting from this step's flows) ──
+    // ── 7. NIC byte accounting (audit ISSUE-002: split request/response, persistent buffer) ──
+    // Ingress = request payloads in, egress = response payloads out — no longer symmetric.
+    // Settlement (deliveredFraction / queuedLatencyMs) happens once per server AFTER step 10's
+    // metrics accumulate (which reads the per-step counters), feeding the NEXT step.
     for (const f of Object.values(flows)) {
       const inst = compiled.instances[f.instanceId]
       const nic = inst ? nicByServer[inst.serverId] : undefined
       if (!inst || !nic) continue
-      const bytes = f.admittedRps * BYTES_PER_REQUEST_EACH_WAY * stepSec
-      applyNicCap(nic, doc.servers[inst.serverId], bytes, bytes, stepMs)
+      addNicBytes(nic, f.admittedRps * NIC_REQUEST_BYTES * stepSec, f.admittedRps * NIC_RESPONSE_BYTES * stepSec)
     }
 
     // ── 8. breaker record + transition ──
@@ -478,6 +496,15 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
 
     // ── 10. metrics accumulate ──
     accumulateStep(s.metrics, flows, hostResults, vpsPublish, nicByServer, healthOfAny, simMs, managedDbRt)
+    // NIC settlement (audit ISSUE-002) — AFTER accumulate (which reads the per-step byte
+    // counters settleNic resets). The result gates next step's admits/latency, one-step lag.
+    for (const server of Object.values(doc.servers)) {
+      const nic = s.nics.get(server.id)
+      if (!nic) continue
+      const settled = settleNic(nic, server, stepMs)
+      s.nicDeliveredFraction.set(server.id, settled.deliveredFraction)
+      s.nicQueuedLatencyMs.set(server.id, settled.queuedLatencyMs)
+    }
     s.windowTotals.crossAzBytes += totals.crossAzBytes * stepSec
     s.windowTotals.crossRegionBytes += totals.crossRegionBytes * stepSec
     s.windowTotals.internetBytes += totals.internetBytes * stepSec
@@ -744,7 +771,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         routePathById: buildRoutePathById(doc),
         routing: createRoutingState(), failover: createFailoverState(),
         vpsStates: new Map(Object.values(doc.servers).map(sv => [sv.id, createVpsState(sv)])),
-        vpsFactor: new Map(), breakers: new Map(), metrics: createMetricsState(),
+        vpsFactor: new Map(),
+        nics: new Map(Object.values(doc.servers).map(sv => [sv.id, createNicState()])),
+        nicDeliveredFraction: new Map(), nicQueuedLatencyMs: new Map(),
+        breakers: new Map(), metrics: createMetricsState(),
         events: createEventRing(500), replay: createReplayBuffer(300), tracer: createTracer(createRng(seed ^ 0x1234)),
         prevFlows: {}, windowTotals: { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} },
         lastRoutingSnapshot: { populationRoutes: [] }, popRegion: new Map(), pendingFailover: new Map(),

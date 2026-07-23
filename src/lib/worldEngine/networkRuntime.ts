@@ -50,21 +50,56 @@ export function hopLatencyMs(
 
 // ─── NIC caps ─────────────────────────────────────────────────────────────────
 
+// Request/response byte asymmetry for NIC accounting (audit ISSUE-002): a request payload is
+// much smaller than its response. flows.ts's BYTES_PER_REQUEST_EACH_WAY (2048, symmetric)
+// remains the cost-model convention; the NIC books the split so ingress and egress saturate
+// independently and realistically.
+export const NIC_REQUEST_BYTES = 512
+export const NIC_RESPONSE_BYTES = 2048
+
 export interface NicState {
   inBytesThisStep: number
   outBytesThisStep: number
+  // Send-buffer carryover from a saturated step (audit ISSUE-002): what the NIC accepted but
+  // could not transmit within the step. Joins the next step's load, so a saturated NIC drains
+  // over several ticks instead of resetting. Bounded at one step's cap — beyond 2x cap the
+  // excess is SHED, not queued.
+  backlogBytes: number
 }
 
 export function createNicState(): NicState {
-  return { inBytesThisStep: 0, outBytesThisStep: 0 }
+  return { inBytesThisStep: 0, outBytesThisStep: 0, backlogBytes: 0 }
 }
 
-// Accumulates this call's bytes into the step's running totals, then evaluates the
-// cumulative load against the per-step budget (worst direction governs):
+/** Accumulate a call's bytes into the step's running totals (no evaluation). */
+export function addNicBytes(state: NicState, inBytes: number, outBytes: number): void {
+  state.inBytesThisStep += inBytes
+  state.outBytesThisStep += outBytes
+}
+
+// Evaluate the cumulative step load (+ backlog carryover) against the per-step budget (worst
+// direction governs):
 //   <= cap        -> deliveredFraction 1, no added latency
 //   cap .. 2xcap  -> still delivers fully; excess waits, queuedLatencyMs grows linearly
 //                    from 0 at cap to stepMs at 2xcap
 //   >  2xcap      -> sheds to 2xcap (deliveredFraction = 2xcap / load), queue saturated
+function evaluateNic(
+  state: NicState,
+  server: Server,
+  stepMs: number,
+): { capBytes: number; load: number; result: { deliveredFraction: number; queuedLatencyMs: number } } {
+  const capBytes = ((server.specs.nicMbps * 1e6) / 8) * (stepMs / 1000)
+  const load = Math.max(state.inBytesThisStep, state.outBytesThisStep) + state.backlogBytes
+  if (capBytes <= 0) return { capBytes, load, result: { deliveredFraction: 0, queuedLatencyMs: stepMs } }
+  const ratio = load / capBytes
+  const result =
+    ratio <= 1 ? { deliveredFraction: 1, queuedLatencyMs: 0 }
+    : ratio <= 2 ? { deliveredFraction: 1, queuedLatencyMs: (ratio - 1) * stepMs }
+    : { deliveredFraction: 2 / ratio, queuedLatencyMs: stepMs }
+  return { capBytes, load, result }
+}
+
+/** Accumulate + evaluate in one call (the original single-shot API; result reflects backlog). */
 export function applyNicCap(
   state: NicState,
   server: Server,
@@ -72,15 +107,24 @@ export function applyNicCap(
   addOutBytes: number,
   stepMs: number,
 ): { deliveredFraction: number; queuedLatencyMs: number } {
-  state.inBytesThisStep += addInBytes
-  state.outBytesThisStep += addOutBytes
-  const capBytes = ((server.specs.nicMbps * 1e6) / 8) * (stepMs / 1000)
-  if (capBytes <= 0) return { deliveredFraction: 0, queuedLatencyMs: stepMs }
-  const load = Math.max(state.inBytesThisStep, state.outBytesThisStep)
-  const ratio = load / capBytes
-  if (ratio <= 1) return { deliveredFraction: 1, queuedLatencyMs: 0 }
-  if (ratio <= 2) return { deliveredFraction: 1, queuedLatencyMs: (ratio - 1) * stepMs }
-  return { deliveredFraction: 2 / ratio, queuedLatencyMs: stepMs }
+  addNicBytes(state, addInBytes, addOutBytes)
+  return evaluateNic(state, server, stepMs).result
+}
+
+// End-of-step settlement (audit ISSUE-002): evaluate the step, carry the un-transmitted
+// remainder as backlog (bounded at one step-cap — the beyond-2x slice was shed), reset the
+// per-step counters. The engine feeds the result into the NEXT step's admits and latency,
+// mirroring admittedScale's one-step lag.
+export function settleNic(
+  state: NicState,
+  server: Server,
+  stepMs: number,
+): { deliveredFraction: number; queuedLatencyMs: number } {
+  const { capBytes, load, result } = evaluateNic(state, server, stepMs)
+  state.backlogBytes = capBytes <= 0 ? 0 : Math.min(Math.max(0, load - capBytes), capBytes)
+  state.inBytesThisStep = 0
+  state.outBytesThisStep = 0
+  return result
 }
 
 // ─── Blocked-path refusals ────────────────────────────────────────────────────

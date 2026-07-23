@@ -203,6 +203,50 @@ describe('breaker trips on a down dependency (audit ISSUE-001)', () => {
   })
 })
 
+// Audit ISSUE-002: step 7 computed applyNicCap and threw the result away — NIC saturation never
+// shed throughput or added latency. The settlement now feeds the NEXT step's admits
+// (deliveredFraction, like admittedScale) and latency (queuedLatencyMs, additive).
+describe('NIC backpressure (audit ISSUE-002)', () => {
+  function nicWorld(nicMbps: number) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    server.specs = { ...server.specs, nicMbps }
+    doc.servers[server.id] = server
+    const web = publicBlueprint('web', 0)
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id)
+    doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 300
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), webInst: instanceId(pl.id, 0) }
+  }
+
+  it('a saturated NIC caps throughput and raises latency; an uncapped one does not', () => {
+    // Baseline: 10 Gbps NIC — 300 rps × 2KB responses is nowhere near saturation.
+    const base = nicWorld(10_000)
+    const baseSim = drive(base.doc, base.compiled)
+    baseSim.stepFor(6)
+    const baseInst = baseSim.latest().instances[base.webInst]!
+    expect(baseInst.rps).toBeGreaterThan(250)
+    baseSim.engine.stop()
+
+    // 1 Mbps NIC: ~12.5KB/step budget vs ~61KB/step of response bytes — deep saturation.
+    const capped = nicWorld(1)
+    const capSim = drive(capped.doc, capped.compiled)
+    capSim.stepFor(6)
+    const capInst = capSim.latest().instances[capped.webInst]!
+    expect(capInst.rps).toBeLessThan(baseInst.rps * 0.7)          // throughput shed at the NIC
+    expect(capInst.p50Ms).toBeGreaterThan(baseInst.p50Ms + 30)    // queued latency raises p50
+    capSim.engine.stop()
+  })
+})
+
 describe('world engine integration', () => {
   it('flows client rps end-to-end through the compiled world', () => {
     const f = e2eFixture()
