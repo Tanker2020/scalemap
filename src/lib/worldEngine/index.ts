@@ -9,8 +9,9 @@ import type {
 } from './types'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
-  ServiceInstance, CompiledLbRouting, Server, AvailabilityZone,
+  ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole,
 } from '../world/types'
+import { managedDbEngine } from '../world/types'
 import { routeMatchesPattern, listRoutes } from '../nodeConfig'
 import { createRng, type Rng } from './rng'
 import { createClock, type ClockHandle } from './engineClock'
@@ -31,7 +32,8 @@ import { solveFlows, type InstanceFlow } from './flows'
 import { managedDbRuntime } from '../managedDbRuntime'
 import {
   createFailoverState, setOutage as failoverSetOutage, computeHealth, probeInstant, promoteReplicas,
-  drainFactor, beginDrain, clearDrain, DEFAULT_HYSTERESIS, effectiveRoleResolver, type FailoverState,
+  drainFactor, beginDrain, clearDrain, DEFAULT_HYSTERESIS, effectiveRoleResolver, hasOutage,
+  type FailoverState, type OutageScope,
   recoverMultiAzManagedDbs, failbackPromotions, applyAzOutageToManaged,
 } from './failover'
 import {
@@ -121,6 +123,15 @@ interface EngineState {
   // Compiled instances grouped by server, built once at start() (audit ISSUE-076): compiled
   // is frozen for the run, so rebuilding this O(instances) Map every step was pure waste.
   instancesByServer: Map<ServerId, ServiceInstance[]>
+  // Per-step recompute memos (audit ISSUE-079). The role resolver rescans all instances after
+  // any promotion — cache it keyed on promotedAt's contents so it rebuilds only when a
+  // promotion/failback actually changes the overlay. hasManagedDbs skips the managed-DB
+  // runtime's per-tick flow scan outright for worlds with no managed DB (the common case);
+  // WITH managed DBs the scan is inherent — its input (prevFlows) is new every tick, so there
+  // is no delta to update incrementally from.
+  hasManagedDbs: boolean
+  roleResolver: ((id: InstanceId) => PlacementRole) | null
+  roleResolverKey: string
   // Permitted instance→instance downstream adjacency (audit ISSUE-014), built once at start():
   // the 1 Hz starved-detection BFS walks it from the down set to find instances that are silent
   // because an UPSTREAM died, not because the world is idle.
@@ -183,14 +194,21 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
   const entryBlueprints = (doc: WorldDoc): BlueprintId[] =>
     Object.values(doc.blueprints).filter(bp => bp.ports.some(p => p.visibility === 'public')).map(bp => bp.id)
 
+  // ONE id allocator for every subsystem (audit ISSUE-045): failover/promotion helpers return
+  // events with descriptive hand-built ids (`outage-…`, `promote-…`) that never touched idSeq —
+  // two divergent id schemes with no cross-subsystem monotonicity. The facade re-stamps every
+  // event on emit, so ids are globally sequential within a run; the semantic context those
+  // prefixes carried already lives in kind/message/affected.
   const emitEvent = (e: EngineEvent): void => {
     if (!state) return
-    state.events.push(e)
-    state.callbacks.onEvent(e)
+    const sequenced = { ...e, id: `evt-${state.idSeq++}` }
+    state.events.push(sequenced)
+    state.callbacks.onEvent(sequenced)
   }
   const emit = (kind: EngineEventKind, severity: EngineEvent['severity'], message: string, affected: string[], simMs: number): void => {
     if (!state) return
-    emitEvent(mkEvent(kind, severity, message, affected, simMs, state.idSeq++))
+    // mkEvent's idSeq arg is a placeholder here — emitEvent owns the real allocation.
+    emitEvent(mkEvent(kind, severity, message, affected, simMs, 0))
   }
 
   const healthOfScope = (id: string): HealthState => state!.failover.healthByScope.get(id) ?? 'healthy'
@@ -297,11 +315,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // probePrev) — never healthOfScope: computeHealth folds checkFailed into its output, so
     // probing the output self-sustained (a killed region's checks failed forever and it never
     // recovered after restore — the post-Polish-2 bug).
-    const probeOfScope = (id: string): HealthState =>
-      s.failover.manualOutages.has(id) ? 'down' : (s.probePrev.get(id) ?? 'healthy')
+    const probeOfScope = (scope: OutageScope, id: string): HealthState =>
+      hasOutage(s.failover, scope, id) ? 'down' : (s.probePrev.get(id) ?? 'healthy')
     const scopes = [
-      ...Object.values(doc.regions).map(r => ({ id: r.id, health: probeOfScope(r.id) })),
-      ...Object.values(doc.azs).map(a => ({ id: a.id, health: probeOfScope(a.id) })),
+      ...Object.values(doc.regions).map(r => ({ id: r.id, health: probeOfScope('region', r.id) })),
+      ...Object.values(doc.azs).map(a => ({ id: a.id, health: probeOfScope('az', a.id) })),
     ]
     const checkResults = runHealthChecks(s.routing, doc.routing, simMs, scopes)
     const checkFailedById = new Map(checkResults.map(c => [c.id, c.checkFailed]))
@@ -457,14 +475,21 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     }
     // Effective roles carry the promotion overlay committed at the END of a PRIOR step
     // (promoteReplicas below), so once a primary has failed over, this step's writes route to the
-    // promoted replica. Built from engine state only — the doc is never touched.
-    const roleOf = effectiveRoleResolver(compiled, s.failover.promotedAt)
+    // promoted replica. Built from engine state only — the doc is never touched. Memoized on
+    // promotedAt's contents (audit ISSUE-079): after a promotion the resolver rescans all
+    // instances, so rebuild it only when the overlay actually changes.
+    const promoKey = s.failover.promotedAt.size === 0 ? '' : [...s.failover.promotedAt.keys()].sort().join('|')
+    if (!s.roleResolver || s.roleResolverKey !== promoKey) {
+      s.roleResolver = effectiveRoleResolver(compiled, s.failover.promotedAt)
+      s.roleResolverKey = promoKey
+    }
+    const roleOf = s.roleResolver
     // Managed-DB failure model (node-model Phase 5.4) from the PREVIOUS step's flows. Queueing
     // latency, Little's-law connections and the timeout fraction are all functions of a DB's
     // AGGREGATE load, which the solver's per-dependency loop cannot see — so it is computed once
     // here and both the solver and the metrics window read the same entries. One-step lag, exactly
-    // like admittedScale.
-    const managedDbRt = managedDbRuntime(s.prevFlows, doc, compiled)
+    // like admittedScale. Skipped outright when the world has no managed DB (audit ISSUE-079).
+    const managedDbRt = s.hasManagedDbs ? managedDbRuntime(s.prevFlows, doc, compiled) : {}
     const { flows, totals } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       extraLatencyMsByServer,
@@ -475,7 +500,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // Manual managed-service outages (node-model Phase 5.2): a downed managed service fails every
       // call to it. Read straight from the manual-outage set — managed ids aren't in the per-step
       // health recompute, so healthByScope would go stale on restore.
-      managedDown: (id) => s.failover.manualOutages.has(id),
+      managedDown: (id) => hasOutage(s.failover, 'managed', id),
       managedDbRuntime: managedDbRt,
     })
 
@@ -545,7 +570,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         errorRate: rate(serverAgg.get(server.id)),
         cpuPressure: hostResults[server.id]?.cpuPressure ?? 0,
         checkFailed: false,
-        manualDown: s.failover.manualOutages.has(server.id),
+        manualDown: hasOutage(s.failover, 'server', server.id),
       }, simMs)
     }
     // Audit ISSUE-032: AZ/region rollups read the start()-built serversByAz/azsByRegion indexes —
@@ -555,14 +580,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const offered = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.offered ?? 0), 0)
       const errors = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.errors ?? 0), 0)
       const cpu = srv.reduce((m, v) => Math.max(m, hostResults[v.id]?.cpuPressure ?? 0), 0)
-      applyHealth('az', az.id, { errorRate: offered > MIN_HEALTH_SIGNAL_RPS ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(az.id) ?? false, manualDown: s.failover.manualOutages.has(az.id) }, simMs)
+      applyHealth('az', az.id, { errorRate: offered > MIN_HEALTH_SIGNAL_RPS ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(az.id) ?? false, manualDown: hasOutage(s.failover, 'az', az.id) }, simMs)
     }
     for (const region of Object.values(doc.regions)) {
       const srv = (s.azsByRegion.get(region.id) ?? []).flatMap(a => s.serversByAz.get(a.id) ?? [])
       const offered = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.offered ?? 0), 0)
       const errors = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.errors ?? 0), 0)
       const cpu = srv.reduce((m, v) => Math.max(m, hostResults[v.id]?.cpuPressure ?? 0), 0)
-      applyHealth('region', region.id, { errorRate: offered > MIN_HEALTH_SIGNAL_RPS ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(region.id) ?? false, manualDown: s.failover.manualOutages.has(region.id) }, simMs)
+      applyHealth('region', region.id, { errorRate: offered > MIN_HEALTH_SIGNAL_RPS ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(region.id) ?? false, manualDown: hasOutage(s.failover, 'region', region.id) }, simMs)
     }
     // Failback BEFORE promotion (audit ISSUE-007): a recovered authored primary reclaims its role
     // (clearing the overlay) so this step's promotion pass sees the true current primaries. The
@@ -889,6 +914,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         serversByAz: groupBy(Object.values(doc.servers), sv => sv.azId),
         azsByRegion: groupBy(Object.values(doc.azs), az => az.regionId),
         instancesByServer: groupInstancesByServer(compiled),
+        hasManagedDbs: Object.values(doc.managedServices).some(ms => !!managedDbEngine(ms.nodeType)),
+        roleResolver: null, roleResolverKey: '',
         downstreamAdj: buildDownstreamAdj(compiled),
         routing: createRoutingState(), failover: createFailoverState(),
         demandStates: new Map(),

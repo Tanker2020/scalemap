@@ -30,8 +30,22 @@ export const DEFAULT_HYSTERESIS: HealthHysteresis = { onsetMs: 3000, recoveryMs:
 export type OutageSource = 'manual' | 'simulated'
 export interface ManagedOutage { sinceMs: number; source: OutageSource }
 
+export type OutageScope = 'server' | 'az' | 'region' | 'managed'
+
+// Outage-set key (audit ISSUE-044): keyed `${scope}:${id}`, never the bare id — a bare-id set
+// silently ignored the scope argument, so any id collision across scopes (e.g. an AZ and a
+// managed service sharing an id) cross-triggered each other's outage.
+export function outageKey(scope: OutageScope, id: string): string {
+  return `${scope}:${id}`
+}
+
+export function hasOutage(state: FailoverState, scope: OutageScope, id: string): boolean {
+  return state.manualOutages.has(outageKey(scope, id))
+}
+
 export interface FailoverState {
-  // Every currently-down scope regardless of source — the single set flows.ts/index.ts read.
+  // Every currently-down scope regardless of source — the single set flows.ts/index.ts read,
+  // keyed by outageKey(scope, id) (audit ISSUE-044).
   // (The name predates the manual/simulated split; the source tag lives in managedDownSince.)
   manualOutages: Set<string>
   healthByScope: Map<string, HealthState>
@@ -93,14 +107,15 @@ export function drainFactor(state: FailoverState, azId: AzId, simMs: number): nu
 // Idempotent manual switch: an event is returned ONLY when the outage set actually changes.
 export function setOutage(
   state: FailoverState,
-  scope: 'server' | 'az' | 'region' | 'managed',
+  scope: OutageScope,
   id: string,
   down: boolean,
   simMs = 0,
 ): EngineEvent[] {
-  const already = state.manualOutages.has(id)
+  const key = outageKey(scope, id)
+  const already = state.manualOutages.has(key)
   if (down && !already) {
-    state.manualOutages.add(id)
+    state.manualOutages.add(key)
     state.healthByScope.set(id, 'down')
     if (scope === 'az') beginDrain(state, id, simMs)
     // Phase 5.4 + audit ISSUE-008: record the outage as MANUAL — the operator owns it, so the
@@ -109,7 +124,7 @@ export function setOutage(
     return [outageEvent('outage_triggered', scope, id, simMs)]
   }
   if (!down && already) {
-    state.manualOutages.delete(id)
+    state.manualOutages.delete(key)
     if (scope === 'az') clearDrain(state, id)
     if (scope === 'managed') state.managedDownSince.delete(id)
     return [outageEvent('outage_cleared', scope, id, simMs)]
@@ -143,7 +158,7 @@ export function recoverMultiAzManagedDbs(
     const window = MANAGED_FAILOVER_WINDOW_MS
       + Math.max(0, ms.promotionTier ?? 0) * MANAGED_PROMOTION_TIER_STEP_MS
     if (simMs - outage.sinceMs < window) continue
-    state.manualOutages.delete(id)
+    state.manualOutages.delete(outageKey('managed', id))
     state.managedDownSince.delete(id)
     state.healthByScope.set(id, 'healthy')
     events.push({
@@ -174,8 +189,8 @@ export function applyAzOutageToManaged(
   for (const ms of Object.values(doc.managedServices)) {
     if (ms.scope.kind !== 'az' || ms.scope.azId !== azId) continue
     if (down) {
-      if (state.manualOutages.has(ms.id)) continue     // already down (manual wins; idempotent)
-      state.manualOutages.add(ms.id)
+      if (hasOutage(state, 'managed', ms.id)) continue   // already down (manual wins; idempotent)
+      state.manualOutages.add(outageKey('managed', ms.id))
       state.managedDownSince.set(ms.id, { sinceMs: simMs, source: 'simulated' })
       state.healthByScope.set(ms.id, 'down')
       events.push({
@@ -188,7 +203,7 @@ export function applyAzOutageToManaged(
       })
     } else {
       if (state.managedDownSince.get(ms.id)?.source !== 'simulated') continue
-      state.manualOutages.delete(ms.id)
+      state.manualOutages.delete(outageKey('managed', ms.id))
       state.managedDownSince.delete(ms.id)
       state.healthByScope.set(ms.id, 'healthy')
       events.push({

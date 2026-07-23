@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   createFailoverState, setOutage, computeHealth, probeInstant, promoteReplicas, drainFactor,
-  beginDrain, DEFAULT_HYSTERESIS, effectiveRoleResolver,
+  beginDrain, DEFAULT_HYSTERESIS, effectiveRoleResolver, hasOutage,
   recoverMultiAzManagedDbs, MANAGED_FAILOVER_WINDOW_MS, MANAGED_PROMOTION_TIER_STEP_MS,
   failbackPromotions, applyAzOutageToManaged,
 } from './failover'
@@ -21,7 +21,7 @@ describe('setOutage', () => {
     const events = setOutage(state, 'az', 'az-1', true, 1000)
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({ kind: 'outage_triggered', severity: 'critical', affected: ['az-1'], simMs: 1000 })
-    expect(state.manualOutages.has('az-1')).toBe(true)
+    expect(hasOutage(state, 'az', 'az-1')).toBe(true)
     expect(state.healthByScope.get('az-1')).toBe('down')
     // idempotent — no second event for an already-down scope
     expect(setOutage(state, 'az', 'az-1', true, 2000)).toEqual([])
@@ -35,8 +35,21 @@ describe('setOutage', () => {
     const cleared = setOutage(state, 'region', 'r-1', false, 5000)
     expect(cleared).toHaveLength(1)
     expect(cleared[0]).toMatchObject({ kind: 'outage_cleared', affected: ['r-1'], simMs: 5000 })
-    expect(state.manualOutages.has('r-1')).toBe(false)
+    expect(hasOutage(state, 'region', 'r-1')).toBe(false)
     expect(setOutage(state, 'region', 'r-1', false, 6000)).toEqual([]) // already cleared
+  })
+
+  // Audit ISSUE-044: the outage set is keyed `${scope}:${id}` — an id shared across scopes must
+  // never cross-trigger (taking down az X is not taking down managed X).
+  it('an id shared across scopes does not cross-trigger (ISSUE-044)', () => {
+    const state = createFailoverState()
+    setOutage(state, 'az', 'X', true, 0)
+    expect(hasOutage(state, 'az', 'X')).toBe(true)
+    expect(hasOutage(state, 'managed', 'X')).toBe(false)
+    expect(hasOutage(state, 'server', 'X')).toBe(false)
+    // Resuming the (never-down) managed X is a no-op and leaves the AZ outage in place.
+    expect(setOutage(state, 'managed', 'X', false, 100)).toEqual([])
+    expect(hasOutage(state, 'az', 'X')).toBe(true)
   })
 
   // node-model Phase 5.2: managed services can be taken down. Same set/clear machinery; the flow
@@ -45,10 +58,10 @@ describe('setOutage', () => {
     const state = createFailoverState()
     const down = setOutage(state, 'managed', 'ms-queue', true, 1000)
     expect(down[0]).toMatchObject({ kind: 'outage_triggered', affected: ['ms-queue'] })
-    expect(state.manualOutages.has('ms-queue')).toBe(true)
+    expect(hasOutage(state, 'managed', 'ms-queue')).toBe(true)
     const up = setOutage(state, 'managed', 'ms-queue', false, 2000)
     expect(up[0]).toMatchObject({ kind: 'outage_cleared', affected: ['ms-queue'] })
-    expect(state.manualOutages.has('ms-queue')).toBe(false)
+    expect(hasOutage(state, 'managed', 'ms-queue')).toBe(false)
   })
 })
 
@@ -292,15 +305,15 @@ describe('recoverMultiAzManagedDbs', () => {
     const doc = docWith({ multiAz: true })
     const state = createFailoverState()
     simulateAzFailure(state, doc, 0)
-    expect(state.manualOutages.has('ms-db')).toBe(true)
+    expect(hasOutage(state, 'managed', 'ms-db')).toBe(true)
 
     // Still inside the window — the standby has not taken over yet.
     expect(recoverMultiAzManagedDbs(state, doc, 1000)).toEqual([])
-    expect(state.manualOutages.has('ms-db')).toBe(true)
+    expect(hasOutage(state, 'managed', 'ms-db')).toBe(true)
 
     const events = recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS + 1)
     expect(events.map(e => e.kind)).toContain('replica_promoted')
-    expect(state.manualOutages.has('ms-db')).toBe(false)
+    expect(hasOutage(state, 'managed', 'ms-db')).toBe(false)
   })
 
   it('never auto-recovers a MANUAL operator outage (audit ISSUE-008)', () => {
@@ -308,10 +321,10 @@ describe('recoverMultiAzManagedDbs', () => {
     const state = createFailoverState()
     setOutage(state, 'managed', 'ms-db', true, 0)
     expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS * 10)).toEqual([])
-    expect(state.manualOutages.has('ms-db')).toBe(true)   // stays down until the operator resumes
+    expect(hasOutage(state, 'managed', 'ms-db')).toBe(true)   // stays down until the operator resumes
     // Explicit operator resume is the only way out.
     setOutage(state, 'managed', 'ms-db', false, MANAGED_FAILOVER_WINDOW_MS * 10 + 1)
-    expect(state.manualOutages.has('ms-db')).toBe(false)
+    expect(hasOutage(state, 'managed', 'ms-db')).toBe(false)
   })
 
   it('leaves a single-AZ managed DB down indefinitely', () => {
@@ -319,7 +332,7 @@ describe('recoverMultiAzManagedDbs', () => {
     const state = createFailoverState()
     simulateAzFailure(state, doc, 0)
     expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS * 10)).toEqual([])
-    expect(state.manualOutages.has('ms-db')).toBe(true)
+    expect(hasOutage(state, 'managed', 'ms-db')).toBe(true)
   })
 
   it('does not touch a non-DB managed service', () => {
@@ -327,7 +340,7 @@ describe('recoverMultiAzManagedDbs', () => {
     const state = createFailoverState()
     simulateAzFailure(state, doc, 0)
     expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS * 10)).toEqual([])
-    expect(state.manualOutages.has('ms-db')).toBe(true)
+    expect(hasOutage(state, 'managed', 'ms-db')).toBe(true)
   })
 
   it('promotes only once per outage, and re-arms after a fresh kill', () => {
@@ -348,7 +361,7 @@ describe('recoverMultiAzManagedDbs', () => {
     simulateAzFailure(state, doc, 0)
     // Tier 2 is still waiting when a tier-0 standby would already have promoted.
     expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS + 1)).toEqual([])
-    expect(state.manualOutages.has('ms-db')).toBe(true)
+    expect(hasOutage(state, 'managed', 'ms-db')).toBe(true)
     // …and promotes once its tier delay has also elapsed.
     const events = recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS + 2 * MANAGED_PROMOTION_TIER_STEP_MS + 1)
     expect(events).toHaveLength(1)
@@ -373,7 +386,7 @@ describe('applyAzOutageToManaged', () => {
     const events = applyAzOutageToManaged(state, doc, 'az-1', true, 1000)
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({ kind: 'outage_triggered', affected: ['ms-db'] })
-    expect(state.manualOutages.has('ms-db')).toBe(true)
+    expect(hasOutage(state, 'managed', 'ms-db')).toBe(true)
     expect(state.healthByScope.get('ms-db')).toBe('down')
     // idempotent — a second application changes nothing
     expect(applyAzOutageToManaged(state, doc, 'az-1', true, 2000)).toEqual([])
@@ -397,7 +410,7 @@ describe('applyAzOutageToManaged', () => {
     const cleared = applyAzOutageToManaged(state, doc, 'az-1', false, 1000)
     expect(cleared).toHaveLength(1)
     expect(cleared[0]).toMatchObject({ kind: 'outage_cleared', affected: ['ms-db'] })
-    expect(state.manualOutages.has('ms-db')).toBe(false)
+    expect(hasOutage(state, 'managed', 'ms-db')).toBe(false)
     expect(state.healthByScope.get('ms-db')).toBe('healthy')
   })
 
@@ -406,7 +419,7 @@ describe('applyAzOutageToManaged', () => {
     const state = createFailoverState()
     setOutage(state, 'managed', 'ms-db', true, 0)          // operator kill
     expect(applyAzOutageToManaged(state, doc, 'az-1', false, 1000)).toEqual([])
-    expect(state.manualOutages.has('ms-db')).toBe(true)
+    expect(hasOutage(state, 'managed', 'ms-db')).toBe(true)
   })
 
   it('an AZ failure does not overwrite an existing manual outage with a simulated one', () => {
@@ -416,6 +429,6 @@ describe('applyAzOutageToManaged', () => {
     expect(applyAzOutageToManaged(state, doc, 'az-1', true, 1000)).toEqual([])
     // …so the later AZ restore still cannot resurrect it
     applyAzOutageToManaged(state, doc, 'az-1', false, 2000)
-    expect(state.manualOutages.has('ms-db')).toBe(true)
+    expect(hasOutage(state, 'managed', 'ms-db')).toBe(true)
   })
 })
