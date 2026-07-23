@@ -3260,7 +3260,7 @@ no existing-caller impact.
 ## Audit major fixes — ISSUE-013 through ISSUE-032 (`audit-spec.md`, 2026-07-23)
 
 All 20 Major-tier issues, one commit per issue (013/016/018 land together — the spec marks them
-compounding). Minor tier (ISSUE-033 onward) is NOT part of this work.
+compounding). The Minor tier (ISSUE-033 onward) landed as its own pass — see the next section.
 
 **Engine fidelity (`src/lib/worldEngine/`):**
 
@@ -3369,5 +3369,148 @@ Boundary notes: `solveFlows`' queue inputs, `buildBatch`'s `starved`, `WorkloadP
 `CompiledRouting.regionProportions?` are all additive-optional.
 `HostStepResult.serviceRateByInstance` is a REQUIRED new field (engine-internal type; the one
 external fixture in metrics.test.ts updated). `BreakerConfig`'s reshape is breaking for direct
-constructors of breaker configs — all in-repo callers spread `DEFAULT_BREAKER_CONFIG`. The
-audit's Minor tier (ISSUE-033 onward) remains unaddressed by design.
+constructors of breaker configs — all in-repo callers spread `DEFAULT_BREAKER_CONFIG`.
+
+## Audit minor fixes — ISSUE-033 through ISSUE-079 (`audit-spec.md`, 2026-07-23)
+
+All 47 Minor-tier issues, committed in subsystem batches. Six were verified RESOLVED BY earlier
+tiers rather than re-fixed (each with a regression test or documented reasoning): **043**
+(cold-start over-admit — queue mode bounds step-1 admits by same-step host capacity), **042**
+(shed/degraded/failed conflation — in queue mode a degraded instance under light load serves
+everything, so no phantom error signal remains; pinned by a flows test), **047** (failover-map
+reconciliation — the ISSUE-004 running-gate makes the edit lock strict, engine state is rebuilt
+per run, and `failbackPromotions` already prunes dead placements), **049** (healthOverrides
+pruning — overrides only exist mid-run under the frozen doc and are cleared on stop/reset),
+**071** (cost model vs compiled gate — ISSUE-024's alongside-every-bump accumulator already
+reconciles totals; provisioned cost staying doc-based is the documented design decision), **072**
+(blocked-path dedup — `AnalysisTab.test.tsx` already pins the suppressor; ISSUE-063's shared
+matcher closes the evaluator-drift half).
+
+**Engine (`src/lib/worldEngine/`):**
+
+- **ISSUE-033 (`breakers.ts`):** a claimed half-open trial whose chain produced no downstream
+  row wedged the breaker half-open FOREVER (`transition` only re-fires from `open`). New
+  `trialStartedMs` + `trialTimeoutMs` (2s): `transition` expires an unresolved trial — no
+  evidence, so it neither reopens nor counts as a probe success; `admitRequest(b, simMs)` gained
+  the clock param.
+- **ISSUE-034 (`index.ts`):** `stepVps` receives UNCLAMPED `cpuPressure` — the drain term scales
+  with over-baseline utilization, so a 5×-hammered burstable now burns credits faster than one
+  at exactly-full load (safe: post-019 accrual is constant and the steal walk never reads it).
+- **ISSUE-035 (`hostScheduler.ts`):** `coreUtilization` spreads evenly on the EFFECTIVE-vCPU
+  basis (`min(1, cpuPressure)` per core) — no more two-pegged-two-idle at 50%, and a
+  credit-throttled host reads saturated at saturation.
+- **ISSUE-037 (`managedCapacity.ts`, `metrics.ts`, `replay.ts`):** per-class managed base
+  latency (`MANAGED_BASE_LATENCY_MS` — cache 0.5 ms … objectStorage 15 ms; unknown types keep
+  3 ms) with an M/M/1 `base/(1−ρ)` saturation term (`managedLatencyMs`), published as non-DB
+  `p50Ms`/`p99Ms` (×`MANAGED_P99_OVER_P50`) and used for trace hop attribution; instance `p99Ms`
+  publishes UN-smoothed (the EMA attenuated a 1 s spike to ~30%) — p50 keeps the EMA.
+- **ISSUE-038 (`rng.ts`):** `rng.pick([])` throws loudly instead of reading `arr[-1]` =
+  `undefined` (all callers pre-check; the throw keeps the `T` return type honest).
+- **ISSUE-039/-040 (`replay.ts`, `index.ts`):** trace sampling is rps-WEIGHTED (`pickWeighted`
+  roulette wheel over entries by `offeredRps`, hops by `row.rps`), and `Tracer.sample`'s
+  population callback became `populationsOf` — every population feeding the entry's region with
+  live rps, drawn ∝ rps from the tracer's own rng (never the sim stream).
+- **ISSUE-041 (`metrics.ts`):** interpolated percentiles over a rolling 3-batch latency
+  reservoir (`latencyHistory`) — p99 is no longer just max-of-10-samples.
+- **ISSUE-044 (`failover.ts`):** the outage set keys `outageKey(scope, id)` — an id shared
+  across scopes can't cross-trigger; new `hasOutage(state, scope, id)` is the read seam
+  (index.ts's five read sites updated).
+- **ISSUE-045 (`index.ts`):** ONE event-id allocator — `emitEvent` re-stamps every event
+  `evt-${idSeq++}`, so failover's descriptive hand-built ids no longer break cross-subsystem
+  monotonicity (context lives in kind/message/affected).
+- **ISSUE-046 (`metrics.ts`):** `managedWindow.steps` increments only on row-carrying steps —
+  a runtime-only (idle) step no longer averages a DB's windowed rps toward zero.
+- **ISSUE-048 (`simulation.store.ts`, `index.ts`):** double-start guard — `store.start`
+  early-returns while running AND engine `start()` cancels a live `rafId` before the state swap
+  (two rAF chains advanced one state at double speed).
+- **ISSUE-076/-078/-079 (`index.ts`):** `instancesByServer` built once at `start()`;
+  `entryBlueprintIds` became a `Set` (membership-tested per flow per ~60 Hz frame);
+  `effectiveRoleResolver` memoized on `promotedAt` contents; `managedDbRuntime` skipped outright
+  for worlds with no managed DB (`hasManagedDbs`).
+- **ISSUE-073/-074/-075/-077 (`flows.ts`):** downstream rows aggregate through a keyed `Map`
+  (was `find` over a growing array — quadratic for fan-heavy instances); the BFS cycle guard is
+  a parent-pointer chain walk (≤ MAX_DEPTH hops, zero allocation — was a cloned `Set` per
+  edge); the path index memoizes per compiled identity (`pathIndexFor` WeakMap);
+  `splitDependencyShares` computes single-pass into one shares array (role classification
+  deliberately NOT hoisted to `start()` as the audit sketched — `roleOf` carries the promotion
+  overlay, so roles change mid-run).
+
+**Stores/views (`src/app/`):**
+
+- **ISSUE-052 (`ScrubberV2.tsx`, `simulation.store.ts`, `TimelineV2.tsx`):** `setScrubIndex`
+  accepts the caller's OWN captured frames array so index/batch/label all resolve against one
+  snapshot; the scrubber label reads `scrubBatch.simMs`, never `frames[scrubIndex]`.
+- **ISSUE-053 (`simulation.store.ts`):** the events presentation window micro-batches — a
+  synchronous burst applies in ONE `setState` on the next microtask (generation counter orphans
+  buffers across start/resetSession); replaces the per-event ≤500-entry copy.
+- **ISSUE-055 (`InspectorV2.tsx`):** the 1 Hz trace poll short-circuits to the previous state
+  when trace ids are unchanged.
+- **ISSUE-050 (`worldEngine/types.ts`, `ArcsLayer.tsx`):** `MAX_GLOBE_ARCS` lives in types.ts
+  (re-exported from index.ts for API stability) — the globe view no longer pulls the engine
+  singleton module for one render-cap constant.
+- **ISSUE-051 (`RegionPins.tsx`):** the pin's health split into its own two subscriptions — the
+  region's AZ-id set from a world-store selector (joined-string primitive; AZ add/remove now
+  updates without a sim tick) + a sim-store all-down check over just that region's AZs.
+- **ISSUE-054/-056 (`ArcsLayer.tsx`):** arc-set change detection is `arcsEqual` (zero-alloc
+  element comparison, same order-sensitive/intensity-blind identity as `arcsSignature`, pinned
+  equivalent by test); the `lineDistance` attribute is captured once per rebuild as a
+  RUNTIME-checked typed handle (`PoolEntry.distAttr`) the flow loop writes through. The audit's
+  optional shader-uniform dash offset was deliberately NOT taken (no automated visual gate).
+- **ISSUE-057 (`TimelineV2.tsx`):** `getReplayFrames` memoized on the batch tick; `buildLanes`/
+  `narration` memoized on real inputs; `onMarkerClick` reuses the memoized frames.
+- **ISSUE-058 (`RegionPins.tsx`, `AzRow.tsx`):** the multiplied-per-row components subscribe to
+  DERIVED primitives (pulsing/promoting booleans computed inside the selector) instead of the
+  whole events array; content-rendering components (EventsTab/TimelineV2/RegionView) keep the
+  array — ISSUE-053's batching already collapsed their per-event storms.
+
+**Cost model (`src/lib/costModelV2.ts`, `world/types.ts`):**
+
+- **ISSUE-059:** additive `ManagedService.provisionedIops?` bills gp3-shaped above-baseline
+  IOPS (`DB_IOPS_FREE` 3000 free, $0.005/IOPS-month; billed once per cluster like storage).
+- **ISSUE-060:** LB pricing = base hours + an LCU-shaped traffic term by MODE (`l7` $0.008 vs
+  `l4` $0.006 per unit-hour, 1 unit ≈ 25 rps) off the region's live inbound rps (split evenly
+  across a region's LBs); idle/null-metrics keeps the old base-hours figure.
+
+**Analysis/network (`src/lib/analysis/`, `src/lib/world/`):**
+
+- **ISSUE-061:** additive `RoutingConfig.healthCheckTimeoutMs?` (+`DEFAULT_HEALTH_CHECK_TIMEOUT_MS`
+  5 s, authored by `createWorld()`, validated by the serializer); `ttl-outlives-detection`'s
+  window is now `interval × threshold + timeout`.
+- **ISSUE-062:** `ocean-crossing-population` skips `weighted`/`priority` (deliberate operator
+  intent); under distance policies it remains as a regression guard for the ISSUE-009 class of
+  scoring bug.
+- **ISSUE-063 (`world/network.ts`):** ONE `firewallFirstMatch` — `evaluateFirewall` wraps it and
+  the analysis rules import it (their private copy of the matching loop is deleted); the rules
+  stay the source-AWARE consumers.
+- **ISSUE-064 (`world/network.ts` header):** the firewall model is now explicitly documented as
+  ordered first-match/default-deny (iptables/NACL), NOT an SG union-allow; an SG-mode evaluator
+  is deliberately deferred until authoring demand exists.
+- **ISSUE-065 (`world/types.ts`, `world/network.ts`):** additive container
+  `overlayNetworkNames?` — Swarm/CNI overlay networks span SERVERS, so co-networked containers
+  on different hosts get a permitted path without host publishing (the hop keeps its real
+  network class); plain `networkNames` bridges stay per-host.
+- **ISSUE-066:** `ram-oversubscribed` adds live `ramPerConnMb × activeConnections` from the
+  latest batch for UNCAPPED instances (a container's memLimit is already its counted worst
+  case).
+- **ISSUE-067 (`instanceCatalog.ts`):** burstable presets carry `baselineUtilization?`
+  (vps-small/t3-medium 0.2, vps-medium 0.3); `burstable-sustained-load` compares against the
+  preset's baseline via `server.catalogId` (0.4 stays the custom-specs fallback).
+- **ISSUE-068:** `db-port-exposed` sub-rule (b) is placement-gated — an unplaced public-port db
+  blueprint is a sketch, not a critical finding.
+
+**Serializer (`src/lib/serializer.ts`):**
+
+- **ISSUE-069:** normalization builds a NEW file object (routing/servers/collections spread onto
+  a copy) — the parsed input is never written to, and the vestigial legacy top-level `packets`
+  slot is folded into `world.packets` without being retained.
+- **ISSUE-070:** the version gate compares `String(data.version)` — a numeric `"version": 3`
+  loads; numeric 1/2 land on their dedicated rejection messages.
+
+Boundary notes: every doc-model addition (`provisionedIops?`, `healthCheckTimeoutMs?`,
+`overlayNetworkNames?`, `InstancePreset.baselineUtilization?`) is additive-optional;
+`Tracer.sample`'s `populationsOf` reshape and `admitRequest`'s `simMs` param are engine-internal;
+`setScrubIndex`'s `frames?` param is additive. `MAX_GLOBE_ARCS` moved to `worldEngine/types.ts`
+(index.ts re-exports). `firewallFirstMatch`, `hasOutage`/`outageKey`, `arcsEqual`,
+`managedBaseLatencyMs`/`managedLatencyMs`/`MANAGED_P99_OVER_P50`, and `DB_IOPS_FREE` are new pure
+exports. With this pass the audit's full issue list (Critical + Major + Minor, ISSUE-001 through
+ISSUE-079) is closed.
