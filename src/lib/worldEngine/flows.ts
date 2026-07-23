@@ -7,7 +7,7 @@
 //   (the caller can't see the misconfig; attempts on blocked paths are LIVE failures)
 //   blocked share -> caller refusedRps + blocked downstream row (no bytes, no propagation)
 //   breakerOpen(pathKey) short-circuits the whole dependency (refused, no rows)
-//   depth cap 8; cycles guarded per request chain (visited set carried on each item)
+//   depth cap 8; cycles guarded per request chain (parent-pointer chain walk, ISSUE-074)
 import type {
   CompiledWorld, WorldDoc, CompiledPath, InstanceId, ServerId, HopClass,
   ServiceBlueprint, ManagedService, ManagedServiceId, PlacementRole,
@@ -75,44 +75,65 @@ export function splitDependencyShares(
 ): number[] {
   const n = candidates.length
 
-  const weightOf = (p: CompiledPath): number =>
-    p.to.kind === 'instance' ? healthWeightOf(p.to.instanceId) : 1
+  // Single-pass share accumulation (audit ISSUE-077): this runs per dependency per active
+  // instance per tick, so the old map/filter/reduce chains (weights array + pool filter +
+  // per-pool share arrays + sum2 merge, ~6 allocations per SQL call) were steady per-tick GC
+  // pressure. One weights array + one output array now; identical numeric results. Role
+  // classification deliberately stays per-call (NOT hoisted to start() as the audit sketched):
+  // roleOf carries the promotion overlay, so roles CAN change mid-run.
+  const weights = new Array<number>(n)
+  for (let i = 0; i < n; i++) {
+    const p = candidates[i]
+    weights[i] = p.to.kind === 'instance' ? healthWeightOf(p.to.instanceId) : 1
+  }
+  const shares = new Array<number>(n).fill(0)
 
   // Distribute `amount` across the candidates flagged by `inPool`, proportionally to health
-  // weight. A pool whose every member is down (total weight 0) falls back to the even split —
-  // there is nothing to route around, so the attempts still land and fail LIVE at the dead
-  // targets (the 100%-error signal the caller's breaker feed needs to trip).
-  const distribute = (amount: number, inPool: (i: number) => boolean): number[] => {
-    const weights = candidates.map((p, i) => (inPool(i) ? weightOf(p) : 0))
-    const poolSize = candidates.filter((_, i) => inPool(i)).length
-    const total = weights.reduce((a, b) => a + b, 0)
-    if (total <= 0) return candidates.map((_, i) => (inPool(i) ? amount / poolSize : 0))
-    return weights.map(w => (amount * w) / total)
+  // weight, ACCUMULATING into `shares`. A pool whose every member is down (total weight 0)
+  // falls back to the even split — there is nothing to route around, so the attempts still
+  // land and fail LIVE at the dead targets (the 100%-error signal the caller's breaker feed
+  // needs to trip).
+  const distributeInto = (amount: number, inPool: (i: number) => boolean): void => {
+    let total = 0
+    let poolSize = 0
+    for (let i = 0; i < n; i++) {
+      if (inPool(i)) { total += weights[i]; poolSize++ }
+    }
+    if (total <= 0) {
+      if (poolSize === 0) return
+      const even = amount / poolSize
+      for (let i = 0; i < n; i++) if (inPool(i)) shares[i] += even
+      return
+    }
+    for (let i = 0; i < n; i++) if (inPool(i)) shares[i] += (amount * weights[i]) / total
   }
-
-  const sum2 = (a: number[], b: number[]): number[] => a.map((v, i) => v + b[i])
 
   // Non-DB target (or unknown): health-weighted split over all candidates (even when all are
   // equally healthy — identical to the pre-Phase-3 even split). writeFraction is meaningless
   // without primary/replica semantics, so it is ignored here.
   const engine = targetBp?.dbConfig?.engine
-  if (!engine) return distribute(admitted, () => true)
+  if (!engine || engine === 'nosql') {
+    // (NoSQL: every node is both a read and a write target, so each candidate's total is just
+    // its health-weighted share — but the write/read SPLIT is what downstream capacity
+    // accounting cares about.)
+    distributeInto(admitted, () => true)
+    return shares
+  }
 
   const w = Math.min(1, Math.max(0, writeFraction))
-
-  if (engine === 'nosql') {
-    // Every node is both a read and a write target, so each candidate's total is just its
-    // health-weighted share — but the write/read SPLIT is what downstream capacity accounting
-    // cares about.
-    return distribute(admitted, () => true)
-  }
 
   // SQL: partition by EFFECTIVE role. A managed target (a cloud DB has no primary/replica
   // instances here) is treated as writable. roleOf carries the Phase-4 promotion overlay, so a
   // promoted replica reads back as 'primary' here and writes route to it.
-  const isPrimary = candidates.map(p =>
-    p.to.kind === 'instance' ? roleOf(p.to.instanceId) === 'primary' : true)
-  const primaryCount = isPrimary.filter(Boolean).length
+  const isPrimary = new Array<boolean>(n)
+  let primaryCount = 0
+  let replicaWeight = 0
+  for (let i = 0; i < n; i++) {
+    const p = candidates[i]
+    isPrimary[i] = p.to.kind === 'instance' ? roleOf(p.to.instanceId) === 'primary' : true
+    if (isPrimary[i]) primaryCount++
+    else replicaWeight += weights[i]
+  }
   const replicaCount = n - primaryCount
 
   // A candidate is a WRITE target if it's a primary — or, in the degenerate no-primary case,
@@ -124,15 +145,14 @@ export function splitDependencyShares(
   // breaker against a perfectly healthy promoted primary. Writes never spill to replicas — a
   // replica can't take writes until promotion flips its role.
   const noPrimary = primaryCount === 0
-  const replicaWeight = candidates.reduce((sum, p, i) => sum + (!isPrimary[i] ? weightOf(p) : 0), 0)
   const noReplica = replicaCount === 0 || (replicaWeight <= 0 && !noPrimary)
   const isWriteTarget = (i: number): boolean => noPrimary || isPrimary[i]
   const isReadTarget = (i: number): boolean => noReplica ? isWriteTarget(i) : !isPrimary[i]
 
   // Writes and reads each distribute health-weighted within their own pool.
-  const writeShares = w <= 0 ? candidates.map(() => 0) : distribute(admitted * w, isWriteTarget)
-  const readShares = w >= 1 ? candidates.map(() => 0) : distribute(admitted * (1 - w), isReadTarget)
-  return sum2(writeShares, readShares)
+  if (w > 0) distributeInto(admitted * w, isWriteTarget)
+  if (w < 1) distributeInto(admitted * (1 - w), isReadTarget)
+  return shares
 }
 
 // How much of `share` rps a cloud-managed DB REFUSES because it exceeds the instance class's
@@ -262,7 +282,44 @@ interface QueueItem {
   instanceId: InstanceId
   offered: number
   depth: number
-  visited: Set<InstanceId>   // instances already on this request chain (cycle guard)
+  // Request-chain back-pointer (audit ISSUE-074): the cycle guard walks parents instead of
+  // carrying a cloned Set per pushed edge. Depth is capped at MAX_DEPTH (8), so the walk is a
+  // bounded ≤8-hop pointer chase — O(depth) time, zero allocation, vs a Set clone per edge.
+  parent: QueueItem | null
+}
+
+// Does `id` already appear on this request chain? (The old `visited` Set semantics: the item's
+// own instance plus every ancestor.)
+function chainHas(item: QueueItem, id: InstanceId): boolean {
+  for (let node: QueueItem | null = item; node !== null; node = node.parent) {
+    if (node.instanceId === id) return true
+  }
+  return false
+}
+
+// Candidate-path index memo (audit ISSUE-075): fromInstanceId → dependencyId → CompiledPath[].
+// compiled.paths never changes during a run, but solveFlows rebuilt this map every tick. Keyed
+// weakly on the CompiledWorld object so a recompile (new identity) naturally gets a fresh index
+// and stopped runs don't pin memory.
+const pathIndexCache = new WeakMap<CompiledWorld, Map<InstanceId, Map<string, CompiledPath[]>>>()
+
+function pathIndexFor(compiled: CompiledWorld): Map<InstanceId, Map<string, CompiledPath[]>> {
+  const cached = pathIndexCache.get(compiled)
+  if (cached) return cached
+  // (compiled.paths order is deterministic, so the even split is too.)
+  const index = new Map<InstanceId, Map<string, CompiledPath[]>>()
+  for (const p of compiled.paths) {
+    let byDep = index.get(p.fromInstanceId)
+    if (!byDep) {
+      byDep = new Map()
+      index.set(p.fromInstanceId, byDep)
+    }
+    const list = byDep.get(p.dependencyId)
+    if (list) list.push(p)
+    else byDep.set(p.dependencyId, [p])
+  }
+  pathIndexCache.set(compiled, index)
+  return index
 }
 
 export function solveFlows(input: FlowInput): { flows: Record<InstanceId, InstanceFlow>; totals: FlowTotals } {
@@ -281,19 +338,8 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     return h === 'down' ? 0 : h === 'degraded' ? DEGRADED_ADMIT_FACTOR : 1
   }
 
-  // Index candidate paths once: fromInstanceId -> dependencyId -> CompiledPath[]
-  // (compiled.paths order is deterministic, so the even split is too).
-  const pathsByFromDep = new Map<InstanceId, Map<string, CompiledPath[]>>()
-  for (const p of compiled.paths) {
-    let byDep = pathsByFromDep.get(p.fromInstanceId)
-    if (!byDep) {
-      byDep = new Map()
-      pathsByFromDep.set(p.fromInstanceId, byDep)
-    }
-    const list = byDep.get(p.dependencyId)
-    if (list) list.push(p)
-    else byDep.set(p.dependencyId, [p])
-  }
+  // Candidate-path index, memoized per compiled identity (audit ISSUE-075).
+  const pathsByFromDep = pathIndexFor(compiled)
 
   const flows: Record<InstanceId, InstanceFlow> = {}
   const totals: FlowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} }
@@ -323,7 +369,11 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
   }
 
   // Contributions from different entries/chains can land on the same downstream row —
-  // aggregate rps into one row per (dependency, target, blocked) triple.
+  // aggregate rps into one row per (dependency, target, blocked, failure) key. Keyed in a Map
+  // (audit ISSUE-073): the old `f.downstream.find(...)` scanned the growing row array per
+  // contribution — quadratic per tick for fan-heavy instances. Row array order is unchanged
+  // (first-touch push order), so output is identical.
+  const rowIndex = new Map<InstanceId, Map<string, DownstreamFlow>>()
   const addDownstream = (
     f: InstanceFlow,
     dependencyId: string,
@@ -333,14 +383,20 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     blocked: boolean,
     failure?: 'throttled' | 'timeout',
   ): void => {
-    const row = f.downstream.find(d =>
-      d.dependencyId === dependencyId &&
-      d.toInstanceId === target.toInstanceId &&
-      d.toManagedServiceId === target.toManagedServiceId &&
-      d.blocked === blocked &&
-      d.failure === failure)
-    if (row) row.rps += rps
-    else f.downstream.push({ dependencyId, ...target, rps, hopClass, blocked, ...(failure ? { failure } : {}) })
+    const key = `${dependencyId}|${target.toInstanceId ?? ''}|${target.toManagedServiceId ?? ''}|${blocked}|${failure ?? ''}`
+    let rows = rowIndex.get(f.instanceId)
+    if (!rows) {
+      rows = new Map()
+      rowIndex.set(f.instanceId, rows)
+    }
+    const row = rows.get(key)
+    if (row) {
+      row.rps += rps
+    } else {
+      const created: DownstreamFlow = { dependencyId, ...target, rps, hopClass, blocked, ...(failure ? { failure } : {}) }
+      rows.set(key, created)
+      f.downstream.push(created)
+    }
   }
 
   const bucketBytes = (hopClass: HopClass, rps: number): void => {
@@ -366,7 +422,7 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
   const seeded = new Set<InstanceId>()
   for (const [instanceId, rps] of Object.entries(entryDemand)) {
     if (rps <= 0) continue
-    queue.push({ instanceId, offered: rps, depth: 0, visited: new Set([instanceId]) })
+    queue.push({ instanceId, offered: rps, depth: 0, parent: null })
     seeded.add(instanceId)
     // Client -> entry traffic rides the public internet.
     totals.internetBytes += rps * BYTES_PER_REQUEST_EACH_WAY * 2
@@ -376,7 +432,7 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
   if (queueMode) {
     for (const [instanceId, q] of queueDepth!) {
       if (q <= 0 || seeded.has(instanceId)) continue
-      queue.push({ instanceId, offered: 0, depth: 0, visited: new Set([instanceId]) })
+      queue.push({ instanceId, offered: 0, depth: 0, parent: null })
     }
   }
 
@@ -536,10 +592,8 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
         bucketBytes(path.hopClass, share)
 
         const toId = path.to.instanceId
-        if (item.visited.has(toId)) continue        // cycle guard: row recorded, no re-entry
-        const visited = new Set(item.visited)
-        visited.add(toId)
-        queue.push({ instanceId: toId, offered: share, depth: item.depth + 1, visited })
+        if (chainHas(item, toId)) continue          // cycle guard: row recorded, no re-entry
+        queue.push({ instanceId: toId, offered: share, depth: item.depth + 1, parent: item })
       }
     }
   }
