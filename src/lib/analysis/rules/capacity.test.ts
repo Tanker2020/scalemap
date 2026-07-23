@@ -89,18 +89,27 @@ describe('capacity: ocean-crossing-population', () => {
   })
 })
 
+// audit ISSUE-010: the rule was inverted. Total failover time ≈ detection window + up to one
+// TTL, so a SHORT TTL is healthy; the anti-pattern is a TTL that OUTLIVES detection (clients
+// keep serving a stale cached record long after the failure is known).
 describe('capacity: ttl-outlives-detection', () => {
-  it('fires when DNS TTL is shorter than the detection window', () => {
+  it('fires when the DNS TTL outlives the failure-detection window', () => {
     const s = scenario()
-    s.doc.routing.dnsTtlSec = 5 // 5000ms < 10000×3 = 30000ms
+    s.doc.routing.dnsTtlSec = 300 // 300000ms > 10000×3 = 30000ms — stale cache dominates failover
     const f = ids(runAnalysis(s.doc, s.compile(), null), 'ttl-outlives-detection')
     expect(f).toHaveLength(1)
     expect(f[0].affected).toEqual([])
     expect(f[0].id).toBe('ttl-outlives-detection:world')
-    expect(f[0].why).toMatch(/5000/); expect(f[0].why).toMatch(/30000/)
+    expect(f[0].why).toMatch(/300000/); expect(f[0].why).toMatch(/30000/)
+    expect(f[0].fix).toMatch(/lower/i)
+  })
+  it('silent when the TTL is below the detection window (short TTL is healthy)', () => {
+    const s = scenario()
+    s.doc.routing.dnsTtlSec = 5 // 5000ms < 30000ms — clients re-resolve promptly after detection
+    expect(ids(runAnalysis(s.doc, s.compile(), null), 'ttl-outlives-detection')).toHaveLength(0)
   })
   it('silent at the default TTL/detection balance', () => {
-    const s = scenario() // dnsTtlSec 30 → 30000ms == 30000ms detection, not <
+    const s = scenario() // dnsTtlSec 30 → 30000ms == 30000ms detection, not >
     expect(ids(runAnalysis(s.doc, s.compile(), null), 'ttl-outlives-detection')).toHaveLength(0)
   })
 })

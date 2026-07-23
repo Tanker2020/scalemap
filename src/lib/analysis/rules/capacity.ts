@@ -98,18 +98,23 @@ const oceanCrossingPopulation: AnalysisRule = {
   },
 }
 
+// audit ISSUE-010: total failover time ≈ detection window + up to one TTL, so a SHORT TTL is
+// healthy (clients re-resolve promptly once the failure is detected). The anti-pattern is a TTL
+// that OUTLIVES detection: clients keep serving the stale cached region long after the failure
+// is known. (The original rule had this inverted — it flagged the healthy config and its fix
+// text recommended raising the TTL, which worsens real failover.)
 const ttlOutlivesDetection: AnalysisRule = {
   id: 'ttl-outlives-detection', family: 'capacity',
   run: ({ doc }) => {
     const { dnsTtlSec, healthCheckIntervalMs, healthCheckFailureThreshold } = doc.routing
     const ttlMs = dnsTtlSec * 1000
     const detectMs = healthCheckIntervalMs * healthCheckFailureThreshold
-    if (ttlMs >= detectMs) return []
+    if (ttlMs <= detectMs) return []
     return [{
       id: 'ttl-outlives-detection:world', ruleId: 'ttl-outlives-detection', family: 'capacity', severity: 'warning',
-      title: 'DNS TTL shorter than failure detection',
-      why: `DNS TTL is ${ttlMs} ms but failure detection takes ${detectMs} ms (${healthCheckIntervalMs} ms × ${healthCheckFailureThreshold}); clients re-resolve faster than a failed region is detected, so failover lags.`,
-      fix: `Raise dnsTtlSec above the detection window, or lower the health-check interval/threshold (Traffic panel → routing).`,
+      title: 'DNS TTL outlives failure detection',
+      why: `DNS TTL is ${ttlMs} ms but failure detection takes only ${detectMs} ms (${healthCheckIntervalMs} ms × ${healthCheckFailureThreshold}); clients keep resolving to a failed region for up to a full TTL after the failure is detected, so failover lags behind detection.`,
+      fix: `Lower dnsTtlSec below the detection window so clients re-resolve promptly after failover (Traffic panel → routing).`,
       affected: [],
     }]
   },

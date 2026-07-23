@@ -91,7 +91,9 @@ function threeTier(): WorldDoc {
 
 function multiRegion(): WorldDoc {
   const doc = createWorld()
-  doc.routing.dnsTtlSec = 20
+  // TTL below the 3000×2=6000ms detection window — clients re-resolve promptly after failover
+  // (the corrected ttl-outlives-detection semantics, audit ISSUE-010: short TTL is healthy).
+  doc.routing.dnsTtlSec = 5
   doc.routing.healthCheckIntervalMs = 3000
   doc.routing.healthCheckFailureThreshold = 2
 
@@ -181,9 +183,9 @@ function eventDriven(): WorldDoc {
 
 function brokenTeaching(): WorldDoc {
   const doc = createWorld()
-  doc.routing.dnsTtlSec = 5                    // ttl-outlives-detection: 5s TTL vs
-  doc.routing.healthCheckIntervalMs = 12000    // 12s × 3 = 36s detection window
-  doc.routing.healthCheckFailureThreshold = 3
+  doc.routing.dnsTtlSec = 120                  // ttl-outlives-detection: 120s TTL outlives the
+  doc.routing.healthCheckIntervalMs = 12000    // 12s × 3 = 36s detection window — clients serve
+  doc.routing.healthCheckFailureThreshold = 3  // the stale region long after detection (ISSUE-010)
 
   const r = region(doc, 'us-east-1')
   const aza = az(doc, r.id, 'us-east-1a')      // ONE AZ — single-az-region
