@@ -330,3 +330,32 @@ describe('computeWorldCost — orphaned-AZ completeness (ISSUE-024)', () => {
     expect(withMs.monthlyUsd).toBeGreaterThan(withoutMs.monthlyUsd)
   })
 })
+
+// Audit ISSUE-022: DB provisioned storage bills the PROVIDER's registry rate, not a hardcoded
+// AWS constant (GCP Cloud SQL storage is $0.17/GB-month vs AWS/Azure $0.115).
+describe('computeWorldCost — provider-correct DB storage rate (ISSUE-022)', () => {
+  function dbWithStorage(provider: 'aws' | 'gcp' | 'azure') {
+    const { doc, regionId } = twoServerWorld()
+    doc.managedServices['ms-db'] = {
+      id: 'ms-db', label: 'orders-db', nodeType: 'dbSql', provider,
+      scope: { kind: 'region', regionId }, port: 5432,
+      instanceClassId: 'sql.small', storageGb: 100,
+    } as WorldDoc['managedServices'][string]
+    return computeWorldCost(doc, null).monthlyUsd
+  }
+  function dbNoStorage(provider: 'aws' | 'gcp' | 'azure') {
+    const { doc, regionId } = twoServerWorld()
+    doc.managedServices['ms-db'] = {
+      id: 'ms-db', label: 'orders-db', nodeType: 'dbSql', provider,
+      scope: { kind: 'region', regionId }, port: 5432,
+      instanceClassId: 'sql.small', storageGb: 0,
+    } as WorldDoc['managedServices'][string]
+    return computeWorldCost(doc, null).monthlyUsd
+  }
+
+  it('bills 100 GB at 0.115 on aws and 0.17 on gcp', () => {
+    expect(dbWithStorage('aws') - dbNoStorage('aws')).toBeCloseTo(100 * 0.115, 5)
+    expect(dbWithStorage('gcp') - dbNoStorage('gcp')).toBeCloseTo(100 * 0.17, 5)
+    expect(dbWithStorage('azure') - dbNoStorage('azure')).toBeCloseTo(100 * 0.115, 5)
+  })
+})

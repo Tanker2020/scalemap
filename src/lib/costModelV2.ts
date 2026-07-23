@@ -6,9 +6,22 @@ import { getServiceSpec, egressMonthlyCost, PROVIDER_EGRESS, type CloudProvider,
 import { getDbInstanceClass } from './dbInstanceClasses'
 import { managedDbEngine } from './world/types'
 
-// Provisioned-storage rate for a cloud-managed DB ($/GB-month) — the gp3-class rate the dbSql
-// registry entry already uses. A single rate (not a tier ladder) matches how DB storage is priced.
-const DB_STORAGE_USD_PER_GB_MONTH = 0.115
+// Fallback provisioned-storage rate for a cloud-managed DB ($/GB-month) — the AWS gp3-class rate,
+// used only when the provider's registry entry can't be resolved (e.g. 'generic'). Audit
+// ISSUE-022: real pricing reads the provider's own storageGbMonth tier from cloudRegistry (GCP
+// Cloud SQL storage is 0.17, ~48% above this), so this constant is no longer applied to every
+// provider.
+const DB_STORAGE_FALLBACK_USD_PER_GB_MONTH = 0.115
+
+// Provider-correct $/GB-month for a managed DB's provisioned storage (audit ISSUE-022): the
+// registry entry for this nodeType+provider carries the rate (flat single-tier for DBs).
+function dbStorageRate(ms: ManagedService): number {
+  const spec = getServiceSpec(MANAGED_TYPE_ALIASES[ms.nodeType] ?? ms.nodeType, ms.provider)
+  const storageComponent = spec?.pricing.find(c => c.kind === 'storageGbMonth')
+  if (storageComponent?.kind !== 'storageGbMonth') return DB_STORAGE_FALLBACK_USD_PER_GB_MONTH
+  const tier = storageComponent.tiers.find(t => t.id === ms.storageTierId) ?? storageComponent.tiers[0]
+  return tier?.storageGbMonth ?? DB_STORAGE_FALLBACK_USD_PER_GB_MONTH
+}
 
 export const HOURS_PER_MONTH = 730
 const CROSS_AZ_USD_PER_GB = 0.01
@@ -85,7 +98,7 @@ function managedServiceMonthlyUsd(ms: ManagedService, rps = 0): number {
   const dbClass = managedDbEngine(ms.nodeType) ? getDbInstanceClass(ms.instanceClassId) : undefined
   if (dbClass) {
     const instances = 1 + (ms.replicaCount ?? 0) + (ms.multiAz ? 1 : 0)   // primary + replicas + standby
-    const storage = (ms.storageGb ?? 0) * DB_STORAGE_USD_PER_GB_MONTH
+    const storage = (ms.storageGb ?? 0) * dbStorageRate(ms)   // provider-correct rate (ISSUE-022)
     // Phase 5.4 — capacity mode decides the SHAPE of the compute bill:
     //   serverless  → no instance-hours at all; pay per request off live traffic. A commitment
     //                 discount cannot apply, because there is no provisioned capacity to commit to.
