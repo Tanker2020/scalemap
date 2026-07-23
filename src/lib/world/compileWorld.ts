@@ -35,6 +35,19 @@ export function compileWorld(doc: WorldDoc): CompiledWorld {
   const paths: CompiledPath[] = []
   const findings: CompileFinding[] = []
 
+  // Audit ISSUE-027: index instances by blueprint ONCE so each dependency resolves against only
+  // its target blueprint's instances (O(I × D × matches)) instead of re-scanning — and
+  // re-materializing — the whole instance map per (from, dep) pair (O(I × D × I), ~750k
+  // evaluateInstancePath calls at 500 instances × 3 deps). Built in Object.values order, so
+  // per-blueprint candidate order — and the emitted paths order every even-split consumer
+  // depends on — is unchanged.
+  const instancesByBlueprint = new Map<string, ServiceInstance[]>()
+  for (const inst of Object.values(instances)) {
+    const list = instancesByBlueprint.get(inst.blueprintId)
+    if (list) list.push(inst)
+    else instancesByBlueprint.set(inst.blueprintId, [inst])
+  }
+
   for (const from of Object.values(instances)) {
     const fromBp = doc.blueprints[from.blueprintId]
     const fromPl = doc.placements[from.placementId]
@@ -58,8 +71,7 @@ export function compileWorld(doc: WorldDoc): CompiledWorld {
       }
 
       const targetBpId = dep.target.blueprintId
-      for (const to of Object.values(instances)) {
-        if (to.blueprintId !== targetBpId) continue
+      for (const to of instancesByBlueprint.get(targetBpId) ?? []) {
         const toPl = doc.placements[to.placementId]
         const toServer = doc.servers[to.serverId]
         const toBp = doc.blueprints[to.blueprintId]
