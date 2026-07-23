@@ -7,7 +7,8 @@ import type {
 } from './types'
 import type { InstanceFlow } from './flows'
 import { managedDbCeilings } from './flows'
-import { managedCapacityRps } from '../managedCapacity'
+import { managedCapacityRps, managedLatencyMs, MANAGED_P99_OVER_P50 } from '../managedCapacity'
+import { managedDbEngine } from '../world/types'
 import type { ManagedDbRuntime } from '../managedDbRuntime'
 import type { HostStepResult } from './hostScheduler'
 import type { NicState } from './networkRuntime'
@@ -52,10 +53,18 @@ interface ManagedWindow {
   runtimeSteps: number; latencySum: number; p99Sum: number; connectionsSum: number; saturationSum: number
 }
 
+// Rolling latency reservoir width (audit ISSUE-041): percentiles are computed over the last N
+// 1 s windows' samples (~10 samples each), not a single window — p99 over ~10 samples was just
+// the max. Idle windows contribute their default sample too, so a gone-quiet instance's tail
+// still decays over N seconds instead of pinning at its last-busy value.
+const LATENCY_RESERVOIR_BATCHES = 3
+
 export interface MetricsState {
   window: Map<InstanceId, InstanceWindow>
   serverWindow: Map<ServerId, ServerWindow>
   managedWindow: Map<ManagedServiceId, ManagedWindow>
+  // Last few batches' latency samples per instance (audit ISSUE-041) — the percentile reservoir.
+  latencyHistory: Map<InstanceId, number[][]>
   // EMA-published values, keyed per entity. Missing key = first window seeds directly.
   published: Map<string, number>
   // Latest step's side-channel values, retained for buildBatch (its skeleton signature
@@ -70,6 +79,7 @@ export function createMetricsState(): MetricsState {
     window: new Map(),
     serverWindow: new Map(),
     managedWindow: new Map(),
+    latencyHistory: new Map(),
     published: new Map(),
     lastHost: {},
     lastVps: {},
@@ -118,10 +128,16 @@ export function accumulateStep(
       mw = { steps: 0, admittedSum: 0, refusedSum: 0, errorSum: 0, runtimeSteps: 0, latencySum: 0, p99Sum: 0, connectionsSum: 0, saturationSum: 0 }
       state.managedWindow.set(id, mw)
     }
-    mw.steps++
-    mw.admittedSum += msAdmitted.get(id) ?? 0
-    mw.refusedSum += msRefused.get(id) ?? 0
-    mw.errorSum += msErrored.get(id) ?? 0
+    // `steps` counts only steps that actually carried a row (audit ISSUE-046): a DB that has a
+    // runtime entry but received no traffic this step must not have its windowed rps/refused
+    // averaged toward zero — the runtime gauges below keep their own runtimeSteps divisor.
+    const receivedRow = msAdmitted.has(id) || msRefused.has(id) || msErrored.has(id)
+    if (receivedRow) {
+      mw.steps++
+      mw.admittedSum += msAdmitted.get(id) ?? 0
+      mw.refusedSum += msRefused.get(id) ?? 0
+      mw.errorSum += msErrored.get(id) ?? 0
+    }
     const rt = managedRuntime?.[id]
     if (rt) {
       mw.runtimeSteps++
@@ -153,10 +169,17 @@ function ema(state: MetricsState, key: string, windowValue: number): number {
   return next
 }
 
+// Linear-interpolated percentile (audit ISSUE-041) — nearest-rank over a ≤10-sample window made
+// p99 literally the max sample and p50 whichever sample sat at index 5. Interpolating between
+// ranks is the standard estimator and behaves continuously as the reservoir grows.
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0
-  const idx = Math.min(sorted.length - 1, Math.floor(p * sorted.length))
-  return sorted[idx]
+  const rank = p * (sorted.length - 1)
+  const lo = Math.floor(rank)
+  const hi = Math.ceil(rank)
+  if (lo === hi) return sorted[lo]
+  const frac = rank - lo
+  return sorted[lo] * (1 - frac) + sorted[hi] * frac
 }
 
 export function buildBatch(
@@ -199,11 +222,23 @@ export function buildBatch(
     // Error rate = fraction of offered traffic (admitted + errored/refused) that failed —
     // always in [0,1]; a fully-down instance (admitted 0, errors>0) reports 1.0.
     const windowErrRate = w.admittedSum + w.errorSum > 0 ? w.errorSum / (w.admittedSum + w.errorSum) : 0
-    const sorted = [...w.latencies].sort((a, b) => a - b)
+    // Rolling multi-second latency reservoir (audit ISSUE-041): percentiles over the last few
+    // windows' samples, not one window's ~10.
+    let history = state.latencyHistory.get(inst.id)
+    if (!history) {
+      history = []
+      state.latencyHistory.set(inst.id, history)
+    }
+    history.push(w.latencies)
+    if (history.length > LATENCY_RESERVOIR_BATCHES) history.shift()
+    const sorted = history.flat().sort((a, b) => a - b)
     const rps = ema(state, `i:${inst.id}:rps`, windowRps)
     const errorRate = ema(state, `i:${inst.id}:err`, windowErrRate)
     const p50Ms = ema(state, `i:${inst.id}:p50`, percentile(sorted, 0.5))
-    const p99Ms = ema(state, `i:${inst.id}:p99`, percentile(sorted, 0.99))
+    // p99 is published UN-smoothed (audit ISSUE-037): EMA α=0.3 attenuated a 1 s latency spike
+    // to ~30% of its size, hiding exactly the transients a tail metric exists to show. The
+    // multi-second reservoir already steadies it; p50 keeps the EMA for stable display.
+    const p99Ms = percentile(sorted, 0.99)
     const activeConnections = rps * (p50Ms / 1000)          // Little's law
     const workload = bp?.workload ?? { cpuMsPerRequest: 0, ramBaseMb: 0, ramPerConnMb: 0, diskIoPerRequest: 0 }
     // Starved override (audit ISSUE-014): an instance silenced by a down upstream must not read
@@ -330,17 +365,21 @@ export function buildBatch(
     // Served bytes/sec for a storage/CDN service (node-model Phase 5.2) — the window holds ~1s of
     // accumulated served bytes, EMA-smoothed to a rate like the world byte totals below.
     const egressBytesPerSec = ema(state, `m:${ms.id}:egr`, totals.managedEgressBytes?.[ms.id] ?? 0)
-    // Phase 5.4 failure-model gauges, averaged over the steps that actually carried a runtime entry
-    // (a non-DB service never does, and stays 0 across the board).
+    // Phase 5.4 failure-model gauges, averaged over the steps that actually carried a runtime
+    // entry. A DB without a runtime stays 0 across the board (back-compat); a NON-DB service
+    // now publishes its per-class base latency with an M/M/1 queueing multiplier under load
+    // (audit ISSUE-037) instead of a flat 0 — a saturated cache visibly slows down.
     const rtSteps = Math.max(1, mw.runtimeSteps)
     const had = mw.runtimeSteps > 0
+    const isDb = !!managedDbEngine(ms.nodeType)
+    const classP50 = !had && !isDb ? managedLatencyMs(ms.nodeType, utilization) : 0
     managedServices[ms.id] = {
       managedServiceId: ms.id, rps, refusedRps, utilization, health, egressBytesPerSec,
       errorRps,
-      saturation: had ? mw.saturationSum / rtSteps : 0,
-      p50Ms: had ? mw.latencySum / rtSteps : 0,
-      p99Ms: had ? mw.p99Sum / rtSteps : 0,
-      connections: had ? mw.connectionsSum / rtSteps : 0,
+      saturation: had ? mw.saturationSum / rtSteps : (isDb ? 0 : utilization),
+      p50Ms: had ? mw.latencySum / rtSteps : classP50,
+      p99Ms: had ? mw.p99Sum / rtSteps : classP50 * MANAGED_P99_OVER_P50,
+      connections: had ? mw.connectionsSum / rtSteps : (isDb ? 0 : rps * classP50 / 1000),
     }
   }
 

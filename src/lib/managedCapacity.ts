@@ -38,3 +38,46 @@ export function managedCapacityRps(ms: ManagedService): number | null {
   if (ms.capacityRps != null && ms.capacityRps > 0) return ms.capacityRps
   return MANAGED_DEFAULT_CAPACITY_RPS[ms.nodeType] ?? Number.POSITIVE_INFINITY
 }
+
+// ── Per-class base latency + load-dependent queueing (audit ISSUE-037) ──────────────────────
+// Every non-DB managed service used to book one flat 3 ms regardless of type or load — a cache
+// hit and an object-store GET are an order of magnitude apart, and a saturated queue should
+// visibly slow down. Same coarse-but-honest register as the capacity table above. DB nodes are
+// NOT served from here: their latency comes from the instance-class failure model
+// (managedDbRuntime.ts); a type absent from this table keeps the historical 3 ms.
+export const MANAGED_BASE_LATENCY_MS: Record<string, number> = {
+  queue: 5,
+  eventBus: 6,
+  pubsub: 6,
+  stream: 8,
+  redis: 0.5,
+  memcached: 0.4,
+  cdn: 8,
+  cdnCache: 8,
+  apiGateway: 5,
+  lambda: 15,
+  objectStorage: 15,
+  fileStorage: 10,
+  dns: 1,
+  firewall: 1,
+  loadBalancer: 1,
+  vpn: 12,
+}
+
+// Mirrors worldEngine/flows.ts's MANAGED_SERVICE_LATENCY_MS (3) — repeated here as a literal
+// because importing it would invert the layering (flows.ts imports this module).
+const DEFAULT_MANAGED_LATENCY_MS = 3
+
+// Documented tail spread for the coarse managed model (a DB's runtime carries its own p99).
+export const MANAGED_P99_OVER_P50 = 3
+
+export function managedBaseLatencyMs(nodeType: string): number {
+  return MANAGED_BASE_LATENCY_MS[nodeType] ?? DEFAULT_MANAGED_LATENCY_MS
+}
+
+// Load-dependent service latency: M/M/1-shaped queueing multiplier `base / (1 − ρ)` on the
+// class base, ρ capped at 0.95 so a saturated service reads ~20× base rather than diverging.
+export function managedLatencyMs(nodeType: string, utilization: number): number {
+  const rho = Math.min(0.95, Math.max(0, utilization))
+  return managedBaseLatencyMs(nodeType) / (1 - rho)
+}

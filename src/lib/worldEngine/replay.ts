@@ -4,7 +4,7 @@
 import type { ReplayFrame, TracedRequest, RenderScope } from './types'
 import type { Rng } from './rng'
 import type { InstanceFlow } from './flows'
-import { MANAGED_SERVICE_LATENCY_MS } from './flows'
+import { managedBaseLatencyMs } from '../managedCapacity'
 import type { ManagedDbRuntime } from '../managedDbRuntime'
 import { hopLatencyMs } from './networkRuntime'
 import { REGION_GEO } from '../world/regionGeo'
@@ -93,10 +93,13 @@ export function createTracer(rng: Rng): Tracer {
         let latencyMs = 0
         if (!row.blocked) {
           const fromRegionCatalogId = doc.regions[compiled.instances[cur]?.regionId]?.catalogId ?? null
+          // Managed hop time: the DB runtime's p50 when available, else the target's per-class
+          // base latency (audit ISSUE-037 — a cache hit and an object-store GET are no longer
+          // both booked at one flat constant; unknown types keep the historical 3 ms).
           const downstreamServiceMs = row.toInstanceId
             ? (flows[row.toInstanceId]?.serviceLatencyMs ?? 1)
             : (row.toManagedServiceId ? managedDbRuntime?.[row.toManagedServiceId]?.p50Ms : undefined)
-              ?? MANAGED_SERVICE_LATENCY_MS
+              ?? managedBaseLatencyMs(doc.managedServices[row.toManagedServiceId ?? '']?.nodeType ?? '')
           const toRegionCatalogId = row.toInstanceId
             ? (doc.regions[compiled.instances[row.toInstanceId]?.regionId]?.catalogId ?? null)
             : null

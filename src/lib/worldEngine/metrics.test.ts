@@ -94,6 +94,42 @@ describe('metrics pyramid', () => {
     expect(b2.instances[f.i1].rps).toBeCloseTo(70, 1)       // 0.3·0 + 0.7·100
   })
 
+  // Audit ISSUE-041: percentiles interpolate between ranks (p50 of 10..100 is 55, not the 6th
+  // sample) over a rolling multi-second reservoir, so p99 is no longer just max-of-10.
+  it('latency percentiles interpolate instead of nearest-rank (ISSUE-041)', () => {
+    const f = fixture()
+    const state = createMetricsState()
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state,
+        { [f.i1]: flow(f.i1, 100, { serviceLatencyMs: (s + 1) * 10 }) },   // 10, 20, … 100
+        { [f.s1.id]: host() }, {}, {}, healthy, s * 100)
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    expect(batch.instances[f.i1].p50Ms).toBeCloseTo(55, 1)     // (50+60)/2, not sample[5]=60
+    expect(batch.instances[f.i1].p99Ms).toBeCloseTo(99.1, 1)   // interpolated, not max=100
+  })
+
+  // Audit ISSUE-037: p99 is published UN-smoothed — a 1 s latency spike appears at full size in
+  // the tail metric instead of being attenuated to ~30% by the EMA.
+  it('p99 shows a transient spike at full size while p50 stays EMA-smoothed', () => {
+    const f = fixture()
+    const state = createMetricsState()
+    const second = (latency: number, simBase: number) => {
+      for (let s = 0; s < 10; s++) {
+        accumulateStep(state, { [f.i1]: flow(f.i1, 100, { serviceLatencyMs: latency }) },
+          { [f.s1.id]: host() }, {}, {}, healthy, simBase + s * 100)
+      }
+    }
+    second(10, 0)
+    buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    second(10, 1000)
+    buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 2000)
+    second(500, 2000)   // the spike second
+    const spiked = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 3000)
+    expect(spiked.instances[f.i1].p99Ms).toBeCloseTo(500, 0)          // full-size, immediately
+    expect(spiked.instances[f.i1].p50Ms).toBeLessThan(200)            // p50 still smoothed
+  })
+
   it('computes healthScore = 100 × (1 − errorRate) × healthFactor', () => {
     const f = fixture()
     const state = createMetricsState()
@@ -294,6 +330,53 @@ describe('metrics: managed-DB runtime gauges (Phase 5.4)', () => {
     expect(m.rps).toBeCloseTo(400, 1)
     expect(m.refusedRps).toBeCloseTo(100, 1)   // throttle only
     expect(m.errorRps).toBeCloseTo(60, 1)      // timeouts split out
+  })
+
+  // Audit ISSUE-046: a DB with a runtime entry but NO traffic this step must not have its
+  // windowed rps averaged toward zero — `steps` counts only steps that carried a row.
+  it('idle runtime-only steps do not dilute the windowed rps (ISSUE-046)', () => {
+    const f = fixture()
+    const ms = addManagedDb(f)
+    const state = createMetricsState()
+    const runtime = managedDbRuntimeFor(f.doc.managedServices[ms.id], 300, 0)!
+    // 5 steps WITH 300 rps of rows + 5 steps with a runtime entry but no rows at all.
+    for (let s = 0; s < 5; s++) {
+      accumulateStep(state, { [f.i1]: flow(f.i1, 100, { downstream: [dsRow(ms.id, 300)] }) },
+        { [f.s1.id]: host() }, { [f.s1.id]: vps }, { [f.s1.id]: nic }, healthy, s * 100,
+        { [ms.id]: runtime })
+    }
+    for (let s = 5; s < 10; s++) {
+      accumulateStep(state, { [f.i1]: flow(f.i1, 100) },
+        { [f.s1.id]: host() }, { [f.s1.id]: vps }, { [f.s1.id]: nic }, healthy, s * 100,
+        { [ms.id]: runtime })
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    // Old behavior: steps=10 ⇒ rps averaged to 150. Correct: 5 row-carrying steps ⇒ 300.
+    expect(batch.managedServices![ms.id].rps).toBeCloseTo(300, 1)
+  })
+
+  // Audit ISSUE-037: a non-DB managed service publishes its per-class base latency with an
+  // M/M/1 queueing multiplier under load — not a flat 0.
+  it('a non-DB managed service publishes class base latency that rises with utilization', () => {
+    const f = fixture()
+    // objectStorage: base 15 ms, flat ceiling 5500 rps.
+    const ms = addManagedDb(f, { nodeType: 'objectStorage', instanceClassId: null })
+    const state = createMetricsState()
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state, { [f.i1]: flow(f.i1, 100, { downstream: [dsRow(ms.id, 550)] }) },
+        { [f.s1.id]: host() }, { [f.s1.id]: vps }, { [f.s1.id]: nic }, healthy, s * 100)
+    }
+    const lowLoad = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000).managedServices![ms.id]
+    expect(lowLoad.p50Ms).toBeCloseTo(15 / (1 - 0.1), 1)   // ρ = 550/5500 = 0.1
+    expect(lowLoad.p99Ms!).toBeGreaterThan(lowLoad.p50Ms!)
+
+    const state2 = createMetricsState()
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state2, { [f.i1]: flow(f.i1, 100, { downstream: [dsRow(ms.id, 4950)] }) },
+        { [f.s1.id]: host() }, { [f.s1.id]: vps }, { [f.s1.id]: nic }, healthy, s * 100)
+    }
+    const highLoad = buildBatch(state2, f.doc, f.compiled, snapshot(f, 100), totals, 1000).managedServices![ms.id]
+    expect(highLoad.p50Ms!).toBeGreaterThan(lowLoad.p50Ms! * 5)   // saturation term bites
   })
 
   it('defaults the new gauges to 0 when no runtime is supplied (back-compat)', () => {

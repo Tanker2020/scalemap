@@ -776,6 +776,25 @@ describe('solveFlows — queue model (ISSUE-013)', () => {
     expect(flows[db.iid]?.offeredRps ?? 0).toBeGreaterThan(0)   // drained work still called the db
   })
 
+  // Audit ISSUE-042 (verified subsumed by the queue model): the old proportional path errored
+  // 30% of a degraded instance's offered load unconditionally — "errors" that fed the health
+  // error-rate signal and could push a merely-degraded scope toward down. In queue mode a
+  // degraded instance just has 0.7× capacity; under light load it serves EVERYTHING, so no
+  // phantom error signal exists to spiral on.
+  it('a degraded instance under light load reports zero errors, not 30% (ISSUE-042)', () => {
+    const { doc, api } = queueWorld()
+    const qd = new Map<string, number>()
+    for (let i = 0; i < 10; i++) {
+      const f = solveFlows(baseInput(doc, { [api.iid]: 50 }, {
+        serviceRateByInstance: { [api.iid]: 100 },   // degraded ⇒ effective capacity 70 > 50 offered
+        queueDepth: qd, stepSec: STEP,
+        healthOf: () => 'degraded' as HealthState,
+      })).flows[api.iid]
+      expect(f.admittedRps).toBeCloseTo(50, 6)
+      expect(f.errorRps).toBeCloseTo(0, 6)
+    }
+  })
+
   it('a down instance has zero capacity AND zero queue — its demand errors instantly', () => {
     const { doc, api } = queueWorld()
     const qd = new Map<string, number>([[api.iid, 50]])
