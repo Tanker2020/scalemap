@@ -9,7 +9,7 @@ import type {
 } from './types'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
-  ServiceInstance, CompiledLbRouting,
+  ServiceInstance, CompiledLbRouting, Server, AvailabilityZone,
 } from '../world/types'
 import { routeMatchesPattern, listRoutes } from '../nodeConfig'
 import { createRng, type Rng } from './rng'
@@ -105,6 +105,13 @@ interface EngineState {
   callbacks: EngineCallbacks
   entryBlueprintIds: BlueprintId[]           // blueprints with a 'public' port = client entry points
   routePathById: Map<string, string>         // routeId → route path, for L7 listener-rule matching
+
+  // Static topology indexes built once at start() (audit ISSUE-032): the per-step health
+  // propagation loops read these instead of re-filtering doc.servers/doc.azs per AZ/region
+  // every step — the exact unindexed-lookup regression groupInstancesByServer's comment warns
+  // against. The doc is frozen for the run, so these can never go stale.
+  serversByAz: Map<AzId, Server[]>
+  azsByRegion: Map<RegionId, AvailabilityZone[]>
 
   routing: RoutingState
   failover: FailoverState
@@ -460,16 +467,17 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         manualDown: s.failover.manualOutages.has(server.id),
       }, simMs)
     }
+    // Audit ISSUE-032: AZ/region rollups read the start()-built serversByAz/azsByRegion indexes —
+    // per-step filters over doc.servers/doc.azs made this stage O(regions × azs × servers).
     for (const az of Object.values(doc.azs)) {
-      const srv = Object.values(doc.servers).filter(v => v.azId === az.id)
+      const srv = s.serversByAz.get(az.id) ?? []
       const offered = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.offered ?? 0), 0)
       const errors = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.errors ?? 0), 0)
       const cpu = srv.reduce((m, v) => Math.max(m, hostResults[v.id]?.cpuPressure ?? 0), 0)
       applyHealth('az', az.id, { errorRate: offered > MIN_HEALTH_SIGNAL_RPS ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(az.id) ?? false, manualDown: s.failover.manualOutages.has(az.id) }, simMs)
     }
     for (const region of Object.values(doc.regions)) {
-      const azsIn = Object.values(doc.azs).filter(a => a.regionId === region.id)
-      const srv = Object.values(doc.servers).filter(v => azsIn.some(a => a.id === v.azId))
+      const srv = (s.azsByRegion.get(region.id) ?? []).flatMap(a => s.serversByAz.get(a.id) ?? [])
       const offered = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.offered ?? 0), 0)
       const errors = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.errors ?? 0), 0)
       const cpu = srv.reduce((m, v) => Math.max(m, hostResults[v.id]?.cpuPressure ?? 0), 0)
@@ -774,6 +782,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         running: true, seed, rng: createRng(seed), clock: createClock(DEFAULT_STEP_MS), stepMs: DEFAULT_STEP_MS,
         timeScale: 1, doc, compiled, callbacks, entryBlueprintIds: entryBlueprints(doc),
         routePathById: buildRoutePathById(doc),
+        serversByAz: groupBy(Object.values(doc.servers), sv => sv.azId),
+        azsByRegion: groupBy(Object.values(doc.azs), az => az.regionId),
         routing: createRoutingState(), failover: createFailoverState(),
         vpsStates: new Map(Object.values(doc.servers).map(sv => [sv.id, createVpsState(sv)])),
         vpsFactor: new Map(),
@@ -842,6 +852,18 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
 }
 
 const frac = (x: number): number => x - Math.floor(x)
+
+// Order-preserving single-pass grouping (audit ISSUE-032) — same shape as groupInstancesByServer.
+function groupBy<T, K>(items: T[], keyOf: (item: T) => K): Map<K, T[]> {
+  const m = new Map<K, T[]>()
+  for (const item of items) {
+    const key = keyOf(item)
+    const list = m.get(key)
+    if (list) list.push(item)
+    else m.set(key, [item])
+  }
+  return m
+}
 const perfNow = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now())
 
 // Shared singleton the store drives; tests construct their own via createWorldEngine().
