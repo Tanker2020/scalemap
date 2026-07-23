@@ -74,6 +74,39 @@ describe('evaluateInstancePath / compileWorld paths', () => {
     expect(compiled.findings).toHaveLength(0)
   })
 
+  // Audit ISSUE-065: overlay networks (Swarm/CNI semantics) span SERVERS — co-networked
+  // containers on different hosts communicate without publishing host ports, while plain
+  // compose bridge networks stay per-host.
+  it('permits cross-server container traffic over a shared overlay network without host publishing (ISSUE-065)', () => {
+    const { doc, web, db } = twoServerWorld()
+    const api = createBlueprint('api', 0)
+    const pg = createBlueprint('pg', 1)
+    pg.ports = [{ port: 5432, protocol: 'tcp', visibility: 'internal' }]
+    api.dependencies = [{ id: 'dep-1', target: { kind: 'blueprint', blueprintId: pg.id }, port: 5432, protocol: 'db', packetTemplateId: null }]
+    Object.assign(doc.blueprints, { [api.id]: api, [pg.id]: pg })
+    const containerOn = (overlay: boolean): PlacementRuntime => ({
+      type: 'container', stackName: 'app', networkNames: ['backend'],
+      ...(overlay ? { overlayNetworkNames: ['mesh'] } : {}),
+      portMappings: [], cpuLimit: null, memLimitMb: null,   // NOTHING published on the host
+    })
+    const plApi = { ...createPlacement(api.id, web.id), runtime: containerOn(true) }
+    const plPg = { ...createPlacement(pg.id, db.id), runtime: containerOn(true) }
+    Object.assign(doc.placements, { [plApi.id]: plApi, [plPg.id]: plPg })
+
+    const compiled = compileWorld(doc)
+    expect(compiled.paths).toHaveLength(1)
+    // Permitted over the overlay; the hop keeps its REAL network class (the overlay removes the
+    // publishing barrier, not the physical distance).
+    expect(compiled.paths[0]).toMatchObject({ verdict: 'permitted', hopClass: 'same-az' })
+
+    // Same stack + same bridge network name but NO overlay: bridges are per-host — still blocked
+    // without a host port mapping (the pre-ISSUE-065 behavior is preserved).
+    plApi.runtime = containerOn(false)
+    plPg.runtime = containerOn(false)
+    const withoutOverlay = compileWorld(doc)
+    expect(withoutOverlay.paths[0]).toMatchObject({ verdict: 'blocked' })
+  })
+
   it('blocks with firewall-deny (and emits a finding) when the target denies the port', () => {
     const { doc, web, db } = twoServerWorld()
     db.firewall = [{ id: 'deny5432', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' }]

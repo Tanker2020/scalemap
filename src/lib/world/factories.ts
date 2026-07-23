@@ -21,6 +21,7 @@ export function createWorld(): WorldDoc {
       priorityOrder: [],
       healthCheckIntervalMs: 10_000,
       healthCheckFailureThreshold: 3,
+      healthCheckTimeoutMs: 5_000,   // audit ISSUE-061 — probe timeout, part of real detection time
       dnsTtlSec: 30,
     },
     populations: {},

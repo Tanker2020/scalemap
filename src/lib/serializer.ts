@@ -104,7 +104,7 @@ export function deserializeWorld(raw: string): ScalemapFileV3 {
     healthCheckIntervalMs: src.world.routing.healthCheckIntervalMs ?? 10_000,
     healthCheckFailureThreshold: src.world.routing.healthCheckFailureThreshold ?? 3,
   }
-  for (const field of ['dnsTtlSec', 'healthCheckIntervalMs', 'healthCheckFailureThreshold'] as const) {
+  for (const field of ['dnsTtlSec', 'healthCheckIntervalMs', 'healthCheckFailureThreshold', 'healthCheckTimeoutMs'] as const) {
     finiteOrThrow((routing as unknown as Record<string, unknown>)[field], `routing.${field}`)
   }
   for (const server of Object.values(src.world.servers)) {

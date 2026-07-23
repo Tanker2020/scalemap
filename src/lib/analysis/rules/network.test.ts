@@ -54,6 +54,20 @@ describe('network: db-port-exposed', () => {
     expect(f.length).toBeGreaterThanOrEqual(1)
     expect(f[0].affected).toContain(s2.id)
   })
+  // Audit ISSUE-068: sub-rule (b) is placement-gated — an UNPLACED blueprint with a public db
+  // port is a design sketch, not a live "critical" exposure; placing it makes it one.
+  it('stays silent for an unplaced public-port db blueprint until it is placed (ISSUE-068)', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const s1 = s.server(az.id)
+    const web = s.blueprint('web', 0); const db = s.blueprint('db', 1)
+    db.ports = [{ port: 5432, protocol: 'tcp', visibility: 'public' }]
+    web.dependencies = [dep('d-db', db.id, 'db', 5432)]
+    s.placement(web.id, s1.id)   // db NOT placed anywhere
+    expect(ids(run(s), 'db-port-exposed').some(x => x.affected[0] === db.id)).toBe(false)
+    s.placement(db.id, s1.id)    // now it's live
+    expect(ids(run(s), 'db-port-exposed').some(x => x.affected[0] === db.id)).toBe(true)
+  })
   it('fires via public visibility even without a firewall hole', () => {
     const s = scenario()
     const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')

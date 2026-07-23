@@ -2,6 +2,15 @@
 // Semantics (spec D10 + plan "Semantics locked here"): same-server traffic never hits the
 // firewall; cross-server evaluates the TARGET server's rules first-match-wins with default
 // deny; in Phase 1 every in-world flow counts as 'internal' and CIDR sources match it.
+//
+// ── Firewall model, stated explicitly (audit ISSUE-064) ─────────────────────────────────────
+// This is an ORDERED, FIRST-MATCH-WINS rule list with allow AND deny actions and an implicit
+// default-deny — iptables/network-ACL semantics. It is deliberately NOT an AWS Security Group:
+// an SG is an unordered permissive UNION (allow rules only, no deny, no ordering, implicit deny
+// only as the absence of any allow). Users reasoning in SG terms should note the differences:
+// a deny rule above an allow WINS here, and rule ORDER matters. One model, one evaluator
+// (firewallFirstMatch below, audit ISSUE-063) — an SG-style union-allow mode would be a second
+// evaluator behind a model flag, deliberately not implemented until authoring demand exists.
 import type {
   Server, AvailabilityZone, FirewallRule, FirewallSource, ServiceBlueprint, PlacementRuntime,
   HopClass, BlockReason,
@@ -19,17 +28,26 @@ export function isInternetSource(source: FirewallSource): boolean {
   return prefix !== '' && Number(prefix) === 0
 }
 
+// THE first-match rule (audit ISSUE-063): the single definition of "which firewall rule
+// matches a port" for BOTH the compile-side verdict (evaluateFirewall below) and the analysis
+// rules (network.ts's openToAny/db-port-exposed/entry-unreachable read the returned rule's
+// action + source themselves). Two divergent copies of this loop existed before — a latent
+// security-logic split waiting to drift. null = no match = default deny.
+export function firewallFirstMatch(rules: FirewallRule[], port: number): FirewallRule | null {
+  for (const rule of rules) {
+    const portMatches = rule.port === 'any' || rule.port === port
+    const protocolMatches = rule.protocol === 'any' || rule.protocol === 'tcp' // all Phase-1 dep protocols ride tcp
+    if (portMatches && protocolMatches) return rule
+  }
+  return null
+}
+
 export function evaluateFirewall(
   rules: FirewallRule[],
   port: number,
 ): { allowed: boolean; matchedRuleId: string | null } {
-  for (const rule of rules) {
-    const portMatches = rule.port === 'any' || rule.port === port
-    const protocolMatches = rule.protocol === 'any' || rule.protocol === 'tcp' // all Phase-1 dep protocols ride tcp
-    if (portMatches && protocolMatches) {
-      return { allowed: rule.action === 'allow', matchedRuleId: rule.id }
-    }
-  }
+  const match = firewallFirstMatch(rules, port)
+  if (match) return { allowed: match.action === 'allow', matchedRuleId: match.id }
   return { allowed: false, matchedRuleId: null } // default deny
 }
 
@@ -90,17 +108,28 @@ export function evaluateInstancePath(ctx: InstancePathContext): PathEvaluation {
     fromRuntime.type === 'container' &&
     fromRuntime.stackName === toRuntime.stackName &&
     fromRuntime.networkNames.some(n => toRuntime.networkNames.includes(n))
+  // Overlay networks span servers (audit ISSUE-065): Swarm/CNI semantics — co-networked
+  // containers on DIFFERENT hosts communicate over the overlay without host port publishing.
+  // The compose bridge (`networkNames`) stays per-host; only overlayNetworkNames cross it.
+  const sharedOverlay =
+    !sharedNetwork &&
+    fromRuntime.type === 'container' &&
+    fromRuntime.stackName === toRuntime.stackName &&
+    (fromRuntime.overlayNetworkNames ?? []).some(n => (toRuntime.overlayNetworkNames ?? []).includes(n))
 
-  if (sharedNetwork) {
-    // Container-to-container over the compose bridge: the CONTAINER port must be bound.
+  if (sharedNetwork || sharedOverlay) {
+    // Container-to-container over the bridge/overlay: the CONTAINER port must be bound.
+    // A same-host hop stays 'localhost'; an overlay hop keeps its REAL network class (the
+    // overlay removes the firewall/publishing barrier, not the physical distance).
+    const overlayHop = sharedOverlay && !sameServer ? hopClass : 'localhost'
     if (!bindsPort) {
-      return blocked('localhost', {
+      return blocked(overlayHop, {
         kind: 'no-port-binding',
         detail: `${toBlueprint.name} container does not bind port ${port}`,
         firewallRuleId: null,
       })
     }
-    return permitted('localhost')
+    return permitted(overlayHop)
   }
 
   // Off-network access needs the container port published on the host.

@@ -1,20 +1,11 @@
-// Network/security analysis rules (Phase 6 D2). Pure. Replicates a SOURCE-aware first-match firewall
-// loop because src/lib/world/network.ts's evaluateFirewall ignores `source` (Phase-1 all-internal).
+// Network/security analysis rules (Phase 6 D2). Pure. Rule matching comes from the ONE shared
+// evaluator in src/lib/world/network.ts (audit ISSUE-063 — this file used to carry its own copy
+// of the first-match loop, a security-logic split waiting to drift); these rules stay the
+// source-AWARE consumers, reading the matched rule's action + source themselves.
 import type { AnalysisFinding, AnalysisRule } from '../types'
 import type { FirewallRule } from '../../world/types'
-import { isInternetSource } from '../../world/network'
+import { isInternetSource, firewallFirstMatch } from '../../world/network'
 import { getRoute, routeMatchesPattern } from '../../nodeConfig'
-
-// First rule (array order) that matches the port+tcp; null = default deny. Source-aware callers read
-// match.action + match.source themselves.
-function firewallFirstMatch(rules: FirewallRule[], port: number): FirewallRule | null {
-  for (const r of rules) {
-    const portOk = r.port === 'any' || r.port === port
-    const protoOk = r.protocol === 'any' || r.protocol === 'tcp'
-    if (portOk && protoOk) return r
-  }
-  return null
-}
 // Internet-open = 'any' OR an all-covering CIDR like '0.0.0.0/0'/'::/0' (audit ISSUE-011) —
 // shared by db-port-exposed (no false negatives) and entry-unreachable (no false positives).
 const openToAny = (rules: FirewallRule[], port: number): FirewallRule | null => {
@@ -84,13 +75,18 @@ const dbPortExposed: AnalysisRule = {
     }
 
     // (b) a blueprint that is a db-dependency target AND declares a public-visibility port.
+    // Placement-gated (audit ISSUE-068): a never-deployed blueprint is a design sketch, not a
+    // live exposure — sub-rule (a) already walks placed instances, and (b) must match that bar
+    // instead of flagging "critical" on something with zero compiled instances.
+    const placedBlueprints = new Set<string>()
+    for (const inst of Object.values(compiled.instances)) placedBlueprints.add(inst.blueprintId)
     const dbTargets = new Set<string>()
     for (const bp of Object.values(doc.blueprints))
       for (const d of bp.dependencies)
         if (d.protocol === 'db' && d.target.kind === 'blueprint') dbTargets.add(d.target.blueprintId)
     for (const bpId of dbTargets) {
       const bp = doc.blueprints[bpId]
-      if (!bp || !bp.ports.some(p => p.visibility === 'public')) continue
+      if (!bp || !placedBlueprints.has(bpId) || !bp.ports.some(p => p.visibility === 'public')) continue
       push({
         id: `db-port-exposed:${bp.id}`, ruleId: 'db-port-exposed', family: 'network', severity: 'critical',
         title: 'Database blueprint has a public port',

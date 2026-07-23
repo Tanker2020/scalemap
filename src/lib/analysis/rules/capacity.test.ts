@@ -33,24 +33,65 @@ describe('capacity: ram-oversubscribed', () => {
     pl.runtime = { type: 'container', stackName: 'app', networkNames: [], portMappings: [], cpuLimit: null, memLimitMb: 1000 }
     expect(ids(runAnalysis(s.doc, s.compile(), null), 'ram-oversubscribed')).toHaveLength(0)
   })
+
+  // Audit ISSUE-066: RAM demand under LOAD includes ramPerConnMb × live activeConnections — a
+  // static reservation that fits can still OOM once connections pile up.
+  it('counts live per-connection RAM growth from the batch (ISSUE-066)', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const srv = s.server(az.id) // dedicated-8 → 32768 MB
+    const bp = s.blueprint('web')
+    bp.workload.ramBaseMb = 1000
+    bp.workload.ramPerConnMb = 8
+    s.placement(bp.id, srv.id)   // process runtime — no memLimit cap
+    const compiled = s.compile()
+    const iid = Object.keys(compiled.instances)[0]
+    // Static-only: 1000 MB fits easily; silent without a batch.
+    expect(ids(runAnalysis(s.doc, compiled, null), 'ram-oversubscribed')).toHaveLength(0)
+    // 5000 live connections × 8 MB = 40000 MB of growth ⇒ over the 32768 MB host.
+    const batch = { servers: {}, instances: { [iid]: { activeConnections: 5000 } } } as unknown as MetricsBatch
+    const f = ids(runAnalysis(s.doc, compiled, batch), 'ram-oversubscribed')
+    expect(f).toHaveLength(1)
+    expect(f[0].why).toMatch(/per-connection/)
+  })
 })
 
 describe('capacity: burstable-sustained-load', () => {
-  it('fires when a burstable VPS averages > 40% CPU', () => {
+  it('fires when a burstable VPS averages above its credit baseline', () => {
     const s = scenario()
     const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
-    const srv = s.server(az.id, 'vps-small') // burstable
+    const srv = s.server(az.id, 'vps-small') // burstable, baseline 0.2
     s.placement(s.blueprint('web').id, srv.id)
     const f = ids(runAnalysis(s.doc, s.compile(), batchWith(srv.id, [0.5, 0.5])), 'burstable-sustained-load')
     expect(f).toHaveLength(1)
     expect(f[0].affected).toEqual([srv.id])
   })
-  it('silent below the 40% threshold', () => {
+  it('silent at or below the preset baseline', () => {
     const s = scenario()
     const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
     const srv = s.server(az.id, 'vps-small')
     s.placement(s.blueprint('web').id, srv.id)
     expect(ids(runAnalysis(s.doc, s.compile(), batchWith(srv.id, [0.2, 0.2])), 'burstable-sustained-load')).toHaveLength(0)
+  })
+  // Audit ISSUE-067: the threshold is the PRESET's credit baseline, not one hardcoded 40% — a
+  // small burstable at 30% sustained is already draining credits; a bigger one is not.
+  it('reads the per-preset baseline: vps-small (20%) fires at 30%, vps-medium (30%) does not', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const small = s.server(az.id, 'vps-small')    // baseline 0.2
+    const medium = s.server(az.id, 'vps-medium')  // baseline 0.3
+    s.placement(s.blueprint('web').id, small.id)
+    s.placement(s.blueprint('api', 1).id, medium.id)
+    const batch = {
+      servers: {
+        [small.id]: { coreUtilization: [0.3, 0.3] },
+        [medium.id]: { coreUtilization: [0.3, 0.3, 0.3, 0.3] },
+      },
+    } as unknown as MetricsBatch
+    const f = ids(runAnalysis(s.doc, s.compile(), batch), 'burstable-sustained-load')
+    expect(f).toHaveLength(1)
+    expect(f[0].affected).toEqual([small.id])
+    expect(f[0].why).toMatch(/20%/)
   })
   it('silent with a null batch', () => {
     const s = scenario()
@@ -62,14 +103,17 @@ describe('capacity: burstable-sustained-load', () => {
 })
 
 describe('capacity: ocean-crossing-population', () => {
-  it('fires when the first region is > 1.5× the nearest', () => {
+  // Audit ISSUE-062: the km check only judges DISTANCE-driven policies (geo/latency), where a
+  // far-first ordering signals a scoring bug (the ISSUE-009 class). The fire case simulates
+  // exactly that mis-scored ordering on the compiled output under the default latency policy.
+  it('fires when a distance policy produces a first region > 1.5× the nearest', () => {
     const s = scenario()
     const r1 = s.region('us-east-1'); s.az(r1.id, 'us-east-1a')
     const r2 = s.region('eu-west-1'); s.az(r2.id, 'eu-west-1a')
-    s.doc.routing.policy = 'priority'
-    s.doc.routing.priorityOrder = [r1.id, r2.id] // forces us-east-1 first for a London pop
     const pop = s.population('london', 51.5, -0.1)
-    const f = ids(runAnalysis(s.doc, s.compile(), null), 'ocean-crossing-population')
+    const compiled = s.compile()
+    compiled.routing.populationRegionOrder[pop.id] = [r1.id, r2.id]   // simulated mis-scoring
+    const f = ids(runAnalysis(s.doc, compiled, null), 'ocean-crossing-population')
     expect(f).toHaveLength(1)
     expect(f[0].affected).toEqual([pop.id, r1.id, r2.id])
   })
@@ -77,8 +121,17 @@ describe('capacity: ocean-crossing-population', () => {
     const s = scenario()
     const r1 = s.region('us-east-1'); s.az(r1.id, 'us-east-1a')
     const r2 = s.region('eu-west-1'); s.az(r2.id, 'eu-west-1a')
+    s.population('london', 51.5, -0.1)
+    expect(ids(runAnalysis(s.doc, s.compile(), null), 'ocean-crossing-population')).toHaveLength(0)
+  })
+  // Audit ISSUE-062's verification: a deliberate far route under an explicit priority order is
+  // operator INTENT, not a design smell — the rule must stay silent (same for weighted splits).
+  it('silent under a deliberate priority order to a far region (ISSUE-062)', () => {
+    const s = scenario()
+    const r1 = s.region('us-east-1'); s.az(r1.id, 'us-east-1a')
+    const r2 = s.region('eu-west-1'); s.az(r2.id, 'eu-west-1a')
     s.doc.routing.policy = 'priority'
-    s.doc.routing.priorityOrder = [r2.id, r1.id]
+    s.doc.routing.priorityOrder = [r1.id, r2.id] // forces us-east-1 first for a London pop
     s.population('london', 51.5, -0.1)
     expect(ids(runAnalysis(s.doc, s.compile(), null), 'ocean-crossing-population')).toHaveLength(0)
   })
@@ -95,21 +148,32 @@ describe('capacity: ocean-crossing-population', () => {
 describe('capacity: ttl-outlives-detection', () => {
   it('fires when the DNS TTL outlives the failure-detection window', () => {
     const s = scenario()
-    s.doc.routing.dnsTtlSec = 300 // 300000ms > 10000×3 = 30000ms — stale cache dominates failover
+    // 300000ms > 10000×3 + 5000 probe timeout = 35000ms (audit ISSUE-061 folds the timeout in)
+    s.doc.routing.dnsTtlSec = 300
     const f = ids(runAnalysis(s.doc, s.compile(), null), 'ttl-outlives-detection')
     expect(f).toHaveLength(1)
     expect(f[0].affected).toEqual([])
     expect(f[0].id).toBe('ttl-outlives-detection:world')
-    expect(f[0].why).toMatch(/300000/); expect(f[0].why).toMatch(/30000/)
+    expect(f[0].why).toMatch(/300000/); expect(f[0].why).toMatch(/35000/)
     expect(f[0].fix).toMatch(/lower/i)
   })
   it('silent when the TTL is below the detection window (short TTL is healthy)', () => {
     const s = scenario()
-    s.doc.routing.dnsTtlSec = 5 // 5000ms < 30000ms — clients re-resolve promptly after detection
+    s.doc.routing.dnsTtlSec = 5 // 5000ms < 35000ms — clients re-resolve promptly after detection
     expect(ids(runAnalysis(s.doc, s.compile(), null), 'ttl-outlives-detection')).toHaveLength(0)
   })
   it('silent at the default TTL/detection balance', () => {
-    const s = scenario() // dnsTtlSec 30 → 30000ms == 30000ms detection, not >
+    const s = scenario() // dnsTtlSec 30 → 30000ms < 35000ms detection (incl. probe timeout)
+    expect(ids(runAnalysis(s.doc, s.compile(), null), 'ttl-outlives-detection')).toHaveLength(0)
+  })
+  // Audit ISSUE-061: the detection estimate includes one probe timeout — a TTL that fits the
+  // bare interval×threshold window but not the true window (with timeout) must still fire.
+  it('counts the probe timeout inside the detection window (ISSUE-061)', () => {
+    const s = scenario()
+    s.doc.routing.dnsTtlSec = 32          // 32000ms > 30000ms bare, > only WITH the old estimate…
+    s.doc.routing.healthCheckTimeoutMs = 1000   // …true window = 31000ms < 32000 ⇒ fires
+    expect(ids(runAnalysis(s.doc, s.compile(), null), 'ttl-outlives-detection')).toHaveLength(1)
+    s.doc.routing.healthCheckTimeoutMs = 5000   // true window = 35000ms ≥ 32000 ⇒ silent
     expect(ids(runAnalysis(s.doc, s.compile(), null), 'ttl-outlives-detection')).toHaveLength(0)
   })
 })

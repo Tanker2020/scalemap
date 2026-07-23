@@ -24,8 +24,16 @@ export interface RoutingConfig {
   // Consecutive healthy probes required before a failed scope passes again (audit ISSUE-020 —
   // ALB/NLB "healthy threshold" semantics). Optional + additive: absent ⇒ engine default 2.
   healthCheckHealthyThreshold?: number
+  // Per-probe response timeout (audit ISSUE-061). Optional + additive: absent ⇒ default 5000
+  // (DEFAULT_HEALTH_CHECK_TIMEOUT_MS). Consumed by the analysis detection-window estimate —
+  // real detection ≈ interval × failure threshold + one probe timeout.
+  healthCheckTimeoutMs?: number
   dnsTtlSec: number
 }
+
+// Default per-probe timeout (audit ISSUE-061) — ALB-shaped 5 s. Lives here (not the engine) so
+// the analysis rules and any future engine consumption share one value.
+export const DEFAULT_HEALTH_CHECK_TIMEOUT_MS = 5_000
 
 export type DiurnalPattern = 'flat' | 'day-night'
 
@@ -210,6 +218,12 @@ export type PlacementRuntime =
       type: 'container'
       stackName: string
       networkNames: string[]
+      // Cross-host virtual networks (audit ISSUE-065): names listed here span SERVERS — Swarm/
+      // CNI-overlay semantics — so two containers on different hosts sharing an overlay name get
+      // a permitted path WITHOUT publishing host ports. `networkNames` above stays per-host
+      // (compose bridge semantics: same server only). Additive/optional: absent ⇒ no overlays,
+      // the pre-fix behavior.
+      overlayNetworkNames?: string[]
       portMappings: PortMapping[]
       cpuLimit: number | null
       memLimitMb: number | null

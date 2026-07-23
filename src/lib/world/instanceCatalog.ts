@@ -8,15 +8,20 @@ export interface InstancePreset {
   hourlyUsd: number
   oversubscriptionRatio: number | null  // vps only
   burstable: boolean                    // vps only (t3-style credits, engine models in Phase 2)
+  // Burstable credit-neutral utilization (audit ISSUE-067): the mean CPU fraction at which
+  // credits neither accrue nor drain — t3.micro ≈ 10%, t3.medium ≈ 20%, larger burstables more.
+  // Read by the burstable-sustained-load analysis rule instead of one hardcoded 40% for every
+  // size. Optional: absent on a burstable preset ⇒ the rule's conservative default.
+  baselineUtilization?: number
 }
 
 // Pricing is indicative-realistic (2026 commodity market), not provider-quoted; the cloud
 // presets approximate their namesakes so the cost model (Phase 2) lands in the right decade.
 export const INSTANCE_CATALOG: InstancePreset[] = [
-  { id: 'vps-small',    label: 'VPS Small (2 vCPU / 4 GB)',    kind: 'vps', specs: { vcpu: 2,  threadsPerCore: 1, ramMb: 4096,   diskGb: 40,  nicMbps: 500 },   hourlyUsd: 0.018, oversubscriptionRatio: 6, burstable: true },
-  { id: 'vps-medium',   label: 'VPS Medium (4 vCPU / 8 GB)',   kind: 'vps', specs: { vcpu: 4,  threadsPerCore: 1, ramMb: 8192,   diskGb: 80,  nicMbps: 1000 },  hourlyUsd: 0.036, oversubscriptionRatio: 4, burstable: true },
+  { id: 'vps-small',    label: 'VPS Small (2 vCPU / 4 GB)',    kind: 'vps', specs: { vcpu: 2,  threadsPerCore: 1, ramMb: 4096,   diskGb: 40,  nicMbps: 500 },   hourlyUsd: 0.018, oversubscriptionRatio: 6, burstable: true, baselineUtilization: 0.2 },
+  { id: 'vps-medium',   label: 'VPS Medium (4 vCPU / 8 GB)',   kind: 'vps', specs: { vcpu: 4,  threadsPerCore: 1, ramMb: 8192,   diskGb: 80,  nicMbps: 1000 },  hourlyUsd: 0.036, oversubscriptionRatio: 4, burstable: true, baselineUtilization: 0.3 },
   { id: 'vps-large',    label: 'VPS Large (8 vCPU / 16 GB)',   kind: 'vps', specs: { vcpu: 8,  threadsPerCore: 1, ramMb: 16384,  diskGb: 160, nicMbps: 2000 },  hourlyUsd: 0.071, oversubscriptionRatio: 3, burstable: false },
-  { id: 'aws-t3-medium',  label: 'AWS t3.medium (2 vCPU / 4 GB)',   kind: 'vps', specs: { vcpu: 2, threadsPerCore: 2, ramMb: 4096,  diskGb: 60,  nicMbps: 1000 }, hourlyUsd: 0.0416, oversubscriptionRatio: 4, burstable: true },
+  { id: 'aws-t3-medium',  label: 'AWS t3.medium (2 vCPU / 4 GB)',   kind: 'vps', specs: { vcpu: 2, threadsPerCore: 2, ramMb: 4096,  diskGb: 60,  nicMbps: 1000 }, hourlyUsd: 0.0416, oversubscriptionRatio: 4, burstable: true, baselineUtilization: 0.2 },
   { id: 'aws-m7i-large', label: 'AWS m7i.large (2 vCPU / 8 GB)',   kind: 'vps', specs: { vcpu: 2, threadsPerCore: 2, ramMb: 8192,  diskGb: 100, nicMbps: 2500 }, hourlyUsd: 0.1008, oversubscriptionRatio: 2, burstable: false },
   { id: 'gcp-e2-standard-4', label: 'GCP e2-standard-4 (4 vCPU / 16 GB)', kind: 'vps', specs: { vcpu: 4, threadsPerCore: 2, ramMb: 16384, diskGb: 100, nicMbps: 2000 }, hourlyUsd: 0.134, oversubscriptionRatio: 3, burstable: false },
   { id: 'dedicated-8',  label: 'Dedicated 8-core / 32 GB',  kind: 'dedicated', specs: { vcpu: 8,  threadsPerCore: 2, ramMb: 32768,  diskGb: 500,  nicMbps: 10000 }, hourlyUsd: 0.34, oversubscriptionRatio: null, burstable: false },
