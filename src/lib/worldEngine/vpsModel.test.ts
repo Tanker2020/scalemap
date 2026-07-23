@@ -78,13 +78,13 @@ describe('stepVps — steal walk', () => {
   })
 })
 
-describe('stepVps — burst credits', () => {
-  it('drains credits under sustained high utilization until exhausted, then clamps effectiveVcpuFactor to 0.4', () => {
+describe('stepVps — burst credits (audit ISSUE-019 semantics)', () => {
+  it('drains at the NET rate (accrue − drain = −3/s at full util) until exhausted, then throttles to 0.4', () => {
     const server = vpsServer({ oversubscriptionRatio: 2, burstable: true })
     const state = createVpsState(server)!
     const rng = createRng(6)
     let sawExhaustedEvent = false
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40; i++) {   // 100 credits / 3 per sec ≈ 33.4s to empty
       const r = stepVps(state, server, 1.0, 1000, rng)
       if (r.creditsJustExhausted) sawExhaustedEvent = true
     }
@@ -95,16 +95,46 @@ describe('stepVps — burst credits', () => {
     expect(throttled.creditsFraction).toBe(0)
   })
 
-  it('recovers effectiveVcpuFactor once credits climb back above 10', () => {
+  it('accrues continuously — a hammered VM still drains slower than the gross drain rate', () => {
     const server = vpsServer({ oversubscriptionRatio: 2, burstable: true })
     const state = createVpsState(server)!
     const rng = createRng(6)
-    for (let i = 0; i < 20; i++) stepVps(state, server, 1.0, 1000, rng) // drain to exhaustion
+    stepVps(state, server, 1.0, 1000, rng)
+    // One second at full utilization: net −3 (accrue 2 − drain 5), NOT the old gross −5.
+    expect(state.credits).toBeCloseTo(97, 5)
+  })
+
+  it('recovers only past the hysteresis band (≥25), not at the throttle threshold (10) — no flutter', () => {
+    const server = vpsServer({ oversubscriptionRatio: 2, burstable: true })
+    const state = createVpsState(server)!
+    const rng = createRng(6)
+    for (let i = 0; i < 40; i++) stepVps(state, server, 1.0, 1000, rng) // drain to exhaustion
     let last = stepVps(state, server, 1.0, 1000, rng)
     expect(last.effectiveVcpuFactor).toBe(0.4)
-    for (let i = 0; i < 6; i++) last = stepVps(state, server, 0.0, 1000, rng) // recover, low utilization
+
+    // Below-baseline load: +2/s. At 12 credits (>10, <25) the throttle must STILL hold.
+    for (let i = 0; i < 6; i++) last = stepVps(state, server, 0.0, 1000, rng)
     expect(state.credits).toBeGreaterThan(10)
+    expect(state.credits).toBeLessThan(25)
+    expect(last.effectiveVcpuFactor).toBe(0.4)
+
+    // Crossing 25 releases it — and the factor returns to the un-throttled 1 − steal.
+    for (let i = 0; i < 8; i++) last = stepVps(state, server, 0.0, 1000, rng)
+    expect(state.credits).toBeGreaterThanOrEqual(25)
     expect(last.effectiveVcpuFactor).not.toBe(0.4)
+    expect(last.effectiveVcpuFactor).toBeCloseTo(1 - state.steal, 5)
+  })
+
+  it('no permanent lockout: a throttled VM under baseline load earns its way back to full factor', () => {
+    const server = vpsServer({ oversubscriptionRatio: 2, burstable: true })
+    const state = createVpsState(server)!
+    const rng = createRng(9)
+    for (let i = 0; i < 40; i++) stepVps(state, server, 1.0, 1000, rng)   // exhaust
+    expect(state.throttled).toBe(true)
+    // Sustained utilization just under baseline (0.3): accrual dominates (drain term is 0).
+    let last = stepVps(state, server, 0.3, 1000, rng)
+    for (let i = 0; i < 20; i++) last = stepVps(state, server, 0.3, 1000, rng)
+    expect(state.throttled).toBe(false)
     expect(last.effectiveVcpuFactor).toBeCloseTo(1 - state.steal, 5)
   })
 
