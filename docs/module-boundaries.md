@@ -3188,5 +3188,72 @@ contract-drift entry was needed.
 
 Boundary notes: `breakers.ts`'s `recordResult` callers outside the engine facade are unaffected
 (the signature is unchanged); `splitDependencyShares` and `solveFlows` extensions are
-optional-additive; `simulation.store.ts`'s new export is read-only. The audit's remaining
-critical issues (007–012) and everything below them are NOT part of this branch.
+optional-additive; `simulation.store.ts`'s new export is read-only.
+
+## Audit critical fixes — ISSUE-007 through ISSUE-012 (`audit-spec.md`, 2026-07-22)
+
+The remaining six criticals, executed one commit per issue (007+008 share `failover.ts` and land
+together). One `worldEngine/types.ts` contract change — the additive `'primary_failback'`
+`EngineEventKind` — logged in `.superpowers/sdd/contract-drift.md` alongside the internal
+`managedDownSince` shape change.
+
+- **ISSUE-007 (`failover.ts`, `index.ts`):** replica promotion is health-aware, re-armable, and
+  reversible. `promoteReplicas` gained an optional trailing `healthOf(instanceId) => HealthState`
+  (engine passes `healthOfInstance`): candidates are ranked healthy > degraded (down excluded),
+  id compare only as the determinism tiebreak. The lexical-pick and the emit-once guard are both
+  gone — the loop now resolves roles through `effectiveRoleResolver`, so a still-down ORIGINAL
+  primary reads 'replica' after failover (no duplicate emit — same observable behavior as the
+  old guard) while a failed PROMOTED primary reads 'primary' and triggers re-promotion, clearing
+  its stale `promotedAt` entry so exactly one placement per cluster carries the overlay. New
+  `failbackPromotions(state, compiled, doc, healthOf, simMs)` — called in the step just BEFORE
+  promotion — clears a cluster's promotion and emits `'primary_failback'` (new additive
+  `EngineEventKind`) once every authored primary is healthy again; the health hysteresis' 5s
+  recovery lock is the failback debounce.
+- **ISSUE-008 (`failover.ts`, `index.ts`):** manual operator outages and simulated infrastructure
+  failures are no longer conflated. `managedDownSince` entries became
+  `{ sinceMs, source: 'manual' | 'simulated' }`; `setOutage('managed', …)` tags 'manual', and
+  `recoverMultiAzManagedDbs` skips manual entries — an operator-killed multi-AZ DB now stays
+  down until explicitly resumed instead of spontaneously restoring ~15s later. The 'simulated'
+  producer is the new `applyAzOutageToManaged(state, doc, azId, down, simMs)`, called by the
+  facade's `setOutage` for AZ scope: an AZ kill takes its az-scoped managed services down as
+  simulated outages (multi-AZ DBs then auto-promote their standby after the failover window —
+  the multiAz value story now rides the AZ kill switch, not the per-service one), and an AZ
+  restore clears simulated outages only — it can neither resurrect a manual kill nor can an AZ
+  failure overwrite one. `manualOutages` (the name predates the split) remains the single
+  all-sources outage set `flows.ts`/`index.ts` read — zero changes to the flow solver.
+- **ISSUE-009 (`world/routing.ts`):** the `latency` policy no longer adds `baseLatencyMs × 10` —
+  a "distance from a US-East reference client" constant that biased every population on Earth
+  toward regions near Virginia (a mid-US population ranked Virginia above a ~400 km-closer
+  N. California). Score is now `km × PROPAGATION_MS_PER_KM (0.01) + REGION_PROCESSING_MS (2)` —
+  population→region great-circle propagation (~0.01 ms RTT/km in fiber) plus a
+  location-independent constant, so ordering is true-distance. `WORLD_REGIONS` is no longer
+  imported by routing.ts; `regionConfig.ts`'s `baseLatencyMs` keeps its other consumers.
+- **ISSUE-010 (`analysis/rules/capacity.ts`):** `ttl-outlives-detection` was inverted — it fired
+  on `ttl < detection` (the HEALTHY config, since total failover ≈ detection + up to one TTL)
+  and its fix text recommended raising the TTL, which worsens real failover. Now fires on
+  `ttl > detection` (stale cached records outlive detection) and recommends lowering
+  `dnsTtlSec`. Vault example worlds were re-authored to the corrected semantics:
+  `multi-region-failover` (clean) dropped `dnsTtlSec` 20 → 5 (below its 6s detection window);
+  `broken-teaching` raised 5 → 120 (outliving its 36s window) so it still trips the rule.
+- **ISSUE-011 (`world/network.ts`, `analysis/rules/network.ts`):** new shared helper
+  `isInternetSource(source)` in `world/network.ts` — true for `'any'` and every 0-length CIDR
+  prefix (`'0.0.0.0/0'`, `'::/0'`, any `/0`). The analysis rules' `openToAny` uses it instead of
+  the literal `m.source === 'any'`, fixing both directions at once: `db-port-exposed` no longer
+  false-negatives on a DB port opened to `0.0.0.0/0`, and `entry-unreachable` no longer
+  false-positives on a front door reachable only via it. `evaluateFirewall` itself is untouched
+  (Phase-1 all-internal source semantics).
+- **ISSUE-012 (`serializer.ts`, `world/routing.ts`):** the v3 gate now validates values, not just
+  shape. Present-but-invalid fields REJECT with the established `Invalid .scalemap file: …`
+  message style (`server <id> hourlyUsd`/`specs.*` must be finite numbers; `routing.policy` must
+  be a known policy; routing timing fields must be finite); MISSING fields keep the defensive
+  leniency (routing timing defaults to 30 / 10 000 / 3 — the `createWorld()` values — and the
+  hand-authored bare-server test still loads). Defense in depth: `regionOrderFor`'s policy
+  `switch` gained a `default: score = km` (geo fallback) so an unknown policy that ever slips a
+  boundary can't leave scores `undefined` and poison the sort.
+
+Boundary notes: `promoteReplicas`' new param and `'primary_failback'` are additive (both event
+consumers verified tolerant — `timelineModel.markerClass` has a `default:` arm,
+`simulation.store` pattern-matches specific kinds); `managedDownSince`'s entry shape is
+engine-internal (only failover.ts + tests touch it); `isInternetSource` is a new pure export with
+no existing-caller impact. The audit's Major/Minor tiers (ISSUE-013 onward) are NOT part of this
+work.
