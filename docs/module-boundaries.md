@@ -3255,5 +3255,119 @@ Boundary notes: `promoteReplicas`' new param and `'primary_failback'` are additi
 consumers verified tolerant — `timelineModel.markerClass` has a `default:` arm,
 `simulation.store` pattern-matches specific kinds); `managedDownSince`'s entry shape is
 engine-internal (only failover.ts + tests touch it); `isInternetSource` is a new pure export with
-no existing-caller impact. The audit's Major/Minor tiers (ISSUE-013 onward) are NOT part of this
-work.
+no existing-caller impact.
+
+## Audit major fixes — ISSUE-013 through ISSUE-032 (`audit-spec.md`, 2026-07-23)
+
+All 20 Major-tier issues, one commit per issue (013/016/018 land together — the spec marks them
+compounding). Minor tier (ISSUE-033 onward) is NOT part of this work.
+
+**Engine fidelity (`src/lib/worldEngine/`):**
+
+- **ISSUE-013 + -016 + -018 (`flows.ts`, `hostScheduler.ts`, `index.ts`):** the flow solver
+  gained a persistent QUEUE MODEL. `stepHost` now returns `serviceRateByInstance` — a weighted
+  fair share of `effectiveVcpu` per instance (`WorkloadProfile.cpuShares?`, default 1;
+  demand-capped water-fill for work conservation, PLUS a fair-share floor so a cold/recovered
+  instance never has zero capacity; `InstanceLoad.backlogRps?` lets a draining instance claim
+  capacity beyond its instantaneous demand). `solveFlows` accepts optional
+  `serviceRateByInstance` + `queueDepth` (engine-owned `Map`, mutated in place, carried across
+  ticks) + `stepSec`; when all three are present the queueing path runs:
+  `served = min(capacity, backlog-first + arrivals)`, excess fills a bounded queue
+  (`capacity × MAX_QUEUE_SEC`, 2s), ONLY past-the-bound overflow/timeout becomes `errorRps`, and
+  Little's-law wait (`Q/capacity`) adds to `serviceLatencyMs`. Capacity =
+  fair-share CPU rate × NIC line-rate ceiling (an absolute rps derived from `specs.nicMbps` —
+  a fraction multiplied onto an ample CPU rate never bites) × health factor (down ⇒ 0 ⇒ zero
+  queue ⇒ instant errors, subtree still zeroed). Backlogged instances with no arrivals are
+  BFS-seeded at zero offered so they drain and their served work still fans out. The per-server
+  `admittedScale` CPU shed — the ISSUE-016 one-step-lag oscillator — is GONE from the engine
+  path (`admittedScaleByServer` now carries only the NIC deliveredFraction); absent the queue
+  inputs `solveFlows` runs the legacy proportional path, so existing solver call sites/tests are
+  a frozen back-compat contract.
+- **ISSUE-014 (`index.ts`, `metrics.ts`):** starved-vs-idle. `buildDownstreamAdj(compiled)`
+  (permitted instance→instance edges, built at `start()`) feeds a per-batch BFS from the down
+  set; a reached non-down instance with no offered traffic is STARVED and `buildBatch`'s new
+  optional `starved?: Set<InstanceId>` publishes it 'degraded' instead of healthy-at-0
+  (override lifts 'healthy' only — real degraded/down win; presentation-only, never fed back
+  into failover inputs). `activeConnections` drain rides the existing rps EMA (~70%/s).
+- **ISSUE-015 (`breakers.ts`, `index.ts` step 8):** Hystrix-shaped windows. The flat 20-sample
+  fraction array became time-bucketed (`bucketMs` 1s × `bucketCount` 10) REQUEST-WEIGHTED
+  `{failures, total}` buckets — step 8 records `rps × stepSec` request counts, so
+  `minTotalToOpen` (10) has real units and a 10 000-rps dependency outweighs a 1-rps one.
+  Hysteresis: open at `errorThreshold` 0.5, a half-open probe batch is a SUCCESS only below
+  `closeThreshold` 0.2, and closing needs `halfOpenProbes` (3) consecutive successes — a ~50%
+  dependency opens and stays open. `BreakerConfig` reshaped (windowSize → bucket fields);
+  `recordResult` stays the boolean special case.
+- **ISSUE-017 (`demand.ts`, `index.ts`):** Poisson arrivals + flash crowds. The diurnal curve
+  sets the MEAN; per-step arrivals are a seeded Poisson draw (`samplePoisson` — Knuth < 64,
+  normal approx above), replacing the ±3% uniform jitter that never stressed queues/breakers.
+  New per-population `PopulationDemandState` (engine-owned map) runs an on-off burst process
+  (~1 per 200s, ×1.5–3 for 2–10s), scaled by additive-optional `ClientPopulation.burstiness?`
+  (0 disables). Deterministic: all draws through the engine rng in fixed population order.
+- **ISSUE-019 (`vpsModel.ts`):** burstable credits accrue CONTINUOUSLY at the baseline rate and
+  drain proportionally to utilization above baseline (net −3/s pegged, +2/s idle) — the old
+  accrual gate (`util < 0.4`) was held shut by the throttle's own effect, a permanent 0.4×
+  lockout. `VpsState.throttled` with a real hysteresis band: engage ≤ 10, release ≥ 25.
+- **ISSUE-020 (`routingRuntime.ts`):** health checks gained a rise threshold
+  (`consecutiveSuccesses` + additive-optional `RoutingConfig.healthCheckHealthyThreshold`,
+  default 2): a single healthy probe no longer wipes the failure count, so a flapping scope
+  RATCHETS to failed; recovery needs N consecutive passes (ALB/NLB semantics).
+- **ISSUE-021 (`world/types.ts`, `world/routing.ts`, `index.ts`):** weighted policy splits
+  traffic PROPORTIONALLY. Additive `CompiledRouting.regionProportions?` (normalized over
+  positive weights; absent for other policies / all-zero weights) — the engine's step 3 splits
+  each population's demand by it across not-down regions (renormalizing over survivors), one
+  `populationRoutes` row per served region, `popRegion`/failover events keyed to the
+  highest-share region. All-zero weights still fall back to the order-based path. Logged in
+  `contract-drift.md` (`WorldMetrics.populationRoutes` may now carry >1 row per population).
+- **ISSUE-032 (`index.ts`):** per-step health propagation reads `serversByAz`/`azsByRegion`
+  maps built once at `start()` (new `groupBy` helper) instead of re-filtering
+  `doc.servers`/`doc.azs` per AZ/region every step.
+
+**Cost model (`src/lib/costModelV2.ts`, `src/lib/cloudRegistry.ts`):**
+
+- **ISSUE-022:** managed-DB provisioned storage bills the provider's own registry
+  `storageGbMonth` tier via new `dbStorageRate(ms)` (GCP 0.17 vs AWS/Azure 0.115); the old
+  constant survives only as `DB_STORAGE_FALLBACK_USD_PER_GB_MONTH` for unresolvable providers.
+- **ISSUE-023:** new `PROVIDER_INTERZONE` table in `cloudRegistry.ts` ($/GB against the
+  engine's two-way metered wire bytes; AWS's per-direction cross-AZ billing folds to 0.02 —
+  2× the old flat rate — GCP 0.01, Azure 0; cross-region aws/azure 0.02, gcp 0.05). The world
+  line bills at the documented aws default (servers carry no provider field — same
+  simplification as internet egress); the table is the per-provider seam.
+- **ISSUE-024:** `computeWorldCost` accumulates the compute total ALONGSIDE every bump instead
+  of summing `byRegionMap` — a server/service pointing at a deleted AZ (normal mid-edit
+  transient) now still reaches `monthlyUsd`, so the total is provably complete.
+
+**Analysis rules (`src/lib/analysis/rules/structural.ts`):**
+
+- **ISSUE-025:** `no-failover-region` fires on SERVABLE regions (those hosting an
+  entry-blueprint instance; fallback to any-instance regions when the world has no public port
+  at all) — a second authored-but-empty region no longer silences it.
+- **ISSUE-026:** `replicas-colocated` flags EVERY AZ holding ≥2 copies of a stateful blueprint
+  (any roles — partial colocation and multi-primary clusters included); finding ids are now
+  `replicas-colocated:<bpId>:<azId>` (one per colocated AZ).
+
+**Perf (`src/lib/world/compileWorld.ts`, `src/app/`):**
+
+- **ISSUE-027:** `compileWorld` indexes `instancesByBlueprint` once — dependency resolution is
+  O(I × D × matches), not O(I² × D); path order byte-identical.
+- **ISSUE-028 (`useCompiledWorld.ts`):** compilation cached per doc IDENTITY in a module
+  WeakMap (`compiledFor(doc)` exported for non-hook use) — one compile per doc change however
+  many components call the hook; undo/redo (now reference-sharing, ISSUE-031) is a cache hit.
+- **ISSUE-029 (`useCompiledWorld.ts`, `region/regionData.ts`, `region/AzRow.tsx`,
+  `az/DatacenterFloor.tsx`):** shared per-compiled WeakMap indexes `instancesByServerFor`/
+  `instancesByAzFor`; `dominantBlueprintColor` memoizes its per-server winner map per compiled;
+  AzRow gained `useMemo` throughout (servers, resident set, promoting, per-server rps map).
+- **ISSUE-030 (`RegionView.tsx`):** every derived value (azShares, ribbonAlert,
+  `computeWorldCost`, managed entries, rail pairs/entries/endpoints) is `useMemo`d with precise
+  deps, hoisted above the null early-return; hover-state re-renders no longer recompute the
+  world cost.
+- **ISSUE-031 (`world.store.ts`):** `pushHistory`/`undo`/`redo` share doc REFERENCES —
+  `deepCopy` (JSON round-trip per keystroke, ~100× full-world history memory) is deleted;
+  mutations were already immutable-by-contract via `mutate()`.
+
+Boundary notes: `solveFlows`' queue inputs, `buildBatch`'s `starved`, `WorkloadProfile.cpuShares?`,
+`ClientPopulation.burstiness?`, `RoutingConfig.healthCheckHealthyThreshold?`, and
+`CompiledRouting.regionProportions?` are all additive-optional.
+`HostStepResult.serviceRateByInstance` is a REQUIRED new field (engine-internal type; the one
+external fixture in metrics.test.ts updated). `BreakerConfig`'s reshape is breaking for direct
+constructors of breaker configs — all in-repo callers spread `DEFAULT_BREAKER_CONFIG`. The
+audit's Minor tier (ISSUE-033 onward) remains unaddressed by design.
