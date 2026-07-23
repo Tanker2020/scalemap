@@ -40,13 +40,32 @@ export function scopeKey(scope: RenderScope): string {
 const MAX_TRACES_PER_SCOPE = 10
 const MAX_TRACE_DEPTH = 8
 
+// Roulette-wheel selection weighted by rps (audit ISSUE-040) — a 1-rps blocked edge no longer
+// samples as often as a 1000-rps main path, so traces are representative of real traffic.
+// All-zero/negative weights fall back to a uniform pick. Seeded rng ⇒ deterministic.
+function pickWeighted<T>(rng: Rng, items: T[], weightOf: (t: T) => number): T {
+  let total = 0
+  for (const it of items) total += Math.max(0, weightOf(it))
+  if (total <= 0) return rng.pick(items)
+  let r = rng.range(0, total)
+  for (const it of items) {
+    r -= Math.max(0, weightOf(it))
+    if (r <= 0) return it
+  }
+  return items[items.length - 1]
+}
+
 export interface Tracer {
   sample(
     flows: Record<InstanceId, InstanceFlow>,
     compiled: CompiledWorld,
     doc: WorldDoc,
     simMs: number,
-    populationOf?: (entryInstanceId: InstanceId) => PopulationId | null,
+    // Every population currently feeding the entry's region with its live rps (audit
+    // ISSUE-039): the tracer attributes the trace by a WEIGHTED draw over these, so when
+    // several populations converge on one region, traces split ∝ their traffic instead of
+    // always crediting whichever population happened to be listed first.
+    populationsOf?: (entryInstanceId: InstanceId) => { populationId: PopulationId; rps: number }[],
     // Phase 5.4 managed-DB failure model for THIS step. A managed hop used to book a flat 3ms, so a
     // trace through a saturated DB disagreed with the metrics pyramid by orders of magnitude.
     // Optional: absent ⇒ the flat constant (non-DB managed services keep it regardless).
@@ -70,7 +89,7 @@ export function createTracer(rng: Rng): Tracer {
   }
 
   return {
-    sample(flows, compiled, doc, simMs, populationOf, managedDbRuntime) {
+    sample(flows, compiled, doc, simMs, populationsOf, managedDbRuntime) {
       // Entry instances: offered demand and nothing upstream feeding them.
       const fedByOthers = new Set<string>()
       for (const f of Object.values(flows)) {
@@ -80,7 +99,8 @@ export function createTracer(rng: Rng): Tracer {
         .filter(f => f.offeredRps > 0 && !fedByOthers.has(f.instanceId) && compiled.instances[f.instanceId])
       if (entries.length === 0) return
 
-      const entry = rng.pick(entries)
+      // rps-weighted sampling (audit ISSUE-040): entries ∝ offered demand, hops ∝ row rps.
+      const entry = pickWeighted(rng, entries, f => f.offeredRps)
       const hops: TracedRequest['hops'] = []
       const touchedInstances = [entry.instanceId]
       let cur = entry.instanceId
@@ -88,7 +108,7 @@ export function createTracer(rng: Rng): Tracer {
       for (let depth = 0; depth < MAX_TRACE_DEPTH; depth++) {
         const f = flows[cur]
         if (!f || f.downstream.length === 0) break
-        const row = rng.pick(f.downstream)
+        const row = pickWeighted(rng, f.downstream, r => r.rps)
         const toId = row.toInstanceId ?? row.toManagedServiceId ?? ''
         let latencyMs = 0
         if (!row.blocked) {
@@ -119,9 +139,16 @@ export function createTracer(rng: Rng): Tracer {
         touchedInstances.push(cur)
       }
 
+      // Weighted population attribution (audit ISSUE-039): several populations converging on
+      // one region credit traces ∝ their rps into it, drawn from the tracer's OWN seeded rng
+      // (never the sim stream — trace cadence must not perturb sim outcomes).
+      const feeding = populationsOf ? populationsOf(entry.instanceId) : []
+      const populationId = feeding.length > 0
+        ? pickWeighted(rng, feeding, p => p.rps).populationId
+        : null
       const trace: TracedRequest = {
         id: `trace-${simMs}-${traceSeq++}`,
-        populationId: populationOf ? populationOf(entry.instanceId) : null,
+        populationId,
         hops,
         totalMs: entry.serviceLatencyMs + hops.reduce((s, h) => s + h.latencyMs, 0),
         outcome: refused ? 'refused' : 'ok',

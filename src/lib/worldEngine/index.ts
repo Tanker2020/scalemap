@@ -661,17 +661,18 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved)
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
-      s.tracer.sample(flows, compiled, doc, simMs, entryId => populationForEntry(entryId), managedDbRt)
+      s.tracer.sample(flows, compiled, doc, simMs, entryId => populationsForEntry(entryId), managedDbRt)
       s.windowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} }
     }
   }
 
-  // Which population currently feeds a given entry instance (for TracedRequest.populationId).
-  const populationForEntry = (entryInstanceId: InstanceId): PopulationId | null => {
+  // EVERY population currently feeding a given entry instance's region, with live rps (audit
+  // ISSUE-039). The tracer draws the trace's populationId ∝ these — the old first-match lookup
+  // credited every trace to whichever population happened to appear first in the snapshot.
+  const populationsForEntry = (entryInstanceId: InstanceId): { populationId: PopulationId; rps: number }[] => {
     const inst = state!.compiled.instances[entryInstanceId]
-    if (!inst) return null
-    const route = state!.lastRoutingSnapshot.populationRoutes.find(r => r.regionId === inst.regionId)
-    return route?.populationId ?? null
+    if (!inst) return []
+    return state!.lastRoutingSnapshot.populationRoutes.filter(r => r.regionId === inst.regionId)
   }
 
   // Advance the fixed-step clock by a real frame and run every whole step it produced.

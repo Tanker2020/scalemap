@@ -108,6 +108,48 @@ describe('tracer', () => {
     expect(t.outcome).toBe('refused')
   })
 
+  // Audit ISSUE-040: sampling is rps-weighted — a trickle path must not trace as often as the
+  // main path. With a 10 000:1 rps skew, ~200 samples should overwhelmingly follow the heavy
+  // edge (uniform sampling would split them ~50/50).
+  it('weights hop sampling by rps (ISSUE-040)', () => {
+    const f = tracedFixture()
+    // Second, near-idle downstream row beside the 100-rps main path.
+    f.flows[f.apiInst].downstream.push(
+      { dependencyId: 'dep-1', toInstanceId: f.pgInst, rps: 0.01, hopClass: 'same-az', blocked: true })
+    const tracer = createTracer(createRng(7))
+    for (let s = 1; s <= 200; s++) tracer.sample(f.flows, f.compiled, f.doc, s * 1000)
+    const traces = tracer.getTraced({ level: 'globe' })
+    const refused = traces.filter(t => t.outcome === 'refused').length
+    expect(refused).toBeLessThanOrEqual(1)   // the 0.01-rps blocked edge is ~never drawn
+  })
+
+  // Audit ISSUE-039: with several populations feeding one region, traces are attributed by a
+  // weighted draw over their rps — not always to the first region match.
+  it('attributes traces across converging populations in proportion to rps (ISSUE-039)', () => {
+    const f = tracedFixture()
+    const tracer = createTracer(createRng(11))
+    const feeding = [
+      { populationId: 'pop-heavy', rps: 90 },
+      { populationId: 'pop-light', rps: 10 },
+    ]
+    const counts = new Map<string, number>()
+    for (let s = 1; s <= 300; s++) {
+      tracer.sample(f.flows, f.compiled, f.doc, s * 1000, () => feeding)
+    }
+    // getTraced caps at 10 per scope; count across MANY windows via fresh tracers instead.
+    for (let s = 1; s <= 300; s++) {
+      const t = createTracer(createRng(s))
+      t.sample(f.flows, f.compiled, f.doc, 1000, () => feeding)
+      const [trace] = t.getTraced({ level: 'globe' })
+      counts.set(trace.populationId!, (counts.get(trace.populationId!) ?? 0) + 1)
+    }
+    const heavy = counts.get('pop-heavy') ?? 0
+    const light = counts.get('pop-light') ?? 0
+    expect(heavy + light).toBe(300)
+    expect(light).toBeGreaterThan(0)            // the light population is represented…
+    expect(heavy).toBeGreaterThan(light * 4)    // …but ∝ its share (~90/10), not uniformly
+  })
+
   it('samples at most one trace per scope per 1s window, keeping the last 10', () => {
     const f = tracedFixture()
     const tracer = createTracer(createRng(42))
