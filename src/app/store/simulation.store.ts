@@ -26,6 +26,17 @@ let pendingEvents: EngineEvent[] = []
 let flushTimer: ReturnType<typeof setInterval> | null = null
 let spillBroken = false   // one persistent failure disables spill for the run (no 1 Hz error spam)
 
+/** Diagnostic seam: how many events sit buffered awaiting disk spill (bounded-ness checks). */
+export const pendingEventCount = (): number => pendingEvents.length
+
+// Audit ISSUE-005: once spill is broken it never recovers within a run, so the buffer feeding it
+// must stop growing — flip the flag AND drop the backlog in one place (both failure paths use it),
+// and onEvent guards its push on the same flag.
+function markSpillBroken(): void {
+  spillBroken = true
+  pendingEvents.length = 0
+}
+
 function flushEventLog(): void {
   const { eventLogRunId } = useSimulationStore.getState()
   if (eventLogRunId === null || spillBroken || pendingEvents.length === 0) return
@@ -36,7 +47,7 @@ function flushEventLog(): void {
     .catch((e) => {
       // The sim (and the in-memory window) keeps working without the disk spill; surface the
       // failure once instead of once per second.
-      spillBroken = true
+      markSpillBroken()
       console.error('event log: disk spill failed — keeping the in-memory window only', e)
     })
 }
@@ -116,7 +127,7 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
         flushEventLog()   // catch anything buffered before the ack (incl. a sub-second run)
       })
       .catch((e) => {
-        spillBroken = true
+        markSpillBroken()
         console.error('event log: could not begin run — keeping the in-memory window only', e)
       })
     if (flushTimer !== null) clearInterval(flushTimer)
@@ -124,7 +135,7 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
     worldEngine.start(doc, compiled, {
       onMetrics: (batch) => set({ latestBatch: batch }),
       onEvent: (event) => {
-        pendingEvents.push(event)
+        if (!spillBroken) pendingEvents.push(event)
         set((s) => {
           const next = s.events.length >= EVENT_WINDOW ? [...s.events.slice(s.events.length - EVENT_WINDOW + 1), event] : [...s.events, event]
           if (event.kind === 'engine_degraded') return { events: next, degraded: true }

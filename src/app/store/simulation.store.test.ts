@@ -2,7 +2,7 @@
 // timeScale selection after every start — without this, picking 2x, stopping, and simulating
 // again left the select claiming 2x while the engine ran realtime (user report 2026-07-10).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { useSimulationStore } from './simulation.store'
+import { useSimulationStore, pendingEventCount } from './simulation.store'
 import { worldEngine } from '../../lib/worldEngine'
 import { createWorld } from '../../lib/world/factories'
 import { compileWorld } from '../../lib/world/compileWorld'
@@ -91,6 +91,37 @@ describe('simulation.store event spill', () => {
     expect(vi.mocked(eventLogAppend)).toHaveBeenCalledTimes(2)
     expect(vi.mocked(eventLogAppend).mock.calls[1][1]).toHaveLength(2)
     expect(useSimulationStore.getState().eventLogTotal).toBe(5)
+  })
+
+  // Audit ISSUE-005: once a disk spill fails, spillBroken permanently disables flushing for the
+  // run — so the buffer feeding that flush must stop growing too, or every subsequent event
+  // accumulates forever (a leak the "in-memory window only" fallback claims to survive).
+  it('stops buffering (and clears the backlog) once the disk spill breaks — no unbounded growth', async () => {
+    const doc = createWorld()
+    useSimulationStore.getState().start(doc, compileWorld(doc))
+    await vi.advanceTimersByTimeAsync(0)   // begin-run ack lands
+
+    vi.mocked(eventLogAppend).mockImplementation(async () => { throw new Error('disk full') })
+    onEvent!(mkEvent(1)); onEvent!(mkEvent(2))
+    await vi.advanceTimersByTimeAsync(1000)   // flush attempt fails → spillBroken
+
+    for (let n = 3; n < 50; n++) onEvent!(mkEvent(n))
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(pendingEventCount()).toBe(0)
+
+    // The in-memory presentation window keeps working regardless.
+    expect(useSimulationStore.getState().events.length).toBeGreaterThan(0)
+  })
+
+  it('stops buffering when the begin-run ack itself fails', async () => {
+    vi.mocked(eventLogBeginRun).mockImplementationOnce(async () => { throw new Error('no db') })
+    const doc = createWorld()
+    useSimulationStore.getState().start(doc, compileWorld(doc))
+    onEvent!(mkEvent(1))                   // buffered while the ack is in flight
+    await vi.advanceTimersByTimeAsync(0)   // ack rejection lands → spillBroken
+
+    for (let n = 2; n < 20; n++) onEvent!(mkEvent(n))
+    expect(pendingEventCount()).toBe(0)
   })
 
   it('buffers events that arrive before the run ack and flushes them once it lands', async () => {
