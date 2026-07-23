@@ -115,6 +115,10 @@ interface EngineState {
   // against. The doc is frozen for the run, so these can never go stale.
   serversByAz: Map<AzId, Server[]>
   azsByRegion: Map<RegionId, AvailabilityZone[]>
+  // Permitted instance→instance downstream adjacency (audit ISSUE-014), built once at start():
+  // the 1 Hz starved-detection BFS walks it from the down set to find instances that are silent
+  // because an UPSTREAM died, not because the world is idle.
+  downstreamAdj: Map<InstanceId, InstanceId[]>
 
   routing: RoutingState
   failover: FailoverState
@@ -596,7 +600,30 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // ── 11. 1 Hz batch + replay + trace ──
     if (simMs - s.lastBatchMs >= 1000) {
       s.lastBatchMs = simMs
-      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs)
+      // Starved detection (audit ISSUE-014): BFS the permitted downstream adjacency from the
+      // down set — a non-down instance reached with no offered traffic this step is STARVED
+      // (silent because an upstream died), not idle, and publishes 'degraded' instead of a
+      // healthy zero. Presentation-only: it never feeds back into the failover inputs (the
+      // probe-the-output deadlock shape this engine has been burned by before).
+      const starved = new Set<InstanceId>()
+      const stack = Object.values(compiled.instances)
+        .filter(i => healthOfInstance(i.id) === 'down')
+        .map(i => i.id)
+      const visited = new Set(stack)
+      while (stack.length > 0) {
+        const id = stack.pop()!
+        for (const next of s.downstreamAdj.get(id) ?? []) {
+          if (visited.has(next)) continue
+          visited.add(next)
+          if (healthOfInstance(next) === 'down') {
+            stack.push(next)
+          } else if ((flows[next]?.offeredRps ?? 0) <= MIN_HEALTH_SIGNAL_RPS) {
+            starved.add(next)
+            stack.push(next)   // its own downstream is starved too
+          }
+        }
+      }
+      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved)
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
       s.tracer.sample(flows, compiled, doc, simMs, entryId => populationForEntry(entryId), managedDbRt)
@@ -851,6 +878,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         routePathById: buildRoutePathById(doc),
         serversByAz: groupBy(Object.values(doc.servers), sv => sv.azId),
         azsByRegion: groupBy(Object.values(doc.azs), az => az.regionId),
+        downstreamAdj: buildDownstreamAdj(compiled),
         routing: createRoutingState(), failover: createFailoverState(),
         demandStates: new Map(),
         vpsStates: new Map(Object.values(doc.servers).map(sv => [sv.id, createVpsState(sv)])),
@@ -920,6 +948,19 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
 }
 
 const frac = (x: number): number => x - Math.floor(x)
+
+// Permitted instance→instance edges from the compiled paths (audit ISSUE-014). Blocked paths
+// deliver nothing even when healthy, so they don't count as a feed.
+function buildDownstreamAdj(compiled: CompiledWorld): Map<InstanceId, InstanceId[]> {
+  const adj = new Map<InstanceId, InstanceId[]>()
+  for (const p of compiled.paths) {
+    if (p.verdict !== 'permitted' || p.to.kind !== 'instance') continue
+    const list = adj.get(p.fromInstanceId)
+    if (list) list.push(p.to.instanceId)
+    else adj.set(p.fromInstanceId, [p.to.instanceId])
+  }
+  return adj
+}
 
 // Order-preserving single-pass grouping (audit ISSUE-032) — same shape as groupInstancesByServer.
 function groupBy<T, K>(items: T[], keyOf: (item: T) => K): Map<K, T[]> {

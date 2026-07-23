@@ -166,6 +166,11 @@ export function buildBatch(
   routingSnapshot: RoutingSnapshot,
   totals: { crossAzBytes: number; crossRegionBytes: number; internetBytes: number; managedEgressBytes?: Record<string, number> },
   simMs: number,
+  // Instances silent because an UPSTREAM is down (audit ISSUE-014) — published 'degraded'
+  // instead of a healthy zero. Optional: absent ⇒ no override (existing callers unchanged).
+  // activeConnections need no special drain: the EMA'd rps already decays them exponentially
+  // (~70%/s at α=0.3), the keep-alive-drain shape the audit asks for.
+  starved?: Set<InstanceId>,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
   const servers: Record<ServerId, ServerMetrics> = {}
@@ -201,6 +206,9 @@ export function buildBatch(
     const p99Ms = ema(state, `i:${inst.id}:p99`, percentile(sorted, 0.99))
     const activeConnections = rps * (p50Ms / 1000)          // Little's law
     const workload = bp?.workload ?? { cpuMsPerRequest: 0, ramBaseMb: 0, ramPerConnMb: 0, diskIoPerRequest: 0 }
+    // Starved override (audit ISSUE-014): an instance silenced by a down upstream must not read
+    // as healthy-and-idle. Only lifts 'healthy' to 'degraded' — real degraded/down states win.
+    const baseHealth = state.lastHealth(inst.id)
     instances[inst.id] = {
       instanceId: inst.id,
       rps,
@@ -210,7 +218,7 @@ export function buildBatch(
       activeConnections,
       cpuCoresUsed: rps * workload.cpuMsPerRequest / 1000,
       ramMb: workload.ramBaseMb + workload.ramPerConnMb * activeConnections,
-      health: state.lastHealth(inst.id),
+      health: starved?.has(inst.id) && baseHealth === 'healthy' ? 'degraded' : baseHealth,
     }
   }
 

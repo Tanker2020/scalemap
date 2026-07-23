@@ -541,3 +541,64 @@ describe('weighted routing proportional split (audit ISSUE-021)', () => {
     sim.engine.stop()
   })
 })
+
+// Audit ISSUE-014: an instance silenced by a DOWN upstream publishes 'degraded' (starved), not
+// a healthy zero; a genuinely idle instance stays healthy.
+describe('starved-vs-idle metrics (audit ISSUE-014)', () => {
+  function tiersFixture() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1'); const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const s1 = createServer(az.id, getPreset('dedicated-8')!)   // front tier
+    const s2 = createServer(az.id, getPreset('dedicated-8')!)   // backend
+    const s3 = createServer(az.id, getPreset('dedicated-8')!)   // unrelated idle service
+    Object.assign(doc.servers, { [s1.id]: s1, [s2.id]: s2, [s3.id]: s3 })
+    const web = publicBlueprint('web', 0)
+    const db = createBlueprint('db', 1)
+    const lonely = createBlueprint('lonely', 2)   // internal-only, no callers, no demand
+    web.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 8080, protocol: 'db', packetTemplateId: null }]
+    Object.assign(doc.blueprints, { [web.id]: web, [db.id]: db, [lonely.id]: lonely })
+    const place = (bpId: string, serverId: string) => { const pl = createPlacement(bpId, serverId); doc.placements[pl.id] = pl; return pl }
+    place(web.id, s1.id)
+    const dbPl = place(db.id, s2.id)
+    const lonelyPl = place(lonely.id, s3.id)
+    const pop = createPopulation('nyc', 40.7, -74.0); pop.peakRps = 200; pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+    return {
+      doc, compiled: compileWorld(doc), frontServer: s1,
+      dbInst: instanceId(dbPl.id, 0), lonelyInst: instanceId(lonelyPl.id, 0),
+    }
+  }
+
+  it('a backend starved by a down front tier reports degraded while its rps decays', () => {
+    const f = tiersFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(5)
+    expect(sim.latest().instances[f.dbInst].health).toBe('healthy')   // serving normally
+    const servingRps = sim.latest().instances[f.dbInst].rps
+    expect(servingRps).toBeGreaterThan(50)
+
+    sim.engine.setOutage('server', f.frontServer.id, true)
+    sim.stepFor(6)
+    const starvedDb = sim.latest().instances[f.dbInst]
+    expect(starvedDb.health).toBe('degraded')                 // starved, NOT healthy-idle
+    expect(starvedDb.rps).toBeLessThan(servingRps)            // connections/throughput draining
+    // The unrelated idle service has no down upstream — it stays healthy at 0 rps.
+    expect(sim.latest().instances[f.lonelyInst].health).toBe('healthy')
+    sim.engine.stop()
+  })
+
+  it('recovery clears the starved override', () => {
+    const f = tiersFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(3)
+    sim.engine.setOutage('server', f.frontServer.id, true)
+    sim.stepFor(5)
+    expect(sim.latest().instances[f.dbInst].health).toBe('degraded')
+    sim.engine.setOutage('server', f.frontServer.id, false)
+    sim.stepFor(30)   // recovery hysteresis + traffic resumes
+    expect(sim.latest().instances[f.dbInst].health).toBe('healthy')
+    sim.engine.stop()
+  })
+})
