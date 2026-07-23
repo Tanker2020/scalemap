@@ -15,7 +15,7 @@ import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore, selectLive } from '../../store/simulation.store'
 import { useUiStore } from '../../store/ui.store'
-import { useCompiledWorld } from '../useCompiledWorld'
+import { useCompiledWorld, instancesByServerFor } from '../useCompiledWorld'
 import { layoutFloor } from './floorLayout'
 import { aggregateFlows, internetIngress, meanUtilization, serverAccents } from './floorData'
 import { placeLabels, estimateLabelSize, type LabelSpec, type Rect } from './labelLayout'
@@ -155,15 +155,17 @@ export function DatacenterFloor() {
   // only the top-N permitted flows BY SOURCE-SERVER RPS animate; blocked flows are always static
   // (red dash + reason label), regardless of rank.
   const rpsByServer = useMemo(() => {
+    // Audit ISSUE-029: index into the per-compiled instancesByServer map instead of re-scanning
+    // the whole instance record per server per batch (O(servers × instances) every second).
+    const byServer = instancesByServerFor(compiled)
     const m = new Map<ServerId, number>()
     for (const s of azServers) {
-      const rps = Object.values(compiled.instances)
-        .filter(i => i.serverId === s.id)
+      const rps = (byServer.get(s.id) ?? [])
         .reduce((sum, i) => sum + (batch?.instances[i.id]?.rps ?? 0), 0)
       m.set(s.id, rps)
     }
     return m
-  }, [azServers, compiled.instances, batch])
+  }, [azServers, compiled, batch])
 
   const animatedKeys = useMemo(() => {
     if (!live) return new Map<string, number>()   // frozen run → no marching traces

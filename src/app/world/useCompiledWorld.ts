@@ -26,3 +26,38 @@ export function useCompiledWorld() {
   const doc = useWorldStore(s => s.doc)
   return compiledFor(doc)
 }
+
+// ── Derived indexes over a compiled world (audit ISSUE-029) ──
+// Cached per compiled IDENTITY like compiledFor above: views that need "instances on server X"
+// or "instances in AZ Y" index into these instead of re-filtering the whole instance map per
+// server per 1 Hz batch (which made AzRow/DatacenterFloor O(servers × instances) every second).
+
+const byServerCache = new WeakMap<CompiledWorld, Map<string, CompiledWorld['instances'][string][]>>()
+const byAzCache = new WeakMap<CompiledWorld, Map<string, CompiledWorld['instances'][string][]>>()
+
+function groupInstances(
+  compiled: CompiledWorld,
+  cache: WeakMap<CompiledWorld, Map<string, CompiledWorld['instances'][string][]>>,
+  keyOf: (inst: CompiledWorld['instances'][string]) => string,
+): Map<string, CompiledWorld['instances'][string][]> {
+  let m = cache.get(compiled)
+  if (!m) {
+    m = new Map()
+    for (const inst of Object.values(compiled.instances)) {
+      const key = keyOf(inst)
+      const list = m.get(key)
+      if (list) list.push(inst)
+      else m.set(key, [inst])
+    }
+    cache.set(compiled, m)
+  }
+  return m
+}
+
+export function instancesByServerFor(compiled: CompiledWorld) {
+  return groupInstances(compiled, byServerCache, i => i.serverId)
+}
+
+export function instancesByAzFor(compiled: CompiledWorld) {
+  return groupInstances(compiled, byAzCache, i => i.azId)
+}

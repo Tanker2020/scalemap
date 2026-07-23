@@ -247,17 +247,38 @@ export function replicaRailPairs(_doc: WorldDoc, compiled: CompiledWorld, region
 
 // Signature color of the blueprint with the highest instance count on this server (ties →
 // first by compiled iteration order); fallback 'var(--color-text-muted)'.
+//
+// Audit ISSUE-029: the dominant blueprint per server is derived ONCE per compiled identity (one
+// O(instances) pass, WeakMap-cached like useCompiledWorld's compile cache) instead of re-scanning
+// the whole instance map per server per call — AzRow called this for every server on every 1 Hz
+// batch, making the region page O(servers × instances)/s. Pure memoization, no store access.
+const dominantBpCache = new WeakMap<CompiledWorld, Map<ServerId, BlueprintId>>()
+
+function dominantBlueprintByServer(compiled: CompiledWorld): Map<ServerId, BlueprintId> {
+  let best = dominantBpCache.get(compiled)
+  if (!best) {
+    const counts = new Map<ServerId, Map<BlueprintId, number>>()
+    for (const inst of Object.values(compiled.instances)) {
+      let perBp = counts.get(inst.serverId)
+      if (!perBp) { perBp = new Map(); counts.set(inst.serverId, perBp) }
+      perBp.set(inst.blueprintId, (perBp.get(inst.blueprintId) ?? 0) + 1)
+    }
+    best = new Map()
+    for (const [serverId, perBp] of counts) {
+      let bestId: BlueprintId | null = null
+      let bestCount = 0
+      for (const [id, count] of perBp) {
+        if (count > bestCount) { bestCount = count; bestId = id }
+      }
+      if (bestId) best.set(serverId, bestId)
+    }
+    dominantBpCache.set(compiled, best)
+  }
+  return best
+}
+
 export function dominantBlueprintColor(serverId: ServerId, doc: WorldDoc, compiled: CompiledWorld): string {
-  const counts = new Map<BlueprintId, number>()
-  for (const inst of Object.values(compiled.instances)) {
-    if (inst.serverId !== serverId) continue
-    counts.set(inst.blueprintId, (counts.get(inst.blueprintId) ?? 0) + 1)
-  }
-  let bestId: BlueprintId | null = null
-  let bestCount = 0
-  for (const [id, count] of counts) {
-    if (count > bestCount) { bestCount = count; bestId = id }
-  }
+  const bestId = dominantBlueprintByServer(compiled).get(serverId)
   return (bestId && doc.blueprints[bestId]?.color) || 'var(--color-text-muted)'
 }
 

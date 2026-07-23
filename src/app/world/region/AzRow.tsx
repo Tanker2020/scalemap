@@ -10,10 +10,10 @@
 // reuse `monthlyUsd` already established). Preserves every Phase-4/5 down-state distinction
 // (`outage` vs `outage (manual)`, replica promotion, drain targets, the health ring's `—`
 // at-rest numeral) — this restyles AzRow's existing shape, it does not replace it.
-import type { CSSProperties, ReactElement } from 'react'
+import { useMemo, type CSSProperties, type ReactElement } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
-import { useCompiledWorld } from '../useCompiledWorld'
+import { useCompiledWorld, instancesByAzFor, instancesByServerFor } from '../useCompiledWorld'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { dominantBlueprintColor, regionAzManaged } from './regionData'
 import type { AzId, RegionId, ServerId } from '../../../lib/world/types'
@@ -71,16 +71,31 @@ export function AzRow({
   const managedHere = regionAzManaged(azId, doc, batch)
 
   const az = doc.azs[azId]
-  const servers = Object.values(doc.servers).filter(s => s.azId === azId)
-  const instanceCount = Object.values(compiled.instances).filter(i => i.azId === azId).length
+  // Audit ISSUE-029: memoized + indexed derivations. AzRow re-renders every 1 Hz batch; the
+  // unmemoized full-instance-map filters here (×N AzRows) made the region page
+  // O(servers × instances) per second. instancesByAzFor/instancesByServerFor are the shared
+  // per-compiled indexes (WeakMap-cached in useCompiledWorld.ts).
+  const servers = useMemo(() => Object.values(doc.servers).filter(s => s.azId === azId), [doc.servers, azId])
+  const residentInstances = instancesByAzFor(compiled).get(azId) ?? []
+  const instanceCount = residentInstances.length
   const metrics = batch?.azs[azId] ?? null
   const isDown = metrics?.health === 'down'
-  const dbByServerId = new Map(dbEndpoints.map(e => [e.serverId, e.role]))
+  const dbByServerId = useMemo(() => new Map(dbEndpoints.map(e => [e.serverId, e.role])), [dbEndpoints])
 
-  const residentInstanceIds = Object.values(compiled.instances).filter(i => i.azId === azId).map(i => i.id)
-  const promoting = batch != null && events.some(e =>
-    e.kind === 'replica_promoted' && e.simMs > batch.simMs - PROMOTE_WINDOW_MS && e.simMs <= batch.simMs &&
-    e.affected.some(id => residentInstanceIds.includes(id)))
+  const residentInstanceIds = useMemo(() => new Set(residentInstances.map(i => i.id)), [residentInstances])
+  const batchSimMs = batch?.simMs
+  const promoting = useMemo(() => batchSimMs != null && events.some(e =>
+    e.kind === 'replica_promoted' && e.simMs > batchSimMs - PROMOTE_WINDOW_MS && e.simMs <= batchSimMs &&
+    e.affected.some(id => residentInstanceIds.has(id))), [batchSimMs, events, residentInstanceIds])
+
+  const rpsByServer = useMemo(() => {
+    const byServer = instancesByServerFor(compiled)
+    const m = new Map<ServerId, number>()
+    for (const s of servers) {
+      m.set(s.id, (byServer.get(s.id) ?? []).reduce((sum, i) => sum + (batch?.instances[i.id]?.rps ?? 0), 0))
+    }
+    return m
+  }, [servers, compiled, batch])
 
   const healthyAzLabels = Object.values(doc.azs)
     .filter(a => a.regionId === regionId && a.id !== azId && batch?.azs[a.id]?.health !== 'down')
@@ -157,9 +172,7 @@ export function AzRow({
             const role = dbByServerId.get(server.id)
             const isDb = role != null
             const barColor = isDb ? 'var(--r3-amber)' : (dominantBlueprintColor(server.id, doc, compiled) || BLUE)
-            const rps = Object.values(compiled.instances)
-              .filter(i => i.serverId === server.id)
-              .reduce((sum, i) => sum + (batch?.instances[i.id]?.rps ?? 0), 0)
+            const rps = rpsByServer.get(server.id) ?? 0
             return (
               <div
                 key={server.id} title={server.label}
