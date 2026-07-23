@@ -115,6 +115,53 @@ describe('computeWorldCost', () => {
     expect(withLb.monthlyUsd).toBeCloseTo(baseline.monthlyUsd + expectedLb, 5)
   })
 
+  // Audit ISSUE-060: LB pricing carries an LCU-shaped traffic term — an ALB under load costs
+  // more than an idle one, and an L7 unit-hour prices above an L4 one at the same throughput.
+  it('bills an LCU-shaped traffic term: loaded ALB > idle ALB > nothing; L7 > L4 under load', () => {
+    const { doc, regionId } = twoServerWorld()
+    const lb = createLoadBalancer(regionId)
+    lb.mode = 'l7'
+    doc.loadBalancers[lb.id] = lb
+    const mkWorld = (rps: number) => ({
+      totalRps: rps, errorRate: 0,
+      populationRoutes: [{ populationId: 'pop-1', regionId, rps }],
+      crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0,
+    })
+    const idle = computeWorldCost(doc, mkWorld(0))
+    const loaded = computeWorldCost(doc, mkWorld(2500))
+    expect(idle.loadBalancerUsd).toBeCloseTo(0.0225 * 730, 5)   // base hours only
+    // 2500 rps / 25 rps-per-LCU = 100 LCUs × $0.008/hr × 730 h = $584 on top of base.
+    expect(loaded.loadBalancerUsd).toBeCloseTo(0.0225 * 730 + 100 * 0.008 * 730, 3)
+
+    lb.mode = 'l4'
+    const loadedL4 = computeWorldCost(doc, mkWorld(2500))
+    expect(loadedL4.loadBalancerUsd).toBeLessThan(loaded.loadBalancerUsd)   // NLCU < LCU rate
+    expect(loadedL4.loadBalancerUsd).toBeGreaterThan(idle.loadBalancerUsd)
+  })
+
+  // Audit ISSUE-059: provisioned IOPS above the gp3-style free baseline bill per IOPS-month.
+  it('bills managed-DB provisioned IOPS above the free baseline', () => {
+    const { doc, regionId } = twoServerWorld()
+    const mk = (id: string, provisionedIops?: number) => {
+      doc.managedServices[id] = {
+        id, label: 'db', nodeType: 'dbSql', provider: 'aws',
+        scope: { kind: 'region', regionId }, port: 5432,
+        instanceClassId: 'sql.small', replicaCount: 0, storageGb: 0,
+        ...(provisionedIops != null ? { provisionedIops } : {}),
+      } as WorldDoc['managedServices'][string]
+    }
+    mk('db-base')                       // no knob ⇒ baseline, no IOPS charge
+    const base = computeWorldCost(doc, null).monthlyUsd
+    delete doc.managedServices['db-base']
+    mk('db-low', 3000)                  // at the free baseline ⇒ still no charge
+    const low = computeWorldCost(doc, null).monthlyUsd
+    delete doc.managedServices['db-low']
+    mk('db-high', 9000)                 // 6000 above baseline × $0.005 = $30/month
+    const high = computeWorldCost(doc, null).monthlyUsd
+    expect(low).toBeCloseTo(base, 6)
+    expect(high).toBeCloseTo(base + 6000 * 0.005, 6)
+  })
+
   it('does not price a load balancer whose region was deleted', () => {
     const { doc } = twoServerWorld()
     const lb = createLoadBalancer('region-that-does-not-exist')

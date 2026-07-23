@@ -66,7 +66,17 @@ export interface WorldCostResult {
 // NOT billed here: it rides the cross-AZ egress bytes the engine already meters and costs above.
 const LB_PROVIDER: CloudProvider = 'aws'
 
-function loadBalancerMonthlyUsd(): number {
+// Per-mode LB pricing (audit ISSUE-060): an L7 ALB and an L4 NLB no longer bill identically, and
+// a traffic-unit (LCU-shaped) term now rides on live throughput — AWS shapes: ALB base + $/LCU-hr,
+// NLB base + $/NLCU-hr, 1 unit ≈ 25 new connections/sec. Deliberately coarse (real LCUs take the
+// max of four dimensions); egress bytes stay on the cross-AZ/internet lines, never billed here.
+const LB_MODE_PRICING: Record<'l4' | 'l7', { capacityUnitUsdHr: number }> = {
+  l7: { capacityUnitUsdHr: 0.008 },   // ALB LCU
+  l4: { capacityUnitUsdHr: 0.006 },   // NLB NLCU
+}
+const LB_RPS_PER_CAPACITY_UNIT = 25
+
+function loadBalancerMonthlyUsd(mode: 'l4' | 'l7', servedRps: number): number {
   const spec = getServiceSpec('loadBalancer', LB_PROVIDER)
   if (!spec) return 0
   let usd = 0
@@ -74,6 +84,10 @@ function loadBalancerMonthlyUsd(): number {
     if (c.kind === 'instanceHourly') usd += c.defaultRateUsdHr * c.defaultCount * HOURS_PER_MONTH
     // egress component: intentionally skipped — cross-zone bytes are already in cross-AZ egress.
   }
+  // Traffic-unit term (ISSUE-060): zero when idle or with no live metrics — the base-hours line
+  // above keeps the pre-traffic behavior for a null-metrics projection.
+  const units = Math.max(0, servedRps) / LB_RPS_PER_CAPACITY_UNIT
+  usd += units * LB_MODE_PRICING[mode].capacityUnitUsdHr * HOURS_PER_MONTH
   return usd
 }
 
@@ -81,6 +95,13 @@ function loadBalancerMonthlyUsd(): number {
 // buys the same capacity cheaper — the classic reserved-instance trade, and the reason a stable
 // workload is priced very differently from a spiky one.
 const RESERVED_DISCOUNT: Record<string, number> = { onDemand: 0, reserved1yr: 0.4, reserved3yr: 0.6 }
+
+// Provisioned-IOPS pricing for managed DBs (audit ISSUE-059), gp3-shaped: a baseline allowance
+// rides free with the storage; IOPS provisioned above it bill per IOPS-month. Billed once per
+// cluster (matching the storage-billed-once simplification above). Aurora-style per-I/O billing
+// is not modeled — the engine has no per-request I/O meter for managed DBs.
+export const DB_IOPS_FREE = 3000
+const DB_IOPS_USD_PER_IOPS_MONTH = 0.005
 
 // Serverless/on-demand request price (node-model Phase 5.4). A serverless DB bills per request
 // instead of per instance-hour: idle costs (almost) nothing, saturation costs more than the box
@@ -105,6 +126,8 @@ function managedServiceMonthlyUsd(ms: ManagedService, rps = 0): number {
   if (dbClass) {
     const instances = 1 + (ms.replicaCount ?? 0) + (ms.multiAz ? 1 : 0)   // primary + replicas + standby
     const storage = (ms.storageGb ?? 0) * dbStorageRate(ms)   // provider-correct rate (ISSUE-022)
+      // Provisioned IOPS above the free baseline (audit ISSUE-059) — 0 when the knob is unset.
+      + Math.max(0, (ms.provisionedIops ?? 0) - DB_IOPS_FREE) * DB_IOPS_USD_PER_IOPS_MONTH
     // Phase 5.4 — capacity mode decides the SHAPE of the compute bill:
     //   serverless  → no instance-hours at all; pay per request off live traffic. A commitment
     //                 discount cannot apply, because there is no provisioned capacity to commit to.
@@ -207,11 +230,21 @@ export function computeWorldCost(
 
   // Regional load balancers (Phase 3): each AUTHORED LB adds LB-hours to its region (region-scoped
   // like a region-level managed service — bumped into byRegion so region-scoped cost picks it up).
+  // The LCU-shaped traffic term (ISSUE-060) bills the region's live inbound rps; several LBs in
+  // one region split it evenly (which LB serves which share isn't modeled).
   let loadBalancerUsd = 0
   let loadBalancerCount = 0
+  const lbsPerRegion = new Map<RegionId, number>()
   for (const lb of Object.values(doc.loadBalancers)) {
     if (!doc.regions[lb.regionId]) continue
-    const usd = loadBalancerMonthlyUsd()
+    lbsPerRegion.set(lb.regionId, (lbsPerRegion.get(lb.regionId) ?? 0) + 1)
+  }
+  const regionInboundRps = (regionId: RegionId): number =>
+    world?.populationRoutes.filter(r => r.regionId === regionId).reduce((s, r) => s + r.rps, 0) ?? 0
+  for (const lb of Object.values(doc.loadBalancers)) {
+    if (!doc.regions[lb.regionId]) continue
+    const share = regionInboundRps(lb.regionId) / (lbsPerRegion.get(lb.regionId) ?? 1)
+    const usd = loadBalancerMonthlyUsd(lb.mode, share)
     computeTotal += usd
     bump(byRegionMap, lb.regionId, usd)
     loadBalancerUsd += usd

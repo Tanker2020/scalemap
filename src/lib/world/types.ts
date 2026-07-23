@@ -258,6 +258,11 @@ export interface ManagedService {
   // Interpreted by managedDbRuntime.ts; meaningful only when nodeType is a DB.
   maxConnections?: number          // live-connection cap (Little's law); absent ⇒ the class's default
   queryTimeoutMs?: number          // queries slower than this error out; absent ⇒ no timeout
+  // Provisioned storage IOPS (audit ISSUE-059), meaningful for DB nodes. Additive/optional:
+  // absent ⇒ the baseline allowance (costModelV2's DB_IOPS_FREE) and no extra charge — gp3-style
+  // pricing bills only IOPS provisioned ABOVE the baseline. Cost-model input only (the sim's
+  // capacity model stays instance-class-driven).
+  provisionedIops?: number
   capacityMode?: ManagedCapacityMode  // provisioned (fixed class ceiling) vs serverless (bursts, per-request price)
   pricing?: ManagedPricingCommitment  // reserved commitments discount the provisioned hourly
   replicaLocality?: ReplicaLocality   // read-replica placement ⇒ read-latency + egress tier
