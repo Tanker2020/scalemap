@@ -21,6 +21,9 @@ export interface RoutingConfig {
   priorityOrder: RegionId[]           // policy === 'priority'
   healthCheckIntervalMs: number
   healthCheckFailureThreshold: number
+  // Consecutive healthy probes required before a failed scope passes again (audit ISSUE-020 —
+  // ALB/NLB "healthy threshold" semantics). Optional + additive: absent ⇒ engine default 2.
+  healthCheckHealthyThreshold?: number
   dnsTtlSec: number
 }
 

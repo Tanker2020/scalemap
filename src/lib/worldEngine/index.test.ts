@@ -304,7 +304,9 @@ describe('world engine integration', () => {
     sim.stepFor(32)                                   // past 3 check intervals -> checkFailed latches
     expect(sim.latest().regions[f.r1.id].health).toBe('down')
     sim.engine.setOutage('region', f.r1.id, false)
-    sim.stepFor(20)                                   // next due check resets + 5s recovery hysteresis
+    // Audit ISSUE-020: recovery now needs healthCheckHealthyThreshold (2) consecutive healthy
+    // checks — one extra check interval vs the old single-probe reset — plus the 5s hysteresis.
+    sim.stepFor(30)
     expect(sim.latest().regions[f.r1.id].health).toBe('healthy')
     // and the geo-routed population comes home once its TTL re-expires
     const route = sim.latest().world.populationRoutes.find(r => r.populationId === f.pop.id)?.regionId

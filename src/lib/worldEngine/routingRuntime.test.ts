@@ -131,13 +131,48 @@ describe('runHealthChecks', () => {
     expect(results).toEqual([{ id: 'srv-1', checkFailed: true }]) // 3 failures, threshold reached
   })
 
-  it('a healthy result resets the consecutive-failure counter', () => {
+  // Audit ISSUE-020 (intentional behavior change): a SINGLE healthy probe no longer wipes the
+  // failure counter — clearing requires healthCheckHealthyThreshold consecutive successes.
+  it('one healthy probe does not reset failures; the healthy-threshold run does', () => {
     const state = createRoutingState()
     const config = basePolicy({ healthCheckIntervalMs: 1_000, healthCheckFailureThreshold: 2 })
+    runHealthChecks(state, config, 0, [{ id: 'srv-1', health: 'down' }])          // 1 failure
+    runHealthChecks(state, config, 1_000, [{ id: 'srv-1', health: 'healthy' }])   // 1 success < threshold 2
+    // Failure count survived the single success → this failure reaches the fall threshold.
+    const flapped = runHealthChecks(state, config, 2_000, [{ id: 'srv-1', health: 'down' }])
+    expect(flapped).toEqual([{ id: 'srv-1', checkFailed: true }])
+
+    // Two consecutive successes clear it (default healthy threshold = 2).
+    runHealthChecks(state, config, 3_000, [{ id: 'srv-1', health: 'healthy' }])
+    runHealthChecks(state, config, 4_000, [{ id: 'srv-1', health: 'healthy' }])
+    const recovered = runHealthChecks(state, config, 5_000, [{ id: 'srv-1', health: 'down' }])
+    expect(recovered).toEqual([{ id: 'srv-1', checkFailed: false }])   // fresh count: 1 < 2
+  })
+
+  it('a scope alternating pass/fail ratchets to failed instead of never tripping', () => {
+    const state = createRoutingState()
+    const config = basePolicy({ healthCheckIntervalMs: 1_000, healthCheckFailureThreshold: 3 })
+    let last: { id: string; checkFailed: boolean }[] = []
+    for (let i = 0; i < 6; i++) {
+      const health = i % 2 === 0 ? 'down' : 'healthy'
+      last = runHealthChecks(state, config, i * 1_000, [{ id: 'srv-1', health }])
+    }
+    // fail/pass/fail/pass/fail/pass — failures ratchet 1,1,2,2,3,3 → tripped at the 5th check.
+    expect(last).toEqual([{ id: 'srv-1', checkFailed: true }])
+  })
+
+  it('honors an authored healthCheckHealthyThreshold', () => {
+    const state = createRoutingState()
+    const config = basePolicy({
+      healthCheckIntervalMs: 1_000, healthCheckFailureThreshold: 2, healthCheckHealthyThreshold: 3,
+    })
     runHealthChecks(state, config, 0, [{ id: 'srv-1', health: 'down' }])
-    runHealthChecks(state, config, 1_000, [{ id: 'srv-1', health: 'healthy' }])
-    const results = runHealthChecks(state, config, 2_000, [{ id: 'srv-1', health: 'down' }])
-    expect(results).toEqual([{ id: 'srv-1', checkFailed: false }])
+    runHealthChecks(state, config, 1_000, [{ id: 'srv-1', health: 'down' }])          // failed (2)
+    runHealthChecks(state, config, 2_000, [{ id: 'srv-1', health: 'healthy' }])
+    const twoOfThree = runHealthChecks(state, config, 3_000, [{ id: 'srv-1', health: 'healthy' }])
+    expect(twoOfThree).toEqual([{ id: 'srv-1', checkFailed: true }])   // 2 successes < threshold 3
+    const recovered = runHealthChecks(state, config, 4_000, [{ id: 'srv-1', health: 'healthy' }])
+    expect(recovered).toEqual([{ id: 'srv-1', checkFailed: false }])
   })
 
   it('the interval gate skips extra checks — repeated calls within one interval only count once', () => {

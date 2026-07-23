@@ -13,8 +13,14 @@ interface PopulationCacheEntry {
 
 interface HealthCheckCounter {
   consecutiveFailures: number
+  consecutiveSuccesses: number
   lastCheckMs: number | null
 }
+
+// Rise threshold (audit ISSUE-020): consecutive healthy probes required before the failure
+// counter clears — ALB/NLB "healthy threshold" semantics. Read from
+// config.healthCheckHealthyThreshold when authored; this is the default.
+export const DEFAULT_HEALTHY_THRESHOLD = 2
 
 export interface RoutingState {
   popCache: Map<PopulationId, PopulationCacheEntry>
@@ -68,21 +74,33 @@ export function resolveRegion(
 
 // Per-scope consecutive-failure debounce, gated by `healthCheckIntervalMs` — a scope not yet
 // due for a check reports its last-known `checkFailed` state unchanged.
+//
+// Audit ISSUE-020: symmetric thresholds. Falling needs `healthCheckFailureThreshold` consecutive
+// failures (as before); RISING needs `healthCheckHealthyThreshold` (default 2) consecutive
+// successes before the failure counter clears. A single healthy probe no longer wipes the
+// count, so a scope flapping pass/fail RATCHETS toward failed instead of never tripping.
 export function runHealthChecks(
   state: RoutingState,
   config: RoutingConfig,
   simMs: number,
   scopes: { id: string; health: HealthState }[],
 ): { id: string; checkFailed: boolean }[] {
+  const healthyThreshold = config.healthCheckHealthyThreshold ?? DEFAULT_HEALTHY_THRESHOLD
   return scopes.map(({ id, health }) => {
     let counter = state.healthCheckCounters.get(id)
     if (!counter) {
-      counter = { consecutiveFailures: 0, lastCheckMs: null }
+      counter = { consecutiveFailures: 0, consecutiveSuccesses: 0, lastCheckMs: null }
       state.healthCheckCounters.set(id, counter)
     }
     const due = counter.lastCheckMs === null || simMs - counter.lastCheckMs >= config.healthCheckIntervalMs
     if (due) {
-      counter.consecutiveFailures = health === 'healthy' ? 0 : counter.consecutiveFailures + 1
+      if (health === 'healthy') {
+        counter.consecutiveSuccesses += 1
+        if (counter.consecutiveSuccesses >= healthyThreshold) counter.consecutiveFailures = 0
+      } else {
+        counter.consecutiveFailures += 1
+        counter.consecutiveSuccesses = 0
+      }
       counter.lastCheckMs = simMs
     }
     return { id, checkFailed: counter.consecutiveFailures >= config.healthCheckFailureThreshold }
