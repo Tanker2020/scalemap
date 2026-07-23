@@ -3121,3 +3121,72 @@ pattern: firewall rules are an ordered list of independently-valid rows, where n
 field values is ever invalid mid-edit, unlike `ManagedServiceModal`'s single multi-field entity,
 where a half-edited combination frequently IS invalid mid-edit (e.g. changing `nodeType` needing
 to re-derive `instanceClassId`).
+
+## Audit critical fixes — ISSUE-001 through ISSUE-006 (`audit-spec.md`, 2026-07-22)
+
+Six critical findings from the system audit (`audit-spec.md`, repo root), executed in dependency
+order 004 → 005 → 003 → 006 → 001 → 002 (006 before 001 because 001's breaker feed relies on
+006's "attempts still land when every target is down" error signal; both touch `flows.ts`). One
+commit per issue on `fix/audit-critical-001-006`. No `worldEngine/types.ts` contract shapes
+changed — every engine-side extension is an internal or optional-additive seam, so no
+contract-drift entry was needed.
+
+- **ISSUE-004 (`WorldShell.tsx`):** the global Ctrl+Z / Ctrl+Shift+Z handler now early-returns
+  when `useSimulationStore.getState().running` — the hotkey path finally mirrors the authoring
+  edit-lock (undo mid-run swapped the doc under a running engine, desyncing every view from
+  `batch.instances` keyed by the old ids). The undo/redo branches were merged into one
+  `meta+z` block with the gate checked once.
+- **ISSUE-005 (`simulation.store.ts`):** `markSpillBroken()` is the single place `spillBroken`
+  flips (both the `eventLogAppend` and `eventLogBeginRun` failure paths) and it also empties
+  `pendingEvents`; `onEvent` guards its push on `!spillBroken`. New read-only diagnostic export
+  `pendingEventCount()` — an observability seam for bounded-ness tests, not part of the store's
+  state (module-local buffering deliberately never re-renders views).
+- **ISSUE-003 (`costModelV2.ts`):** the registry pricing loop now bills `requestsPerMillion`
+  from live rps (`rps × SECONDS_PER_MONTH / 1e6 × usdPerMillion` — the same projection the
+  serverless-DB path already used; `computeWorldCost` already threaded `managed[id].rps` in,
+  it just was never consumed on the registry path) and `computeResource` at a documented default
+  sizing (`MANAGED_COMPUTE_DEFAULT_VCPU`/`_RAM_GIB` = 2 vCPU / 4 GiB, x86 rates) because
+  `ManagedService` carries no provisioned-size fields — that constant pair is the seam a future
+  sizing knob replaces. Lambda/SQS/EventBridge/SNS/API Gateway/CDN-requests/DNS-queries/WAF and
+  managed ec2 no longer bill $0. The `usd === 0` early-drop stays (now a genuine no-op skip,
+  documented inline).
+- **ISSUE-006 (`flows.ts`):** `splitDependencyShares` gained an optional trailing
+  `healthWeightOf(instanceId) => number` param (default weight-1 — every existing caller/test
+  unchanged); `solveFlows` passes down ⇒ 0 / degraded ⇒ `DEGRADED_ADMIT_FACTOR` / healthy ⇒ 1,
+  renormalized per pool. Internal fan-out now mirrors the entry tier's down-exclusion. Two
+  deliberate asymmetries: (a) a pool whose EVERY member is down falls back to the even split so
+  attempts still land and fail live at the dead targets (the error signal ISSUE-001 needs);
+  (b) SQL reads SPILL to the primaries when every replica is down (a primary can always serve
+  reads) but writes never spill to replicas (they can't take writes until promotion flips
+  roles) — (b) was surfaced by the replica-promotion e2e, where the demoted-down original pinned
+  the whole read share as errors and tripped the caller's now-working breaker against a healthy
+  promoted primary.
+- **ISSUE-001 (`breakers.ts`, `index.ts` step 8):** `recordWeighted(b, errored, total, simMs)`
+  generalizes the window to per-batch error FRACTIONS (0..1); `recordResult` remains as the
+  boolean special case (`failed?1:0, 1`), so window math, `MIN_SAMPLES_TO_OPEN`, and the
+  half-open state machine are unchanged for boolean callers — half-open now resolves against
+  `errorThreshold` (fraction 1/0 behaves exactly as the old true/false). Step 8 feeds each
+  downstream row the TARGET's observed error fraction (`errorRps / offeredRps` from this step's
+  completed flows — aggregated across all callers by the time the solver returns); hard-blocked
+  rows stay fraction 1; the `row.rps <= 0` skip is preserved. A down / erroring / CPU-shedding
+  downstream instance finally opens its callers' breakers. Known deferred refinements:
+  rps-weighted time-bucketed windows + close-threshold hysteresis are ISSUE-015 (Major), and the
+  errorRps shed/degraded/hard-down conflation feeding this fraction is ISSUE-042 (Minor).
+- **ISSUE-002 (`networkRuntime.ts`, `flows.ts`, `index.ts`):** the NIC cap result is no longer
+  discarded. `NicState` gained `backlogBytes` (send-buffer carryover, bounded at one step-cap —
+  the beyond-2×-cap slice is shed, not queued); new `addNicBytes` (accumulate-only) and
+  `settleNic` (end-of-step evaluate + carry + counter reset) share one evaluator with the kept
+  `applyNicCap` single-shot API. `index.ts` persists `nics` per server from `start()`, books
+  asymmetric bytes (`NIC_REQUEST_BYTES` 512 in / `NIC_RESPONSE_BYTES` 2048 out — the symmetric
+  `BYTES_PER_REQUEST_EACH_WAY` remains the cost-model convention in `flows.ts`), settles AFTER
+  step 10's `accumulateStep` (which reads the per-step counters settleNic resets), and feeds the
+  settlement into the NEXT step: `deliveredFraction` multiplies into `admittedScaleByServer`,
+  `queuedLatencyMs` rides `FlowInput`'s new optional `extraLatencyMsByServer` (added on top of
+  the multiplied sampled service latency in `getFlow`). One-step lag, exactly like
+  `admittedScale`/`vpsFactor`. Note for anyone reading `ServerMetrics.nicInMbps`: ingress now
+  books 512 B/request instead of 2048, so absolute in-Mbps readings dropped 4× (shape unchanged).
+
+Boundary notes: `breakers.ts`'s `recordResult` callers outside the engine facade are unaffected
+(the signature is unchanged); `splitDependencyShares` and `solveFlows` extensions are
+optional-additive; `simulation.store.ts`'s new export is read-only. The audit's remaining
+critical issues (007–012) and everything below them are NOT part of this branch.
