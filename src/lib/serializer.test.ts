@@ -111,6 +111,44 @@ describe('scalemap v3 serializer', () => {
     expect(parsed.world.packets).toEqual({ mode: 'generic', templates: {}, nextId: 1 })
   })
 
+  // Audit ISSUE-070: externally-authored files may carry `"version": 3` as a JSON number.
+  // Same format — accept it; numeric 1/2 still land on their dedicated rejection messages.
+  it('accepts a numeric version 3 and still rejects numeric 1/2 with their own messages', () => {
+    const world = createWorld()
+    const asNumber = JSON.parse(serializeWorld(world, 'n', '2026-07-19T00:00:00.000Z')) as { version: unknown }
+    asNumber.version = 3
+    const parsed = deserializeWorld(JSON.stringify(asNumber))
+    expect(parsed.world).toEqual(world)
+    expect(() => deserializeWorld(JSON.stringify({ version: 1 }))).toThrowError(/v1|older/i)
+    expect(() => deserializeWorld(JSON.stringify({ version: 2 }))).toThrowError(/v2|node|typed/i)
+  })
+
+  // Audit ISSUE-069: normalization builds a NEW file object rather than writing defaults onto
+  // the parsed input. The observable consequences pinned here: the vestigial LEGACY top-level
+  // `packets` slot folds into world.packets and is NOT retained on the returned file.
+  it('folds a legacy top-level packets slot into world.packets without retaining the slot', () => {
+    const legacy = { mode: 'generic', templates: { 1: { id: 1, name: 'api', protocol: 'http', sizeKb: 1, method: 'GET', path: '/api/*', statusCode: 200 } }, nextId: 2 }
+    const raw = JSON.stringify({
+      version: '3',
+      meta: { name: 'legacy-slot', created: '2026-07-19T00:00:00.000Z', modified: '2026-07-19T00:00:00.000Z' },
+      packets: legacy,   // vestigial top-level slot — the running app never populated this
+      world: {
+        routing: { policy: 'latency', weights: {}, priorityOrder: [] },   // timing fields omitted
+        populations: {}, regions: {}, azs: {},
+        servers: { 's1': { id: 's1', label: 'bare-server', azId: 'az-1' } },   // no `rack` key
+        blueprints: {}, placements: {}, managedServices: {},
+        // racks / loadBalancers / world.packets / connectionLayout all omitted
+      },
+    })
+    const parsed = deserializeWorld(raw)
+    expect(parsed.world.packets).toEqual(legacy)
+    expect('packets' in parsed).toBe(false)   // the normalized copy drops the vestigial slot
+    // The rest of the additive defaults land on the copy too.
+    expect(parsed.world.racks).toEqual({})
+    expect(parsed.world.servers['s1'].rack).toBeNull()
+    expect(parsed.world.routing.dnsTtlSec).toBe(30)
+  })
+
   it('round-trips a world.packets route catalog', () => {
     const world = createWorld()
     world.packets = { mode: 'generic', templates: { 1: { id: 1, name: 'api', protocol: 'http', sizeKb: 1, method: 'POST', path: '/api/*', statusCode: 200 } }, nextId: 2 }

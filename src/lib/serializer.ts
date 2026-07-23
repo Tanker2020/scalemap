@@ -46,16 +46,20 @@ export function serializeWorld(
 
 export function deserializeWorld(raw: string): ScalemapFileV3 {
   const data = JSON.parse(raw) as { version?: unknown; world?: unknown }
-  if (data.version === '1') {
+  // Version gate compares on the STRING form (audit ISSUE-070): an externally-authored file
+  // carrying `"version": 3` (number) is the same format, not an unknown one — and a numeric
+  // 1/2 must land on its dedicated rejection message, not the generic fallthrough.
+  const version = data.version == null ? undefined : String(data.version)
+  if (version === '1') {
     throw new Error('This is a v1 diagram from an older Scalemap and predates the world model — v1 files are not supported.')
   }
-  if (data.version === '2') {
+  if (version === '2') {
     // node-model Phase 5: a v2 world predates the typed-node redesign (typed palette nodes, DB
     // appliances, cloud-DB instance classes). It cannot be migrated automatically — rebuild it in
     // the current app. Rejected here, at the version gate, BEFORE the world-shape check.
     throw new Error('This is a v2 world from before the typed-node redesign — it predates node-based services and databases, and cannot be migrated automatically. v2 files are not supported.')
   }
-  if (data.version !== '3') {
+  if (version !== '3') {
     throw new Error(`Unsupported scalemap version: ${String(data.version)}`)
   }
   const meta = (data as { meta?: unknown }).meta
@@ -70,16 +74,16 @@ export function deserializeWorld(raw: string): ScalemapFileV3 {
   if (meta == null || typeof meta !== 'object' || !worldIsValid) {
     throw new Error('Invalid .scalemap file: missing or malformed world document')
   }
-  // Additive-format normalization (Polish 3 Task 2): `racks` and non-null `server.rack`
-  // were both introduced after v2 shipped, so a pre-Polish-3 file simply won't carry
-  // them — default racks to {} and any server missing a `rack` key to the free pool
-  // (null) rather than rejecting/leaving the field undefined.
-  const result = data as ScalemapFileV3
+  // Purity at the boundary (audit ISSUE-069): normalization used to write racks/rack/packets
+  // defaults straight onto the just-parsed `data` — harmless for today's callers, but a caller
+  // retaining its parsed JSON would see it silently rewritten. Build a NEW normalized file
+  // object instead; `data` is never mutated below.
+  const src = data as ScalemapFileV3
 
   // ── Boundary validation (audit ISSUE-012) ──────────────────────────────────
   // Shape-only checking let a corrupt/hostile file carry poison past the gate: a string
   // hourlyUsd turns computeWorldCost into NaN, an unknown routing policy left region scores
-  // undefined. Reject values that are PRESENT but invalid; MISSING additive fields keep the
+  // undefined. Reject values that are PRESENT but invalid; MISSING additive fields get the
   // defensive defaults applied below (a hand-authored bare server still loads).
   const invalid = (msg: string): never => { throw new Error(`Invalid .scalemap file: ${msg}`) }
   const finiteOrThrow = (v: unknown, what: string): void => {
@@ -87,19 +91,23 @@ export function deserializeWorld(raw: string): ScalemapFileV3 {
       invalid(`${what} must be a finite number`)
     }
   }
-  const routing = result.world.routing as unknown as Record<string, unknown>
   const ROUTING_POLICIES = ['latency', 'geo', 'weighted', 'priority']
-  if (!ROUTING_POLICIES.includes(routing.policy as string)) {
-    invalid(`unknown routing policy "${String(routing.policy)}"`)
+  if (!ROUTING_POLICIES.includes((src.world.routing as unknown as Record<string, unknown>).policy as string)) {
+    invalid(`unknown routing policy "${String((src.world.routing as unknown as Record<string, unknown>).policy)}"`)
   }
   // Missing timing fields default to the createWorld() values; present ones must be finite.
-  routing.dnsTtlSec ??= 30
-  routing.healthCheckIntervalMs ??= 10_000
-  routing.healthCheckFailureThreshold ??= 3
-  for (const field of ['dnsTtlSec', 'healthCheckIntervalMs', 'healthCheckFailureThreshold']) {
-    finiteOrThrow(routing[field], `routing.${field}`)
+  // (`??` on required fields looks redundant to the TYPE, but the parsed file is untrusted —
+  // a hand-authored routing block may omit them despite what ScalemapFileV3 claims.)
+  const routing = {
+    ...src.world.routing,
+    dnsTtlSec: src.world.routing.dnsTtlSec ?? 30,
+    healthCheckIntervalMs: src.world.routing.healthCheckIntervalMs ?? 10_000,
+    healthCheckFailureThreshold: src.world.routing.healthCheckFailureThreshold ?? 3,
   }
-  for (const server of Object.values(result.world.servers)) {
+  for (const field of ['dnsTtlSec', 'healthCheckIntervalMs', 'healthCheckFailureThreshold'] as const) {
+    finiteOrThrow((routing as unknown as Record<string, unknown>)[field], `routing.${field}`)
+  }
+  for (const server of Object.values(src.world.servers)) {
     const s = server as unknown as Record<string, unknown>
     finiteOrThrow(s.hourlyUsd, `server ${server.id} hourlyUsd`)
     const specs = s.specs as Record<string, unknown> | null | undefined
@@ -110,28 +118,32 @@ export function deserializeWorld(raw: string): ScalemapFileV3 {
     }
   }
 
-  result.world.racks ??= {}
-  // Additive-format normalization (Phase 1 regional LB): `loadBalancers` was introduced after
-  // v2 shipped, so a pre-LB file won't carry it — default to {}. compileWorld synthesizes a
-  // default LB per region from it, so behavior is unchanged.
-  result.world.loadBalancers ??= {}
-  // Additive-format normalization (Phase 2 route system): the route catalog now lives at
-  // `world.packets` (mutate()-managed for undo/dirty, serialized inside `world` like every other
-  // collection). Older files either omit it entirely or carry a LEGACY top-level `packets` slot —
-  // the vestigial sibling the running app never actually populated (fileOps always passed
-  // undefined). Prefer world.packets; else fold the legacy slot in; else default to empty. This
-  // keeps every pre-Phase-2 file byte-behaviorally unchanged (empty catalog ⇒ implicit default
-  // route ⇒ the pre-route scalar distribution).
-  if (result.world.packets == null) {
-    const legacy = (data as { packets?: PacketRegistry }).packets
-    result.world.packets = legacy ?? emptyPacketRegistry()
+  // Additive-format normalization, all applied to the copy:
+  //  • `racks` + non-null `server.rack` (Polish 3 Task 2) — a pre-Polish-3 file won't carry
+  //    them; default racks to {} and a server missing `rack` to the free pool (null).
+  //  • `loadBalancers` (Phase 1 regional LB) — default {}; compileWorld synthesizes a default
+  //    LB per region, so behavior is unchanged.
+  //  • `packets` (Phase 2 route system) — the catalog lives at `world.packets`; older files
+  //    omit it or carry the vestigial LEGACY top-level `packets` slot (fileOps always passed
+  //    undefined). Prefer world.packets; else fold the legacy slot in; else empty (implicit
+  //    default route ⇒ the pre-route scalar distribution).
+  //  • `connectionLayout` (Connections editor) — default {} (auto tree-layout fallback).
+  const legacyPackets = (data as { packets?: PacketRegistry }).packets
+  const servers = Object.fromEntries(Object.entries(src.world.servers).map(([id, server]) =>
+    [id, server.rack === undefined ? { ...server, rack: null } : server]))
+  const normalizedWorld: WorldDoc = {
+    ...src.world,
+    routing,
+    servers,
+    racks: src.world.racks ?? {},
+    loadBalancers: src.world.loadBalancers ?? {},
+    packets: src.world.packets ?? legacyPackets ?? emptyPacketRegistry(),
+    connectionLayout: src.world.connectionLayout ?? {},
   }
-  for (const server of Object.values(result.world.servers)) {
-    if (server.rack === undefined) server.rack = null
+  return {
+    version: '3',
+    meta: src.meta,
+    world: normalizedWorld,
+    ...(src.viewState ? { viewState: src.viewState } : {}),
   }
-  // Additive-format normalization (Connections editor): manual node positions were introduced
-  // after v2 shipped — a pre-Connections file simply won't carry the map. Default to {} (every
-  // node then falls back to the auto tree-layout).
-  result.world.connectionLayout ??= {}
-  return result
 }
