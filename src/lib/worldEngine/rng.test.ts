@@ -44,6 +44,11 @@ describe('rng', () => {
     for (const p of picksA) expect(arr).toContain(p)
   })
 
+  it('pick() throws loudly on an empty array instead of reading index -1 (audit ISSUE-038)', () => {
+    const rng = createRng(5)
+    expect(() => rng.pick([])).toThrow('empty array')
+  })
+
   it('createRng() with no seed still produces a deterministic default sequence', () => {
     const a = createRng()
     const b = createRng()

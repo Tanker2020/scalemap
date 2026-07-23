@@ -29,6 +29,11 @@ export function createRng(seed: number = DEFAULT_SEED): Rng {
       return min + next() * (max - min)
     },
     pick<T>(arr: T[]): T {
+      // Loud guard (audit ISSUE-038): the old floor/min math read arr[-1] = undefined for an
+      // empty array — a silent poison any future caller would inherit. Every current caller
+      // pre-checks non-emptiness, so this throw is unreachable today; it exists to keep the
+      // primitive honest about its T (not T | undefined) return type.
+      if (arr.length === 0) throw new Error('rng.pick: cannot pick from an empty array')
       const idx = Math.floor(next() * arr.length)
       return arr[Math.min(idx, arr.length - 1)]
     },
