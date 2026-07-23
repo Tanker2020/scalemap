@@ -153,9 +153,15 @@ export function computeWorldCost(
   const byAzMap = new Map<AzId, number>()
   const bump = (map: Map<string, number>, key: string, usd: number) => map.set(key, (map.get(key) ?? 0) + usd)
   let managedEgressTotal = 0
+  // Audit ISSUE-024: the compute total accumulates alongside EVERY bump, independent of whether
+  // the entity's AZ→region reference still resolves. Deriving the total from byRegionMap silently
+  // dropped any server/service pointing at a deleted AZ (a common transient while editing): it
+  // appeared in byAz but not in monthlyUsd, so sum(byAz) ≠ monthlyUsd.
+  let computeTotal = 0
 
   for (const server of Object.values(doc.servers)) {
     const usd = server.hourlyUsd * HOURS_PER_MONTH
+    computeTotal += usd
     bump(byAzMap, server.azId, usd)
     const az = doc.azs[server.azId]
     if (az) bump(byRegionMap, az.regionId, usd)
@@ -170,6 +176,7 @@ export function computeWorldCost(
     // genuinely cost $0 this month (generic provider, or zero-traffic pure-request services) —
     // bumping 0 into the maps would be a no-op anyway.
     if (usd === 0) continue
+    computeTotal += usd
     if (ms.scope.kind === 'az') {
       bump(byAzMap, ms.scope.azId, usd)
       const az = doc.azs[ms.scope.azId]
@@ -186,6 +193,7 @@ export function computeWorldCost(
   for (const lb of Object.values(doc.loadBalancers)) {
     if (!doc.regions[lb.regionId]) continue
     const usd = loadBalancerMonthlyUsd()
+    computeTotal += usd
     bump(byRegionMap, lb.regionId, usd)
     loadBalancerUsd += usd
     loadBalancerCount += 1
@@ -200,11 +208,9 @@ export function computeWorldCost(
   const internetGbMonth = world ? (world.internetEgressBytesPerSec * SECONDS_PER_MONTH) / BYTES_PER_GB : 0
   const internetUsd = world ? egressMonthlyCost('aws', internetGbMonth) : 0
 
-  // byRegionMap already sums every server + every managed service + every load balancer exactly
-  // once (each contributes to exactly one region, directly or via its AZ's region) — safe to use
-  // directly as the compute total, no need to re-walk the doc again. loadBalancerUsd is a SUBSET
-  // of this (already bumped in above), so it is NOT added to monthlyUsd a second time.
-  const computeTotal = [...byRegionMap.values()].reduce((a, b) => a + b, 0)
+  // computeTotal accumulated alongside every bump above (ISSUE-024) — provably complete even
+  // when an AZ→region reference dangles mid-edit. loadBalancerUsd is a SUBSET of it (already
+  // accumulated in the loop), so it is NOT added to monthlyUsd a second time.
   const monthlyUsd = computeTotal + crossAzUsd + crossRegionUsd + internetUsd
 
   return {

@@ -303,3 +303,30 @@ describe('computeWorldCost — managed-DB pricing commitment + capacity mode (Ph
     expect(withStaleQueue).toBeCloseTo(withCleanQueue, 5)
   })
 })
+
+// Audit ISSUE-024: the total accumulates alongside every bump — a server whose AZ was deleted
+// (a normal transient while editing) must still be in monthlyUsd, and sum(byAz) must cover it.
+describe('computeWorldCost — orphaned-AZ completeness (ISSUE-024)', () => {
+  it('a server pointing at a deleted AZ still contributes to monthlyUsd', () => {
+    const { doc } = twoServerWorld()
+    const orphan = createServer('az-deleted', getPreset('dedicated-8')!)   // 0.34 usd/hr
+    doc.servers[orphan.id] = orphan
+    const result = computeWorldCost(doc, null)
+    const expected = (0.036 + 0.34 + 0.34) * 730
+    expect(result.monthlyUsd).toBeCloseTo(expected, 5)
+    // The orphan appears in byAz (under its dangling AZ id) and byAz sums to the compute total.
+    const byAzSum = result.byAz.reduce((s, e) => s + e.monthlyUsd, 0)
+    expect(byAzSum).toBeCloseTo(expected, 5)
+  })
+
+  it('an az-scoped managed service on a deleted AZ still contributes to monthlyUsd', () => {
+    const { doc } = twoServerWorld()
+    doc.managedServices['ms-orphan'] = {
+      id: 'ms-orphan', label: 'db', nodeType: 'dbSql', provider: 'aws',
+      scope: { kind: 'az', azId: 'az-deleted' }, port: 5432,
+    }
+    const withMs = computeWorldCost(doc, null)
+    const withoutMs = computeWorldCost({ ...doc, managedServices: {} }, null)
+    expect(withMs.monthlyUsd).toBeGreaterThan(withoutMs.monthlyUsd)
+  })
+})
