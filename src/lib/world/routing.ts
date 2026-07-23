@@ -5,13 +5,19 @@ import type {
   ClientPopulation, ServiceBlueprint, LoadBalancer, BlueprintId,
 } from './types'
 import { REGION_GEO, greatCircleKm } from './regionGeo'
-import { WORLD_REGIONS } from '../regionConfig'
 
 function distanceScore(popLat: number, popLon: number, region: Region): number {
   const geo = REGION_GEO[region.catalogId]
   if (!geo) return Number.MAX_SAFE_INTEGER
   return greatCircleKm(popLat, popLon, geo.lat, geo.lon)
 }
+
+// Latency model (audit ISSUE-009): light in fiber ≈ 200,000 km/s ⇒ ~0.01 ms RTT per km, plus a
+// small LOCATION-INDEPENDENT per-region processing constant. The old formula added the region's
+// baseLatencyMs — latency from a US-EAST reference client, not from this population — which
+// biased every population on Earth toward regions near Virginia.
+const PROPAGATION_MS_PER_KM = 0.01
+const REGION_PROCESSING_MS = 2
 
 // The per-population region ordering (latency/geo/weighted/priority policies) — extracted from
 // computeRouting (Polish 4 T7, spec D9) so the globe's traffic-placement preview can compute the
@@ -23,17 +29,20 @@ export function regionOrderFor(pop: Pick<ClientPopulation, 'lat' | 'lon'>, doc: 
   const regions = Object.values(doc.regions)
   const scored = regions.map(region => {
     const km = distanceScore(pop.lat, pop.lon, region)
-    const baseLatency = WORLD_REGIONS.find(w => w.id === region.catalogId)?.baseLatencyMs ?? 0
     let score: number
     switch (doc.routing.policy) {
       case 'geo':      score = km; break
-      case 'latency':  score = km + baseLatency * 10; break
+      // Population→region great-circle propagation + a constant processing term (ISSUE-009).
+      case 'latency':  score = km * PROPAGATION_MS_PER_KM + REGION_PROCESSING_MS; break
       case 'weighted': score = -(doc.routing.weights[region.id] ?? 0) * 1e9 + km; break
       case 'priority': {
         const idx = doc.routing.priorityOrder.indexOf(region.id)
         score = (idx === -1 ? 1e6 : idx) * 1e9 + km
         break
       }
+      // Defense in depth (audit ISSUE-012): a corrupt policy that slipped the file boundary must
+      // never leave `score` undefined (an undefined score poisons the whole sort) — fall back to geo.
+      default:         score = km; break
     }
     return { region, score }
   })

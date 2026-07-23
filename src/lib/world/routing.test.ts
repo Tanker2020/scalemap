@@ -32,6 +32,39 @@ describe('computeRouting (via compileWorld)', () => {
     expect(routing.populationRegionOrder[berlin.id][0]).toBe(euwest.id)
   })
 
+  // audit ISSUE-009: the old formula added baseLatencyMs×10 — a distance-from-a-US-East-reference
+  // constant — biasing every population toward low-baseLatency regions. Eastern Colorado sits
+  // ~1746 km from us-west-1 but ~2120 km from us-east-1; the reference constant (68 vs 15 ⇒
+  // +680 vs +150) flipped the order toward Virginia.
+  it('latency policy ranks by true great-circle distance, not the US-East reference constant', () => {
+    const doc = createWorld()
+    const va = createRegion('us-east-1')
+    const ca = createRegion('us-west-1')
+    doc.regions[va.id] = va
+    doc.regions[ca.id] = ca
+    const pop = createPopulation('Eastern Colorado users', 38.5, -102)
+    doc.populations[pop.id] = pop
+
+    const { routing } = compileWorld(doc)
+    expect(routing.populationRegionOrder[pop.id]).toEqual([ca.id, va.id])
+  })
+
+  // audit ISSUE-012 defense-in-depth: an unrecognized policy (e.g. from a corrupt file that
+  // slipped the boundary) must fall back to geo ordering, never leave scores undefined.
+  it('an unknown routing policy falls back to geo ordering', () => {
+    const doc = createWorld()
+    const sydney = createRegion('ap-southeast-2')   // inserted first — the winner if sort is a no-op
+    const useast = createRegion('us-east-1')
+    doc.regions[sydney.id] = sydney
+    doc.regions[useast.id] = useast
+    const nyc = createPopulation('NYC users', 40.7, -74.0)
+    doc.populations[nyc.id] = nyc
+    doc.routing = { ...doc.routing, policy: 'nonsense' as never }
+
+    const { routing } = compileWorld(doc)
+    expect(routing.populationRegionOrder[nyc.id][0]).toBe(useast.id)
+  })
+
   it('passive regions always sort last regardless of proximity', () => {
     const { doc, useast, euwest } = geoWorld()
     doc.regions[useast.id] = { ...useast, role: 'passive' }
