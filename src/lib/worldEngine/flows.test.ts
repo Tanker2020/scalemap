@@ -694,3 +694,99 @@ describe('solveFlows — aggregate managed-DB runtime (Phase 5.4)', () => {
     expect(rowOf(flows[a.iid], msId, false)).toBeCloseTo(500)
   })
 })
+
+// ─── Queue model (audit ISSUE-013 / -016 / -018) ──────────────────────────────
+// Supplying serviceRateByInstance + queueDepth + stepSec activates the queueing path:
+// served = min(capacity, arrivals + backlog); excess fills a bounded queue carried across
+// ticks; ONLY overflow past the bound (capacity × MAX_QUEUE_SEC) errors.
+describe('solveFlows — queue model (ISSUE-013)', () => {
+  function queueWorld() {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    return { doc, server, api }
+  }
+  const STEP = 0.1
+
+  function tick(doc: WorldDoc, iid: string, offered: number, capacity: number, queueDepth: Map<string, number>) {
+    return solveFlows(baseInput(doc, offered > 0 ? { [iid]: offered } : {}, {
+      serviceRateByInstance: { [iid]: capacity },
+      queueDepth, stepSec: STEP,
+    })).flows[iid]
+  }
+
+  it('constant overload converges: served pins at capacity, no oscillation (ISSUE-016)', () => {
+    const { doc, api } = queueWorld()
+    const qd = new Map<string, number>()
+    const admitted: number[] = []
+    for (let i = 0; i < 30; i++) admitted.push(tick(doc, api.iid, 200, 100, qd).admittedRps)
+    // Every tick serves exactly the service rate — the old proportional shed flapped ~0.5×/1×.
+    for (const a of admitted) expect(a).toBeCloseTo(100, 6)
+  })
+
+  it('queue builds to the bound, then overflow becomes the only error source', () => {
+    const { doc, api } = queueWorld()
+    const qd = new Map<string, number>()
+    // capacity 100, offered 200 ⇒ +10 queued requests per 100ms tick; bound = 100 × 2s = 200.
+    let f = tick(doc, api.iid, 200, 100, qd)
+    expect(f.errorRps).toBeCloseTo(0, 6)                 // first tick: everything fits the queue
+    for (let i = 0; i < 19; i++) f = tick(doc, api.iid, 200, 100, qd)
+    expect(qd.get(api.iid)).toBeCloseTo(200, 6)          // bound reached after ~2s of overload
+    f = tick(doc, api.iid, 200, 100, qd)
+    expect(f.errorRps).toBeCloseTo(100, 6)               // past the bound: excess times out
+  })
+
+  it('latency rises with queue depth (Little\'s law wait term)', () => {
+    const { doc, api } = queueWorld()
+    const qd = new Map<string, number>()
+    const first = tick(doc, api.iid, 200, 100, qd)
+    for (let i = 0; i < 15; i++) tick(doc, api.iid, 200, 100, qd)
+    const later = tick(doc, api.iid, 200, 100, qd)
+    expect(later.serviceLatencyMs).toBeGreaterThan(first.serviceLatencyMs + 1000)   // ~1.6s of wait
+  })
+
+  it('removing the load drains the queue over several ticks, not instantly (ISSUE-013/014)', () => {
+    const { doc, api } = queueWorld()
+    const qd = new Map<string, number>()
+    for (let i = 0; i < 10; i++) tick(doc, api.iid, 200, 100, qd)   // build ~100 queued requests
+    const built = qd.get(api.iid)!
+    expect(built).toBeCloseTo(100, 6)
+    // Load drops to 50 rps: spare capacity 50 rps drains 5 requests per tick — NOT all at once.
+    const f1 = tick(doc, api.iid, 50, 100, qd)
+    expect(f1.admittedRps).toBeCloseTo(100, 6)           // still serving at full rate (drain)
+    expect(qd.get(api.iid)!).toBeCloseTo(built - 5, 6)
+    let ticks = 0
+    while ((qd.get(api.iid) ?? 0) > 1e-9 && ticks < 100) { tick(doc, api.iid, 50, 100, qd); ticks++ }
+    expect(ticks).toBeGreaterThan(5)                     // a drain CURVE, not a cliff
+    const settled = tick(doc, api.iid, 50, 100, qd)
+    expect(settled.admittedRps).toBeCloseTo(50, 6)       // steady state after the drain
+  })
+
+  it('an instance with zero arrivals still drains its backlog (and fans out the served work)', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const db = addService(doc, 'db', server.id, 1)
+    api.bp.dependencies = [dep('d-db', db.bp.id)]
+    const qd = new Map<string, number>([[api.iid, 10]])
+    const { flows } = solveFlows(baseInput(doc, {}, {
+      serviceRateByInstance: { [api.iid]: 100, [db.iid]: 100 },
+      queueDepth: qd, stepSec: STEP,
+    }))
+    expect(flows[api.iid].admittedRps).toBeCloseTo(100, 6)   // 10 requests / 0.1s = 100 rps of drain
+    expect(qd.get(api.iid)).toBeCloseTo(0, 6)
+    expect(flows[db.iid]?.offeredRps ?? 0).toBeGreaterThan(0)   // drained work still called the db
+  })
+
+  it('a down instance has zero capacity AND zero queue — its demand errors instantly', () => {
+    const { doc, api } = queueWorld()
+    const qd = new Map<string, number>([[api.iid, 50]])
+    const f = solveFlows(baseInput(doc, { [api.iid]: 200 }, {
+      serviceRateByInstance: { [api.iid]: 100 },
+      queueDepth: qd, stepSec: STEP,
+      healthOf: () => 'down' as HealthState,
+    })).flows[api.iid]
+    expect(f.admittedRps).toBe(0)
+    // 200 rps of arrivals + the 50-request carried queue (500 rps equivalent) all fail.
+    expect(f.errorRps).toBeCloseTo(200 + 50 / STEP, 6)
+    expect(qd.get(api.iid)).toBeCloseTo(0, 6)
+  })
+})

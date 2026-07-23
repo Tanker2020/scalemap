@@ -42,7 +42,7 @@ function flow(id: string, rps: number, over: Partial<InstanceFlow> = {}): Instan
 function host(vcpu = 4): HostStepResult {
   return {
     cpuPressure: 0.5, coreUtilization: Array.from({ length: vcpu }, (_, i) => (i < 2 ? 0.5 : 0)),
-    latencyMultiplier: 1, admittedScale: 1, ramUsedMb: 1024, oomVictim: null,
+    latencyMultiplier: 1, admittedScale: 1, serviceRateByInstance: {}, ramUsedMb: 1024, oomVictim: null,
   }
 }
 

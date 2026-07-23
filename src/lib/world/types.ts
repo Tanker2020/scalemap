@@ -143,6 +143,10 @@ export interface WorkloadProfile {
   ramBaseMb: number
   ramPerConnMb: number
   diskIoPerRequest: number
+  // CPU weight for the host scheduler's fair-share split (audit ISSUE-018) — cgroup-shares-like:
+  // a share-2 instance gets twice a share-1 sibling's capacity on a saturated host. Optional +
+  // additive: absent ⇒ 1 (all instances equal, the pre-fix behavior).
+  cpuShares?: number
 }
 
 export type DependencyTarget =

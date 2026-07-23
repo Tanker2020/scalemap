@@ -97,3 +97,45 @@ describe('sampleLatencyMs', () => {
     expect(median).toBeLessThanOrEqual(50 * 1.1)
   })
 })
+
+// Audit ISSUE-018: per-instance weighted fair-share service rates.
+describe('stepHost — serviceRateByInstance (ISSUE-018)', () => {
+  it('splits a saturated host by cpuShares: the high-share instance keeps more capacity', () => {
+    const server = testServer(4, 8192)
+    const rng = createRng(5)
+    // Both demand far beyond the 4 effective cores (10 ms/req ⇒ 400 rps host-wide ceiling).
+    const result = stepHost(server, [
+      load({ instanceId: 'hi', cpuMsPerRequest: 10, admittedRps: 1000, cpuShares: 3 }),
+      load({ instanceId: 'lo', cpuMsPerRequest: 10, admittedRps: 1000, cpuShares: 1 }),
+    ], 4, rng)
+    const hi = result.serviceRateByInstance['hi']
+    const lo = result.serviceRateByInstance['lo']
+    expect(hi).toBeCloseTo(300, 3)   // 3/4 of 4 cores ⇒ 3 cores ⇒ 300 rps at 10 ms/req
+    expect(lo).toBeCloseTo(100, 3)
+  })
+
+  it('is work-conserving: an idle sibling\'s unused share flows to the busy instance', () => {
+    const server = testServer(4, 8192)
+    const rng = createRng(5)
+    const result = stepHost(server, [
+      load({ instanceId: 'busy', cpuMsPerRequest: 10, admittedRps: 1000 }),
+      load({ instanceId: 'idle', cpuMsPerRequest: 10, admittedRps: 0 }),
+    ], 4, rng)
+    // busy's demand-capped water-fill takes the whole 4 cores (idle wants nothing).
+    expect(result.serviceRateByInstance['busy']).toBeCloseTo(400, 3)
+    // idle keeps its fair-share FLOOR (2 of 4 cores ⇒ 200 rps) so it can serve from cold.
+    expect(result.serviceRateByInstance['idle']).toBeCloseTo(200, 3)
+  })
+
+  it('grants a backlogged instance capacity beyond its instantaneous demand', () => {
+    const server = testServer(4, 8192)
+    const rng = createRng(5)
+    const result = stepHost(server, [
+      load({ instanceId: 'draining', cpuMsPerRequest: 10, admittedRps: 100, backlogRps: 150 }),
+      load({ instanceId: 'other', cpuMsPerRequest: 10, admittedRps: 100 }),
+    ], 4, rng)
+    // draining wants 100+150=250 rps (2.5 cores), other wants 100 (1 core); both fit in 4.
+    expect(result.serviceRateByInstance['draining']).toBeCloseTo(250, 3)
+    expect(result.serviceRateByInstance['other']).toBeCloseTo(200, 3)   // floor (2 cores) > demand
+  })
+})

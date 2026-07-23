@@ -129,6 +129,9 @@ interface EngineState {
   nicDeliveredFraction: Map<ServerId, number>
   nicQueuedLatencyMs: Map<ServerId, number>
   breakers: Map<string, Breaker>
+  // Persistent per-instance request queues (audit ISSUE-013): carried across ticks, mutated by
+  // solveFlows. THE backpressure/damping state — served = min(capacity, arrivals + backlog).
+  queueDepth: Map<InstanceId, number>
   metrics: MetricsState
   events: EventRing
   replay: ReplayBuffer
@@ -342,7 +345,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // exactly one row, the weighted split one per share.
       for (const { regionId, fraction } of shares ?? [{ regionId: region, fraction: 1 }]) {
         const rps = demandByPop[pop.id] * fraction
-        if (rps <= 0) continue
+        // Rows are pushed even at rps 0 (a Poisson tick can draw zero arrivals) — the routing
+        // snapshot is attribution, and drain arcs / inbound lists key off row presence.
         populationRoutes.push({ populationId: pop.id, regionId, rps })
         distributeViaLb(regionId, splitDemandByMix(rps, pop.requestMix), entryDemand)
       }
@@ -358,6 +362,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const nicByServer: Record<ServerId, NicState> = {}
 
     const instancesByServer = groupInstancesByServer(compiled)
+    const serviceRateByInstance: Record<InstanceId, number> = {}
     for (const server of Object.values(doc.servers)) {
       const resident = instancesByServer.get(server.id) ?? []
       const loads: InstanceLoad[] = resident.map(i => {
@@ -374,14 +379,32 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           ramBaseMb: bp?.workload.ramBaseMb ?? 0,
           ramPerConnMb: bp?.workload.ramPerConnMb ?? 0,
           memLimitMb: runtime && runtime.type === 'container' ? runtime.memLimitMb : null,
+          // Audit ISSUE-018/013: fair-share weight + carried backlog, so the scheduler can grant
+          // a draining instance capacity beyond its instantaneous demand.
+          cpuShares: bp?.workload.cpuShares ?? 1,
+          backlogRps: (s.queueDepth.get(i.id) ?? 0) / stepSec,
         }
       })
       const effectiveVcpu = server.specs.vcpu * (s.vpsFactor.get(server.id) ?? 1)
       const host = stepHost(server, loads, effectiveVcpu, s.rng)
       hostResults[server.id] = host
-      // Audit ISSUE-002: last step's NIC settlement gates this step's admits (like the CPU's
-      // admittedScale) and adds its queued latency on top of the multiplied service latency.
-      admittedScaleByServer[server.id] = host.admittedScale * (s.nicDeliveredFraction.get(server.id) ?? 1)
+      // Fold the NIC's ABSOLUTE line-rate ceiling into each instance's capacity (audit
+      // ISSUE-002 × ISSUE-013): the worst byte direction governs (mirrors evaluateNic), shared
+      // across resident instances by the same cpu-share weights. Without this the queue model
+      // would never feel the NIC — a fraction multiplied onto an ample CPU rate doesn't bite.
+      const nicCeilingRps =
+        ((server.specs.nicMbps * 1e6) / 8) / Math.max(NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES)
+      const totalShares = loads.reduce((sum, l) => sum + Math.max(0, l.cpuShares ?? 1), 0) || 1
+      for (const l of loads) {
+        const nicShare = nicCeilingRps * (Math.max(0, l.cpuShares ?? 1) / totalShares)
+        serviceRateByInstance[l.instanceId] =
+          Math.min(host.serviceRateByInstance[l.instanceId] ?? 0, nicShare)
+      }
+      // Audit ISSUE-002 + ISSUE-016: the per-server scale now carries ONLY the NIC's delivered
+      // fraction. CPU saturation no longer sheds throughput proportionally (the old one-step-lag
+      // oscillator) — it bounds each instance's service rate, and the queue model (ISSUE-013)
+      // absorbs the excess as latency before erroring past the queue bound.
+      admittedScaleByServer[server.id] = s.nicDeliveredFraction.get(server.id) ?? 1
       latencyMultiplierByServer[server.id] = host.latencyMultiplier
       const queuedMs = s.nicQueuedLatencyMs.get(server.id) ?? 0
       if (queuedMs > 0) extraLatencyMsByServer[server.id] = queuedMs
@@ -431,6 +454,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const { flows, totals } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       extraLatencyMsByServer,
+      // Queue model (audit ISSUE-013): fair-share service rates + the persistent queue map
+      // (mutated in place) + step length — activates the queueing path in the solver.
+      serviceRateByInstance, queueDepth: s.queueDepth, stepSec,
       breakerOpen, healthOf: healthOfInstance, roleOf, rng: s.rng,
       // Manual managed-service outages (node-model Phase 5.2): a downed managed service fails every
       // call to it. Read straight from the manual-outage set — managed ids aren't in the per-step
@@ -831,7 +857,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         vpsFactor: new Map(),
         nics: new Map(Object.values(doc.servers).map(sv => [sv.id, createNicState()])),
         nicDeliveredFraction: new Map(), nicQueuedLatencyMs: new Map(),
-        breakers: new Map(), metrics: createMetricsState(),
+        breakers: new Map(), queueDepth: new Map(), metrics: createMetricsState(),
         events: createEventRing(500), replay: createReplayBuffer(300), tracer: createTracer(createRng(seed ^ 0x1234)),
         prevFlows: {}, windowTotals: { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} },
         lastRoutingSnapshot: { populationRoutes: [] }, popRegion: new Map(), pendingFailover: new Map(),

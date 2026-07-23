@@ -36,6 +36,10 @@ export const MANAGED_SERVICE_LATENCY_MS = 3
 const MAX_DEPTH = 8                 // hop-depth cap; demand landing at depth 8 stops there
 const DEGRADED_ADMIT_FACTOR = 0.7   // degraded instances still serve most of their load
 const EPSILON_RPS = 1e-9            // below this, a contribution is dead — don't propagate
+// Queue bound (audit ISSUE-013): an instance queues up to this many seconds of its own service
+// capacity; arrivals beyond it time out (errorRps). A down instance (capacity 0) has a zero
+// queue, so its whole subtree still errors instantly.
+export const MAX_QUEUE_SEC = 2
 // Blueprints carry no authored latency model (only workload.cpuMsPerRequest), so service
 // latency samples log-normal with p50 = cpuMsPerRequest and this p99 spread — legacy
 // NODE_SIM_DEFAULTS spreads ran 10-12.5x. SKELETON CONCERNS #5.
@@ -184,6 +188,19 @@ export interface FlowInput {
   entryDemand: Record<InstanceId, number>          // rps landed on entry instances this step (from routing)
   admittedScaleByServer: Record<ServerId, number>  // from host scheduler (previous sub-step)
   latencyMultiplierByServer: Record<ServerId, number>
+  // ── Queue model (audit ISSUE-013) — all three supplied together by the engine ──
+  // Per-instance service capacity in rps (hostScheduler's fair-share rates, ISSUE-018). When
+  // present WITH queueDepth+stepSec, the solver runs the queueing path: served =
+  // min(capacity, arrivals + backlog), excess fills a bounded queue carried across ticks, and
+  // ONLY overflow past the bound becomes errorRps. Absent ⇒ the legacy proportional path
+  // (admitted = offered × admittedScale × healthFactor, excess errors instantly) — existing
+  // callers and tests unchanged.
+  serviceRateByInstance?: Record<InstanceId, number>
+  // Requests waiting per instance, MUTATED in place each call (the engine owns the map and
+  // carries it across ticks).
+  queueDepth?: Map<InstanceId, number>
+  // Step length in seconds — converts between rps and queued request counts.
+  stepSec?: number
   // Additive per-server latency (audit ISSUE-002): the previous step's NIC queued-latency
   // settlement, added on top of the multiplied service latency. Optional: absent ⇒ 0 extra,
   // so existing callers and tests are unchanged.
@@ -333,12 +350,34 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     // localhost / same-az transfer is free — no cost line for it
   }
 
+  // ── Queue model plumbing (audit ISSUE-013) ──
+  // Active only when the engine supplies all three inputs; unit tests calling solveFlows without
+  // them run the legacy proportional path unchanged.
+  const queueMode = !!(input.serviceRateByInstance && input.queueDepth && input.stepSec)
+  const stepSec = input.stepSec ?? 0.1
+  const queueDepth = input.queueDepth
+  // Per-instance remaining serve capacity this tick (rps). Presence doubles as the first-touch
+  // marker: the first item to reach an instance settles its backlog (timeout, wait latency,
+  // backlog-first serving) exactly once.
+  const remainingCapacity = new Map<InstanceId, number>()
+  const capacityOf = new Map<InstanceId, number>()
+
   const queue: QueueItem[] = []
+  const seeded = new Set<InstanceId>()
   for (const [instanceId, rps] of Object.entries(entryDemand)) {
     if (rps <= 0) continue
     queue.push({ instanceId, offered: rps, depth: 0, visited: new Set([instanceId]) })
+    seeded.add(instanceId)
     // Client -> entry traffic rides the public internet.
     totals.internetBytes += rps * BYTES_PER_REQUEST_EACH_WAY * 2
+  }
+  // Backlogged instances receiving no arrivals this tick still drain (and their served backlog
+  // still fans out downstream): seed a zero-offered item so the normal first-touch path runs.
+  if (queueMode) {
+    for (const [instanceId, q] of queueDepth!) {
+      if (q <= 0 || seeded.has(instanceId)) continue
+      queue.push({ instanceId, offered: 0, depth: 0, visited: new Set([instanceId]) })
+    }
   }
 
   // BFS via head index (no O(n) shift; perf budget is 4ms/step at 2,000 instances).
@@ -353,9 +392,56 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     const health = healthOf(item.instanceId)
     const healthFactor = health === 'down' ? 0 : health === 'degraded' ? DEGRADED_ADMIT_FACTOR : 1
     const admittedScale = admittedScaleByServer[inst.serverId] ?? 1
-    const admitted = item.offered * admittedScale * healthFactor
-    flow.admittedRps += admitted
-    flow.errorRps += item.offered - admitted   // shed + down demand errors HERE
+    let admitted: number
+    if (queueMode) {
+      // ── Queueing path (audit ISSUE-013/016/018) ──
+      // capacity = fair-share service rate × NIC delivered fraction × health. served =
+      // min(capacity, backlog-first + arrivals); excess fills a bounded queue carried across
+      // ticks; ONLY overflow/timeout becomes errorRps. Inherently damped: while a backlog
+      // exists, served pins at capacity regardless of arrival oscillation — the proportional
+      // admittedScale shed (and its two-step limit cycle) is gone from this path.
+      let extraServe = 0
+      let rem = remainingCapacity.get(item.instanceId)
+      if (rem === undefined) {
+        // First touch this tick: settle the carried queue against TODAY's capacity.
+        const capacity = (input.serviceRateByInstance![item.instanceId] ?? 0) * admittedScale * healthFactor
+        capacityOf.set(item.instanceId, capacity)
+        const maxQueue = capacity * MAX_QUEUE_SEC
+        let q0 = queueDepth!.get(item.instanceId) ?? 0
+        if (q0 > maxQueue) {
+          // Queue shrank (capacity dropped / instance died): the un-holdable tail times out.
+          flow.errorRps += (q0 - maxQueue) / stepSec
+          q0 = maxQueue
+        }
+        // Little's-law wait: requests queued behind q0 wait q0/capacity seconds.
+        if (capacity > EPSILON_RPS && q0 > 0) flow.serviceLatencyMs += (q0 / capacity) * 1000
+        const backlogServe = Math.min(q0 / stepSec, capacity)
+        if (backlogServe > 0) {
+          q0 = Math.max(0, q0 - backlogServe * stepSec)
+          extraServe = backlogServe
+        }
+        queueDepth!.set(item.instanceId, q0)
+        rem = capacity - backlogServe
+      }
+      const serveable = Math.min(item.offered, rem)
+      remainingCapacity.set(item.instanceId, rem - serveable)
+      const excess = item.offered - serveable
+      if (excess > EPSILON_RPS) {
+        const capacity = capacityOf.get(item.instanceId) ?? 0
+        const maxQueue = capacity * MAX_QUEUE_SEC
+        const q = queueDepth!.get(item.instanceId) ?? 0
+        const queued = Math.min(excess * stepSec, Math.max(0, maxQueue - q))
+        if (queued > 0) queueDepth!.set(item.instanceId, q + queued)
+        flow.errorRps += excess - queued / stepSec   // only past-the-bound overflow errors
+      }
+      admitted = serveable + extraServe
+      flow.admittedRps += admitted
+    } else {
+      // Legacy proportional path (pre-ISSUE-013 semantics) for callers without queue inputs.
+      admitted = item.offered * admittedScale * healthFactor
+      flow.admittedRps += admitted
+      flow.errorRps += item.offered - admitted   // shed + down demand errors HERE
+    }
 
     if (admitted <= EPSILON_RPS) continue      // a down instance zeroes its whole subtree
     if (item.depth >= MAX_DEPTH) continue      // landed, but fans out no further
