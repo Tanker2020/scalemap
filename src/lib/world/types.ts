@@ -50,6 +50,9 @@ export interface ClientPopulation {
   // engine's golden tests are unchanged. Entries referencing a deleted route are scrubbed by the
   // store's removeRoute; the engine/analysis treat an unknown routeId as an unmatched route.
   requestMix?: RequestMixEntry[]
+  // Burst intensity knob (audit ISSUE-017): scales the engine's flash-crowd burst probability
+  // for this population. Optional + additive: absent ⇒ 1 (default bursts); 0 disables bursts.
+  burstiness?: number
 }
 
 export type RegionRole = 'active' | 'passive'

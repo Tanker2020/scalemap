@@ -14,7 +14,10 @@ import type {
 import { routeMatchesPattern, listRoutes } from '../nodeConfig'
 import { createRng, type Rng } from './rng'
 import { createClock, type ClockHandle } from './engineClock'
-import { populationDemandRps, splitDemandByMix, type RouteDemand } from './demand'
+import {
+  populationDemandRps, splitDemandByMix, createDemandState,
+  type RouteDemand, type PopulationDemandState,
+} from './demand'
 import {
   createRoutingState, resolveRegion, runHealthChecks, distributeToTargets, type RoutingState,
 } from './routingRuntime'
@@ -115,6 +118,9 @@ interface EngineState {
 
   routing: RoutingState
   failover: FailoverState
+  // Per-population burst state (audit ISSUE-017) — the on-off flash-crowd process is stateful
+  // across ticks; demand.ts stays a pure function of (pop, simMs, rng, state).
+  demandStates: Map<PopulationId, PopulationDemandState>
   vpsStates: Map<ServerId, VpsState | null>
   vpsFactor: Map<ServerId, number>           // previous step's effective vCPU factor
   // Persistent NIC send buffers (audit ISSUE-002) + the previous step's settlement, which
@@ -264,7 +270,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
 
     // ── 1. demand ──
     const demandByPop: Record<PopulationId, number> = {}
-    for (const pop of Object.values(doc.populations)) demandByPop[pop.id] = populationDemandRps(pop, simMs, s.rng)
+    for (const pop of Object.values(doc.populations)) {
+      let ds = s.demandStates.get(pop.id)
+      if (!ds) {
+        ds = createDemandState()
+        s.demandStates.set(pop.id, ds)
+      }
+      demandByPop[pop.id] = populationDemandRps(pop, simMs, s.rng, stepMs, ds)
+    }
 
     // ── 2. routing: health checks ──
     // The probe input is the RAW signal (manual outage now, last step's error/pressure via
@@ -785,6 +798,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         serversByAz: groupBy(Object.values(doc.servers), sv => sv.azId),
         azsByRegion: groupBy(Object.values(doc.azs), az => az.regionId),
         routing: createRoutingState(), failover: createFailoverState(),
+        demandStates: new Map(),
         vpsStates: new Map(Object.values(doc.servers).map(sv => [sv.id, createVpsState(sv)])),
         vpsFactor: new Map(),
         nics: new Map(Object.values(doc.servers).map(sv => [sv.id, createNicState()])),
