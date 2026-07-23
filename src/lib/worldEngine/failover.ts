@@ -2,7 +2,7 @@
 // AZ drain ramp, and stateful replica promotion. Spec decision 7 (and decision 2 for the
 // hysteresis port), docs/superpowers/specs/2026-07-08-phase2-substrate-engine-design.md.
 // Emits contract EngineEvents; the facade (Task 12) owns id re-sequencing and observation.
-import type { AzId, PlacementId, InstanceId, CompiledWorld, WorldDoc, PlacementRole } from '../world/types'
+import type { AzId, PlacementId, InstanceId, CompiledWorld, WorldDoc, PlacementRole, ServiceInstance } from '../world/types'
 import { managedDbEngine } from '../world/types'
 import type { EngineEvent, HealthState } from './types'
 
@@ -24,16 +24,25 @@ export interface HealthHysteresis {
 // recovery lock — SKELETON CONCERNS #7 keeps the skeleton's 5s since it's a parameter).
 export const DEFAULT_HYSTERESIS: HealthHysteresis = { onsetMs: 3000, recoveryMs: 5000 }
 
+// Why a managed service is down (audit ISSUE-008): a MANUAL operator kill stays down until the
+// operator explicitly resumes it; a SIMULATED infrastructure failure (its AZ going down) may
+// auto-recover — a multi-AZ DB promotes its standby after the failover window.
+export type OutageSource = 'manual' | 'simulated'
+export interface ManagedOutage { sinceMs: number; source: OutageSource }
+
 export interface FailoverState {
+  // Every currently-down scope regardless of source — the single set flows.ts/index.ts read.
+  // (The name predates the manual/simulated split; the source tag lives in managedDownSince.)
   manualOutages: Set<string>
   healthByScope: Map<string, HealthState>
   drainUntil: Map<AzId, number>
   promotedAt: Map<PlacementId, number>
   onsetPendingSince: Map<string, number>
   recoveryUntil: Map<string, number>
-  // When each currently-down managed service went down (node-model Phase 5.4), so a multi-AZ DB
-  // can auto-recover once its failover window elapses. Cleared on recovery or manual restore.
-  managedDownSince: Map<string, number>
+  // When and WHY each currently-down managed service went down (node-model Phase 5.4 + audit
+  // ISSUE-008), so a multi-AZ DB can auto-recover a SIMULATED failure once its failover window
+  // elapses — while a manual operator outage is never auto-cancelled. Cleared on recovery/restore.
+  managedDownSince: Map<string, ManagedOutage>
 }
 
 export function createFailoverState(): FailoverState {
@@ -94,8 +103,9 @@ export function setOutage(
     state.manualOutages.add(id)
     state.healthByScope.set(id, 'down')
     if (scope === 'az') beginDrain(state, id, simMs)
-    // Phase 5.4: start the failover clock so a multi-AZ managed DB can promote its standby.
-    if (scope === 'managed') state.managedDownSince.set(id, simMs)
+    // Phase 5.4 + audit ISSUE-008: record the outage as MANUAL — the operator owns it, so the
+    // multi-AZ auto-recovery below must never cancel it.
+    if (scope === 'managed') state.managedDownSince.set(id, { sinceMs: simMs, source: 'manual' })
     return [outageEvent('outage_triggered', scope, id, simMs)]
   }
   if (!down && already) {
@@ -114,22 +124,25 @@ export const MANAGED_FAILOVER_WINDOW_MS = 15_000
 // managed DB's replicas are anonymous (the lightweight locality model has no per-replica entities).
 export const MANAGED_PROMOTION_TIER_STEP_MS = 5_000
 
-// Multi-AZ managed DBs recover on their own: the standby promotes after the failover window, so
-// killing one is a blip rather than a permanent outage. A SINGLE-AZ DB has nothing to promote and
-// stays down until manually restored — which is precisely what makes multiAz worth paying for.
-// Only managed DBs participate; other managed types have no standby model.
+// Multi-AZ managed DBs recover from SIMULATED infrastructure failures on their own: the standby
+// promotes after the failover window, so an AZ failure is a blip rather than a permanent outage.
+// A SINGLE-AZ DB has nothing to promote and stays down until its AZ recovers — which is precisely
+// what makes multiAz worth paying for. A MANUAL operator outage is never auto-cancelled (audit
+// ISSUE-008): it stays down until the operator resumes it. Only managed DBs participate; other
+// managed types have no standby model.
 export function recoverMultiAzManagedDbs(
   state: FailoverState,
   doc: WorldDoc,
   simMs: number,
 ): EngineEvent[] {
   const events: EngineEvent[] = []
-  for (const [id, since] of [...state.managedDownSince]) {
+  for (const [id, outage] of [...state.managedDownSince]) {
+    if (outage.source === 'manual') continue   // the operator said down — honor it (ISSUE-008)
     const ms = doc.managedServices[id]
     if (!ms || !managedDbEngine(ms.nodeType) || !ms.multiAz) continue
     const window = MANAGED_FAILOVER_WINDOW_MS
       + Math.max(0, ms.promotionTier ?? 0) * MANAGED_PROMOTION_TIER_STEP_MS
-    if (simMs - since < window) continue
+    if (simMs - outage.sinceMs < window) continue
     state.manualOutages.delete(id)
     state.managedDownSince.delete(id)
     state.healthByScope.set(id, 'healthy')
@@ -141,6 +154,52 @@ export function recoverMultiAzManagedDbs(
       message: `${ms.label} promoted its multi-AZ standby after failover`,
       affected: [id],
     })
+  }
+  return events
+}
+
+// AZ-outage propagation (audit ISSUE-008): when an AZ fails, every managed service scoped to it
+// goes down as a SIMULATED outage — the source that recoverMultiAzManagedDbs may auto-recover.
+// When the AZ recovers, simulated outages clear; MANUAL operator outages are never touched in
+// either direction (an AZ failing can't overwrite operator intent, and an AZ recovering can't
+// resurrect a service the operator explicitly killed).
+export function applyAzOutageToManaged(
+  state: FailoverState,
+  doc: WorldDoc,
+  azId: AzId,
+  down: boolean,
+  simMs: number,
+): EngineEvent[] {
+  const events: EngineEvent[] = []
+  for (const ms of Object.values(doc.managedServices)) {
+    if (ms.scope.kind !== 'az' || ms.scope.azId !== azId) continue
+    if (down) {
+      if (state.manualOutages.has(ms.id)) continue     // already down (manual wins; idempotent)
+      state.manualOutages.add(ms.id)
+      state.managedDownSince.set(ms.id, { sinceMs: simMs, source: 'simulated' })
+      state.healthByScope.set(ms.id, 'down')
+      events.push({
+        id: `azfail-${ms.id}-down-${simMs}`,
+        simMs,
+        kind: 'outage_triggered',
+        severity: 'critical',
+        message: `${ms.label} unavailable — its AZ is down`,
+        affected: [ms.id],
+      })
+    } else {
+      if (state.managedDownSince.get(ms.id)?.source !== 'simulated') continue
+      state.manualOutages.delete(ms.id)
+      state.managedDownSince.delete(ms.id)
+      state.healthByScope.set(ms.id, 'healthy')
+      events.push({
+        id: `azfail-${ms.id}-up-${simMs}`,
+        simMs,
+        kind: 'outage_cleared',
+        severity: 'info',
+        message: `${ms.label} restored — its AZ recovered`,
+        affected: [ms.id],
+      })
+    }
   }
   return events
 }
@@ -249,34 +308,48 @@ export function effectiveRoleResolver(
   }
 }
 
-// Primary down -> promote the oldest same-blueprint, same-region replica (spec decision 7).
-// The promotion is now REAL: effectiveRoleResolver above flips routing to the promoted replica.
-// Emits once per (blueprint, region) via the promotedAt guard.
+const HEALTH_RANK: Record<HealthState, number> = { healthy: 0, degraded: 1, down: 2 }
+
+// Primary down -> promote the healthiest same-blueprint, same-region replica (spec decision 7,
+// audit ISSUE-007 — health stands in for replication lag in the lightweight model; the id compare
+// is only a determinism tiebreak). The promotion is REAL: effectiveRoleResolver above flips
+// routing to the promoted replica. Effective roles also gate re-entry: a still-down ORIGINAL
+// primary resolves 'replica' after failover (no duplicate emit), while a failed PROMOTED primary
+// resolves 'primary' — so a second failure in the cluster re-promotes a surviving replica,
+// clearing the stale promotion.
 export function promoteReplicas(
   state: FailoverState,
   compiled: CompiledWorld,
   doc: WorldDoc,
   downInstanceIds: InstanceId[],
   simMs: number,
+  healthOf?: (id: InstanceId) => HealthState,
 ): EngineEvent[] {
   const events: EngineEvent[] = []
   const downSet = new Set(downInstanceIds)
+  const roleOf = effectiveRoleResolver(compiled, state.promotedAt)
+  const handledClusters = new Set<string>()
 
   for (const downId of downInstanceIds) {
     const primary = compiled.instances[downId]
-    if (!primary || primary.role !== 'primary') continue
+    if (!primary || roleOf(downId) !== 'primary') continue
+    const clusterKey = `${primary.blueprintId}|${primary.regionId}`
+    if (handledClusters.has(clusterKey)) continue
+    handledClusters.add(clusterKey)
 
     const siblingReplicas = Object.values(compiled.instances).filter(
-      i => i.role === 'replica' && i.blueprintId === primary.blueprintId && i.regionId === primary.regionId,
+      i => roleOf(i.id) === 'replica' && i.blueprintId === primary.blueprintId && i.regionId === primary.regionId,
     )
-    // already promoted a replica for this (blueprint, region)? emit-once guard.
-    if (siblingReplicas.some(i => state.promotedAt.has(i.placementId))) continue
 
+    const health = (i: ServiceInstance): HealthState => healthOf?.(i.id) ?? 'healthy'
     const chosen = siblingReplicas
-      .filter(i => !downSet.has(i.id))
-      .sort((a, b) => a.id.localeCompare(b.id))[0]
+      .filter(i => !downSet.has(i.id) && health(i) !== 'down')
+      .sort((a, b) => (HEALTH_RANK[health(a)] - HEALTH_RANK[health(b)]) || a.id.localeCompare(b.id))[0]
     if (!chosen) continue
 
+    // Re-promotion: the down effective primary may itself be a promoted replica — drop its stale
+    // promotion so exactly one placement per cluster carries the overlay.
+    state.promotedAt.delete(primary.placementId)
     state.promotedAt.set(chosen.placementId, simMs)
     const bpName = doc.blueprints[primary.blueprintId]?.name ?? primary.blueprintId
     events.push({
@@ -289,5 +362,43 @@ export function promoteReplicas(
     })
   }
 
+  return events
+}
+
+// Failback (audit ISSUE-007): once every AUTHORED primary of a promoted cluster is healthy again
+// (the health hysteresis' recovery lock has already debounced this), clear the promotion overlay
+// so writes route back to the original primary. Without this, promotedAt was never cleared — the
+// recovered original stayed demoted forever.
+export function failbackPromotions(
+  state: FailoverState,
+  compiled: CompiledWorld,
+  doc: WorldDoc,
+  healthOf: (id: InstanceId) => HealthState,
+  simMs: number,
+): EngineEvent[] {
+  if (state.promotedAt.size === 0) return []
+  const events: EngineEvent[] = []
+  const instances = Object.values(compiled.instances)
+
+  for (const placementId of [...state.promotedAt.keys()]) {
+    const promotedInst = instances.find(i => i.placementId === placementId)
+    if (!promotedInst) { state.promotedAt.delete(placementId); continue }   // placement gone from the doc
+    const authoredPrimaries = instances.filter(
+      i => i.role === 'primary' && i.blueprintId === promotedInst.blueprintId && i.regionId === promotedInst.regionId,
+    )
+    if (authoredPrimaries.length === 0) continue
+    if (!authoredPrimaries.every(i => healthOf(i.id) === 'healthy')) continue
+
+    state.promotedAt.delete(placementId)
+    const bpName = doc.blueprints[promotedInst.blueprintId]?.name ?? promotedInst.blueprintId
+    events.push({
+      id: `failback-${promotedInst.id}-${simMs}`,
+      simMs,
+      kind: 'primary_failback',
+      severity: 'info',
+      message: `${bpName} primary recovered — writes failed back from promoted replica ${promotedInst.id}`,
+      affected: [...authoredPrimaries.map(i => i.id), promotedInst.id],
+    })
+  }
   return events
 }

@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   createFailoverState, setOutage, computeHealth, probeInstant, promoteReplicas, drainFactor,
   beginDrain, DEFAULT_HYSTERESIS, effectiveRoleResolver,
-  recoverMultiAzManagedDbs, MANAGED_FAILOVER_WINDOW_MS,
+  recoverMultiAzManagedDbs, MANAGED_FAILOVER_WINDOW_MS, MANAGED_PROMOTION_TIER_STEP_MS,
+  failbackPromotions, applyAzOutageToManaged,
 } from './failover'
 import type { WorldDoc } from '../world/types'
 import {
@@ -124,6 +125,84 @@ describe('promoteReplicas', () => {
     const state = createFailoverState()
     expect(promoteReplicas(state, f.compiled, f.doc, [f.replicaInst], 1000)).toEqual([])
   })
+
+  // 1 primary + 2 replicas in three AZs — selection & re-promotion (audit ISSUE-007).
+  function twoReplicaFixture() {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const azA = createAz(region.id, 'us-east-1a')
+    const azB = createAz(region.id, 'us-east-1b')
+    const azC = createAz(region.id, 'us-east-1c')
+    const sA = createServer(azA.id, getPreset('dedicated-8')!)
+    const sB = createServer(azB.id, getPreset('dedicated-8')!)
+    const sC = createServer(azC.id, getPreset('dedicated-8')!)
+    const bp = createBlueprint('db', 0)
+    bp.stateful = true
+    const primary = createPlacement(bp.id, sA.id)
+    const replicaA = createPlacement(bp.id, sB.id); replicaA.role = 'replica'
+    const replicaB = createPlacement(bp.id, sC.id); replicaB.role = 'replica'
+    doc.regions[region.id] = region
+    Object.assign(doc.azs, { [azA.id]: azA, [azB.id]: azB, [azC.id]: azC })
+    Object.assign(doc.servers, { [sA.id]: sA, [sB.id]: sB, [sC.id]: sC })
+    doc.blueprints[bp.id] = bp
+    Object.assign(doc.placements, { [primary.id]: primary, [replicaA.id]: replicaA, [replicaB.id]: replicaB })
+    const compiled = compileWorld(doc)
+    return {
+      doc, compiled, primaryInst: instanceId(primary.id, 0),
+      // Sorted lexically: the OLD selector always picked replicaInsts[0].
+      replicaInsts: [instanceId(replicaA.id, 0), instanceId(replicaB.id, 0)].sort((a, b) => a.localeCompare(b)),
+      placementOf: (iid: string) => compiled.instances[iid].placementId,
+    }
+  }
+
+  it('prefers a healthier replica over the lexically-first one (audit ISSUE-007)', () => {
+    const f = twoReplicaFixture()
+    const [first, second] = f.replicaInsts
+    const state = createFailoverState()
+    const healthOf = (id: string) => (id === first ? 'degraded' as const : 'healthy' as const)
+    const events = promoteReplicas(state, f.compiled, f.doc, [f.primaryInst], 1000, healthOf)
+    expect(events).toHaveLength(1)
+    expect(state.promotedAt.has(f.placementOf(second))).toBe(true)
+    expect(state.promotedAt.has(f.placementOf(first))).toBe(false)
+  })
+
+  it('re-promotes a second replica when the promoted one later fails (audit ISSUE-007)', () => {
+    const f = twoReplicaFixture()
+    const state = createFailoverState()
+    promoteReplicas(state, f.compiled, f.doc, [f.primaryInst], 1000)
+    const [promoted, survivor] = f.replicaInsts       // all healthy ⇒ deterministic id tiebreak
+    expect(state.promotedAt.has(f.placementOf(promoted))).toBe(true)
+    const events = promoteReplicas(state, f.compiled, f.doc, [f.primaryInst, promoted], 2000)
+    expect(events).toHaveLength(1)
+    expect(events[0].affected).toContain(survivor)
+    expect(state.promotedAt.has(f.placementOf(promoted))).toBe(false)   // stale promotion cleared
+    expect(state.promotedAt.has(f.placementOf(survivor))).toBe(true)
+  })
+
+  // Failback (audit ISSUE-007): once the authored primary is healthy again the promotion
+  // overlay clears and writes route back to it.
+  it('fails back — clears the promotion and reverts roles once the authored primary recovers', () => {
+    const f = replicaFixture()
+    const state = createFailoverState()
+    promoteReplicas(state, f.compiled, f.doc, [f.primaryInst], 1000)
+    expect(state.promotedAt.size).toBe(1)
+    const events = failbackPromotions(state, f.compiled, f.doc, () => 'healthy', 30_000)
+    expect(events).toHaveLength(1)
+    expect(events[0].kind).toBe('primary_failback')
+    expect(state.promotedAt.size).toBe(0)
+    const roleOf = effectiveRoleResolver(f.compiled, state.promotedAt)
+    expect(roleOf(f.primaryInst)).toBe('primary')
+    expect(roleOf(f.replicaInst)).toBe('replica')
+  })
+
+  it('holds the promotion while the authored primary is still down', () => {
+    const f = replicaFixture()
+    const state = createFailoverState()
+    promoteReplicas(state, f.compiled, f.doc, [f.primaryInst], 1000)
+    const events = failbackPromotions(state, f.compiled, f.doc, id => (id === f.primaryInst ? 'down' : 'healthy'), 30_000)
+    expect(events).toEqual([])
+    expect(state.promotedAt.size).toBe(1)
+  })
 })
 
 describe('probeInstant', () => {
@@ -191,24 +270,28 @@ describe('effectiveRoleResolver', () => {
   })
 })
 
-// ─── Multi-AZ managed-DB auto-recovery (node-model Phase 5.4) ────────────────
-// A multi-AZ managed DB has a standby that promotes on its own — so an outage is a blip, not a
-// permanent kill. A single-AZ one has nothing to promote and stays down until manually restored.
+// ─── Multi-AZ managed-DB auto-recovery (node-model Phase 5.4, audit ISSUE-008) ─
+// A multi-AZ managed DB has a standby that promotes on its own — so a SIMULATED infrastructure
+// failure (its AZ going down) is a blip, not a permanent kill. A MANUAL operator kill stays down
+// until the operator restores it. A single-AZ DB has nothing to promote and stays down either way.
 describe('recoverMultiAzManagedDbs', () => {
   function docWith(over: Record<string, unknown>): WorldDoc {
     const doc = createWorld()
     doc.managedServices['ms-db'] = {
       id: 'ms-db', label: 'orders-db', nodeType: 'dbSql',
-      scope: { kind: 'region', regionId: 'r1' }, provider: 'aws', port: 5432,
+      scope: { kind: 'az', azId: 'az-1' }, provider: 'aws', port: 5432,
       instanceClassId: 'sql.small', ...over,
     } as WorldDoc['managedServices'][string]
     return doc
   }
+  // A simulated failure: the managed service's AZ goes down (audit ISSUE-008 'simulated' source).
+  const simulateAzFailure = (state: ReturnType<typeof createFailoverState>, doc: WorldDoc, simMs: number) =>
+    applyAzOutageToManaged(state, doc, 'az-1', true, simMs)
 
-  it('auto-recovers a multi-AZ managed DB after the failover window', () => {
+  it('auto-recovers a multi-AZ managed DB after the failover window (simulated AZ failure)', () => {
     const doc = docWith({ multiAz: true })
     const state = createFailoverState()
-    setOutage(state, 'managed', 'ms-db', true, 0)
+    simulateAzFailure(state, doc, 0)
     expect(state.manualOutages.has('ms-db')).toBe(true)
 
     // Still inside the window — the standby has not taken over yet.
@@ -220,10 +303,21 @@ describe('recoverMultiAzManagedDbs', () => {
     expect(state.manualOutages.has('ms-db')).toBe(false)
   })
 
+  it('never auto-recovers a MANUAL operator outage (audit ISSUE-008)', () => {
+    const doc = docWith({ multiAz: true })
+    const state = createFailoverState()
+    setOutage(state, 'managed', 'ms-db', true, 0)
+    expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS * 10)).toEqual([])
+    expect(state.manualOutages.has('ms-db')).toBe(true)   // stays down until the operator resumes
+    // Explicit operator resume is the only way out.
+    setOutage(state, 'managed', 'ms-db', false, MANAGED_FAILOVER_WINDOW_MS * 10 + 1)
+    expect(state.manualOutages.has('ms-db')).toBe(false)
+  })
+
   it('leaves a single-AZ managed DB down indefinitely', () => {
     const doc = docWith({ multiAz: false })
     const state = createFailoverState()
-    setOutage(state, 'managed', 'ms-db', true, 0)
+    simulateAzFailure(state, doc, 0)
     expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS * 10)).toEqual([])
     expect(state.manualOutages.has('ms-db')).toBe(true)
   })
@@ -231,7 +325,7 @@ describe('recoverMultiAzManagedDbs', () => {
   it('does not touch a non-DB managed service', () => {
     const doc = docWith({ nodeType: 'queue', multiAz: true })
     const state = createFailoverState()
-    setOutage(state, 'managed', 'ms-db', true, 0)
+    simulateAzFailure(state, doc, 0)
     expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS * 10)).toEqual([])
     expect(state.manualOutages.has('ms-db')).toBe(true)
   })
@@ -239,11 +333,11 @@ describe('recoverMultiAzManagedDbs', () => {
   it('promotes only once per outage, and re-arms after a fresh kill', () => {
     const doc = docWith({ multiAz: true })
     const state = createFailoverState()
-    setOutage(state, 'managed', 'ms-db', true, 0)
+    simulateAzFailure(state, doc, 0)
     expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS + 1)).toHaveLength(1)
     expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS + 2)).toEqual([])
 
-    setOutage(state, 'managed', 'ms-db', true, 100_000)
+    simulateAzFailure(state, doc, 100_000)
     expect(recoverMultiAzManagedDbs(state, doc, 100_000 + 1)).toEqual([])   // window restarts
     expect(recoverMultiAzManagedDbs(state, doc, 100_000 + MANAGED_FAILOVER_WINDOW_MS + 1)).toHaveLength(1)
   })
@@ -251,9 +345,77 @@ describe('recoverMultiAzManagedDbs', () => {
   it('delays recovery for a higher promotion tier', () => {
     const doc = docWith({ multiAz: true, promotionTier: 2 })
     const state = createFailoverState()
-    setOutage(state, 'managed', 'ms-db', true, 0)
+    simulateAzFailure(state, doc, 0)
     // Tier 2 is still waiting when a tier-0 standby would already have promoted.
     expect(recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS + 1)).toEqual([])
+    expect(state.manualOutages.has('ms-db')).toBe(true)
+    // …and promotes once its tier delay has also elapsed.
+    const events = recoverMultiAzManagedDbs(state, doc, MANAGED_FAILOVER_WINDOW_MS + 2 * MANAGED_PROMOTION_TIER_STEP_MS + 1)
+    expect(events).toHaveLength(1)
+  })
+})
+
+// ─── AZ-outage propagation into az-scoped managed services (audit ISSUE-008) ──
+describe('applyAzOutageToManaged', () => {
+  function docWithAzMs(over: Record<string, unknown> = {}): WorldDoc {
+    const doc = createWorld()
+    doc.managedServices['ms-db'] = {
+      id: 'ms-db', label: 'orders-db', nodeType: 'dbSql',
+      scope: { kind: 'az', azId: 'az-1' }, provider: 'aws', port: 5432,
+      instanceClassId: 'sql.small', multiAz: true, ...over,
+    } as WorldDoc['managedServices'][string]
+    return doc
+  }
+
+  it('an AZ failure takes down its az-scoped managed services as simulated outages', () => {
+    const doc = docWithAzMs()
+    const state = createFailoverState()
+    const events = applyAzOutageToManaged(state, doc, 'az-1', true, 1000)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ kind: 'outage_triggered', affected: ['ms-db'] })
+    expect(state.manualOutages.has('ms-db')).toBe(true)
+    expect(state.healthByScope.get('ms-db')).toBe('down')
+    // idempotent — a second application changes nothing
+    expect(applyAzOutageToManaged(state, doc, 'az-1', true, 2000)).toEqual([])
+  })
+
+  it('ignores managed services scoped to other AZs or to a region', () => {
+    const doc = docWithAzMs({ scope: { kind: 'region', regionId: 'r1' } })
+    doc.managedServices['ms-other'] = {
+      id: 'ms-other', label: 'cache', nodeType: 'redis',
+      scope: { kind: 'az', azId: 'az-2' }, provider: 'aws', port: 6379,
+    } as WorldDoc['managedServices'][string]
+    const state = createFailoverState()
+    expect(applyAzOutageToManaged(state, doc, 'az-1', true, 0)).toEqual([])
+    expect(state.manualOutages.size).toBe(0)
+  })
+
+  it('restoring the AZ clears a simulated managed outage', () => {
+    const doc = docWithAzMs()
+    const state = createFailoverState()
+    applyAzOutageToManaged(state, doc, 'az-1', true, 0)
+    const cleared = applyAzOutageToManaged(state, doc, 'az-1', false, 1000)
+    expect(cleared).toHaveLength(1)
+    expect(cleared[0]).toMatchObject({ kind: 'outage_cleared', affected: ['ms-db'] })
+    expect(state.manualOutages.has('ms-db')).toBe(false)
+    expect(state.healthByScope.get('ms-db')).toBe('healthy')
+  })
+
+  it('an AZ restore never clears a MANUAL managed outage', () => {
+    const doc = docWithAzMs()
+    const state = createFailoverState()
+    setOutage(state, 'managed', 'ms-db', true, 0)          // operator kill
+    expect(applyAzOutageToManaged(state, doc, 'az-1', false, 1000)).toEqual([])
+    expect(state.manualOutages.has('ms-db')).toBe(true)
+  })
+
+  it('an AZ failure does not overwrite an existing manual outage with a simulated one', () => {
+    const doc = docWithAzMs()
+    const state = createFailoverState()
+    setOutage(state, 'managed', 'ms-db', true, 0)          // operator kill first
+    expect(applyAzOutageToManaged(state, doc, 'az-1', true, 1000)).toEqual([])
+    // …so the later AZ restore still cannot resurrect it
+    applyAzOutageToManaged(state, doc, 'az-1', false, 2000)
     expect(state.manualOutages.has('ms-db')).toBe(true)
   })
 })

@@ -29,7 +29,7 @@ import { managedDbRuntime } from '../managedDbRuntime'
 import {
   createFailoverState, setOutage as failoverSetOutage, computeHealth, probeInstant, promoteReplicas,
   drainFactor, beginDrain, clearDrain, DEFAULT_HYSTERESIS, effectiveRoleResolver, type FailoverState,
-  recoverMultiAzManagedDbs,
+  recoverMultiAzManagedDbs, failbackPromotions, applyAzOutageToManaged,
 } from './failover'
 import {
   createMetricsState, accumulateStep, buildBatch, type MetricsState, type RoutingSnapshot,
@@ -475,10 +475,15 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const cpu = srv.reduce((m, v) => Math.max(m, hostResults[v.id]?.cpuPressure ?? 0), 0)
       applyHealth('region', region.id, { errorRate: offered > MIN_HEALTH_SIGNAL_RPS ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(region.id) ?? false, manualDown: s.failover.manualOutages.has(region.id) }, simMs)
     }
+    // Failback BEFORE promotion (audit ISSUE-007): a recovered authored primary reclaims its role
+    // (clearing the overlay) so this step's promotion pass sees the true current primaries. The
+    // health hysteresis' 5s recovery lock has already debounced the primary's recovery.
+    for (const e of failbackPromotions(s.failover, compiled, doc, healthOfInstance, simMs)) emitEvent(e)
     const downInstances = Object.values(compiled.instances).filter(i => healthOfInstance(i.id) === 'down').map(i => i.id)
-    for (const e of promoteReplicas(s.failover, compiled, doc, downInstances, simMs)) emitEvent(e)
-    // Phase 5.4: a multi-AZ managed DB promotes its standby and clears its own outage once the
-    // failover window elapses; a single-AZ one stays down until manually restored.
+    for (const e of promoteReplicas(s.failover, compiled, doc, downInstances, simMs, healthOfInstance)) emitEvent(e)
+    // Phase 5.4: a multi-AZ managed DB promotes its standby and clears its own SIMULATED outage
+    // once the failover window elapses; a single-AZ one stays down until its AZ recovers, and a
+    // manual operator outage stays down until explicitly resumed (audit ISSUE-008).
     for (const e of recoverMultiAzManagedDbs(s.failover, doc, simMs)) emitEvent(e)
 
     // rate-limited connection_refused (blocked/breaker attempts are live failures, spec D6)
@@ -808,6 +813,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     setOutage(scope, id, down) {
       if (!state) return
       for (const e of failoverSetOutage(state.failover, scope, id, down, state.clock.simMs)) emitEvent(e)
+      // audit ISSUE-008: an AZ failure is a SIMULATED outage for the managed services scoped to
+      // it — they go down with the AZ (and multi-AZ DBs may then auto-promote their standby),
+      // and recover with it. Manual per-service kills are untouched in both directions.
+      if (scope === 'az') {
+        for (const e of applyAzOutageToManaged(state.failover, state.doc, id, down, state.clock.simMs)) emitEvent(e)
+      }
     },
     attachRenderer(scope, onFrame) {
       if (!state) return () => {}

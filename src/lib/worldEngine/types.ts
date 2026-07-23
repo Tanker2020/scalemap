@@ -139,6 +139,7 @@ export type EngineEventKind =
   | 'failover_completed'
   | 'ttl_lag_expired'            // a population's DNS cache expired and re-resolved
   | 'replica_promoted'
+  | 'primary_failback'           // recovered authored primary reclaimed the role (audit ISSUE-007)
   | 'outage_triggered' | 'outage_cleared'   // manual switches
   | 'engine_degraded'            // perf watch halved the step rate (spec decision 9); info severity
 
