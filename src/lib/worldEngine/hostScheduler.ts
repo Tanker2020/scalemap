@@ -109,16 +109,15 @@ export function stepHost(server: Server, loads: InstanceLoad[], effectiveVcpu: n
     }
   }
 
-  // Fill cores in order for readability (Phase 3's CPU die renders index 0 first).
-  const usedCores = Math.min(demandCores, safeEffectiveVcpu)
+  // Even spread on the EFFECTIVE-vCPU basis (audit ISSUE-035). The old sequential fill pinned
+  // core 0 → 1.0 before touching core 1 (a 4-core host at 50% drew two pegged + two idle dies),
+  // and capped total fill at steal/credit-reduced capacity while distributing across RAW
+  // specs.vcpu — so a throttled host could never read full even at saturation. One basis now:
+  // every core shows the saturation of the capacity that actually exists this step
+  // (min(1, cpuPressure)), which a real scheduler's load balancing approximates.
   const coreCount = Math.max(1, Math.round(server.specs.vcpu))
-  const coreUtilization: number[] = []
-  let remaining = usedCores
-  for (let i = 0; i < coreCount; i++) {
-    const fill = Math.max(0, Math.min(1, remaining))
-    coreUtilization.push(fill)
-    remaining -= fill
-  }
+  const coreFill = Math.max(0, Math.min(1, demandCores / safeEffectiveVcpu))
+  const coreUtilization: number[] = new Array<number>(coreCount).fill(coreFill)
 
   // RAM: base + per-connection growth; a container's own memLimitMb caps (and kills) it
   // individually before any host-level accounting — the host never sees more than the cap.

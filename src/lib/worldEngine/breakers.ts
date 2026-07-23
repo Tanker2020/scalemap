@@ -22,6 +22,11 @@ export interface BreakerConfig {
   minTotalToOpen: number   // weighted call volume the window must hold before the open check trips
   halfOpenProbes: number   // consecutive successful probe batches required to close
   resetMs: number          // open -> half-open cooldown
+  // An unresolved half-open trial expires after this (audit ISSUE-033): a claimed probe whose
+  // request chain produced no downstream row never reaches recordWeighted, and without expiry
+  // trialPending stays true forever — admitRequest refuses everyone and the breaker wedges
+  // half-open permanently (transition() only re-fires from `open`).
+  trialTimeoutMs: number
 }
 
 export const DEFAULT_BREAKER_CONFIG: BreakerConfig = {
@@ -32,6 +37,7 @@ export const DEFAULT_BREAKER_CONFIG: BreakerConfig = {
   minTotalToOpen: 10,
   halfOpenProbes: 3,
   resetMs: 10_000,
+  trialTimeoutMs: 2_000,
 }
 
 interface Bucket {
@@ -47,6 +53,7 @@ export interface Breaker {
   // While half-open: whether the single allowed trial has been claimed (admitRequest) and
   // is in flight. Reset on every entry to/exit from half-open.
   trialPending: boolean
+  trialStartedMs: number   // simMs when the pending trial was claimed (expiry clock, ISSUE-033)
   halfOpenSuccesses: number // consecutive successful probe batches in the current half-open spell
   config: BreakerConfig
 }
@@ -62,7 +69,7 @@ export function getBreaker(
 ): Breaker {
   let b = map.get(key)
   if (!b) {
-    b = { state: 'closed', openedAt: 0, buckets: [], trialPending: false, halfOpenSuccesses: 0, config }
+    b = { state: 'closed', openedAt: 0, buckets: [], trialPending: false, trialStartedMs: 0, halfOpenSuccesses: 0, config }
     map.set(key, b)
   }
   return b
@@ -139,17 +146,27 @@ export function transition(breaker: Breaker, simMs: number): BreakerState {
     breaker.trialPending = false // fresh half-open window — no trial claimed yet
     breaker.halfOpenSuccesses = 0
   }
+  // Expire a wedged trial (audit ISSUE-033): a claimed probe whose chain yielded no downstream
+  // row (e.g. the caller admitted nothing that step) never resolves via recordWeighted. Clear
+  // it after trialTimeoutMs so the next caller can re-probe — an expired trial is NO evidence
+  // (no calls flowed), so it neither reopens nor counts as a probe success.
+  if (breaker.state === 'half-open' && breaker.trialPending &&
+      simMs - breaker.trialStartedMs > breaker.config.trialTimeoutMs) {
+    breaker.trialPending = false
+  }
   return breaker.state
 }
 
 // May a request proceed through this breaker right now? closed: always. open: never.
 // half-open: exactly once per unresolved trial — the first caller claims it (side effect: sets
-// trialPending), everyone else is refused until recordWeighted resolves it.
+// trialPending + its expiry clock), everyone else is refused until recordWeighted resolves it
+// (or transition() expires it, audit ISSUE-033).
 // This is the gate flows.ts's breakerOpen callback inverts. SKELETON CONCERNS #6.
-export function admitRequest(breaker: Breaker): boolean {
+export function admitRequest(breaker: Breaker, simMs = 0): boolean {
   if (breaker.state === 'closed') return true
   if (breaker.state === 'half-open' && !breaker.trialPending) {
     breaker.trialPending = true
+    breaker.trialStartedMs = simMs
     return true
   }
   return false

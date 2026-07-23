@@ -82,6 +82,27 @@ describe('breakers — state cycle (audit ISSUE-015 semantics)', () => {
     expect(admitRequest(b)).toBe(true)    // next probe may claim a fresh trial
   })
 
+  // Audit ISSUE-033: a claimed trial whose request chain produced no downstream row never
+  // reaches recordWeighted. Without expiry the breaker wedged half-open FOREVER (transition
+  // only re-fires from `open`) — after trialTimeoutMs the trial must expire so probing resumes.
+  it('an unresolved half-open trial expires after trialTimeoutMs instead of wedging', () => {
+    const { b } = freshBreaker()
+    for (let i = 0; i < 10; i++) recordResult(b, true, 0)
+    transition(b, 10_001)
+    expect(b.state).toBe('half-open')
+    expect(admitRequest(b, 10_001)).toBe(true)     // trial claimed… and never resolved
+    expect(admitRequest(b, 10_101)).toBe(false)    // in-flight: others refused
+    // Within the timeout the trial is still pending.
+    expect(transition(b, 11_000)).toBe('half-open')
+    expect(admitRequest(b, 11_000)).toBe(false)
+    // Past trialTimeoutMs (2s) the wedge clears: still half-open, but re-probing is allowed.
+    expect(transition(b, 12_101)).toBe('half-open')
+    expect(b.trialPending).toBe(false)
+    expect(admitRequest(b, 12_101)).toBe(true)
+    // An expired trial is no evidence — it neither reopened nor counted as a probe success.
+    expect(b.halfOpenSuccesses).toBe(0)
+  })
+
   it('closed always admits; open never admits', () => {
     const { b } = freshBreaker()
     expect(admitRequest(b)).toBe(true)

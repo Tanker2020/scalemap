@@ -453,7 +453,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const b = s.breakers.get(key)
       if (!b) return false
       transition(b, simMs)
-      return !admitRequest(b)
+      return !admitRequest(b, simMs)
     }
     // Effective roles carry the promotion overlay committed at the END of a PRIOR step
     // (promoteReplicas below), so once a primary has failed over, this step's writes route to the

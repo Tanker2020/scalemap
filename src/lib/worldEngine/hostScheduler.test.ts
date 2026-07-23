@@ -24,15 +24,24 @@ const load = (over: Partial<InstanceLoad> & { instanceId: string }): InstanceLoa
 })
 
 describe('stepHost', () => {
-  it('under capacity: multiplier 1, cores partially filled in order', () => {
+  it('under capacity: multiplier 1, utilization spread evenly across cores (audit ISSUE-035)', () => {
     const server = testServer(4, 2048)
     const rng = createRng(5)
     const result = stepHost(server, [load({ instanceId: 'i1', cpuMsPerRequest: 10, admittedRps: 150 })], 4, rng)
-    // demand = 150 * 10 / 1000 = 1.5 cores
+    // demand = 150 * 10 / 1000 = 1.5 cores over 4 → every core at 0.375, not [1, 0.5, 0, 0]
     expect(result.cpuPressure).toBeCloseTo(0.375)
     expect(result.latencyMultiplier).toBe(1)
     expect(result.admittedScale).toBe(1)
-    expect(result.coreUtilization).toEqual([1, 0.5, 0, 0])
+    expect(result.coreUtilization).toEqual([0.375, 0.375, 0.375, 0.375])
+  })
+
+  it('a credit-throttled host reads saturated on the effective basis (audit ISSUE-035)', () => {
+    const server = testServer(4, 2048)
+    const rng = createRng(5)
+    // effectiveVcpu 1.6 (0.4× throttle on 4 vCPU); demand 2 cores saturates the effective
+    // capacity — the die must read full, not 2/4 of the raw core count.
+    const result = stepHost(server, [load({ instanceId: 'i1', cpuMsPerRequest: 10, admittedRps: 200 })], 1.6, rng)
+    expect(result.coreUtilization).toEqual([1, 1, 1, 1])
   })
 
   it('2x overload: multiplier 2, admittedScale 0.5, every core saturated', () => {
