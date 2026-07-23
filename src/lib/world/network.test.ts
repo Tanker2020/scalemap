@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { evaluateFirewall } from './network'
+import { evaluateFirewall, isInternetSource } from './network'
 import { createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement } from './factories'
 import { getPreset } from './instanceCatalog'
 import { compileWorld } from './compileWorld'
@@ -7,6 +7,23 @@ import type { FirewallRule, PlacementRuntime } from './types'
 
 const allowAll: FirewallRule = { id: 'r-allow', action: 'allow', port: 'any', protocol: 'any', source: 'internal' }
 const denyDb: FirewallRule = { id: 'r-deny-db', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' }
+
+// audit ISSUE-011: the shared internet-open test — 'any' plus every /0 CIDR spelling.
+describe('isInternetSource', () => {
+  it('treats any, 0.0.0.0/0, ::/0 and any /0 prefix as internet-open', () => {
+    expect(isInternetSource('any')).toBe(true)
+    expect(isInternetSource('0.0.0.0/0')).toBe(true)
+    expect(isInternetSource('::/0')).toBe(true)
+    expect(isInternetSource('1.2.3.4/0')).toBe(true)   // prefix length 0 covers everything
+  })
+
+  it('is false for internal and genuinely-scoped CIDR ranges', () => {
+    expect(isInternetSource('internal')).toBe(false)
+    expect(isInternetSource('10.0.0.0/8')).toBe(false)
+    expect(isInternetSource('192.168.1.0/24')).toBe(false)
+    expect(isInternetSource('203.0.113.7/32')).toBe(false)
+  })
+})
 
 describe('evaluateFirewall', () => {
   it('first matching rule wins, in array order', () => {

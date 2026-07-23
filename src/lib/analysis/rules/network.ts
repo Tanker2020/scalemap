@@ -2,6 +2,7 @@
 // loop because src/lib/world/network.ts's evaluateFirewall ignores `source` (Phase-1 all-internal).
 import type { AnalysisFinding, AnalysisRule } from '../types'
 import type { FirewallRule } from '../../world/types'
+import { isInternetSource } from '../../world/network'
 import { getRoute, routeMatchesPattern } from '../../nodeConfig'
 
 // First rule (array order) that matches the port+tcp; null = default deny. Source-aware callers read
@@ -14,9 +15,11 @@ function firewallFirstMatch(rules: FirewallRule[], port: number): FirewallRule |
   }
   return null
 }
+// Internet-open = 'any' OR an all-covering CIDR like '0.0.0.0/0'/'::/0' (audit ISSUE-011) —
+// shared by db-port-exposed (no false negatives) and entry-unreachable (no false positives).
 const openToAny = (rules: FirewallRule[], port: number): FirewallRule | null => {
   const m = firewallFirstMatch(rules, port)
-  return m && m.action === 'allow' && m.source === 'any' ? m : null
+  return m && m.action === 'allow' && isInternetSource(m.source) ? m : null
 }
 
 const blockedDependencyPath: AnalysisRule = {

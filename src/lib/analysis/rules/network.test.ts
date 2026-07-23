@@ -9,6 +9,7 @@ import type { FirewallRule } from '../../world/types'
 const ids = (fs: AnalysisFinding[], ruleId: string) => fs.filter(f => f.ruleId === ruleId)
 const run = (s: ReturnType<typeof scenario>) => runAnalysis(s.doc, s.compile(), null)
 const allowAny = (port: number): FirewallRule => ({ id: `fw-open-${port}`, action: 'allow', port, protocol: 'tcp', source: 'any' })
+const allowFrom = (port: number, source: string): FirewallRule => ({ id: `fw-open-${port}`, action: 'allow', port, protocol: 'tcp', source })
 
 describe('network: blocked-dependency-path', () => {
   it('fires for a firewall-denied cross-server path and names the rule in the fix', () => {
@@ -64,6 +65,32 @@ describe('network: db-port-exposed', () => {
     const f = ids(run(s), 'db-port-exposed')
     expect(f.some(x => x.affected[0] === db.id)).toBe(true)
   })
+  // audit ISSUE-011: '0.0.0.0/0' (and '::/0') IS the entire internet — a valid CIDR
+  // FirewallSource that must be treated exactly like the literal 'any'.
+  it('fires when a db target server allows the port from 0.0.0.0/0', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const s1 = s.server(az.id); const s2 = s.server(az.id)
+    s2.firewall = [allowFrom(5432, '0.0.0.0/0'), ...s2.firewall]
+    const web = s.blueprint('web', 0); const db = s.blueprint('db', 1)
+    db.ports = [{ port: 5432, protocol: 'tcp', visibility: 'internal' }]
+    web.dependencies = [dep('d-db', db.id, 'db', 5432)]
+    s.placement(web.id, s1.id); s.placement(db.id, s2.id)
+    const f = ids(run(s), 'db-port-exposed')
+    expect(f.length).toBeGreaterThanOrEqual(1)
+    expect(f[0].affected).toContain(s2.id)
+  })
+  it('fires for the IPv6 ::/0 form as well', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const s1 = s.server(az.id); const s2 = s.server(az.id)
+    s2.firewall = [allowFrom(5432, '::/0'), ...s2.firewall]
+    const web = s.blueprint('web', 0); const db = s.blueprint('db', 1)
+    db.ports = [{ port: 5432, protocol: 'tcp', visibility: 'internal' }]
+    web.dependencies = [dep('d-db', db.id, 'db', 5432)]
+    s.placement(web.id, s1.id); s.placement(db.id, s2.id)
+    expect(ids(run(s), 'db-port-exposed').length).toBeGreaterThanOrEqual(1)
+  })
   it('silent for a db target behind the default internal firewall', () => {
     const s = scenario()
     const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
@@ -92,6 +119,16 @@ describe('network: entry-unreachable', () => {
     const s = scenario()
     const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
     const s1 = s.server(az.id); s1.firewall = [allowAny(443), ...s1.firewall]
+    const web = s.blueprint('web', 0)
+    web.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+    s.placement(web.id, s1.id)
+    expect(ids(run(s), 'entry-unreachable')).toHaveLength(0)
+  })
+  // audit ISSUE-011: a public port reachable via 0.0.0.0/0 is reachable — no false positive.
+  it('silent when a hosting server allows the port from 0.0.0.0/0', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const s1 = s.server(az.id); s1.firewall = [allowFrom(443, '0.0.0.0/0'), ...s1.firewall]
     const web = s.blueprint('web', 0)
     web.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
     s.placement(web.id, s1.id)

@@ -3,9 +3,21 @@
 // firewall; cross-server evaluates the TARGET server's rules first-match-wins with default
 // deny; in Phase 1 every in-world flow counts as 'internal' and CIDR sources match it.
 import type {
-  Server, AvailabilityZone, FirewallRule, ServiceBlueprint, PlacementRuntime,
+  Server, AvailabilityZone, FirewallRule, FirewallSource, ServiceBlueprint, PlacementRuntime,
   HopClass, BlockReason,
 } from './types'
+
+// The single source of truth for "this source means the entire internet" (audit ISSUE-011):
+// the literal 'any' plus every 0-length CIDR prefix — '0.0.0.0/0', '::/0', even '1.2.3.4/0'
+// all admit every address. Consumed by the network-security analysis rules; source-aware
+// firewall evaluation itself is still Phase-1 all-internal (see evaluateFirewall below).
+export function isInternetSource(source: FirewallSource): boolean {
+  if (source === 'any') return true
+  const slash = source.lastIndexOf('/')
+  if (slash === -1) return false
+  const prefix = source.slice(slash + 1)
+  return prefix !== '' && Number(prefix) === 0
+}
 
 export function evaluateFirewall(
   rules: FirewallRule[],
