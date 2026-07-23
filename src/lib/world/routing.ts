@@ -81,7 +81,27 @@ export function computeRouting(
     for (const list of Object.values(byBp)) list.sort()
   }
 
-  return { populationRegionOrder, regionAzSpread, azBlueprintTargets, lbRouting: computeLbRouting(doc, instances) }
+  return {
+    populationRegionOrder, regionAzSpread, azBlueprintTargets,
+    lbRouting: computeLbRouting(doc, instances),
+    ...regionProportionsFor(doc),
+  }
+}
+
+// Audit ISSUE-021: the 'weighted' policy emits a normalized per-region traffic PROPORTION —
+// the engine splits each population's demand by it instead of sending 100% to the single
+// highest-weight region. All-zero (the createWorld default) or non-weighted policies emit
+// nothing, so the engine falls back to the order-based path unchanged.
+function regionProportionsFor(doc: WorldDoc): { regionProportions?: Record<RegionId, number> } {
+  if (doc.routing.policy !== 'weighted') return {}
+  const positive = Object.values(doc.regions)
+    .map(r => ({ id: r.id, w: Math.max(0, doc.routing.weights[r.id] ?? 0) }))
+    .filter(e => e.w > 0)
+  const total = positive.reduce((s, e) => s + e.w, 0)
+  if (total <= 0) return {}
+  const regionProportions: Record<RegionId, number> = {}
+  for (const e of positive) regionProportions[e.id] = e.w / total
+  return { regionProportions }
 }
 
 // A blueprint is a client entry point when it exposes a 'public' port (the documented entry

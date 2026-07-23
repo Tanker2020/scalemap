@@ -387,6 +387,12 @@ export interface CompiledRouting {
   regionAzSpread: Record<RegionId, AzId[]>
   azBlueprintTargets: Record<AzId, Record<BlueprintId, InstanceId[]>>
   lbRouting: Record<RegionId, CompiledLbRouting>
+  // Audit ISSUE-021 (additive): normalized per-region traffic PROPORTIONS for the 'weighted'
+  // policy — Route 53 weighted records split a population's clients ~70/30, they don't send
+  // 100% to the top weight. Present only when policy === 'weighted' with ≥1 positive weight
+  // (proportions sum to 1 over the positively-weighted regions); undefined for order-based
+  // policies and for the all-zero-weights default, which falls back to the geo order.
+  regionProportions?: Record<RegionId, number>
 }
 
 export interface CompileFinding {

@@ -488,3 +488,56 @@ describe('replica promotion — real write failover', () => {
     expect(replica!.rps).toBeGreaterThan(primary!.rps)
   })
 })
+
+// Audit ISSUE-021: the weighted policy splits a population's traffic PROPORTIONALLY across
+// regions (Route 53 weighted-record semantics) instead of sending 100% to the highest weight.
+describe('weighted routing proportional split (audit ISSUE-021)', () => {
+  function weightedFixture() {
+    const f = e2eFixture()
+    f.doc.routing.policy = 'weighted'
+    f.doc.routing.weights = { [f.r1.id]: 70, [f.r2.id]: 30 }
+    f.pop.diurnal = 'flat'   // steady demand — the split fractions are what's under test
+    return { ...f, compiled: compileWorld(f.doc) }
+  }
+
+  it('routes ~70/30 of a population to the two regions, not 100% to the top weight', () => {
+    const f = weightedFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(20)
+    const routes = sim.latest().world.populationRoutes.filter(r => r.populationId === f.pop.id)
+    expect(routes).toHaveLength(2)
+    const total = routes.reduce((s, r) => s + r.rps, 0)
+    const r1Share = (routes.find(r => r.regionId === f.r1.id)?.rps ?? 0) / total
+    expect(r1Share).toBeCloseTo(0.7, 5)   // exact proportional split of the tick's demand
+    // and the landed traffic follows: both regions carry real load
+    expect(sim.latest().regions[f.r1.id].rps).toBeGreaterThan(0)
+    expect(sim.latest().regions[f.r2.id].rps).toBeGreaterThan(0)
+    sim.engine.stop()
+  })
+
+  it('renormalizes onto the survivors when a weighted region goes down', () => {
+    const f = weightedFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(5)
+    sim.engine.setOutage('region', f.r1.id, true)
+    sim.stepFor(10)
+    const routes = sim.latest().world.populationRoutes.filter(r => r.populationId === f.pop.id)
+    expect(routes).toHaveLength(1)
+    expect(routes[0].regionId).toBe(f.r2.id)   // 100% renormalized onto the healthy region
+    sim.engine.stop()
+  })
+
+  it('all-zero weights fall back to the order-based path (single-region rows)', () => {
+    const f = e2eFixture()
+    f.doc.routing.policy = 'weighted'
+    f.doc.routing.weights = {}
+    f.pop.diurnal = 'flat'
+    const compiled = compileWorld(f.doc)
+    expect(compiled.routing.regionProportions).toBeUndefined()
+    const sim = drive(f.doc, compiled)
+    sim.stepFor(5)
+    const routes = sim.latest().world.populationRoutes.filter(r => r.populationId === f.pop.id)
+    expect(routes).toHaveLength(1)
+    sim.engine.stop()
+  })
+})

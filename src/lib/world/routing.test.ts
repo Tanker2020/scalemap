@@ -251,3 +251,31 @@ describe('volumeFindings', () => {
     expect(volumeFindings(doc)).toHaveLength(0)
   })
 })
+
+// Audit ISSUE-021: computeRouting emits normalized regionProportions for the weighted policy.
+describe('regionProportions (ISSUE-021)', () => {
+  it('normalizes positive weights to a sum of 1 and omits zero-weight regions', async () => {
+    const { createWorld, createRegion } = await import('./factories')
+    const { computeRouting } = await import('./routing')
+    const doc = createWorld()
+    const a = createRegion('us-east-1'); const b = createRegion('eu-west-1'); const c = createRegion('ap-southeast-1')
+    doc.regions[a.id] = a; doc.regions[b.id] = b; doc.regions[c.id] = c
+    doc.routing.policy = 'weighted'
+    doc.routing.weights = { [a.id]: 70, [b.id]: 30, [c.id]: 0 }
+    const routing = computeRouting(doc, {})
+    expect(routing.regionProportions).toEqual({ [a.id]: 0.7, [b.id]: 0.3 })
+  })
+
+  it('is undefined for all-zero weights and for non-weighted policies', async () => {
+    const { createWorld, createRegion } = await import('./factories')
+    const { computeRouting } = await import('./routing')
+    const doc = createWorld()
+    const a = createRegion('us-east-1'); doc.regions[a.id] = a
+    doc.routing.policy = 'weighted'
+    doc.routing.weights = {}
+    expect(computeRouting(doc, {}).regionProportions).toBeUndefined()
+    doc.routing.policy = 'geo'
+    doc.routing.weights = { [a.id]: 50 }
+    expect(computeRouting(doc, {}).regionProportions).toBeUndefined()
+  })
+})

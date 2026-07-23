@@ -300,10 +300,30 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // ── 3. routing: resolve + build entry demand ──
     const populationRoutes: RoutingSnapshot['populationRoutes'] = []
     const entryDemand: Record<InstanceId, number> = {}
+    // Weighted policy (audit ISSUE-021): compiled regionProportions splits each population's
+    // demand ~70/30 across regions like Route 53 weighted records (a population is MANY clients,
+    // each resolving independently — no single-region winner, no TTL cliff). Down regions drop
+    // out and the split renormalizes over the survivors. Absent proportions (order-based
+    // policies, or weighted with all-zero weights) keep the resolveRegion path unchanged.
+    const proportions = compiled.routing.regionProportions
     for (const pop of Object.values(doc.populations)) {
       const order = compiled.routing.populationRegionOrder[pop.id] ?? []
       const prevRegion = s.popRegion.get(pop.id) ?? null
-      const region = resolveRegion(s.routing, pop.id, order, healthOfScope, doc.routing, simMs, s.rng)
+      let region: RegionId | null
+      let shares: { regionId: RegionId; fraction: number }[] | null = null
+      if (proportions) {
+        const healthy = order.filter(id => (proportions[id] ?? 0) > 0 && healthOfScope(id) !== 'down')
+        const total = healthy.reduce((sum, id) => sum + (proportions[id] ?? 0), 0)
+        if (healthy.length > 0 && total > 0) {
+          shares = healthy.map(id => ({ regionId: id, fraction: (proportions[id] ?? 0) / total }))
+          // "Primary" for failover events / drain arcs: the highest-share healthy region.
+          region = shares.reduce((best, e) => (e.fraction > best.fraction ? e : best)).regionId
+        } else {
+          region = resolveRegion(s.routing, pop.id, order, healthOfScope, doc.routing, simMs, s.rng)
+        }
+      } else {
+        region = resolveRegion(s.routing, pop.id, order, healthOfScope, doc.routing, simMs, s.rng)
+      }
       if (!region) continue
       if (prevRegion && prevRegion !== region) {
         emit('ttl_lag_expired', 'info', `${pop.label} DNS re-resolved ${prevRegion} → ${region}`, [pop.id, prevRegion, region], simMs)
@@ -316,11 +336,16 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         s.popPrevRegion.delete(pop.id)
       }
       s.popRegion.set(pop.id, region)
-      populationRoutes.push({ populationId: pop.id, regionId: region, rps: demandByPop[pop.id] })
       // Split the population's scalar demand into per-route rps (its requestMix, else one implicit
       // default route) so the LB can route each class independently. populationRoutes keeps the
-      // scalar total — the globe/routing snapshot is per-population, not per-route.
-      distributeViaLb(region, splitDemandByMix(demandByPop[pop.id], pop.requestMix), entryDemand)
+      // scalar totals — one row per (population, region) served; order-based policies emit
+      // exactly one row, the weighted split one per share.
+      for (const { regionId, fraction } of shares ?? [{ regionId: region, fraction: 1 }]) {
+        const rps = demandByPop[pop.id] * fraction
+        if (rps <= 0) continue
+        populationRoutes.push({ populationId: pop.id, regionId, rps })
+        distributeViaLb(regionId, splitDemandByMix(rps, pop.requestMix), entryDemand)
+      }
     }
     s.lastRoutingSnapshot = { populationRoutes }
 
