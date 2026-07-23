@@ -3514,3 +3514,46 @@ Boundary notes: every doc-model addition (`provisionedIops?`, `healthCheckTimeou
 `managedBaseLatencyMs`/`managedLatencyMs`/`MANAGED_P99_OVER_P50`, and `DB_IOPS_FREE` are new pure
 exports. With this pass the audit's full issue list (Critical + Major + Minor, ISSUE-001 through
 ISSUE-079) is closed.
+
+## Cross-zone-off dropped traffic + overload health + honest AZ card (2026-07-23)
+
+A user-reported "500 rps into the region, server handles 150 and never crashes" traced to three
+compounding issues around a cross-zone-off L7 LB whose target service was placed in only one of
+the region's AZs. Fixed together (branch `fix/crosszone-dropped-traffic`):
+
+- **Silent forfeiture → surfaced (`worldEngine/routingRuntime.ts`, `index.ts`, `metrics.ts`,
+  `types.ts`).** `distributeToTargets` with cross-zone OFF split `rps / regionAzSpread.length`
+  (ALL region AZs) and skipped any AZ with no target instance — dropping `(N−1)/N` of the ingress
+  silently. It now takes an optional `droppedByAz` accumulator crediting every undeliverable
+  share (empty target group / all-AZs-down → whole rps spread across the region's AZs; per-AZ
+  `targetsHere.length === 0` → that `perAz`; `pickInstance → null`, i.e. placed-but-all-down →
+  that `perBp`; cross-zone-true `targets.length === 0` → whole rps). The engine threads a per-step
+  `droppedByAz` map through `distributeViaLb`, and `accumulateStep`/`buildBatch` publish it as the
+  additive `AzMetrics.droppedRps` (EMA'd per AZ, `droppedWindow`/`droppedSteps` in `MetricsState`)
+  + a region roll-up `RegionMetrics.droppedRps`.
+- **Display-only region impairment, NO cascade (`metrics.ts` buildBatch).** The region's DISPLAYED
+  `errorRate`/`health`/`healthScore` fold in dropped (errorRate = true failing inbound fraction;
+  health downgrades from — never above — the failover verdict). This is deliberately kept OUT of
+  the failover state machine (`index.ts` step 9) and routing: folding it there cascaded onto
+  healthy instances via `healthOfInstance = worst-scope`, wrongly failing/throttling backends
+  (caught by the starved-vs-idle + forfeit engine tests). Failover health remains the routing/
+  cascade source of truth; only the published batch reflects the drop.
+- **Overload health from OFFERED load (`index.ts` step 9, Fix D).** Per-server `cpuPressure` for
+  the HEALTH input is now computed inline from the current step's `flows[i].offeredRps ×
+  cpuMsPerRequest / effectiveVcpu` (`overloadPressureByServer`), not `hostResults.cpuPressure`
+  (admitted-based, capped at capacity ⇒ always ≈ 1.0, so an overwhelmed server never tripped the
+  CPU band). `latencyMultiplier`, `admittedScale`, and VPS credit-drain keep the admitted-based
+  pressure — only server/AZ/region health inputs use the offered-based one, so a moderately
+  overloaded server degrades via pressure before its bounded queue saturates into errors.
+- **Honest AZ card / split pills (`region/regionData.ts` `azShares`, `AzRow.tsx`,
+  `SplitLines.tsx`, `RegionView.tsx`).** `azShares` now splits region ingress into DELIVERED
+  (fraction-of-throughput × `ingress − dropped`) + per-AZ `dropped`, so a fully-forfeited AZ shows
+  its dropped share instead of the whole ingress being attributed to the one serving AZ. `AzShare`
+  gained `dropped`; the AZ card appends `· N dropped` (danger) and a majority-dropped `SplitLines`
+  beam renders red/static (`✕N` pill) instead of a healthy teal flow.
+
+Boundary notes: `AzMetrics.droppedRps?`/`RegionMetrics.droppedRps?` are additive-optional (frozen
+contract, logged in `contract-drift.md`); `distributeToTargets`' `droppedByAz`, `accumulateStep`'s
+`droppedByAz`, and `distributeViaLb`'s 4th arg are additive-optional; `AzShare.dropped` and
+`AzRow`'s `droppedRps` prop are new required fields on app-layer (non-contract) types, all
+in-repo callers updated. No `.scalemap`/persistence impact (metrics are ephemeral).

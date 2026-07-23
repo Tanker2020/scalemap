@@ -62,6 +62,12 @@ export interface AzMetrics {
   health: HealthState
   serverCount: number
   instanceCount: number
+  // Additive (contract-drift): undeliverable inbound rps the LB routed to this AZ but couldn't
+  // serve — cross-zone-off forfeiture (no target instance in this AZ), an empty target group, or
+  // all instances down. A real cross-zone-off NLB fails these connections; surfaced here instead
+  // of vanishing. Absent on pre-existing serialized batches (there is no batch persistence) —
+  // consumers default to 0.
+  droppedRps?: number
 }
 
 export interface RegionMetrics {
@@ -73,6 +79,9 @@ export interface RegionMetrics {
   health: HealthState
   // Live inbound share per population routed here (Phase 4 split-lines, Phase 5 arcs).
   inboundByPopulation: { populationId: PopulationId; rps: number }[]
+  // Additive (contract-drift): Σ of this region's AZ droppedRps — undeliverable inbound folded
+  // into the region's health error rate too, so a region dropping traffic degrades. Default 0.
+  droppedRps?: number
 }
 
 export interface WorldMetrics {

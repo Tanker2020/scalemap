@@ -244,7 +244,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
   // to the pre-route distribution, so the engine's golden tests hold. Traffic whose target group
   // resolves empty (a rule/default pointing at a service with no instance here) is dropped: the
   // analysis engine surfaces that as a finding.
-  const distributeViaLb = (regionId: RegionId, routeDemands: RouteDemand[], into: Record<InstanceId, number>): void => {
+  const distributeViaLb = (
+    regionId: RegionId,
+    routeDemands: RouteDemand[],
+    into: Record<InstanceId, number>,
+    droppedByAz?: Record<AzId, number>,
+  ): void => {
     const s = state!
     const lb = s.compiled.routing.lbRouting[regionId]
     if (!lb) return
@@ -262,6 +267,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         healthOfInstance,
         cursors: s.routing,
         into,
+        droppedByAz,
       })
     }
   }
@@ -334,6 +340,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // ── 3. routing: resolve + build entry demand ──
     const populationRoutes: RoutingSnapshot['populationRoutes'] = []
     const entryDemand: Record<InstanceId, number> = {}
+    // Undeliverable rps this step, keyed by the AZ that couldn't serve it (cross-zone-off
+    // forfeiture, empty target group, all-down region). Folded into region health + published as
+    // a metric so dropped traffic is no longer invisible.
+    const droppedByAz: Record<AzId, number> = {}
     // Weighted policy (audit ISSUE-021): compiled regionProportions splits each population's
     // demand ~70/30 across regions like Route 53 weighted records (a population is MANY clients,
     // each resolving independently — no single-region winner, no TTL cliff). Down regions drop
@@ -379,7 +389,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         // Rows are pushed even at rps 0 (a Poisson tick can draw zero arrivals) — the routing
         // snapshot is attribution, and drain arcs / inbound lists key off row presence.
         populationRoutes.push({ populationId: pop.id, regionId, rps })
-        distributeViaLb(regionId, splitDemandByMix(rps, pop.requestMix), entryDemand)
+        distributeViaLb(regionId, splitDemandByMix(rps, pop.requestMix), entryDemand, droppedByAz)
       }
     }
     s.lastRoutingSnapshot = { populationRoutes }
@@ -561,6 +571,24 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       agg.errors += f.errorRps + f.refusedRps
       serverAgg.set(inst.serverId, agg)
     }
+    // Overload pressure for the HEALTH signal, from THIS step's OFFERED load (not the
+    // admitted-based hostResults.cpuPressure, which is capped at capacity so it can never exceed
+    // ~1.0 — an overwhelmed server would otherwise only ever read cpuPressure ≈ 1 and never trip
+    // the CPU-pressure health band). Capacity/latency/VPS paths keep the admitted-based pressure;
+    // only the health input uses this offered-based one.
+    const overloadPressureByServer = new Map<ServerId, number>()
+    for (const server of Object.values(doc.servers)) {
+      const resident = s.instancesByServer.get(server.id) ?? []
+      let offeredCores = 0
+      for (const i of resident) {
+        const offered = flows[i.id]?.offeredRps ?? 0
+        if (offered <= 0) continue
+        offeredCores += (offered * (doc.blueprints[i.blueprintId]?.workload.cpuMsPerRequest ?? 1)) / 1000
+      }
+      const effVcpu = Math.max(0.0001, server.specs.vcpu * (s.vpsFactor.get(server.id) ?? 1))
+      overloadPressureByServer.set(server.id, offeredCores / effVcpu)
+    }
+    const overload = (serverId: ServerId): number => overloadPressureByServer.get(serverId) ?? 0
     // Health inputs need a minimum traffic signal: after failover drains a scope, the flow
     // solver's smoothing leaves an exponentially-decaying residual that never quite reaches
     // zero — and errors/offered on that vanishing residual stays pinned at 1.0, holding the
@@ -571,7 +599,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     for (const server of Object.values(doc.servers)) {
       applyHealth('server', server.id, {
         errorRate: rate(serverAgg.get(server.id)),
-        cpuPressure: hostResults[server.id]?.cpuPressure ?? 0,
+        cpuPressure: overload(server.id),
         checkFailed: false,
         manualDown: hasOutage(s.failover, 'server', server.id),
       }, simMs)
@@ -582,14 +610,19 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const srv = s.serversByAz.get(az.id) ?? []
       const offered = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.offered ?? 0), 0)
       const errors = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.errors ?? 0), 0)
-      const cpu = srv.reduce((m, v) => Math.max(m, hostResults[v.id]?.cpuPressure ?? 0), 0)
+      const cpu = srv.reduce((m, v) => Math.max(m, overload(v.id)), 0)
       applyHealth('az', az.id, { errorRate: offered > MIN_HEALTH_SIGNAL_RPS ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(az.id) ?? false, manualDown: hasOutage(s.failover, 'az', az.id) }, simMs)
     }
     for (const region of Object.values(doc.regions)) {
       const srv = (s.azsByRegion.get(region.id) ?? []).flatMap(a => s.serversByAz.get(a.id) ?? [])
       const offered = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.offered ?? 0), 0)
       const errors = srv.reduce((n, v) => n + (serverAgg.get(v.id)?.errors ?? 0), 0)
-      const cpu = srv.reduce((m, v) => Math.max(m, hostResults[v.id]?.cpuPressure ?? 0), 0)
+      const cpu = srv.reduce((m, v) => Math.max(m, overload(v.id)), 0)
+      // NOTE: undeliverable (dropped) traffic is deliberately NOT folded into the FAILOVER region
+      // health here — that state cascades onto every instance in the region (healthOfInstance =
+      // worst scope) and would wrongly fail/throttle healthy backends when the LB config drops
+      // traffic elsewhere. Dropped is surfaced in the region's DISPLAYED error/health instead
+      // (metrics.ts buildBatch), which the routing/cascade path never reads.
       applyHealth('region', region.id, { errorRate: offered > MIN_HEALTH_SIGNAL_RPS ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(region.id) ?? false, manualDown: hasOutage(s.failover, 'region', region.id) }, simMs)
     }
     // Failback BEFORE promotion (audit ISSUE-007): a recovered authored primary reclaims its role
@@ -617,7 +650,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     }
 
     // ── 10. metrics accumulate ──
-    accumulateStep(s.metrics, flows, hostResults, vpsPublish, nicByServer, healthOfAny, simMs, managedDbRt)
+    accumulateStep(s.metrics, flows, hostResults, vpsPublish, nicByServer, healthOfAny, simMs, managedDbRt, droppedByAz)
     // NIC settlement (audit ISSUE-002) — AFTER accumulate (which reads the per-step byte
     // counters settleNic resets). The result gates next step's admits/latency, one-step lag.
     for (const server of Object.values(doc.servers)) {

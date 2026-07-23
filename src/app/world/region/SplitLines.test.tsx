@@ -40,8 +40,8 @@ function offsetDelta(values: string): number {
 describe('SplitLines — seamless-loop invariant (taskA)', () => {
   it('the animated beam\'s stroke-dashoffset delta is a whole multiple of its dash period', () => {
     const shares: AzShare[] = [
-      { azId: 'az-a', fraction: 0.7, rps: 700, down: false },
-      { azId: 'az-b', fraction: 0.3, rps: 300, down: false },
+      { azId: 'az-a', fraction: 0.7, rps: 700, dropped: 0, down: false },
+      { azId: 'az-b', fraction: 0.3, rps: 300, dropped: 0, down: false },
     ]
     const { container } = render(<SplitLines shares={shares} height={200} live />)
 
@@ -71,8 +71,8 @@ describe('SplitLines — seamless-loop invariant (taskA)', () => {
 
   it('non-animated (second) beam and down stubs render without an <animate> child at all', () => {
     const shares: AzShare[] = [
-      { azId: 'az-down', fraction: 0, rps: 0, down: true },
-      { azId: 'az-idle', fraction: 0, rps: 0, down: false },
+      { azId: 'az-down', fraction: 0, rps: 0, dropped: 0, down: true },
+      { azId: 'az-idle', fraction: 0, rps: 0, dropped: 0, down: false },
     ]
     const { container } = render(<SplitLines shares={shares} height={200} live />)
     expect(container.querySelectorAll('animate').length).toBe(0)
@@ -81,8 +81,8 @@ describe('SplitLines — seamless-loop invariant (taskA)', () => {
   it('reduced motion renders the beam static (no <animate> child) even when it would otherwise animate', () => {
     mockUseReducedMotion.mockReturnValue(true)
     const shares: AzShare[] = [
-      { azId: 'az-a', fraction: 0.7, rps: 700, down: false },
-      { azId: 'az-b', fraction: 0.3, rps: 300, down: false },
+      { azId: 'az-a', fraction: 0.7, rps: 700, dropped: 0, down: false },
+      { azId: 'az-b', fraction: 0.3, rps: 300, dropped: 0, down: false },
     ]
     const { container } = render(<SplitLines shares={shares} height={200} live />)
     expect(container.querySelectorAll('animate').length).toBe(0)
@@ -90,8 +90,8 @@ describe('SplitLines — seamless-loop invariant (taskA)', () => {
 
   it('a NOT-live (paused/ended/scrubbed) run freezes the beam — no <animate> child even at rps>0', () => {
     const shares: AzShare[] = [
-      { azId: 'az-a', fraction: 0.7, rps: 700, down: false },
-      { azId: 'az-b', fraction: 0.3, rps: 300, down: false },
+      { azId: 'az-a', fraction: 0.7, rps: 700, dropped: 0, down: false },
+      { azId: 'az-b', fraction: 0.3, rps: 300, dropped: 0, down: false },
     ]
     const { container } = render(<SplitLines shares={shares} height={200} live={false} />)
     expect(container.querySelectorAll('animate').length).toBe(0)

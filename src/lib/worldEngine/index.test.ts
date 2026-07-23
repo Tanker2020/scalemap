@@ -124,6 +124,75 @@ describe('cross-zone-off ingress distribution', () => {
     expect(b.azs[f.az2].rps).toBe(0)                 // az2 processed nothing
     sim.engine.stop()
   })
+
+  it('SURFACES the forfeited share: az2 reports droppedRps and the region degrades on display', () => {
+    const f = twoAzIngress(false)   // entry only in az1
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(20)
+    const b = sim.latest()
+    // The ~250 rps routed to az2 (no target there) is no longer invisible — it's on az2's metric.
+    expect(b.azs[f.az2].droppedRps ?? 0).toBeGreaterThan(200)
+    expect(b.azs[f.az2].droppedRps ?? 0).toBeLessThan(300)
+    // az1 delivered its share, nothing dropped there.
+    expect(b.azs[f.az1].droppedRps ?? 0).toBeLessThan(1)
+    // The region roll-up carries it and its DISPLAYED error rate reflects the ~50% failing inbound
+    // (≈ dropped / (served + dropped)), so the region no longer looks fully healthy.
+    const region = b.regions[Object.keys(b.regions)[0]]
+    expect(region.droppedRps ?? 0).toBeGreaterThan(200)
+    expect(region.errorRate).toBeGreaterThan(0.4)
+    expect(region.health).not.toBe('healthy')
+    // …but the cascade is NOT triggered: the surviving web instance keeps serving at full health
+    // (dropped is a DISPLAY/metric impairment, never fed into the failover state machine).
+    expect(b.instances[f.web1!].health).toBe('healthy')
+    expect(b.instances[f.web1!].rps).toBeGreaterThan(200)
+    sim.engine.stop()
+  })
+})
+
+// Overload health from OFFERED load (not admitted, which is capped at capacity so pre-fix an
+// overwhelmed server read cpuPressure ≈ 1.0 and stayed 'healthy'). A moderate sustained overload
+// degrades the server via pressure BEFORE its bounded queue saturates into errors.
+describe('overload health from offered load', () => {
+  function overloadedServer(cpuMsPerRequest: number, peakRps: number) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)   // 8 vCPU, dedicated (no VPS noise)
+    doc.servers[server.id] = server
+    const web = publicBlueprint('web', 0)
+    web.workload = { ...web.workload, cpuMsPerRequest }             // capacity ≈ 8000 / cpuMs rps
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id); doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0); pop.peakRps = peakRps; pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), webInst: instanceId(pl.id, 0) }
+  }
+
+  it('a moderate overload degrades the server via pressure while errors are still ~0', () => {
+    // cpuMs 40 ⇒ capacity ≈ 200 rps; offered ≈ 280 (1.4×). Queue bound = 200 × 2 s = 400 req,
+    // filling at ~80 req/s ⇒ ~5 s to saturate. At 4 s the queue is still absorbing (errorRate low)
+    // but offered-based cpuPressure ≈ 1.4 ⇒ the instance reads 'degraded'.
+    const f = overloadedServer(40, 280)
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(4)
+    const inst = sim.latest().instances[f.webInst]
+    expect(inst.health).toBe('degraded')       // from cpuPressure, not errors…
+    expect(inst.errorRate).toBeLessThan(0.15)  // …queue not yet saturated
+    expect(inst.p50Ms).toBeGreaterThan(50)     // standing queue raises latency
+    sim.engine.stop()
+  })
+
+  it('a severe sustained overload drives the server down', () => {
+    // cpuMs 40 ⇒ capacity ≈ 200; offered ≈ 600 (3×) ⇒ cpuPressure ≈ 3 (past DOWN_CPU_PRESSURE 2),
+    // and the queue saturates into heavy errors — both paths converge on 'down'.
+    const f = overloadedServer(40, 600)
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(6)
+    expect(sim.latest().instances[f.webInst].health).toBe('down')
+    sim.engine.stop()
+  })
 })
 
 describe('pause/resume (stop preserves state; resume continues)', () => {

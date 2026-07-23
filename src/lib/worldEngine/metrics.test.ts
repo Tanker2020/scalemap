@@ -167,6 +167,40 @@ describe('metrics pyramid', () => {
     expect(batch.world.internetEgressBytesPerSec).toBeCloseTo(500_000, -3)
   })
 
+  // Undeliverable rps (cross-zone-off forfeiture etc.) is published per AZ and rolled up per
+  // region, and impairs the region's DISPLAYED error rate / health without touching failover.
+  it('publishes AZ droppedRps, rolls it up to the region, and degrades the region error rate', () => {
+    const f = fixture()
+    const state = createMetricsState()
+    // 10 steps: az serves 100 rps and the LB drops another 100 rps at it (a fully-forfeited peer AZ
+    // would be a different az id, but crediting this az keeps the fixture single-AZ and explicit).
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(
+        state,
+        { [f.i1]: flow(f.i1, 100), [f.i2]: flow(f.i2, 0) },
+        { [f.s1.id]: host(), [f.s2.id]: host() },
+        { [f.s1.id]: { steal: 0, effectiveVcpuFactor: 1, creditsFraction: null } as VpsPublish, [f.s2.id]: { steal: 0, effectiveVcpuFactor: 1, creditsFraction: null } as VpsPublish },
+        { [f.s1.id]: nic, [f.s2.id]: nic },
+        healthy, s * 100, undefined, { [f.az.id]: 100 },
+      )
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 200), totals, 1000)
+    expect(batch.azs[f.az.id].droppedRps).toBeCloseTo(100, 0)
+    expect(batch.regions[f.region.id].droppedRps).toBeCloseTo(100, 0)
+    // served 100 + dropped 100 ⇒ ~50% of inbound failed ⇒ region error rate ≈ 0.5, health degraded.
+    expect(batch.regions[f.region.id].errorRate).toBeGreaterThan(0.4)
+    expect(batch.regions[f.region.id].health).not.toBe('healthy')
+  })
+
+  it('leaves droppedRps at 0 (and the region healthy) when nothing is dropped', () => {
+    const f = fixture()
+    const state = createMetricsState()
+    accumulate1s(state, f, 60, 40)   // no droppedByAz passed
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    expect(batch.azs[f.az.id].droppedRps ?? 0).toBe(0)
+    expect(batch.regions[f.region.id].droppedRps ?? 0).toBe(0)
+  })
+
   it('orders ramByInstance by ramMb descending', () => {
     const f = fixture()
     // Put both instances on s1 by moving p2's placement server: simplest — build flows with

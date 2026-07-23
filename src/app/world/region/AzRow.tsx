@@ -47,6 +47,8 @@ export interface AzRowProps {
   // The header shows THIS as the AZ's inbound rate, not batch.azs[az].rps (total instance
   // throughput, which additionally counts internal service→service hops and reads ~2× the ingress).
   inboundRps: number
+  // Of that inbound, the rps the LB routed here but couldn't serve (cross-zone-off forfeiture etc.).
+  droppedRps: number
   monthlyUsd: number
   dbEndpoints: AzRowDbEndpoint[]
   onNavigateAz: () => void
@@ -55,7 +57,7 @@ export interface AzRowProps {
 }
 
 export function AzRow({
-  azId, regionId, inboundRps, monthlyUsd, dbEndpoints, onNavigateAz, onNavigateServer, onHoverServer,
+  azId, regionId, inboundRps, droppedRps, monthlyUsd, dbEndpoints, onNavigateAz, onNavigateServer, onHoverServer,
 }: AzRowProps): ReactElement {
   const doc = useWorldStore(s => s.doc)
   const addServer = useWorldStore(s => s.addServer)
@@ -150,6 +152,11 @@ export function AzRow({
         </span>
         <span style={{ color: isDown ? 'var(--color-danger)' : 'var(--r3-hud)', fontSize: 10.5, fontVariantNumeric: 'tabular-nums' }}>
           {isDown ? (isManuallyDown ? 'outage (manual)' : 'outage') : `◂ ${inboundRps.toFixed(0)} rps`}
+          {/* Undeliverable inbound routed here (cross-zone-off forfeiture etc.) — no target
+              instance in this AZ, so a real NLB fails those connections. */}
+          {!isDown && droppedRps >= 0.5 && (
+            <span style={{ color: 'var(--color-danger)' }}> · {droppedRps.toFixed(0)} dropped</span>
+          )}
         </span>
         <span style={{ color: 'var(--color-text-muted)', fontSize: 9.5 }}>
           {servers.length} srv · {instanceCount} svc

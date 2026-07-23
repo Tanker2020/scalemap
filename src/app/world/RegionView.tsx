@@ -233,6 +233,7 @@ export function RegionView() {
               <AzRow
                 key={az.id} azId={az.id} regionId={regionId}
                 inboundRps={shares.find(s => s.azId === az.id)?.rps ?? 0}
+                droppedRps={shares.find(s => s.azId === az.id)?.dropped ?? 0}
                 monthlyUsd={costs.byAz.find(e => e.azId === az.id)?.monthlyUsd ?? 0}
                 dbEndpoints={dbEndpointsByAz.get(az.id) ?? []}
                 onNavigateAz={() => goAz(regionId, az.id)}

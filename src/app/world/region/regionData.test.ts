@@ -77,6 +77,34 @@ describe('azShares', () => {
     expect(c.rps).toBe(0)
   })
 
+  // Cross-zone-off forfeiture: one AZ serves, the peer AZ dropped its whole share. The split shows
+  // BOTH — the served AZ's delivered share and the empty AZ's dropped share — summing to ingress.
+  it('surfaces per-AZ dropped and splits ingress into delivered + dropped', () => {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const azA = createAz(region.id, 'us-east-1a')   // serves
+    const azB = createAz(region.id, 'us-east-1b')   // all dropped (no target here)
+    doc.regions[region.id] = region
+    doc.azs[azA.id] = azA; doc.azs[azB.id] = azB
+    const batch = fakeBatch(1000, {
+      [azA.id]: az({ azId: azA.id, rps: 200, health: 'healthy' }),   // throughput (incl. internal)
+      [azB.id]: az({ azId: azB.id, rps: 0, health: 'healthy' }),
+    })
+    // Region ingress 540; azB's ~270 was dropped (surfaced on its metric), azA delivered the rest.
+    batch.azs[azB.id].droppedRps = 270
+    batch.world.populationRoutes = [{ populationId: 'p', regionId: region.id, rps: 540 }]
+    const shares = azShares(region.id, doc, batch)
+    const a = shares.find(s => s.azId === azA.id)!
+    const b = shares.find(s => s.azId === azB.id)!
+    expect(a.dropped).toBe(0)
+    expect(b.dropped).toBe(270)
+    // deliveredIngress = 540 − 270 = 270, all attributed to azA (only AZ with throughput).
+    expect(a.rps).toBeCloseTo(270, 5)
+    // azB's routed inbound is entirely its dropped share.
+    expect(b.rps).toBeCloseTo(270, 5)
+    expect(a.rps + b.rps).toBeCloseTo(540, 5)   // still sums to the region ingress
+  })
+
   it('handles null batch', () => {
     const doc = createWorld()
     const region = createRegion('us-east-1')
@@ -84,7 +112,7 @@ describe('azShares', () => {
     doc.regions[region.id] = region
     doc.azs[azA.id] = azA
     const shares = azShares(region.id, doc, null)
-    expect(shares).toEqual([{ azId: azA.id, fraction: 0, rps: 0, down: false }])
+    expect(shares).toEqual([{ azId: azA.id, fraction: 0, rps: 0, dropped: 0, down: false }])
   })
 })
 

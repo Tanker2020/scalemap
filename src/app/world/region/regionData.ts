@@ -6,28 +6,33 @@ import type { WorldDoc, CompiledWorld, RegionId, AzId, ServerId, BlueprintId, Ma
 import type { MetricsBatch, EngineEvent, ReplayFrame, HealthState } from '../../../lib/worldEngine/types'
 import { managedCapacityRps } from '../../../lib/managedCapacity'
 
-export interface AzShare { azId: AzId; fraction: number; rps: number; down: boolean }
+export interface AzShare { azId: AzId; fraction: number; rps: number; dropped: number; down: boolean }
 
-// The region → AZ INGRESS split. `fraction` is each healthy AZ's share of the region's total
-// AZ throughput; `rps` is that fraction applied to the region's actual INGRESS (what the sources
-// send in — the SourcesColumn trunk = Σ populationRoutes into this region), NOT the AZ's own
-// throughput. Using throughput for `rps` double-counted internal service→service hops, so the two
-// AZ pills summed to ~2× the ingress (the "both AZs receive the entirety, doubling" report); the
-// shares now sum to the region ingress. A down AZ's `rps`/`fraction` are pinned to 0 (mockup line
-// 244) and excluded from the throughput denominator, so the remaining shares still sum to 1.
+// The region → AZ INGRESS split. Region ingress (Σ populationRoutes into this region) divides into
+// what was DELIVERED to servers (`ingress − dropped`) and what the LB routed to an AZ that couldn't
+// serve it (`dropped` — cross-zone-off forfeiture etc., published per AZ). The delivered portion is
+// attributed by each healthy AZ's share of region throughput (throughput double-counts internal
+// service→service hops, so only its FRACTION is used, not its absolute — this fixed the earlier
+// "both AZs receive the entirety, doubling" report); `dropped` is added on top per AZ. `rps` is the
+// AZ's total ROUTED inbound (delivered share + dropped), so the shares still sum to the region
+// ingress. A down AZ's delivered share is pinned to 0, but it still shows any traffic dropped at it.
 export function azShares(regionId: RegionId, doc: WorldDoc, batch: MetricsBatch | null): AzShare[] {
   const azIds = Object.values(doc.azs).filter(a => a.regionId === regionId).map(a => a.id)
   const raw = azIds.map(azId => {
     const m = batch?.azs[azId] ?? null
-    return { azId, throughput: m?.rps ?? 0, down: m?.health === 'down' }
+    return { azId, throughput: m?.rps ?? 0, dropped: m?.droppedRps ?? 0, down: m?.health === 'down' }
   })
   const totalThroughput = raw.reduce((sum, a) => sum + (a.down ? 0 : a.throughput), 0)
   const regionIngress = (batch?.world.populationRoutes ?? [])
     .filter(r => r.regionId === regionId)
     .reduce((sum, r) => sum + r.rps, 0)
+  const totalDropped = raw.reduce((sum, a) => sum + a.dropped, 0)
+  const deliveredIngress = Math.max(0, regionIngress - totalDropped)
   return raw.map(a => {
-    const fraction = a.down || totalThroughput <= 0 ? 0 : a.throughput / totalThroughput
-    return { azId: a.azId, down: a.down, fraction, rps: a.down ? 0 : fraction * regionIngress }
+    const servedFraction = a.down || totalThroughput <= 0 ? 0 : a.throughput / totalThroughput
+    const rps = servedFraction * deliveredIngress + a.dropped
+    const fraction = regionIngress > 0 ? rps / regionIngress : 0
+    return { azId: a.azId, down: a.down, fraction, rps, dropped: a.dropped }
   })
 }
 

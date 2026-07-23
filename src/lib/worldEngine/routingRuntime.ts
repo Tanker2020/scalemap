@@ -123,6 +123,12 @@ export interface DistributeInput {
   healthOfInstance: (id: InstanceId) => HealthState
   cursors: RoutingState
   into: Record<InstanceId, number>                                   // accumulator (mutated)
+  // Undeliverable rps, keyed by the AZ that could not serve it (audit follow-up: cross-zone-off
+  // forfeiture used to vanish silently). A real cross-zone-off NLB FAILS the connections routed to
+  // an AZ with no healthy target, so that share is a failure, not a no-op — every drop point below
+  // credits it here. Optional accumulator (mutated), mirroring `into`; absent ⇒ drops go uncounted
+  // (existing callers/tests unchanged).
+  droppedByAz?: Record<AzId, number>
 }
 
 // Distributes `rps` across a target group per the regional LB's cross-zone setting. This is the
@@ -137,10 +143,22 @@ export interface DistributeInput {
 //     totals toward the AZ with more instances.
 export function distributeToTargets(input: DistributeInput): void {
   const { targetBlueprintIds, rps, crossZone, regionAzSpread, azBlueprintTargets,
-    healthOfScope, healthOfInstance, cursors, into } = input
-  if (rps <= 0 || targetBlueprintIds.length === 0) return
+    healthOfScope, healthOfInstance, cursors, into, droppedByAz } = input
+  if (rps <= 0) return
+  // Credit undeliverable `amount` to `azId` (or spread across the region's AZs when the drop isn't
+  // attributable to one AZ — e.g. an empty target group or an all-down region).
+  const drop = (azId: AzId | null, amount: number): void => {
+    if (!droppedByAz || amount <= 0) return
+    if (azId) { droppedByAz[azId] = (droppedByAz[azId] ?? 0) + amount; return }
+    const spread = regionAzSpread.length > 0 ? regionAzSpread : []
+    if (spread.length === 0) return
+    const per = amount / spread.length
+    for (const id of spread) droppedByAz[id] = (droppedByAz[id] ?? 0) + per
+  }
+
+  if (targetBlueprintIds.length === 0) { drop(null, rps); return }
   const healthyAzs = azSplit(regionAzSpread, healthOfScope)
-  if (healthyAzs.length === 0) return
+  if (healthyAzs.length === 0) { drop(null, rps); return }
 
   if (crossZone) {
     const targets: InstanceId[] = []
@@ -152,7 +170,7 @@ export function distributeToTargets(input: DistributeInput): void {
         }
       }
     }
-    if (targets.length === 0) return
+    if (targets.length === 0) { drop(null, rps); return }
     const per = rps / targets.length
     for (const iid of targets) into[iid] = (into[iid] ?? 0) + per
     return
@@ -162,11 +180,15 @@ export function distributeToTargets(input: DistributeInput): void {
   for (const azId of healthyAzs) {
     const byBp = azBlueprintTargets[azId] ?? {}
     const targetsHere = targetBlueprintIds.filter(bpId => (byBp[bpId]?.length ?? 0) > 0)
-    if (targetsHere.length === 0) continue
+    // This AZ's node has no healthy target for the traffic routed to it: cross-zone-off can't
+    // spill to another AZ, so the whole per-AZ share fails here (real NLB connection failures).
+    if (targetsHere.length === 0) { drop(azId, perAz); continue }
     const perBp = perAz / targetsHere.length
     for (const bpId of targetsHere) {
       const inst = pickInstance(cursors, azId, bpId, byBp[bpId], healthOfInstance)
+      // pickInstance returns null only when every instance of the blueprint here is down.
       if (inst) into[inst] = (into[inst] ?? 0) + perBp
+      else drop(azId, perBp)
     }
   }
 }

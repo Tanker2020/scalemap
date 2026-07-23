@@ -37,11 +37,13 @@ export function SplitLines({ shares, height, live }: SplitLinesProps): ReactElem
   const rowY = (i: number) => ((i + 0.5) * height) / Math.max(1, shares.length)
   const midX = (ORIGIN_X + TARGET_X) / 2
 
-  // Rank by fraction (desc) among the up (non-down) shares CARRYING TRAFFIC only — down AZs
-  // never animate, and neither does anything at 0 rps (dash speed = rate, D1: an idle beam
-  // must sit static — user report 2026-07-11 caught the top beam marching pre-simulation).
+  // Rank by fraction (desc) among the up (non-down) shares actually DELIVERING traffic — down AZs
+  // never animate, nor does an idle beam (dash speed = rate, D1: static pre-simulation), nor a beam
+  // whose inbound is (mostly) DROPPED: cross-zone-off forfeited traffic isn't flowing, it's failing,
+  // so it must sit static/red rather than march like healthy ingress.
+  const delivered = (s: AzShare) => Math.max(0, s.rps - s.dropped)
   const animatedAzIds = new Set(
-    [...shares].filter(s => !s.down && s.rps > 0).sort((a, b) => b.fraction - a.fraction).slice(0, MAX_ANIMATED_BEAMS).map(s => s.azId),
+    [...shares].filter(s => !s.down && delivered(s) > 0).sort((a, b) => b.fraction - a.fraction).slice(0, MAX_ANIMATED_BEAMS).map(s => s.azId),
   )
 
   return (
@@ -50,8 +52,11 @@ export function SplitLines({ shares, height, live }: SplitLinesProps): ReactElem
         const y = rowY(i)
         const d = `M${ORIGIN_X},${originY} C${midX - 5},${originY} ${midX},${y} ${TARGET_X},${y}`
         const pct = Math.round(s.fraction * 100)
+        // Majority of this AZ's routed inbound couldn't be served (cross-zone-off forfeiture etc.):
+        // render it as a failure, not healthy flow.
+        const failing = !s.down && s.dropped >= 0.5 && s.dropped >= s.rps * 0.5
         const strokeWidth = s.down ? 1 : 1.5 + 2.5 * s.fraction
-        const stroke = s.down ? 'var(--color-danger)' : TEAL
+        const stroke = s.down || failing ? 'var(--color-danger)' : TEAL
         // Up-beam dash period MUST divide the `dashflow` keyframe's -30 offset delta (seamless-
         // loop law, taskA-brief.md) — '7 8' -> period 15, 30/15 = 2 whole cycles per wrap, so the
         // dash pattern lines back up exactly where it started (no visible snap). The prior '8 9'
@@ -62,8 +67,8 @@ export function SplitLines({ shares, height, live }: SplitLinesProps): ReactElem
         // is a one-character-wider dash rather than a per-beam offset/duration derivation. Down
         // stubs ('2 7', period 9) stay untouched — they never carry `<animate>`, so their period
         // is irrelevant to seamlessness (see file header note).
-        const dash = s.down ? '2 7' : '7 8'
-        const animated = live && !reduced && !s.down && animatedAzIds.has(s.azId)
+        const dash = s.down || failing ? '2 7' : '7 8'
+        const animated = live && !reduced && !s.down && !failing && animatedAzIds.has(s.azId)
         // fraction 0 → slowest (1.3s), fraction 1 → fastest (0.9s) — both endpoints are the
         // mock's own two literal durations (default 0.9s + the explicit 1.3s override).
         const periodSec = (1.3 - 0.4 * s.fraction).toFixed(2)
@@ -72,7 +77,7 @@ export function SplitLines({ shares, height, live }: SplitLinesProps): ReactElem
         const pillY = y - 22
         return (
           <g key={s.azId}>
-            <path d={d} fill="none" stroke={stroke} strokeWidth={strokeWidth} strokeDasharray={dash} opacity={s.down ? 0.5 : 0.75 + 0.1 * s.fraction}>
+            <path d={d} fill="none" stroke={stroke} strokeWidth={strokeWidth} strokeDasharray={dash} opacity={s.down || failing ? 0.5 : 0.75 + 0.1 * s.fraction}>
               {animated && (
                 <animate attributeName="stroke-dashoffset" values="0;-30" dur={`${periodSec}s`} repeatCount="indefinite" />
               )}
@@ -81,8 +86,10 @@ export function SplitLines({ shares, height, live }: SplitLinesProps): ReactElem
               <text x={midX} y={y - 6} fill="var(--color-danger)" fontSize={9}>{pct}%</text>
             ) : (
               <g>
-                <rect className="sharepill" x={pillX} y={pillY} rx={4} width={pillW} height={16} fill={PILL_FILL} stroke={PILL_STROKE} />
-                <text x={pillX + 6} y={pillY + 11} fill="var(--r3-hud)" fontSize={9.5}>{pct}% · {Math.round(s.rps)}</text>
+                <rect className="sharepill" x={pillX} y={pillY} rx={4} width={pillW} height={16} fill={PILL_FILL} stroke={failing ? 'var(--color-danger)' : PILL_STROKE} />
+                <text x={pillX + 6} y={pillY + 11} fill={failing ? 'var(--color-danger)' : 'var(--r3-hud)'} fontSize={9.5}>
+                  {pct}% · {failing ? `✕${Math.round(s.rps)}` : Math.round(s.rps)}
+                </text>
               </g>
             )}
           </g>

@@ -63,6 +63,10 @@ export interface MetricsState {
   window: Map<InstanceId, InstanceWindow>
   serverWindow: Map<ServerId, ServerWindow>
   managedWindow: Map<ManagedServiceId, ManagedWindow>
+  // Undeliverable rps per AZ (cross-zone-off forfeiture etc.): sum of per-step drop RATES over the
+  // window ÷ droppedSteps = mean dropped rps, EMA'd into AzMetrics.droppedRps at buildBatch.
+  droppedWindow: Map<AzId, number>
+  droppedSteps: number
   // Last few batches' latency samples per instance (audit ISSUE-041) — the percentile reservoir.
   latencyHistory: Map<InstanceId, number[][]>
   // EMA-published values, keyed per entity. Missing key = first window seeds directly.
@@ -80,6 +84,8 @@ export function createMetricsState(): MetricsState {
     serverWindow: new Map(),
     managedWindow: new Map(),
     latencyHistory: new Map(),
+    droppedWindow: new Map(),
+    droppedSteps: 0,
     published: new Map(),
     lastHost: {},
     lastVps: {},
@@ -98,7 +104,17 @@ export function accumulateStep(
   // This step's managed-DB failure model (node-model Phase 5.4). Optional: absent ⇒ the new gauges
   // stay 0, so existing callers and tests are unchanged.
   managedRuntime?: ManagedDbRuntime,
+  // This step's undeliverable rps per AZ (cross-zone-off forfeiture etc.). Optional: absent ⇒
+  // droppedRps stays 0.
+  droppedByAz?: Record<AzId, number>,
 ): void {
+  // Per-step drop RATES accumulate into the window; droppedSteps is the divisor for the mean.
+  state.droppedSteps++
+  if (droppedByAz) {
+    for (const [azId, rps] of Object.entries(droppedByAz)) {
+      if (rps > 0) state.droppedWindow.set(azId, (state.droppedWindow.get(azId) ?? 0) + rps)
+    }
+  }
   // Managed-service received traffic THIS step, summed across every caller's downstream rows
   // (a managed service can be a dependency of several instances). Folded into the window below.
   const msAdmitted = new Map<ManagedServiceId, number>()
@@ -298,6 +314,9 @@ export function buildBatch(
         Math.max(1, inAz.reduce((s, i) => s + (instances[i.id].rps || 1), 0))
       : 0
     const health = state.lastHealth(az.id)
+    // Mean undeliverable rps for this AZ (cross-zone-off forfeiture etc.), EMA'd like rps.
+    const droppedRps = ema(state, `az:${az.id}:dropped`,
+      (state.droppedWindow.get(az.id) ?? 0) / Math.max(1, state.droppedSteps))
     azs[az.id] = {
       azId: az.id,
       rps,
@@ -307,6 +326,7 @@ export function buildBatch(
       health,
       serverCount: Object.values(doc.servers).filter(s => s.azId === az.id).length,
       instanceCount: inAz.length,
+      droppedRps,
     }
   }
 
@@ -315,11 +335,22 @@ export function buildBatch(
     const inRegion = Object.values(doc.azs).filter(a => a.regionId === region.id).map(a => azs[a.id])
     const rps = inRegion.reduce((s, a) => s + a.rps, 0)
     const errWeighted = inRegion.reduce((s, a) => s + a.errorRate * a.rps, 0)
-    const errorRate = rps > 0 ? errWeighted / rps : 0
+    const servedErrorRate = rps > 0 ? errWeighted / rps : 0
     const p50 = inRegion.length > 0
       ? inRegion.reduce((s, a) => s + a.p50Ms * (a.rps || 1), 0) / Math.max(1, inRegion.reduce((s, a) => s + (a.rps || 1), 0))
       : 0
-    const health = state.lastHealth(region.id)
+    // Undeliverable inbound (cross-zone-off forfeiture etc.) impairs the region on DISPLAY only.
+    // errorRate reflects the true failing fraction of inbound (served failures + dropped over
+    // served + dropped); healthScore/health downgrade with it — but this NEVER feeds the failover
+    // state machine (index.ts step 9) or routing, so it can't cascade onto or throttle healthy
+    // instances. The failover health is the floor: display only ever downgrades from it.
+    const droppedRps = inRegion.reduce((s, a) => s + (a.droppedRps ?? 0), 0)
+    const inbound = rps + droppedRps
+    const errorRate = inbound > 0 ? (servedErrorRate * rps + droppedRps) / inbound : 0
+    const failoverHealth = state.lastHealth(region.id)
+    const banded: HealthState = errorRate >= 0.5 ? 'down' : errorRate >= 0.1 ? 'degraded' : 'healthy'
+    const health: HealthState =
+      HEALTH_FACTOR[banded] < HEALTH_FACTOR[failoverHealth] ? banded : failoverHealth
     regions[region.id] = {
       regionId: region.id,
       rps,
@@ -330,6 +361,7 @@ export function buildBatch(
       inboundByPopulation: routingSnapshot.populationRoutes
         .filter(r => r.regionId === region.id)
         .map(r => ({ populationId: r.populationId, rps: r.rps })),
+      droppedRps,
     }
   }
 
@@ -399,6 +431,8 @@ export function buildBatch(
   state.window.clear()
   state.serverWindow.clear()
   state.managedWindow.clear()
+  state.droppedWindow.clear()
+  state.droppedSteps = 0
 
   return { simMs, instances, servers, azs, regions, world, managedServices }
 }

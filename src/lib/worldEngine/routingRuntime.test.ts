@@ -55,6 +55,48 @@ describe('distributeToTargets (regional LB distribution)', () => {
     expect(into['i-a0']).toBe(100)      // only az1 healthy → it takes the whole 100
     expect(into['i-b0'] ?? 0).toBe(0)
   })
+
+  // The target service placed in only ONE of the region's AZs, cross-zone off: the other AZ's
+  // per-AZ share can't be served there and is REPORTED as dropped (used to vanish silently).
+  it('cross-zone off reports the empty-AZ per-AZ share as dropped, not silently lost', () => {
+    const into: Record<string, number> = {}
+    const droppedByAz: Record<string, number> = {}
+    // Only az1 hosts the target blueprint; az2 has none.
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 500, crossZone: false,
+      regionAzSpread, azBlueprintTargets: { az1: { bp: ['i-a0'] } },
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into, droppedByAz,
+    })
+    expect(into['i-a0']).toBe(250)       // az1's half is delivered
+    expect(droppedByAz['az2']).toBe(250) // az2's half (no target here) is reported dropped
+    expect(droppedByAz['az1'] ?? 0).toBe(0)
+    // Delivered + dropped accounts for the whole ingress — nothing vanishes.
+    expect((into['i-a0'] ?? 0) + Object.values(droppedByAz).reduce((a, b) => a + b, 0)).toBe(500)
+  })
+
+  it('reports the full rps as dropped when the target group is empty (spread across region AZs)', () => {
+    const droppedByAz: Record<string, number> = {}
+    distributeToTargets({
+      targetBlueprintIds: [], rps: 300, crossZone: false,
+      regionAzSpread, azBlueprintTargets, healthOfScope: healthy, healthOfInstance: healthy,
+      cursors: createRoutingState(), into: {}, droppedByAz,
+    })
+    expect(Object.values(droppedByAz).reduce((a, b) => a + b, 0)).toBeCloseTo(300, 6)
+  })
+
+  // A placed instance that is DOWN is also an undeliverable share (real NLB connection failures).
+  it('cross-zone off reports a per-blueprint share dropped when its only instance here is down', () => {
+    const into: Record<string, number> = {}
+    const droppedByAz: Record<string, number> = {}
+    const instHealth = (id: string) => (id === 'i-a0' ? 'down' : 'healthy') as HealthState
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 100, crossZone: false,
+      regionAzSpread: ['az1'], azBlueprintTargets: { az1: { bp: ['i-a0'] } },
+      healthOfScope: healthy, healthOfInstance: instHealth, cursors: createRoutingState(), into, droppedByAz,
+    })
+    expect(into['i-a0'] ?? 0).toBe(0)
+    expect(droppedByAz['az1']).toBe(100)
+  })
 })
 
 describe('resolveRegion', () => {
