@@ -29,7 +29,14 @@ export function InspectorV2({ azId }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   useEffect(() => {
-    const poll = () => setTraces(useSimulationStore.getState().getTracedRequests({ level: 'az', azId }))
+    // getTracedRequests returns a FRESH array each call; short-circuit to the previous state
+    // when the trace ids are unchanged (audit ISSUE-055) — otherwise the new reference forced a
+    // steady 1 Hz re-render of the overlay even with no new traces.
+    const poll = () => setTraces(prev => {
+      const next = useSimulationStore.getState().getTracedRequests({ level: 'az', azId })
+      const unchanged = next.length === prev.length && next.every((t, i) => t.id === prev[i].id)
+      return unchanged ? prev : next
+    })
     poll()
     const id = setInterval(poll, 1000)
     return () => clearInterval(id)

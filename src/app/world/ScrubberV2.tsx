@@ -23,6 +23,7 @@ export function ScrubberV2() {
   const paused = useSimulationStore(s => s.paused)
   const latestBatch = useSimulationStore(s => s.latestBatch)
   const scrubIndex = useSimulationStore(s => s.scrubIndex)
+  const scrubBatch = useSimulationStore(s => s.scrubBatch)
   const setScrubIndex = useSimulationStore(s => s.setScrubIndex)
   const [frames, setFrames] = useState<ReplayFrame[]>([])
   const reduced = useReducedMotion()
@@ -42,10 +43,12 @@ export function ScrubberV2() {
   // that distinguishes "just stopped/paused, scrub away" from "discarded world, stale ring".
   if (!halted || frames.length === 0 || latestBatch === null) return null
 
+  // Resolve against the SAME captured array the ticks render (audit ISSUE-052): index, batch
+  // and label all derive from `frames`, so a late final ring frame can't desync them.
   const pick = (clientX: number, target: HTMLDivElement) => {
     const rect = target.getBoundingClientRect()
     const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
-    setScrubIndex(Math.min(frames.length - 1, Math.floor(ratio * frames.length)))
+    setScrubIndex(Math.min(frames.length - 1, Math.floor(ratio * frames.length)), frames)
   }
 
   return (
@@ -78,7 +81,9 @@ export function ScrubberV2() {
           />
         ))}
       </div>
-      <span>{scrubIndex == null ? 'live' : `${(frames[scrubIndex].simMs / 1000).toFixed(1)}s`}</span>
+      {/* Label from the RESOLVED batch (audit ISSUE-052), never frames[scrubIndex] — the store
+          clamps a stale index to null, so this can't deref undefined. */}
+      <span>{scrubIndex == null || scrubBatch == null ? 'live' : `${(scrubBatch.simMs / 1000).toFixed(1)}s`}</span>
       {scrubIndex != null && (
         <button
           style={{

@@ -58,6 +58,57 @@ function stopEventFlusher(): void {
   flushEventLog()   // final drain so a run's last second of events isn't dropped
 }
 
+// ── Presentation-window micro-batching (audit ISSUE-053) ────────────────────────────────────
+// The engine emits every event of a step synchronously inside one task; applying each with its
+// own `set` copied the ≤500-entry window per event (O(events × window) during a failover burst)
+// and re-rendered subscribers per event. Buffer them and apply the whole task's burst in ONE
+// setState on the following microtask — before paint, so nothing is visually delayed. The
+// generation counter aborts a flush that outlives its session (start/resetSession cleared the
+// window the buffered events belonged to).
+let eventBuffer: EngineEvent[] = []
+let eventFlushScheduled = false
+let eventGen = 0
+
+function applyEventBuffer(gen: number): void {
+  eventFlushScheduled = false
+  if (gen !== eventGen) { eventBuffer = []; return }
+  if (eventBuffer.length === 0) return
+  const batch = eventBuffer
+  eventBuffer = []
+  useSimulationStore.setState((s) => {
+    const merged = [...s.events, ...batch]
+    const events = merged.length > EVENT_WINDOW ? merged.slice(merged.length - EVENT_WINDOW) : merged
+    let degraded = s.degraded
+    // A multi-AZ managed DB clears its OWN outage inside the engine once its standby promotes
+    // (node-model Phase 5.4, failover.ts's recoverMultiAzManagedDbs). healthOverrides is the
+    // UI's copy of that kill switch — without this the DB serves traffic again while the dock
+    // still renders it "down" and offers a restore button for something already restored.
+    let overrides: Record<string, boolean> | null = null
+    for (const event of batch) {
+      if (event.kind === 'engine_degraded') degraded = true
+      if (event.kind === 'replica_promoted') {
+        const src: Record<string, boolean> = overrides ?? s.healthOverrides
+        const recovered = event.affected.filter(id => src[id])
+        if (recovered.length > 0) {
+          const next: Record<string, boolean> = { ...src }
+          for (const id of recovered) delete next[id]
+          overrides = next
+        }
+      }
+    }
+    return { events, degraded, ...(overrides ? { healthOverrides: overrides } : {}) }
+  })
+}
+
+function bufferEvent(event: EngineEvent): void {
+  eventBuffer.push(event)
+  if (!eventFlushScheduled) {
+    eventFlushScheduled = true
+    const gen = eventGen
+    queueMicrotask(() => applyEventBuffer(gen))
+  }
+}
+
 interface SimulationStoreV2 {
   running: boolean
   // A run that is active but frozen: the engine has halted ticking (no new frames/events), yet the
@@ -88,7 +139,10 @@ interface SimulationStoreV2 {
   resetSession: () => void
   setTimeScale: (scale: number) => void
   setOutage: (scope: 'server' | 'az' | 'region' | 'managed', id: string, down: boolean) => void
-  setScrubIndex: (i: number | null) => void
+  // `frames` (audit ISSUE-052): the caller's OWN captured frame array, so the resolved batch
+  // matches what the caller displays — re-reading the live ring here could disagree with the
+  // scrubber's snapshot when a late final frame lands between capture and click.
+  setScrubIndex: (i: number | null, frames?: ReplayFrame[]) => void
   attachRenderer: (scope: RenderScope, onFrame: (p: FramePayload) => void) => DetachFn
   getReplayFrames: () => ReplayFrame[]
   getTracedRequests: (scope: RenderScope) => TracedRequest[]
@@ -114,12 +168,18 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
   eventLogTotal: 0,
 
   start: (doc, compiled) => {
+    // Re-entry guard (audit ISSUE-048): a second start() while running would overwrite engine
+    // state under the previous run's in-flight rAF chain — two chains advancing one state,
+    // double sim speed until stop. The engine start() also defensively cancels a live rafId.
+    if (get().running) return
     set({
       running: true, paused: false, latestBatch: null, events: [], degraded: false, scrubIndex: null,
       scrubBatch: null, eventLogRunId: null, eventLogTotal: 0,
     })
     pendingEvents = []
     spillBroken = false
+    eventGen++            // orphan any un-flushed event buffer from a previous session (ISSUE-053)
+    eventBuffer = []
     // Action-time read only (no subscription): the run row wants a human-readable label.
     eventLogBeginRun(useFileStore.getState().fileName ?? 'untitled')
       .then(runId => {
@@ -136,23 +196,8 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
       onMetrics: (batch) => set({ latestBatch: batch }),
       onEvent: (event) => {
         if (!spillBroken) pendingEvents.push(event)
-        set((s) => {
-          const next = s.events.length >= EVENT_WINDOW ? [...s.events.slice(s.events.length - EVENT_WINDOW + 1), event] : [...s.events, event]
-          if (event.kind === 'engine_degraded') return { events: next, degraded: true }
-          // A multi-AZ managed DB clears its OWN outage inside the engine once its standby promotes
-          // (node-model Phase 5.4, failover.ts's recoverMultiAzManagedDbs). healthOverrides is the
-          // UI's copy of that kill switch — without this the DB serves traffic again while the dock
-          // still renders it "down" and offers a restore button for something already restored.
-          if (event.kind === 'replica_promoted') {
-            const recovered = event.affected.filter(id => s.healthOverrides[id])
-            if (recovered.length > 0) {
-              const overrides = { ...s.healthOverrides }
-              for (const id of recovered) delete overrides[id]
-              return { events: next, healthOverrides: overrides }
-            }
-          }
-          return { events: next }
-        })
+        // One setState per synchronous burst, applied on the next microtask (audit ISSUE-053).
+        bufferEvent(event)
       },
       onHealthChange: () => {},
     })
@@ -189,6 +234,8 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
   resetSession: () => {
     worldEngine.stop()
     stopEventFlusher()
+    eventGen++            // buffered events belong to the discarded session (ISSUE-053)
+    eventBuffer = []
     set({
       running: false, paused: false, latestBatch: null, events: [], scrubIndex: null, scrubBatch: null,
       degraded: false, healthOverrides: {}, eventLogRunId: null, eventLogTotal: 0,
@@ -202,9 +249,9 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
     worldEngine.setOutage(scope, id, down)
     set((s) => ({ healthOverrides: { ...s.healthOverrides, [id]: down } }))
   },
-  setScrubIndex: (i) => {
-    const frames = worldEngine.getReplayFrames()
-    set({ scrubIndex: i, scrubBatch: i === null ? null : frames[i]?.batch ?? null })
+  setScrubIndex: (i, frames) => {
+    const resolved = frames ?? worldEngine.getReplayFrames()
+    set({ scrubIndex: i, scrubBatch: i === null ? null : resolved[i]?.batch ?? null })
   },
   attachRenderer: (scope, onFrame) => worldEngine.attachRenderer(scope, onFrame),
   getReplayFrames: () => worldEngine.getReplayFrames(),

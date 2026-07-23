@@ -908,6 +908,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
 
   const api: WorldEngineApi & { __test_step: (steps?: number) => void; __test_render: (wallMs?: number) => void } = {
     start(doc, compiled, callbacks) {
+      // Defense against double-start (audit ISSUE-048): cancel any live rAF chain BEFORE the
+      // state swap — otherwise the old chain reads the module-level `state`, sees the new run's
+      // running=true, and keeps scheduling: two chains advancing one state at double speed.
+      if (state?.rafId != null && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(state.rafId)
+      }
       state = {
         running: true, seed, rng: createRng(seed), clock: createClock(DEFAULT_STEP_MS), stepMs: DEFAULT_STEP_MS,
         timeScale: 1, doc, compiled, callbacks, entryBlueprintIds: new Set(entryBlueprints(doc)),
