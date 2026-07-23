@@ -62,7 +62,6 @@ export function AzRow({
   const compiled = useCompiledWorld()
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const running = useSimulationStore(s => s.running)
-  const events = useSimulationStore(s => s.events)
   const isManuallyDown = useSimulationStore(s => s.healthOverrides[azId] ?? false)
   const healthOverrides = useSimulationStore(s => s.healthOverrides)
   const setOutage = useSimulationStore(s => s.setOutage)
@@ -83,10 +82,15 @@ export function AzRow({
   const dbByServerId = useMemo(() => new Map(dbEndpoints.map(e => [e.serverId, e.role])), [dbEndpoints])
 
   const residentInstanceIds = useMemo(() => new Set(residentInstances.map(i => i.id)), [residentInstances])
-  const batchSimMs = batch?.simMs
-  const promoting = useMemo(() => batchSimMs != null && events.some(e =>
-    e.kind === 'replica_promoted' && e.simMs > batchSimMs - PROMOTE_WINDOW_MS && e.simMs <= batchSimMs &&
-    e.affected.some(id => residentInstanceIds.has(id))), [batchSimMs, events, residentInstanceIds])
+  // Targeted selector (audit ISSUE-058): the whole-events subscription re-rendered EVERY AzRow
+  // on every event. Deriving the boolean inside the selector keeps unrelated events from
+  // re-rendering this row (primitive equality).
+  const promoting = useSimulationStore(s => {
+    const simMs = (s.scrubBatch ?? s.latestBatch)?.simMs
+    return simMs != null && s.events.some(e =>
+      e.kind === 'replica_promoted' && e.simMs > simMs - PROMOTE_WINDOW_MS && e.simMs <= simMs &&
+      e.affected.some(id => residentInstanceIds.has(id)))
+  })
 
   const rpsByServer = useMemo(() => {
     const byServer = instancesByServerFor(compiled)

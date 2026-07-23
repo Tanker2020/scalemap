@@ -219,7 +219,9 @@ describe('TimelineV2', () => {
     render(<TimelineV2 regionId={region.id} />)
     const marker = screen.getAllByTestId('tl-marker').find(m => m.getAttribute('data-cls') === 'shift')!
     fireEvent.click(marker)
-    expect(setScrubIndexSpy).toHaveBeenCalledWith(1)   // frame simMs=5000 is nearest to event simMs=5200
+    // Frame simMs=5000 is nearest to event simMs=5200; the frames snapshot rides along so the
+    // store resolves the batch from the SAME array the bands were drawn from (audit ISSUE-052/057).
+    expect(setScrubIndexSpy).toHaveBeenCalledWith(1, frames)
   })
 
   it('clicks inert while running, with the running-disabled title (carried from TimelineStrip)', () => {

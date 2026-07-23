@@ -74,22 +74,32 @@ interface PinProps { regionId: RegionId; catalogId: string; lat: number; lon: nu
 
 function RegionPin({ regionId, catalogId, lat, lon }: PinProps): ReactElement {
   const goRegion = useNavStore(s => s.goRegion)
-  const health = useSimulationStore(s => {
+  // Split subscriptions (audit ISSUE-051): the old selector called useWorldStore.getState()
+  // INSIDE a simulation-store selector — Zustand only re-evaluates on sim-store changes, so an
+  // AZ add/remove without a sim update left the pin's derived health stale; and it filtered
+  // ALL doc.azs per sim update per pin. The region's AZ-id set now comes from its OWN world
+  // subscription (a joined-string primitive: default equality, recomputed only on doc change),
+  // and the sim selector scans just this region's AZs.
+  const batchHealth = useSimulationStore(s =>
+    (s.scrubBatch ?? s.latestBatch)?.regions[regionId]?.health ?? 'healthy')
+  const azIdsKey = useWorldStore(s =>
+    Object.values(s.doc.azs).filter(a => a.regionId === regionId).map(a => a.id).join('|'))
+  const allAzsDown = useSimulationStore(s => {
     const batch = s.scrubBatch ?? s.latestBatch
-    const h = batch?.regions[regionId]?.health ?? 'healthy'
-    if (!batch || h === 'down') return h
+    if (!batch || azIdsKey === '') return false
     // View-side aggregation (the engine's contracts are frozen): a region whose EVERY AZ is
     // down IS down to the viewer — the engine's own region health can miss the
     // all-AZs-manually-killed case (user report 2026-07-11: killing every AZ left the globe
-    // pin green). Selector returns a primitive, so the getState() read here is safe.
-    const azs = Object.values(useWorldStore.getState().doc.azs).filter(a => a.regionId === regionId)
-    const allDown = azs.length > 0 && azs.every(a => batch.azs[a.id]?.health === 'down')
-    return allDown ? 'down' : h
+    // pin green).
+    return azIdsKey.split('|').every(id => batch.azs[id]?.health === 'down')
   })
-  const events = useSimulationStore(s => s.events)
-  const simMs = useSimulationStore(s => (s.scrubBatch ?? s.latestBatch)?.simMs ?? 0)
+  const health: HealthState = batchHealth === 'down' || allAzsDown ? 'down' : batchHealth
   const reduced = useReducedMotion() ?? false
-  const pulsing = !reduced && isPulsing(events, regionId, simMs)
+  // Targeted selector (audit ISSUE-058): subscribing to the whole `events` array re-rendered
+  // every pin on EVERY event. Deriving the boolean inside the selector means an event that
+  // doesn't change THIS pin's pulse state doesn't re-render it (primitive equality).
+  const pulsing = useSimulationStore(s =>
+    !reduced && isPulsing(s.events, regionId, (s.scrubBatch ?? s.latestBatch)?.simMs ?? 0))
   const sceneOverlay = useUiStore(s => s.sceneOverlay)
   const setSceneOverlay = useUiStore(s => s.setSceneOverlay)
   const overlayOpen = sceneOverlay?.kind === 'region' && sceneOverlay.id === regionId

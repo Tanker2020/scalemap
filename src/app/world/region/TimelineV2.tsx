@@ -14,6 +14,7 @@
 // rides the app's existing blanket prefers-reduced-motion override (src/index.css) — the same
 // precedent that file's own `.region-timeline-flash` comment documents, so no separate
 // useReducedMotion() call is needed here for this one CSS-only transition.
+import { useMemo } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
@@ -98,12 +99,14 @@ export function TimelineV2({ regionId }: TimelineV2Props): ReactElement | null {
   const running = useSimulationStore(s => s.running)
   const events = useSimulationStore(s => s.events)
   const setScrubIndex = useSimulationStore(s => s.setScrubIndex)
-  // Non-reactive getter, re-read fresh every render — the same imperative access TimelineStrip
-  // used, but read at render time (not just inside the click handler) since bands/markers need
-  // the frame history to draw, not only to scrub to it. `batch`/`events` above already give
-  // this component a subscribed 1Hz re-render cadence while running, so the frame data this
-  // pulls stays effectively live without a second subscription.
-  const frames = useSimulationStore.getState().getReplayFrames()
+  // Non-reactive getter memoized on the batch tick (audit ISSUE-057): the ring only grows at
+  // 1 Hz, but this used to copy all ≤300 frames on EVERY render (each a fresh array from the
+  // engine). `batch`/`events` above already give this component a subscribed 1 Hz re-render
+  // cadence while running, so the frame data stays effectively live without a second
+  // subscription; memoizing on the batch's simMs re-reads exactly when the ring can have grown.
+  const batchSimMs = batch?.simMs ?? 0
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- getReplayFrames is non-reactive; batchSimMs IS its change signal
+  const frames = useMemo(() => useSimulationStore.getState().getReplayFrames(), [batchSimMs])
 
   const endMs = batch?.simMs ?? 0
   // buildLanes' own frame/event-FILTERING window start is clamped to 0 (it must never admit
@@ -115,10 +118,16 @@ export function TimelineV2({ regionId }: TimelineV2Props): ReactElement | null {
   // at 100%) — the "shorter runs left-pad from t=0" behavior buildLanes' own doc comment
   // describes as living in the view, not the model.
   const viewOrigin = endMs - TIMELINE_WINDOW_MS
-  const lanes = buildLanes(regionId, doc, compiled, events, frames, endMs)
+  // Memoized on real inputs (audit ISSUE-057): buildLanes reprocessed the full ring on every
+  // re-render; now once per second (or doc/compile change), not per render.
+  const lanes = useMemo(
+    () => buildLanes(regionId, doc, compiled, events, frames, endMs),
+    [regionId, doc, compiled, events, frames, endMs])
+  const chainInfo = useMemo(
+    () => narration(regionId, doc, compiled, events),
+    [regionId, doc, compiled, events])
   if (lanes.length === 0) return null
 
-  const chainInfo = narration(regionId, doc, compiled, events)
   const chain = chainInfo?.chain ?? []
   const links = chainInfo ? causalLinks(lanes, chain) : []
 
@@ -131,15 +140,16 @@ export function TimelineV2({ regionId }: TimelineV2Props): ReactElement | null {
   // simMs-distance scrub, inert while running.
   const onMarkerClick = (event: EngineEvent) => {
     if (running) return
-    const replayFrames = useSimulationStore.getState().getReplayFrames()
-    if (replayFrames.length === 0) return
+    // Reuses the memoized frames the bands were drawn from (audit ISSUE-057) and passes them
+    // through so the resolved scrub batch matches this exact snapshot (audit ISSUE-052).
+    if (frames.length === 0) return
     let nearest = 0
     let best = Infinity
-    replayFrames.forEach((f, i) => {
+    frames.forEach((f, i) => {
       const d = Math.abs(f.simMs - event.simMs)
       if (d < best) { best = d; nearest = i }
     })
-    setScrubIndex(nearest)
+    setScrubIndex(nearest, frames)
   }
 
   // Cross-lane consecutive chain-step arrows (D8: dotted, static, arrowhead). Geometry is

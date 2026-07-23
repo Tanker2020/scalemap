@@ -15,7 +15,10 @@ import { useReducedMotion } from 'framer-motion'
 import * as THREE from 'three'
 import { useSimulationStore } from '../../store/simulation.store'
 import { greatCirclePoints } from './geo'
-import { MAX_GLOBE_ARCS } from '../../../lib/worldEngine'
+// From types.ts, NOT the engine facade (audit ISSUE-050): importing the value from
+// lib/worldEngine pulled index.ts — which constructs the worldEngine singleton at module
+// load — into the globe view's import graph for one shared render-cap constant.
+import { MAX_GLOBE_ARCS } from '../../../lib/worldEngine/types'
 import type { VisualArc, FramePayload } from '../../../lib/worldEngine/types'
 
 const ARC_SEGMENTS = 48
@@ -35,6 +38,22 @@ export function arcsSignature(arcs: VisualArc[]): string {
   return arcs.map(a => `${a.kind}:${a.fromLatLon}:${a.toLatLon}`).join('|')
 }
 
+// Zero-allocation change detection (audit ISSUE-056): same order-sensitive identity as
+// arcsSignature, but as direct element comparisons — the joined string allocated ~200 short
+// strings EVERY rAF frame even when nothing changed. `intensity` is deliberately excluded
+// (like the signature): it updates per frame without a geometry rebuild.
+export function arcsEqual(a: VisualArc[], b: VisualArc[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]
+    const y = b[i]
+    if (x.kind !== y.kind ||
+        x.fromLatLon[0] !== y.fromLatLon[0] || x.fromLatLon[1] !== y.fromLatLon[1] ||
+        x.toLatLon[0] !== y.toLatLon[0] || x.toLatLon[1] !== y.toLatLon[1]) return false
+  }
+  return true
+}
+
 interface PoolEntry {
   line: THREE.Line
   material: THREE.LineDashedMaterial
@@ -45,8 +64,17 @@ interface PoolEntry {
   // simulated by adding a per-entry phase to a cached copy of the rebuild-time distances and
   // rewriting the `lineDistance` attribute's typed array IN PLACE every frame (no new
   // allocation — same array reference, values mutated). baseDistances is captured once per
-  // geometry rebuild (signature change), not per frame.
+  // geometry rebuild (arc-set change), not per frame.
+  // (Audit ISSUE-056 considered a shader-driven phase uniform via onBeforeCompile to drop the
+  // CPU rewrite + per-arc GPU re-upload entirely; deliberately NOT taken — this path has no
+  // automated visual gate, and patching the linedashed shader unverified trades a bounded,
+  // known-correct 48-float write for silent-breakage risk.)
   baseDistances: Float32Array | null
+  // Typed handle to the geometry's lineDistance attribute, captured at rebuild (audit
+  // ISSUE-054): the frame loop writes through THIS instead of re-fetching with an `as` cast —
+  // getAttribute can legally return an InterleavedBufferAttribute, and the cast would silently
+  // misbehave if geometry construction ever changed. Null when the runtime check fails.
+  distAttr: THREE.BufferAttribute | null
   phase: number
 }
 
@@ -54,7 +82,7 @@ export function ArcsLayer(): ReactElement {
   const groupRef = useRef<THREE.Group>(null)
   const poolRef = useRef<PoolEntry[]>([])
   const latestArcsRef = useRef<VisualArc[]>([])
-  const lastSignatureRef = useRef<string>('')
+  const lastArcsRef = useRef<VisualArc[]>([])   // the arc set the pool geometry was last built for
   const running = useSimulationStore(s => s.running)
   const reduced = useReducedMotion() ?? false
 
@@ -72,7 +100,7 @@ export function ArcsLayer(): ReactElement {
       line.visible = false
       line.frustumCulled = false
       group.add(line)
-      pool.push({ line, material, geometry, baseDistances: null, phase: 0 })
+      pool.push({ line, material, geometry, baseDistances: null, distAttr: null, phase: 0 })
     }
     poolRef.current = pool
     return () => {
@@ -102,14 +130,12 @@ export function ArcsLayer(): ReactElement {
     const pool = poolRef.current
     if (pool.length === 0) return
     const arcs = latestArcsRef.current
-    // The one per-frame allocation this file makes — mandated by the skeleton's exact
-    // signature algorithm, bounded by MAX_GLOBE_ARCS (≤200 short strings), cheap relative to
-    // the WebGL frame budget. Every other per-frame write below touches only refs/material
-    // props, no allocations.
-    const signature = arcsSignature(arcs)
-
-    if (signature !== lastSignatureRef.current) {
-      lastSignatureRef.current = signature
+    // Zero-allocation change detection (audit ISSUE-056): direct element comparison against
+    // the last-built arc set — the old per-frame arcsSignature join allocated ~200 short
+    // strings every rAF even in steady state. Every per-frame write below touches only
+    // refs/material props, no allocations.
+    if (!arcsEqual(arcs, lastArcsRef.current)) {
+      lastArcsRef.current = arcs
       for (let i = 0; i < pool.length; i++) {
         const entry = pool[i]
         const arc = arcs[i]
@@ -120,30 +146,35 @@ export function ArcsLayer(): ReactElement {
           ARC_RADIUS, ARC_SEGMENTS)
         entry.geometry.setFromPoints(points)
         entry.line.computeLineDistances()
-        // One-time-per-rebuild copy (not steady-state) — the mutable base the per-frame flow
-        // loop below adds its phase onto.
-        const distAttr = entry.geometry.getAttribute('lineDistance') as THREE.BufferAttribute
-        entry.baseDistances = Float32Array.from(distAttr.array as Float32Array)
+        // One-time-per-rebuild capture (not steady-state): a RUNTIME-checked typed handle to
+        // the attribute (audit ISSUE-054) + the mutable base the flow loop adds its phase onto.
+        const distAttr = entry.geometry.getAttribute('lineDistance')
+        if (distAttr instanceof THREE.BufferAttribute && distAttr.array instanceof Float32Array) {
+          entry.distAttr = distAttr
+          entry.baseDistances = Float32Array.from(distAttr.array)
+        } else {
+          entry.distAttr = null
+          entry.baseDistances = null
+        }
         entry.phase = 0
         entry.material.color.set(ARC_COLOR[arc.kind])
         entry.line.visible = true
       }
     }
 
-    // Per-frame updates independent of signature: opacity tracks intensity, dash pattern flows
-    // (skipped under reduced motion — dashes render static).
+    // Per-frame updates independent of the arc set: opacity tracks intensity, dash pattern
+    // flows (skipped under reduced motion — dashes render static).
     for (let i = 0; i < arcs.length && i < pool.length; i++) {
       const entry = pool[i]
       const arc = arcs[i]
       entry.material.opacity = 0.25 + 0.75 * arc.intensity
-      if (!reduced && entry.baseDistances) {
+      if (!reduced && entry.baseDistances && entry.distAttr) {
         const period = DASH_SIZE + GAP_SIZE
         entry.phase = ((entry.phase - delta * DASH_SPEED) % period + period) % period
-        const distAttr = entry.geometry.getAttribute('lineDistance') as THREE.BufferAttribute
-        const arr = distAttr.array as Float32Array
+        const arr = entry.distAttr.array as Float32Array   // established Float32 at capture
         const base = entry.baseDistances
         for (let j = 0; j < arr.length; j++) arr[j] = base[j] + entry.phase
-        distAttr.needsUpdate = true
+        entry.distAttr.needsUpdate = true
       }
     }
   })

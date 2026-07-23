@@ -194,6 +194,11 @@ export interface FramePayload {
   arcs: VisualArc[]              // globe scope only, else []
 }
 
+// Render cap on globe arcs — part of the render-payload contract (additive, audit ISSUE-050:
+// it lives HERE, not in index.ts, so view code sizing its arc pool doesn't pull the engine
+// singleton module into its import graph just for a shared constant).
+export const MAX_GLOBE_ARCS = 200
+
 export type DetachFn = () => void
 
 // ─── Control API (the engine facade's exported surface) ─────────────────────

@@ -7,6 +7,7 @@ import type {
   WorldEngineApi, EngineCallbacks, EngineEvent, EngineEventKind, HealthState,
   RenderScope, FramePayload, VisualParticle, VisualArc,
 } from './types'
+import { MAX_GLOBE_ARCS } from './types'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
   ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole,
@@ -48,7 +49,9 @@ const DEFAULT_STEP_MS = 100
 const OOM_RESTART_MS = 5000                 // spec decision 3: instance_restarted after 5s
 const PARTICLE_RATIO = 10                    // rps per sampled AZ particle (skeleton T12)
 const MAX_AZ_PARTICLES = 400                 // az render cap (contracts "≤ current particle cap")
-export const MAX_GLOBE_ARCS = 200
+// Relocated to types.ts (audit ISSUE-050) so the globe view can import the render cap without
+// pulling the engine singleton into its bundle graph; re-exported for API stability.
+export { MAX_GLOBE_ARCS }
 const MAX_SERVER_PARTICLES = 50              // server render cap (contracts: server ≤ 50 traces)
 const REFUSED_EVENT_MIN_GAP_MS = 1000        // ≤1 connection_refused per pathKey per second
 const MIN_HEALTH_SIGNAL_RPS = 0.5            // below this offered rps, errorRate carries no signal
