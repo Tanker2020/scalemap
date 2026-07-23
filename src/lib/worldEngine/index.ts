@@ -106,7 +106,10 @@ interface EngineState {
   doc: WorldDoc
   compiled: CompiledWorld
   callbacks: EngineCallbacks
-  entryBlueprintIds: BlueprintId[]           // blueprints with a 'public' port = client entry points
+  // Blueprints with a 'public' port = client entry points. A Set, not an array (audit
+  // ISSUE-078): the particle builders membership-test this per flow per rAF frame (~60 Hz),
+  // where Array.includes' O(k) scan multiplies against the hottest loop in the engine.
+  entryBlueprintIds: Set<BlueprintId>
   routePathById: Map<string, string>         // routeId → route path, for L7 listener-rule matching
 
   // Static topology indexes built once at start() (audit ISSUE-032): the per-step health
@@ -115,6 +118,9 @@ interface EngineState {
   // against. The doc is frozen for the run, so these can never go stale.
   serversByAz: Map<AzId, Server[]>
   azsByRegion: Map<RegionId, AvailabilityZone[]>
+  // Compiled instances grouped by server, built once at start() (audit ISSUE-076): compiled
+  // is frozen for the run, so rebuilding this O(instances) Map every step was pure waste.
+  instancesByServer: Map<ServerId, ServiceInstance[]>
   // Permitted instance→instance downstream adjacency (audit ISSUE-014), built once at start():
   // the 1 Hz starved-detection BFS walks it from the down set to find instances that are silent
   // because an UPSTREAM died, not because the world is idle.
@@ -365,7 +371,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const vpsPublish: Record<ServerId, VpsPublish> = {}
     const nicByServer: Record<ServerId, NicState> = {}
 
-    const instancesByServer = groupInstancesByServer(compiled)
+    const instancesByServer = s.instancesByServer
     const serviceRateByInstance: Record<InstanceId, number> = {}
     for (const server of Object.values(doc.servers)) {
       const resident = instancesByServer.get(server.id) ?? []
@@ -427,7 +433,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
 
       const vpsState = s.vpsStates.get(server.id) ?? null
       if (vpsState) {
-        const vps = stepVps(vpsState, server, Math.min(1, host.cpuPressure), stepMs, s.rng)
+        // Unclamped pressure (audit ISSUE-034): the drain term scales with utilization above
+        // baseline, so clamping to 1 made a 5x-hammered burstable VM burn credits no faster
+        // than one at exactly-full load. stepVps only reads utilization for drain (accrual is
+        // continuous, the steal walk never sees it), so >1 values are safe there.
+        const vps = stepVps(vpsState, server, host.cpuPressure, stepMs, s.rng)
         s.vpsFactor.set(server.id, vps.effectiveVcpuFactor)
         vpsPublish[server.id] = { steal: vps.steal, effectiveVcpuFactor: vps.effectiveVcpuFactor, creditsFraction: vps.creditsFraction }
         if (vps.noisySpikeStarted) emit('noisy_neighbor', 'warning', `noisy-neighbor steal spike on ${server.label}`, [server.id], simMs)
@@ -798,7 +808,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const from = s.compiled.instances[f.instanceId]
       if (!from || from.azId !== azId) continue
       const bp = s.doc.blueprints[from.blueprintId]
-      const isEntry = s.entryBlueprintIds.includes(from.blueprintId)
+      const isEntry = s.entryBlueprintIds.has(from.blueprintId)
       // entry ingress particles from the client edge
       if (isEntry && f.offeredRps > 0) {
         const n = Math.min(MAX_AZ_PARTICLES, Math.round((f.offeredRps / PARTICLE_RATIO) * drain))
@@ -831,7 +841,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const from = s.compiled.instances[f.instanceId]
       if (!from || from.serverId !== serverId) continue
       const fromBp = s.doc.blueprints[from.blueprintId]
-      const isEntry = s.entryBlueprintIds.includes(from.blueprintId)
+      const isEntry = s.entryBlueprintIds.has(from.blueprintId)
       // inbound entry: nic -> receiving instance; colorHint = the receiving service's hue
       if (isEntry && f.offeredRps > 0) {
         const n = Math.min(MAX_SERVER_PARTICLES, Math.round(f.offeredRps / PARTICLE_RATIO))
@@ -874,10 +884,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     start(doc, compiled, callbacks) {
       state = {
         running: true, seed, rng: createRng(seed), clock: createClock(DEFAULT_STEP_MS), stepMs: DEFAULT_STEP_MS,
-        timeScale: 1, doc, compiled, callbacks, entryBlueprintIds: entryBlueprints(doc),
+        timeScale: 1, doc, compiled, callbacks, entryBlueprintIds: new Set(entryBlueprints(doc)),
         routePathById: buildRoutePathById(doc),
         serversByAz: groupBy(Object.values(doc.servers), sv => sv.azId),
         azsByRegion: groupBy(Object.values(doc.azs), az => az.regionId),
+        instancesByServer: groupInstancesByServer(compiled),
         downstreamAdj: buildDownstreamAdj(compiled),
         routing: createRoutingState(), failover: createFailoverState(),
         demandStates: new Map(),
