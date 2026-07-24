@@ -14,13 +14,10 @@ const frames: ReplayFrame[] = [{ simMs: 1000, batch: batch(1000), events: [] }]
 beforeEach(() => useSimulationStore.setState({ running: false, paused: false, latestBatch: null, scrubIndex: null, scrubBatch: null }))
 
 describe('ScrubberV2 session gate', () => {
-  it('shown after a normal stop (frames + latestBatch)', () => {
-    useSimulationStore.setState({ latestBatch: batch(1000), getReplayFrames: () => frames })
-    render(<ScrubberV2 />)
-    expect(screen.getByLabelText('replay-scrubber')).toBeInTheDocument()
-  })
-  it('hidden after a doc swap even when the engine still holds frames', () => {
-    useSimulationStore.setState({ latestBatch: null, getReplayFrames: () => frames })
+  it('hidden after End / doc swap — a cleared latestBatch hides it even while the engine holds frames', () => {
+    // End (stop) and New/Open (resetSession) both clear latestBatch (erase-on-end); scrubbing a
+    // finished run is gone — it is now pause-only (see the PAUSED case below).
+    useSimulationStore.setState({ running: false, paused: false, latestBatch: null, getReplayFrames: () => frames })
     render(<ScrubberV2 />)
     expect(screen.queryByLabelText('replay-scrubber')).not.toBeInTheDocument()
   })

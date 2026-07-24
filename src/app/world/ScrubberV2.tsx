@@ -1,7 +1,9 @@
 // src/app/world/ScrubberV2.tsx
-// Bottom-bar playback scrubber. Shown once replay frames exist and the sim is NOT live — i.e.
-// stopped OR paused (the engine's replay ring survives both, since pause/stop only halt ticking).
-// (contracts: replay is a 1Hz, 300-frame ring — "scrubbing any level reads one frame".)
+// Bottom-bar playback scrubber. Shown once replay frames exist and the sim is halted-but-alive —
+// i.e. PAUSED. (End/stop now erases the run's latestBatch — persist-on-pause, erase-on-end — and
+// the `latestBatch === null` gate below hides the scrubber then, so scrubbing is effectively
+// pause-only; the halted check still admits `!running` defensively but that state carries a null
+// batch after End.) (contracts: replay is a 1Hz, 300-frame ring — "scrubbing any level reads one frame".)
 import { useEffect, useState } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { useSimulationStore } from '../store/simulation.store'

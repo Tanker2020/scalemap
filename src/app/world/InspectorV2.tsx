@@ -27,8 +27,13 @@ interface Props {
 export function InspectorV2({ azId }: Props) {
   const [traces, setTraces] = useState<TracedRequest[]>([])
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  // The engine's tracer holds a run's sampled requests until the next start(); poll it only while
+  // a run is active (running stays true while paused, so traces persist on pause). On End (running
+  // false) clear them, so a finished run's traces don't linger over the at-rest AZ floor.
+  const running = useSimulationStore(s => s.running)
 
   useEffect(() => {
+    if (!running) { setTraces([]); return }
     // getTracedRequests returns a FRESH array each call; short-circuit to the previous state
     // when the trace ids are unchanged (audit ISSUE-055) — otherwise the new reference forced a
     // steady 1 Hz re-render of the overlay even with no new traces.
@@ -40,7 +45,7 @@ export function InspectorV2({ azId }: Props) {
     poll()
     const id = setInterval(poll, 1000)
     return () => clearInterval(id)
-  }, [azId])
+  }, [azId, running])
 
   if (traces.length === 0) return null
 

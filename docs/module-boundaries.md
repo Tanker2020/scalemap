@@ -2294,6 +2294,20 @@ scrub replay history without ending the run. `resume()` snaps back to the live h
 `scrubIndex`/`scrubBatch`) so a scrub position set while paused doesn't strand the views on a past
 frame once ticking continues.
 
+**End ERASES the run; Pause preserves it (2026-07-23).** `stop()` originally cleared only
+`{running, paused, healthOverrides}`, leaving `latestBatch`/`events`/`scrub*`/`degraded`/event-log
+fields intact — so a server/region that went down mid-run kept rendering as down after End
+(views read `scrubBatch ?? latestBatch`) and its routing edge stayed X'ed (user report
+2026-07-23). `stop()` now clears the full run-state set `resetSession()` does (batch, events,
+scrub, degraded, healthOverrides, event-log fields) and orphans the event buffer (`eventGen++`)
+so a late microtask can't repopulate the cleared window — `pause()` is unchanged and still
+preserves everything (`running` stays true). Consequences: the batch-driven views (region/AZ
+health, ingress edges) return to the at-rest authoring state on End; the imperative renderers
+follow suit — `PacketLayer`/`ArcsLayer` already clear on `!running`, `InspectorV2` (AZ traces)
+now gates its poll on `running` (clears on End, persists on pause), and `ScrubberV2` is
+effectively **pause-only** (its `latestBatch === null` gate hides it after End). The engine
+already rebuilds all run state on the next `start()`, so this only closes the End→idle window.
+
 ---
 
 ## Regional LB UI gated on AZ count ≥2 (2026-07-17)
