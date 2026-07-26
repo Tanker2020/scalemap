@@ -7,6 +7,7 @@ import {
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
 import { addRoute, routeIdOf } from '../nodeConfig'
+import { computeWorldCost } from '../costModelV2'
 import type { WorldDoc } from '../world/types'
 import type { MetricsBatch, EngineEvent } from './types'
 
@@ -669,5 +670,63 @@ describe('starved-vs-idle metrics (audit ISSUE-014)', () => {
     sim.stepFor(30)   // recovery hysteresis + traffic resumes
     expect(sim.latest().instances[f.dbInst].health).toBe('healthy')
     sim.engine.stop()
+  })
+})
+
+// Packet-driven egress (slice 1): a route's responseSizeKb drives the client→entry internet byte
+// rate, so the internet-egress cost line varies with the traffic's actual payload size instead of
+// the old flat 2 KB-each-way constant.
+describe('route-driven internet egress bytes', () => {
+  // One region / AZ / server, a single public entry service, one population whose whole mix is a
+  // single route — so internet bytes are exactly (offered rps × the route's request+response size).
+  function singleEntryWorld(responseSizeKb: number | null) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const sv = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[sv.id] = sv
+    const web = publicBlueprint('web', 0); doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, sv.id); doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0); pop.peakRps = 40   // light: no NIC shedding
+    if (responseSizeKb != null) {
+      const route = addRoute(doc.packets, { name: 'api', method: 'GET', path: '/api', sizeKb: 1, responseSizeKb })
+      doc.packets = route.registry
+      pop.requestMix = [{ routeId: routeIdOf(route.route), weight: 1 }]
+    }
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc) }
+  }
+
+  const settle = (f: { doc: WorldDoc; compiled: ReturnType<typeof compileWorld> }) => {
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(6)
+    const b = sim.latest()
+    sim.engine.stop()
+    return b
+  }
+
+  it('a larger response size yields a proportionally larger internet byte rate and cost', () => {
+    const small = settle(singleEntryWorld(4))     // 1 KB req + 4 KB resp
+    const big = settle(singleEntryWorld(256))     // 1 KB req + 256 KB resp
+    expect(big.world.internetEgressBytesPerSec).toBeGreaterThan(small.world.internetEgressBytesPerSec)
+    // Same seed ⇒ same offered-rps trajectory, so the ratio reflects only the size difference:
+    // (1+256)/(1+4) ≈ 51×.
+    const ratio = big.world.internetEgressBytesPerSec / small.world.internetEgressBytesPerSec
+    expect(ratio).toBeGreaterThan(30)
+    // Cost follows the byte rate.
+    const costSmall = computeWorldCost(singleEntryWorld(4).doc, small.world).egress.internetUsd
+    const costBig = computeWorldCost(singleEntryWorld(256).doc, big.world).egress.internetUsd
+    expect(costBig).toBeGreaterThan(costSmall)
+  })
+
+  it('a world with no authored routes keeps the 2 KB-each-way convention (byte-identical)', () => {
+    const b = settle(singleEntryWorld(null))   // implicit default route → fallback sizes
+    // internet bytes are seeded from offered entry rps × 4096 (2 KB req + 2 KB resp); at this light
+    // load offered ≈ admitted, so the ratio to totalRps sits right at 4096.
+    const perReq = b.world.internetEgressBytesPerSec / b.world.totalRps
+    expect(perReq).toBeGreaterThan(3900)
+    expect(perReq).toBeLessThan(4300)
   })
 })

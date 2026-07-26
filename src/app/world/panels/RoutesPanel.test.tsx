@@ -41,6 +41,25 @@ describe('RoutesPanel', () => {
     expect(listRoutes(useWorldStore.getState().doc.packets)).toHaveLength(0)
   })
 
+  it('adds a route with authored request/response sizes and a connection type', () => {
+    render(<RoutesPanel />)
+    fireEvent.change(screen.getByLabelText('new-route-name'), { target: { value: 'img' } })
+    fireEvent.change(screen.getByLabelText('new-route-path'), { target: { value: '/img/*' } })
+    fireEvent.change(screen.getByLabelText('new-route-req-size'), { target: { value: '2' } })
+    fireEvent.change(screen.getByLabelText('new-route-resp-size'), { target: { value: '64' } })
+    fireEvent.change(screen.getByLabelText('new-route-connection'), { target: { value: 'streaming' } })
+    fireEvent.click(screen.getByText('+ Route'))
+    const route = listRoutes(useWorldStore.getState().doc.packets)[0]
+    expect(route).toMatchObject({ name: 'img', sizeKb: 2, responseSizeKb: 64, connectionType: 'streaming' })
+  })
+
+  it('edits an existing route response size', () => {
+    const id = useWorldStore.getState().addRoute({ name: 'api', method: 'GET', path: '/api' })
+    render(<RoutesPanel />)
+    fireEvent.change(screen.getByLabelText(`route-resp-size-${id}`), { target: { value: '128' } })
+    expect(listRoutes(useWorldStore.getState().doc.packets)[0].responseSizeKb).toBe(128)
+  })
+
   it('shows a usage count for routes referenced by a population request mix', () => {
     const id = useWorldStore.getState().addRoute({ name: 'api', method: 'GET', path: '/api' })
     const popId = useWorldStore.getState().addPopulation('nyc', 40, -74)

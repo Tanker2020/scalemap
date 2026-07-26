@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   emptyPacketRegistry, listRoutes, getRoute, addRoute, updateRoute, removeRoute,
-  routeMatchesPattern, routeIdOf,
+  routeMatchesPattern, routeIdOf, routeIngressBytes,
 } from './nodeConfig'
 import type { PacketRegistry, EventTemplate } from './nodeConfig'
 
@@ -51,6 +51,45 @@ describe('route helpers over PacketRegistry', () => {
     const reg2 = removeRoute(registry, routeIdOf(route))
     expect(getRoute(reg2, routeIdOf(route))).toBeUndefined()
     expect(listRoutes(reg2)).toEqual([])
+  })
+
+  it('addRoute gives a new route sensible byte/connection defaults', () => {
+    const { route } = addRoute(emptyPacketRegistry(), { name: 'api', method: 'GET', path: '/api' })
+    expect(route.sizeKb).toBe(1)
+    expect(route.responseSizeKb).toBe(4)
+    expect(route.connectionType).toBe('keep-alive')
+  })
+
+  it('addRoute honors explicit sizes and connection type from fields', () => {
+    const { route } = addRoute(emptyPacketRegistry(), {
+      name: 'img', method: 'GET', path: '/img', sizeKb: 2, responseSizeKb: 512, connectionType: 'streaming',
+    })
+    expect(route.sizeKb).toBe(2)
+    expect(route.responseSizeKb).toBe(512)
+    expect(route.connectionType).toBe('streaming')
+  })
+
+  it('updateRoute patches responseSizeKb and connectionType', () => {
+    const { registry, route } = addRoute(emptyPacketRegistry(), { name: 'api', method: 'GET', path: '/api' })
+    const reg2 = updateRoute(registry, routeIdOf(route), { responseSizeKb: 64, connectionType: 'short-lived' })
+    expect(getRoute(reg2, routeIdOf(route))).toMatchObject({ responseSizeKb: 64, connectionType: 'short-lived' })
+  })
+})
+
+describe('routeIngressBytes (route → per-request wire bytes, KB×1024)', () => {
+  it('reads sizeKb / responseSizeKb off the route', () => {
+    const { route } = addRoute(emptyPacketRegistry(), { name: 'img', method: 'GET', path: '/img', sizeKb: 3, responseSizeKb: 10 })
+    expect(routeIngressBytes(route)).toEqual({ reqBytes: 3072, respBytes: 10240 })
+  })
+
+  it('falls back to 2 KB each way when the route is absent (the implicit default route)', () => {
+    expect(routeIngressBytes(undefined)).toEqual({ reqBytes: 2048, respBytes: 2048 })
+  })
+
+  it('falls back to 2 KB for the response when only the request size is authored', () => {
+    // A route carrying a request size but no response size (e.g. an older serialized template).
+    const route = { id: 1, name: 'api', protocol: 'http' as const, sizeKb: 1, method: 'GET' as const, path: '/api', statusCode: 200 }
+    expect(routeIngressBytes(route)).toEqual({ reqBytes: 1024, respBytes: 2048 })
   })
 })
 

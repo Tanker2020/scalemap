@@ -225,6 +225,11 @@ export interface FlowInput {
   // settlement, added on top of the multiplied service latency. Optional: absent ⇒ 0 extra,
   // so existing callers and tests are unchanged.
   extraLatencyMsByServer?: Record<ServerId, number>
+  // Per-entry-instance client-facing wire bytes (packet-driven egress, slice 1): the request+
+  // response payload size the route mix landing on each entry instance implies. Seeds the
+  // client→entry internet byte total by real payload size. Optional: absent ⇒ the flat
+  // BYTES_PER_REQUEST_EACH_WAY convention, so direct-solveFlows unit tests are unchanged.
+  entryBytesByInstance?: Record<InstanceId, { reqBytes: number; respBytes: number }>
   breakerOpen: (pathKey: string) => boolean
   healthOf: (instanceId: InstanceId) => HealthState
   // Manual-outage predicate for managed services (node-model Phase 5.2). A managed service can't
@@ -424,8 +429,11 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     if (rps <= 0) continue
     queue.push({ instanceId, offered: rps, depth: 0, parent: null })
     seeded.add(instanceId)
-    // Client -> entry traffic rides the public internet.
-    totals.internetBytes += rps * BYTES_PER_REQUEST_EACH_WAY * 2
+    // Client -> entry traffic rides the public internet. Packet-driven egress (slice 1): the route
+    // mix that landed here sets the request+response payload size; absent ⇒ the flat 2 KB-each-way
+    // convention (BYTES_PER_REQUEST_EACH_WAY × 2), so worlds with no authored sizes are unchanged.
+    const eb = input.entryBytesByInstance?.[instanceId]
+    totals.internetBytes += rps * (eb ? eb.reqBytes + eb.respBytes : BYTES_PER_REQUEST_EACH_WAY * 2)
   }
   // Backlogged instances receiving no arrivals this tick still drain (and their served backlog
   // still fans out downstream): seed a zero-offered item so the normal first-touch path runs.

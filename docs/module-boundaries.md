@@ -2183,7 +2183,61 @@ load-sensitive and passes in isolation); `npm run build` clean.
 **Scope boundary (unchanged from the plan)** — L7 routing is at **ingress** (client → entry
 service). Internal service-to-service per-route routing keeps `solveFlows`' fan-out unchanged (a
 deliberate future extension). Explicit multi-blueprint target groups, and per-route byte/workload
-realism from the packet templates, are likewise parked.
+realism from the packet templates, are likewise parked. **(The ingress byte half of this is now
+built — see the packet-driven egress section below.)**
+
+---
+
+## Packet-driven egress — slice 1: route byte sizes drive internet-egress cost (2026-07-25)
+
+**Why** — cost was traffic-*volume*-sensitive but not payload-*size*-sensitive: the engine turned
+every request into bytes with flat constants (`BYTES_PER_REQUEST_EACH_WAY = 2048` in `flows.ts`;
+`NIC_REQUEST_BYTES = 512` / `NIC_RESPONSE_BYTES = 2048` in `networkRuntime.ts`), so a health check
+and an image download cost the same egress. First slice of a phased overhaul: make the
+client-facing **internet-egress** byte rate (and thus its cost line) driven by the route mix's
+actual payload sizes. Scope is deliberately the **entry/internet tier only**.
+
+**Schema (`nodeConfig.ts`, low-risk additive)** — `HttpTemplate` gained optional `responseSizeKb`
+(HTTP had no response-size field; only `DbTemplate.resultSizeKb` existed) and `connectionType`
+(`'keep-alive' | 'short-lived' | 'streaming'` — **authored/stored only, no simulation behavior
+yet**, a later phase). Both optional so old `.scalemap` files and the serializer's literal
+templates need zero migration. New pure helper **`routeIngressBytes(route)`** → `{ reqBytes,
+respBytes }` (KB×1024, each falling back to `DEFAULT_PACKET_BYTES_EACH_WAY = 2048` when the route
+or field is absent) — the single fallback point that keeps a no-authored-sizes world byte-identical
+to the old constant. `RouteFields`/`addRoute`/`updateRoute` extended (new-route defaults: 1 KB req,
+4 KB resp, keep-alive).
+
+**Engine (`worldEngine/index.ts` hub, `flows.ts`)** — at `start()`, `buildRouteBytesById(doc)`
+resolves each route's wire bytes into `state.routeBytesById` with **two fallback conventions**:
+cost/internet keeps the symmetric 2 KB (via `routeIngressBytes`), NIC keeps its asymmetric
+512/2048 — so entry-NIC throughput is also byte-identical until a size is authored. `distributeViaLb`
+gained an optional `weightAccum` param: it routes each route's demand into a per-route scratch map,
+then folds both rps (into `entryDemand`) and byte-weighted sums (Σ rps×bytes, into `entryByteAccum`)
+— **`distributeToTargets` (routingRuntime.ts) is untouched**. After the routing loop those sums ÷
+entry rps give per-entry-instance weighted-average request/response sizes: `entryBytesByInstance`
+(cost) seeds `solveFlows`' internet-byte total (new additive-optional `FlowInput.entryBytesByInstance`
+— absent ⇒ the flat 2 KB path, so direct-`solveFlows` unit tests are unchanged), and
+`entryNicBytesByInstance` sizes the **entry-demand share** of each instance's NIC booking (step 7),
+with any internal-serving rps keeping the flat split.
+
+**Cost model** — **no change**: `internetEgressBytesPerSec` already flows into `egressMonthlyCost`
+(`costModelV2.ts`), so the internet-egress cost line becomes payload-size-driven with zero signature
+change.
+
+**UI (`RoutesPanel.tsx`)** — the new-route form and each `RouteCard` gained request-size (KB),
+response-size (KB), and connection-type controls, wired through the existing store `addRoute`/
+`updateRoute` actions.
+
+**Gate** — TDD across `nodeConfig.test.ts` (defaults + `routeIngressBytes` fallback),
+`index.test.ts` (response size drives internet bytes/cost proportionally; no-route world stays at
+the 4096 B/req convention — golden guard), `RoutesPanel.test.tsx` (new inputs). Full suite green;
+`npm run build` clean.
+
+**Still parked (roadmap)** — packet-driven **CPU** cost (blend: service per-KB rate × packet size →
+`WorkloadProfile` + `hostScheduler.ts`); **log-normal** per-packet size variance → tail effects
+(p99/NIC-burst) via the seeded `rng`; **internal-hop** sizing via `BlueprintDependency.packetTemplateId`
+(cross-AZ/cross-region egress + downstream NIC); per-provider egress attribution; connection-type
+*behavior*.
 
 ---
 

@@ -9,6 +9,12 @@
 
 export type PacketProtocol = 'http' | 'event' | 'stream' | 'db'
 
+// How a route's client connection behaves. AUTHORED + STORED today, but carries NO simulation
+// behavior yet — its future effect (keep-alive → fewer connections / handshake CPU / RAM-per-conn)
+// is a later phase (see the packet-cost roadmap). Not dead schema: the editor writes it now so the
+// intent round-trips, and the engine will read it when connection semantics land.
+export type ConnectionType = 'keep-alive' | 'short-lived' | 'streaming'
+
 export type WorkloadTier = 'simple_crud' | 'moderate_logic' | 'heavy_compute' | 'custom'
 
 export interface WorkloadDemand {
@@ -32,6 +38,11 @@ export interface HttpTemplate extends BasePacketTemplate {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE'
   path: string
   statusCode: number        // 2xx/3xx ok · 4xx error-but-completes · 5xx drop
+  // Response payload size (KB). Drives the client-facing internet-egress byte rate (and thus the
+  // internet-egress cost line) via routeIngressBytes → the engine's entry tier. Optional: absent
+  // (older serialized routes) falls back to the 2 KB/way convention, so byte totals are unchanged.
+  responseSizeKb?: number
+  connectionType?: ConnectionType   // see ConnectionType — authored/stored, no sim behavior yet
 }
 
 export interface EventTemplate extends BasePacketTemplate {
@@ -96,18 +107,34 @@ export interface RouteFields {
   name: string
   method: HttpTemplate['method']
   path: string          // the route's path, e.g. '/api/users' — matched against listener patterns
-  sizeKb?: number
+  sizeKb?: number              // request payload size (KB)
+  responseSizeKb?: number      // response payload size (KB) — drives client-facing egress
+  connectionType?: ConnectionType
 }
 
 export function addRoute(reg: PacketRegistry, fields: RouteFields): { registry: PacketRegistry; route: HttpTemplate } {
   const id = reg.nextId
   const route: HttpTemplate = {
     id, name: fields.name, protocol: 'http', sizeKb: fields.sizeKb ?? 1,
+    responseSizeKb: fields.responseSizeKb ?? 4, connectionType: fields.connectionType ?? 'keep-alive',
     method: fields.method, path: fields.path, statusCode: 200,
   }
   return {
     registry: { ...reg, templates: { ...reg.templates, [id]: route }, nextId: id + 1 },
     route,
+  }
+}
+
+// Per-request wire bytes an HTTP route implies, split request/response (KB×1024). The single
+// fallback point that preserves pre-packet-sizing behavior: an absent route (the implicit null
+// "default" route) or an unauthored field defaults to 2 KB — matching the engine's long-standing
+// BYTES_PER_REQUEST_EACH_WAY convention, so a world with no authored sizes stays byte-identical.
+export const DEFAULT_PACKET_BYTES_EACH_WAY = 2048
+
+export function routeIngressBytes(route: HttpTemplate | undefined): { reqBytes: number; respBytes: number } {
+  return {
+    reqBytes: route?.sizeKb != null ? route.sizeKb * 1024 : DEFAULT_PACKET_BYTES_EACH_WAY,
+    respBytes: route?.responseSizeKb != null ? route.responseSizeKb * 1024 : DEFAULT_PACKET_BYTES_EACH_WAY,
   }
 }
 
