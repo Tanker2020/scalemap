@@ -345,4 +345,84 @@ describe('AzConfigTab', () => {
     render(<AzConfigTab azId={azId} />)
     expect(screen.getByTestId(`az-managed-${msId}`)).toHaveTextContent('⚠')
   })
+
+  describe('CONNECTIONS section (opens a read-only graph, 2026-07-25)', () => {
+    function wireApiDb(azId: string, dbAzId = azId) {
+      const apiSrv = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+      const dbSrv = useWorldStore.getState().addServer(dbAzId, getPreset('vps-medium')!)
+      const apiBp = useWorldStore.getState().addBlueprint('api')
+      const dbBp = useWorldStore.getState().addBlueprint('db')
+      useWorldStore.getState().addPlacement(apiBp, apiSrv)
+      useWorldStore.getState().addPlacement(dbBp, dbSrv)
+      useWorldStore.getState().connectServices(apiBp, { kind: 'blueprint', blueprintId: dbBp }, { port: 5432, protocol: 'db', autoProvision: true })
+      return { apiBp, dbBp, apiSrv, dbSrv }
+    }
+
+    it('shows the empty state and a disabled button with no connections touching this AZ', () => {
+      const { azId } = seedAz()
+      render(<AzConfigTab azId={azId} />)
+      expect(screen.getByText(/no connections touch this az/i)).toBeInTheDocument()
+      expect(screen.getByText('open graph ↗')).toBeDisabled()
+    })
+
+    it('shows a connection count and an enabled button once a dependency touches this AZ', () => {
+      const { azId } = seedAz()
+      wireApiDb(azId)
+      render(<AzConfigTab azId={azId} />)
+      expect(screen.getByText(/1 connection touch/i)).toBeInTheDocument()
+      expect(screen.getByText('open graph ↗')).not.toBeDisabled()
+    })
+
+    it('"open graph" opens AzConnectionsView with this AZ\'s nodes/edges, read-only', () => {
+      const { azId } = seedAz()
+      const { apiBp, dbBp } = wireApiDb(azId)
+      render(<AzConfigTab azId={azId} />)
+
+      fireEvent.click(screen.getByText('open graph ↗'))
+      expect(screen.getByTestId(`az-conn-node-${apiBp}`)).toBeInTheDocument()
+      expect(screen.getByTestId(`az-conn-node-${dbBp}`)).toBeInTheDocument()
+      // Read-only: no connect handle, no draft bar affordance anywhere in the overlay.
+      expect(screen.queryByTitle('drag to connect')).toBeNull()
+    })
+
+    it('"close" on the graph overlay hides it again', () => {
+      const { azId } = seedAz()
+      wireApiDb(azId)
+      render(<AzConfigTab azId={azId} />)
+      fireEvent.click(screen.getByText('open graph ↗'))
+      expect(screen.getByTestId('az-conn-canvas')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByText('close'))
+      expect(screen.queryByTestId('az-conn-canvas')).toBeNull()
+    })
+
+    it('a cross-AZ dependency appears in both AZs\' graphs', () => {
+      const { regionId, azId: azA } = seedAz()
+      const azB = useWorldStore.getState().addAz(regionId, 'us-east-1b')
+      const { apiBp, dbBp } = wireApiDb(azA, azB)
+
+      const { unmount } = render(<AzConfigTab azId={azA} />)
+      fireEvent.click(screen.getByText('open graph ↗'))
+      expect(screen.getByTestId(`az-conn-node-${apiBp}`)).toBeInTheDocument()
+      expect(screen.getByTestId(`az-conn-node-${dbBp}`)).toBeInTheDocument()
+      unmount()
+
+      render(<AzConfigTab azId={azB} />)
+      fireEvent.click(screen.getByText('open graph ↗'))
+      expect(screen.getByTestId(`az-conn-node-${apiBp}`)).toBeInTheDocument()
+      expect(screen.getByTestId(`az-conn-node-${dbBp}`)).toBeInTheDocument()
+    })
+
+    it('clicking a blocked edge shows its block reason in the read-only inspector', () => {
+      const { azId } = seedAz()
+      const { dbSrv } = wireApiDb(azId)
+      useWorldStore.getState().updateServer(dbSrv, { firewall: [{ id: 'deny', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' }] })
+
+      render(<AzConfigTab azId={azId} />)
+      fireEvent.click(screen.getByText('open graph ↗'))
+      const edge = screen.getByTestId(/^az-conn-edge-/)
+      fireEvent.click(edge)
+      expect(screen.getByText(/●\s*blocked/)).toBeInTheDocument()
+    })
+  })
 })

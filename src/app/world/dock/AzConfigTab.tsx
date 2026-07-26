@@ -4,7 +4,7 @@
 // SAME shared `ui.store.selectedServerId` the floor/minimap read+write), this AZ's cost, and the
 // floor toolbar's authoring actions relocated byte-for-byte (`+ server`/`auto-arrange`/
 // `kill AZ`) — see each action's own comment below for its exact origin.
-import { useMemo, type CSSProperties, type ReactElement } from 'react'
+import { useMemo, useState, type CSSProperties, type ReactElement } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
@@ -13,8 +13,10 @@ import { useCompiledWorld } from '../useCompiledWorld'
 import { rackUsedU } from '../../../lib/world/rackModel'
 import { NodePalette } from '../az/NodePalette'
 import { serverAccents, meanUtilization } from '../az/floorData'
+import { AzConnectionsView } from '../az/AzConnectionsView'
 import { healthWord } from '../ui/derived'
 import { scopedCost } from './scopeData'
+import { azConnectionGraph } from '../../../lib/world/connections'
 import type { RackId, Server, ServerId } from '../../../lib/world/types'
 import type { HealthState } from '../../../lib/worldEngine/types'
 import './floorPlanStyles'
@@ -101,6 +103,14 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
       (m.scope.kind === 'region' && m.scope.regionId === az?.regionId)),
     [doc.managedServices, azId, az?.regionId],
   )
+
+  // Read-only, AZ-filtered subgraph of compiled.paths (2026-07-25) — the world-scope Connections
+  // tab/graph is still the only authoring surface (see connections.ts's azConnectionGraph comment
+  // for why a dependency has no single AZ it could be authored against); "open graph" below just
+  // views what actually runs through here, in the SAME node/edge visual language as the world
+  // graph (AzConnectionsView.tsx), not a separate list representation.
+  const azGraph = useMemo(() => azConnectionGraph(doc, compiled, azId), [doc, compiled, azId])
+  const [connectionsOpen, setConnectionsOpen] = useState(false)
 
   // Motion budget (D3): the dock's ONE ambient stroke at AZ scope — a single blinking LED for
   // the single busiest server by live mean CPU, running only, never reduced-motion. Reuses the
@@ -300,6 +310,22 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
           ${azCost.hourlyUsd.toFixed(2)}/hr · ${azCost.monthlyUsd.toFixed(0)}/mo
         </span>
       </div>
+
+      <SectionRail label="CONNECTIONS — through this AZ" />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 8px' }}>
+        <span style={{ color: 'var(--color-text-secondary)', fontSize: 10.5 }}>
+          {azGraph.edges.length === 0
+            ? 'No connections touch this AZ yet.'
+            : `${azGraph.edges.length} connection${azGraph.edges.length === 1 ? '' : 's'} touch this AZ`}
+        </span>
+        <button
+          type="button" className="kit-press" style={azGraph.edges.length === 0 ? actionBtnLocked : actionBtn}
+          disabled={azGraph.edges.length === 0} onClick={() => setConnectionsOpen(true)}
+        >
+          open graph ↗
+        </button>
+      </div>
+      <AzConnectionsView azId={azId} open={connectionsOpen} onClose={() => setConnectionsOpen(false)} />
 
       {/* The typed node palette replaces the old hardcoded "+ server" (which always dropped a
           vps-medium). Compute entries add an empty host; data entries add a preconfigured DB

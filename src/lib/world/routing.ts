@@ -155,6 +155,7 @@ function computeLbRouting(
       algorithm: lb?.algorithm ?? 'round-robin',
       rules,
       defaultTargetBlueprintIds,
+      azWeights: lb?.azWeights ?? {},
     }
   }
   return result

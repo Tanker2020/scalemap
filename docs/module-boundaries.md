@@ -2077,9 +2077,13 @@ reshaped) — it fans out to every view + the engine.
 
 **Engine (`worldEngine/index.ts` hub, `routingRuntime.ts`)** — the old inline `distributeToEntries`
 now delegates to a new pure, reusable helper `distributeToTargets` (`routingRuntime.ts`):
-- **cross-zone OFF (NLB default)** — `perAz = rps / healthyAzCount`, then one round-robin
-  instance per target blueprint present in the AZ (entry-node == serving-AZ). Byte-equivalent to
-  the old path; an AZ with no target instances forfeits its share.
+- **cross-zone OFF (NLB default)** — `perAz = rps / servingAzCount`, then one round-robin
+  instance per healthy target blueprint in the AZ (entry-node == serving-AZ). An AZ with **no
+  healthy target for this group is pulled from rotation** (mirroring AWS removing a zone with no
+  healthy targets from DNS) and its share **redistributes** to the AZs that can serve — it is
+  **not** forfeited. Only when *no* AZ in the region can serve does the group's traffic drop.
+  (Superseded the earlier "empty AZ forfeits its per-AZ share" model — 2026-07-24, see the dated
+  entry below.)
 - **cross-zone ON (ALB)** — every healthy target instance region-wide gets an equal split
   (entry-node decoupled from serving-AZ), so unequal per-AZ instance counts skew per-AZ totals.
 `distributeToTargets` takes an input object (target blueprint ids + rps + cross-zone + the compiled
@@ -2107,6 +2111,52 @@ identically.
 region cascade), `serializer.test.ts` (+1, back-compat default), `RegionConfigTab.test.tsx` (+3, LB
 section render/toggle/edit-lock). All engine golden tests green (byte-equivalence proven);
 `npm run build` clean. Phase 2 (routes + L7) is scoped but not built.
+
+---
+
+## Regional Load Balancer — weighted algorithm made real (2026-07-24)
+
+`LoadBalancer.algorithm: 'weighted'` existed since Phase 1 (selectable in the UI, compiled into
+`CompiledLbRouting.algorithm`) but was **never actually consumed** — `distributeToTargets` always
+split traffic equally regardless of the selected algorithm, and there was no UI to author weights
+in the first place. This closes both gaps with a per-AZ weight, the natural fit given
+`distributeToTargets` already operates at the region→AZ tier.
+
+**Model (`world/types.ts`)** — `LoadBalancer.azWeights?: Record<AzId, number>` (optional; missing
+AZ ⇒ default weight 1, so authoring nothing under 'weighted' behaves like an equal split).
+`CompiledLbRouting.azWeights: Record<AzId, number>` (non-optional; `routing.ts`'s
+`computeLbRouting` defaults it to `lb?.azWeights ?? {}`).
+
+**Engine (`worldEngine/routingRuntime.ts`)** — `DistributeInput` gained `weighted?: boolean` +
+`azWeights?: Record<AzId, number>`; `index.ts`'s `distributeViaLb` passes
+`lb.algorithm === 'weighted'` and `lb.azWeights` through on every call. A new `azShares` helper
+splits a total across a set of AZ ids proportional to weight (default 1, floor 0) when `weighted`
+is true and at least one candidate has positive weight; otherwise (unweighted, or an all-zero
+weight set — mirroring `resolveRegion`'s `pickWeighted` fallback for an all-zero region-weight
+policy) it falls back to the pre-existing equal split. Both branches use it:
+- **cross-zone off** — `perAz` (previously always `rps / servingAzCount`) now comes from
+  `azShares`, i.e. an AZ's authored weight, not just its "is it serving" status.
+- **cross-zone on** — previously one flat split across every healthy target instance region-wide
+  (so an AZ's instance *count* skewed its share). Weighted mode now groups targets by AZ first,
+  takes `azShares` for the AZ-level total, then splits *that* evenly across the AZ's own
+  instances — instance count no longer skews the ratio, only the authored weight does.
+`weighted` unset/false takes neither of the new code paths, so round-robin LBs (the default) are
+byte-identical to before this change — no golden-test impact.
+
+**Config UI (`app/world/dock/RegionConfigTab.tsx`)** — `LoadBalancerSection` now takes the
+region's `azs` list (from `RegionConfigTab`, which already computed it for the AZ rows above).
+Selecting `algorithm: 'weighted'` reveals one `type="number"` input per AZ
+(`aria-label="az-weight-${azId}"`, defaulting to `1` when unset), patching
+`azWeights: { ...azWeights, [azId]: value }` on change (min 0; blank/NaN clamps to 0, which
+`azShares`' fallback then treats as "equal split" if every AZ ends up at 0). Switching back to
+`round-robin` hides the inputs again without clearing `azWeights` — flipping back to `weighted`
+later restores the authored values.
+
+**Gate** — `routingRuntime.test.ts` (+3: weighted cross-zone-off proportional split, weighted
+cross-zone-on per-AZ-then-even split, all-zero-weight fallback), `routing.test.ts` (updated for
+the additive `azWeights: {}` field), `RegionConfigTab.test.tsx` (+2: inputs hidden/shown by
+algorithm, editing an input patches `azWeights` while leaving unset AZs defaulted not persisted).
+Full suite green (1344 tests); `tsc --noEmit` clean.
 
 ---
 
@@ -2230,8 +2280,8 @@ response-size (KB), and connection-type controls, wired through the existing sto
 
 **Gate** — TDD across `nodeConfig.test.ts` (defaults + `routeIngressBytes` fallback),
 `index.test.ts` (response size drives internet bytes/cost proportionally; no-route world stays at
-the 4096 B/req convention — golden guard), `RoutesPanel.test.tsx` (new inputs). Full suite green;
-`npm run build` clean.
+the 4096 B/req convention — golden guard), `RoutesPanel.test.tsx` (new inputs). Full suite green
+(1374); `npm run build` clean.
 
 **Still parked (roadmap)** — packet-driven **CPU** cost (blend: service per-KB rate × packet size →
 `WorkloadProfile` + `hostScheduler.ts`); **log-normal** per-packet size variance → tail effects
@@ -2279,12 +2329,12 @@ report). `fraction` still ranks AZs by throughput share, but `rps` is now `fract
 to the ingress. `AzRow` gained an `inboundRps` prop (threaded from `azShares` by `RegionView.tsx`)
 and its `◂ N rps` header shows that instead of `batch.azs[az].rps`; per-server rows still show
 actual per-instance throughput (where the internal amplification remains visible). Note: this is a
-*proportional* attribution — it does not by itself reveal that cross-zone-OFF **drops** an AZ's
-share when that AZ holds no entry/target instance. That real engine behavior (verified by
-`index.test.ts` "cross-zone-off ingress distribution": entry in both AZs → clean 50/50; entry in
-one AZ → the other AZ's share is dropped, `world.totalRps` ≈ half) is surfaced by explanation/
-recommendation (place the entry service in every AZ, or enable cross-zone), not yet by an analysis
-rule.
+*proportional* attribution. As of the 2026-07-24 fix (dated entry below), cross-zone-OFF no longer
+**drops** an AZ's share when that AZ holds no healthy target — the empty AZ leaves the LB rotation
+and its share redistributes to the serving AZ(s) (verified by `index.test.ts` "cross-zone-off
+ingress distribution": entry in both AZs → clean 50/50; entry in one AZ → the serving AZ absorbs
+the whole ingress, `world.totalRps` ≈ full, nothing dropped). A single-AZ entry tier is still a
+SPOF/bottleneck — it just shows up as *concentrated load on the serving AZ*, not phantom LB drops.
 
 ---
 
@@ -2347,6 +2397,20 @@ keeps `running` true, it now gates on `halted = !running || paused` (stopped OR 
 scrub replay history without ending the run. `resume()` snaps back to the live head (clears
 `scrubIndex`/`scrubBatch`) so a scrub position set while paused doesn't strand the views on a past
 frame once ticking continues.
+
+**End ERASES the run; Pause preserves it (2026-07-23).** `stop()` originally cleared only
+`{running, paused, healthOverrides}`, leaving `latestBatch`/`events`/`scrub*`/`degraded`/event-log
+fields intact — so a server/region that went down mid-run kept rendering as down after End
+(views read `scrubBatch ?? latestBatch`) and its routing edge stayed X'ed (user report
+2026-07-23). `stop()` now clears the full run-state set `resetSession()` does (batch, events,
+scrub, degraded, healthOverrides, event-log fields) and orphans the event buffer (`eventGen++`)
+so a late microtask can't repopulate the cleared window — `pause()` is unchanged and still
+preserves everything (`running` stays true). Consequences: the batch-driven views (region/AZ
+health, ingress edges) return to the at-rest authoring state on End; the imperative renderers
+follow suit — `PacketLayer`/`ArcsLayer` already clear on `!running`, `InspectorV2` (AZ traces)
+now gates its poll on `running` (clears on End, persists on pause), and `ScrubberV2` is
+effectively **pause-only** (its `latestBatch === null` gate hides it after End). The engine
+already rebuilds all run state on the next `start()`, so this only closes the End→idle window.
 
 ---
 
@@ -2482,6 +2546,69 @@ carries a `logical service graph` badge + a scope note ("edges apply in every AZ
 service runs; per-server view: open an AZ floor") so the altitude reads unambiguously. If a
 per-AZ physical edge view is ever wanted, the right shape is a complementary AZ-scoped mode that
 renders derived instance→instance `CompiledPath`s (not a second authoring surface).
+
+---
+
+## AZ-scoped read-only Connections graph (2026-07-25, revised same day)
+
+Fielded the instinct again: "why isn't Connections configured per-AZ, since users already open
+each AZ for other config anyway?" Same answer as the 2026-07-17 scope decision above — a
+`BlueprintDependency` is authored once on the blueprint/template and a blueprint's `Placement`s
+routinely span several AZs at once, so there is no single AZ an authored edge could belong to
+without either duplicating the rule per AZ or silently mis-scoping it. Ships the "complementary
+AZ-scoped mode" the 2026-07-17 entry called for.
+
+First cut of this (same day) rendered the AZ's touching paths as a row list in `AzConfigTab.tsx`
+directly. User feedback: match the world-scope Connections tab's own pattern instead — a compact
+summary + button that opens a separate, full node/edge GRAPH overlay (`ConnectionsView.tsx`'s
+visual language), not inline boxes. Revised to that shape; the row-list code below no longer
+exists (`AzConnectionRow`/`azConnectionRows` were removed, not deprecated).
+
+**New pure helper (`lib/world/connections.ts`)** — `azConnectionGraph(doc, compiled, azId): {
+nodes: ConnNode[]; edges: ConnEdge[] }`, appended after `connectionRows`. Re-runs
+`edgesForView`'s exact per-dependency aggregation (status/blockReason/counts via the same
+`statusOf` helper) but only over `compiled.paths` with an endpoint in `azId` — so a dependency
+with NO leg touching this AZ is simply absent, while one that does gets the SAME `ConnEdge` shape
+the world graph uses (just re-aggregated over a filtered path set, not re-invented). Unlike
+`floorData.ts`'s `aggregateFlows` (which drops cross-AZ paths — those render at region level on
+the floor scene instead), a cross-AZ/cross-region dependency shows up in BOTH endpoint AZs'
+graphs, since each genuinely has a leg there. Ingress edges use an AZ-local "placed HERE" check
+(`instances.some(i => i.blueprintId === bp.id && i.azId === azId)`), not `edgesForView`'s
+"placed anywhere in the world" check. Reuses `connNodes`/`layoutNodes`/`INTERNET_NODE`/`NODE_W`/
+`NODE_H` from the same file — no new node/edge shapes for the AZ view to diverge on.
+
+**New read-only viewer (`app/world/az/AzConnectionsView.tsx`)** — a from-scratch component, not a
+`ConnectionsView.tsx` prop-flag fork: same backdrop/surface/SVG-edge/node-box visual structure and
+`STATUS_COLOR` palette, but every mutation path is gone — no move-drag (`startMove`/`onCanvasMove`
+position math), no connect-handle/draft-bar (`startConnect`/`dropConnect`/`commitDraft`), no
+ingress toggle on the node box, and the edge inspector drops `EdgeInspector`'s fix/remove buttons
+and write-fraction slider down to pure detail (endpoints, port/protocol, verdict, block reason).
+Layout is `layoutNodes`'s auto tree only — no `doc.connectionLayout` read/write, since persisting
+manual positions for a read-only per-AZ-filtered subgraph isn't worth a new doc field. Testids are
+`az-conn-*` (not `conn-*`), so nothing about this view can be mistaken for the editable one in a
+test or dev-tools inspection.
+
+**Dock entry point (`dock/AzConfigTab.tsx`)** — the `CONNECTIONS — through this AZ` section (still
+between "this AZ's cost" and "add a node") is now a one-line summary
+(`"N connection(s) touch this AZ"` / the empty-state sentence) plus an `open graph ↗` button
+(disabled when the count is 0, mirroring `ConnectionsPanel.tsx`'s own "open graph" button at world
+scope), which mounts `<AzConnectionsView azId={azId} open={...} onClose={...} />` in local
+component state (`useState`, not a store field — this is transient UI state, same precedent as
+`ConnectionsView`'s own `open` prop being owned by `WorldShell.tsx`). The world-scope Connections
+tab/graph remains the only authoring surface; nothing in either new file dispatches a store
+action.
+
+**Gate** — `connections.test.ts`'s `azConnectionGraph` describe block (6 cases: same-AZ edge +
+node set, cross-AZ edge present in both AZs' graphs, managed-target caller-only, AZ-local ingress
+gating, blocked verdict+reason passthrough, empty graph for a non-touching AZ), new
+`AzConnectionsView.test.tsx` (8 cases: closed-renders-nothing, node/edge rendering, empty state,
+read-only assertions — no connect handle/fix/remove — inspector detail, cross-AZ presence in both
+views, Escape/close), `AzConfigTab.test.tsx`'s revised describe block (6 cases: empty state +
+disabled button, count + enabled button, open-graph renders nodes read-only, close hides the
+overlay, cross-AZ dependency in both AZs' embedded graphs, blocked-edge inspector). No changes to
+`world/types.ts`, `compileWorld.ts`, `network.ts`, `ConnectionsView.tsx`, `ConnectionsPanel.tsx`,
+or `world.store.ts` — still a purely additive read path. Full suite green (1364 tests);
+`tsc --noEmit` and `npm run build` clean.
 
 ---
 
@@ -3611,3 +3738,39 @@ contract, logged in `contract-drift.md`); `distributeToTargets`' `droppedByAz`, 
 `droppedByAz`, and `distributeViaLb`'s 4th arg are additive-optional; `AzShare.dropped` and
 `AzRow`'s `droppedRps` prop are new required fields on app-layer (non-contract) types, all
 in-repo callers updated. No `.scalemap`/persistence impact (metrics are ephemeral).
+
+## Cross-zone-off empty-AZ: forfeit → AWS-accurate redistribute (2026-07-24)
+
+Follow-up correcting the *model* the "silent forfeiture → surfaced" work above made visible. The
+earlier model treated a cross-zone-OFF AZ with no target for a group as a **connection failure**:
+its `perAz = rps / regionAzSpread.length` share was dropped (credited to `droppedByAz[azId]`). In
+the "classic three-tier" preset — entry blueprint `lb` placed only in `us-east-1a` — this dropped
+half the region ingress at `us-east-1b`, and because `azShares` adds each AZ's `dropped` on top of
+its delivered-fraction, the region view read `us-east-1b 73% (…dropped)` vs `us-east-1a 27%`,
+which *looked* like round-robin sending 70% to one AZ. It wasn't: the LB split was an even 840/840;
+1b simply failed its half. (User-reported confusion, 2026-07-23.)
+
+Real AWS NLB/ALB (cross-zone off) does **not** fail a zone that has no healthy targets — it
+**removes that zone's node from DNS** once health checks confirm it, so clients only resolve to
+zones that can serve and the traffic redistributes. The fix aligns the engine with that:
+
+- **`worldEngine/routingRuntime.ts` `distributeToTargets` (cross-zone-false branch).** Now builds a
+  `serving` list = healthy AZs that hold **≥1 healthy target instance** for the group, splits
+  `perAz = rps / serving.length` over *only* those AZs, and drops (`drop(null, rps)`, spread across
+  the region) **only when `serving` is empty** (no AZ can serve — empty group or every target down
+  region-wide). `targetsHere` now filters on instance health, not mere placement, so an
+  all-down blueprint in an otherwise-serving AZ is excluded too. Preserves the genuine cross-zone
+  lesson (unequal *target counts* per AZ still skew per-target load); only the **zero-healthy-target
+  AZ** changed — redistributed, not forfeited.
+- **Behavioral result.** Three-tier preset now shows `us-east-1a`/`us-east-1b` ≈ 50/50 delivered
+  with **0 dropped**; `lb-01` (sole entry) absorbs the full ingress (a single-AZ entry SPOF now
+  reads as *concentrated load*, capacity-testable, not a phantom LB drop). The `droppedByAz`
+  plumbing, `AzShare.dropped`, and the AZ card's `· N dropped`/red-beam rendering from the prior
+  section are unchanged — they still fire for the *genuine* all-down/empty-group drops, just no
+  longer for a merely-empty AZ.
+- **Tests.** `routingRuntime.test.ts` — the "reports the empty-AZ per-AZ share as dropped" case
+  became "redistributes the empty-AZ share to the serving AZ, dropping nothing" (`into['i-a0']` =
+  full 500, `droppedByAz` empty); the down-AZ, empty-group, and all-instances-down cases are
+  unchanged (they still drop). `index.test.ts` "cross-zone-off ingress distribution" — the
+  forfeit/surfaced pair became redistribute/no-drop (`web1` ≈ full 500, region stays healthy). No
+  contract or `.scalemap` change (pure engine-distribution semantics + metrics, both ephemeral).

@@ -305,6 +305,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         cursors: s.routing,
         into: target,
         droppedByAz,
+        weighted: lb.algorithm === 'weighted',
+        azWeights: lb.azWeights,
       })
       if (weightAccum && target !== into) {
         const wb = (routeId != null ? s.routeBytesById.get(routeId) : undefined) ?? DEFAULT_ROUTE_WIRE_BYTES

@@ -57,7 +57,8 @@ export function SimControls() {
         <button className="kit-press" style={btn} onClick={() => start(doc, compiled)}>Simulate</button>
       ) : (
         <>
-          {/* Pause/Resume toggles the freeze; End tears the run down (state kept for scrubbing). */}
+          {/* Pause/Resume toggles the freeze (run state kept — scrub/inspect); End tears the run
+              down and ERASES its visuals + stored run info (persist-on-pause, erase-on-end). */}
           <button className="kit-press" style={live ? btn : btnResume} onClick={() => (live ? pause() : resume())}>
             {live ? 'Pause' : 'Resume'}
           </button>

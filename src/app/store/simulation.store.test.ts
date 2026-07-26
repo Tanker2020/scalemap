@@ -7,7 +7,7 @@ import { worldEngine } from '../../lib/worldEngine'
 import { createWorld } from '../../lib/world/factories'
 import { compileWorld } from '../../lib/world/compileWorld'
 import { eventLogAppend, eventLogBeginRun } from '../../lib/tauri'
-import type { EngineEvent } from '../../lib/worldEngine/types'
+import type { EngineEvent, MetricsBatch } from '../../lib/worldEngine/types'
 
 vi.mock('../../lib/tauri', () => ({
   eventLogBeginRun: vi.fn(async () => 7),
@@ -132,5 +132,88 @@ describe('simulation.store event spill', () => {
     expect(vi.mocked(eventLogAppend)).toHaveBeenCalledTimes(1)
     expect(vi.mocked(eventLogAppend).mock.calls[0][1]).toHaveLength(1)
     expect(useSimulationStore.getState().eventLogTotal).toBe(1)
+  })
+})
+
+// End (stop) must ERASE the finished run's visual state so a server/region that went down mid-run
+// no longer renders as down after ending; Pause must PRESERVE it (scrub/inspect a frozen run).
+// (User report 2026-07-23: after ending a sim, the region still showed down and the AZ edge stayed
+// X'ed, because stop() left latestBatch/events/scrub/degraded intact.)
+describe('simulation.store — End erases run visuals, Pause preserves them', () => {
+  let onMetrics: ((b: MetricsBatch) => void) | null = null
+  let onEvent: ((e: EngineEvent) => void) | null = null
+
+  const emptyBatch = (simMs: number): MetricsBatch => ({
+    simMs, instances: {}, servers: {}, azs: {}, regions: {},
+    world: { totalRps: 0, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
+    managedServices: {},
+  })
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    onMetrics = null; onEvent = null
+    vi.spyOn(worldEngine, 'start').mockImplementation((_doc, _compiled, cb) => { onMetrics = cb.onMetrics; onEvent = cb.onEvent })
+    vi.spyOn(worldEngine, 'stop').mockImplementation(() => {})
+    vi.spyOn(worldEngine, 'resume').mockImplementation(() => {})
+    vi.spyOn(worldEngine, 'setTimeScale').mockImplementation(() => {})
+    vi.mocked(eventLogBeginRun).mockClear()
+    vi.mocked(eventLogAppend).mockClear()
+  })
+  afterEach(() => {
+    useSimulationStore.getState().resetSession()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  const runWithDownState = async () => {
+    const doc = createWorld()
+    useSimulationStore.getState().start(doc, compileWorld(doc))
+    await vi.advanceTimersByTimeAsync(0)                 // begin-run ack
+    onMetrics!(emptyBatch(1000))                          // a published frame (as if something went down)
+    onEvent!({ id: 'e1', simMs: 1000, kind: 'outage_triggered', severity: 'critical', message: 'down', affected: ['az-1'] } as EngineEvent)
+    await vi.advanceTimersByTimeAsync(0)                 // flush the buffered-event microtask
+    // Populate the remaining run-scoped fields the way a real down-mid-run session would.
+    useSimulationStore.setState({ degraded: true, scrubIndex: 2, scrubBatch: emptyBatch(200), healthOverrides: { 'az-1': true } })
+  }
+
+  it('End (stop) clears batch, events, scrub, degraded, health overrides, and event-log fields', async () => {
+    await runWithDownState()
+    // Precondition: the run left visual state behind.
+    expect(useSimulationStore.getState().latestBatch).not.toBeNull()
+    expect(useSimulationStore.getState().events.length).toBeGreaterThan(0)
+
+    useSimulationStore.getState().stop()
+
+    const s = useSimulationStore.getState()
+    expect(s.running).toBe(false)
+    expect(s.paused).toBe(false)
+    expect(s.latestBatch).toBeNull()      // ← the region/AZ "down" frame is gone
+    expect(s.events).toEqual([])
+    expect(s.scrubIndex).toBeNull()
+    expect(s.scrubBatch).toBeNull()
+    expect(s.degraded).toBe(false)
+    expect(s.healthOverrides).toEqual({})
+    expect(s.eventLogRunId).toBeNull()
+    expect(s.eventLogTotal).toBe(0)
+  })
+
+  it('a buffered event microtask after End does not repopulate the cleared window', async () => {
+    await runWithDownState()
+    onEvent!({ id: 'e2', simMs: 1100, kind: 'outage_triggered', severity: 'critical', message: 'x', affected: [] } as EngineEvent)
+    useSimulationStore.getState().stop()   // clears before the microtask fires
+    await vi.advanceTimersByTimeAsync(0)   // the orphaned buffer flush must be a no-op
+    expect(useSimulationStore.getState().events).toEqual([])
+  })
+
+  it('Pause preserves batch, events, scrub, degraded, and health overrides', async () => {
+    await runWithDownState()
+    useSimulationStore.getState().pause()
+    const s = useSimulationStore.getState()
+    expect(s.running).toBe(true)          // still an active (frozen) session
+    expect(s.paused).toBe(true)
+    expect(s.latestBatch).not.toBeNull()
+    expect(s.events.length).toBeGreaterThan(0)
+    expect(s.degraded).toBe(true)
+    expect(s.healthOverrides).toEqual({ 'az-1': true })
   })
 })

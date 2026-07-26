@@ -11,7 +11,7 @@ import { SectionHeader, EdgeRow, Segmented, Explainer } from '../ui/kit'
 import { smallBtn, dangerBtn, field, row } from '../panels/panelStyles'
 import { nextWorldId } from '../../../lib/world/factories'
 import { listRoutes } from '../../../lib/nodeConfig'
-import type { LbAlgorithm, LbMode, LoadBalancer } from '../../../lib/world/types'
+import type { AvailabilityZone, LbAlgorithm, LbMode, LoadBalancer } from '../../../lib/world/types'
 
 export interface RegionConfigTabProps { regionId: string }
 
@@ -94,7 +94,7 @@ export function RegionConfigTab({ regionId }: RegionConfigTabProps) {
           degenerates to rps / 1 either way). Hide the config until it's meaningful; explain why
           at exactly 1 AZ so the section's disappearance reads as expected, not broken. */}
       {azs.length >= 2 ? (
-        <LoadBalancerSection regionId={regionId} running={running} />
+        <LoadBalancerSection regionId={regionId} running={running} azs={azs} />
       ) : azs.length === 1 ? (
         <div style={{ color: 'var(--color-text-muted)', padding: '10px 2px 4px', fontSize: 10.5 }}>
           Add a second AZ to configure this region's load balancer.
@@ -109,7 +109,7 @@ export function RegionConfigTab({ regionId }: RegionConfigTabProps) {
 // each AZ locally; on spreads across every AZ. Reads the authored LB if present, else shows the
 // synthesized default (L4, cross-zone off); the first edit creates the LB via the store's
 // addLoadBalancer + patch dance.
-function LoadBalancerSection({ regionId, running }: { regionId: string; running: boolean }) {
+function LoadBalancerSection({ regionId, running, azs }: { regionId: string; running: boolean; azs: AvailabilityZone[] }) {
   const doc = useWorldStore(s => s.doc)
   const addLoadBalancer = useWorldStore(s => s.addLoadBalancer)
   const updateLoadBalancer = useWorldStore(s => s.updateLoadBalancer)
@@ -117,6 +117,7 @@ function LoadBalancerSection({ regionId, running }: { regionId: string; running:
   const mode: LbMode = lb?.mode ?? 'l4'
   const crossZone = lb?.crossZone ?? false
   const algorithm: LbAlgorithm = lb?.algorithm ?? 'round-robin'
+  const azWeights = lb?.azWeights ?? {}
 
   const patch = (p: Parameters<typeof updateLoadBalancer>[1]) =>
     updateLoadBalancer(lb?.id ?? addLoadBalancer(regionId), p)
@@ -160,6 +161,22 @@ function LoadBalancerSection({ regionId, running }: { regionId: string; running:
             options={[{ value: 'round-robin', label: 'round robin' }, { value: 'weighted', label: 'weighted' }]}
           />
         </label>
+        {algorithm === 'weighted' && (
+          <div style={{ display: 'grid', gap: 4 }}>
+            <Explainer>Relative weight per AZ — a blank or 0 weight falls back to an equal split.</Explainer>
+            {azs.map(az => (
+              <label key={az.id} style={rowLabel}>
+                <span>{az.label}</span>
+                <input
+                  type="number" min={0} step={1} style={{ ...field, width: 64, marginBottom: 0 }}
+                  aria-label={`az-weight-${az.id}`}
+                  value={azWeights[az.id] ?? 1}
+                  onChange={e => patch({ azWeights: { ...azWeights, [az.id]: Math.max(0, Number(e.target.value) || 0) } })}
+                />
+              </label>
+            ))}
+          </div>
+        )}
         {mode === 'l7' && <ListenerRulesEditor lb={lb} patch={patch} />}
       </fieldset>
     </div>

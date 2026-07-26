@@ -208,12 +208,19 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
   },
   stop: () => {
     worldEngine.stop()
-    stopEventFlusher()
-    // Manual outages don't outlive a run (user request 2026-07-11): stopping restores
-    // everything you killed. The engine rebuilds its failover state on the next start()
-    // anyway — this clears the UI side (kill/restore buttons, health tinting keyed off
-    // healthOverrides) so a fresh Simulate starts from a healthy world.
-    set({ running: false, paused: false, healthOverrides: {} })
+    stopEventFlusher()   // final drain FIRST (reads eventLogRunId), before it's cleared below
+    eventGen++           // orphan any un-flushed event buffer (ISSUE-053) so it can't repopulate
+    eventBuffer = []
+    // End ERASES the finished run's visuals and its stored run info (user request 2026-07-23:
+    // "persist on pause, erase on end"). Views read `scrubBatch ?? latestBatch`, so a retained
+    // batch kept a downed region/AZ rendering as down and its routing edge X'ed after ending;
+    // clearing it (plus events/scrub/degraded) returns every view to the at-rest authoring state.
+    // Manual outages also don't outlive a run (the engine rebuilds failover state on the next
+    // start()). Same field set resetSession clears — the run is over either way.
+    set({
+      running: false, paused: false, latestBatch: null, events: [], scrubIndex: null, scrubBatch: null,
+      degraded: false, healthOverrides: {}, eventLogRunId: null, eventLogTotal: 0,
+    })
   },
   // Pause: halt the engine (which PRESERVES state) and keep the whole session — latestBatch,
   // events, manual outages, the event-log run and its 1 Hz flusher (no new events tick in while
