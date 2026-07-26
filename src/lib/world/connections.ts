@@ -11,7 +11,7 @@
 //      is added (React Flow is gone; DOM/SVG precedent is az/DatacenterFloor.tsx).
 import type {
   WorldDoc, CompiledWorld, DependencyTarget, ServicePort, FirewallRule, FirewallSource,
-  BlockReason, ServiceBlueprint,
+  BlockReason, ServiceBlueprint, AzId,
 } from './types'
 import { evaluateFirewall } from './network'
 import { nextWorldId } from './factories'
@@ -330,4 +330,73 @@ export function connectionRows(doc: WorldDoc, compiled: CompiledWorld): Connecti
       a.fromLabel.localeCompare(b.fromLabel) ||
       a.toLabel.localeCompare(b.toLabel) ||
       a.port - b.port)
+}
+
+// ─── AZ-scoped read-only graph (2026-07-25) ──────────────────────────────────
+// Connections are authored once on the blueprint (see the scope-decision note above
+// edgesForView/ConnEdge) — a blueprint's placements routinely span several AZs at once, so an
+// authored dependency has no single AZ it "belongs" to and there is no per-AZ authoring surface
+// here. What DOES vary per AZ is which of the world's edges actually have a leg touching it:
+// `compiled.paths` already resolves each dependency down to instance-to-instance hops. This
+// re-runs edgesForView's exact aggregation (status/blockReason/counts) but over only the paths
+// with an endpoint in `azId`, keeping cross-AZ/cross-region edges (unlike floorData.ts's
+// aggregateFlows, which drops those — they render at region level on the floor scene instead).
+// Same `ConnNode`/`ConnEdge` shapes as the world-scope graph, so `AzConnectionsView.tsx` can
+// reuse `layoutNodes` + the same node/edge presentation, just read-only and pre-filtered.
+export function azConnectionGraph(doc: WorldDoc, compiled: CompiledWorld, azId: AzId): { nodes: ConnNode[]; edges: ConnEdge[] } {
+  const touchesAz = (p: CompiledWorld['paths'][number]): boolean => {
+    const from = compiled.instances[p.fromInstanceId]
+    if (from?.azId === azId) return true
+    if (p.to.kind !== 'instance') return false
+    return compiled.instances[p.to.instanceId]?.azId === azId
+  }
+
+  const byDep = new Map<string, { total: number; blocked: number; worst: BlockReason | null }>()
+  for (const p of compiled.paths) {
+    if (!touchesAz(p)) continue
+    const agg = byDep.get(p.dependencyId) ?? { total: 0, blocked: 0, worst: null }
+    agg.total++
+    if (p.verdict === 'blocked') {
+      agg.blocked++
+      if (!agg.worst && p.blockReason) agg.worst = p.blockReason
+    }
+    byDep.set(p.dependencyId, agg)
+  }
+
+  const edges: ConnEdge[] = []
+  const nodeIds = new Set<string>()
+
+  for (const bp of Object.values(doc.blueprints)) {
+    for (const dep of bp.dependencies) {
+      const agg = byDep.get(dep.id)
+      if (!agg) continue   // this dependency has no leg touching the AZ at all
+      const toId = dep.target.kind === 'blueprint' ? dep.target.blueprintId : dep.target.managedServiceId
+      edges.push({
+        id: dep.id, fromId: bp.id, toId, target: dep.target, port: dep.port, protocol: dep.protocol,
+        status: statusOf(agg.total, agg.blocked), blockReason: agg.worst,
+        totalPaths: agg.total, blockedPaths: agg.blocked,
+      })
+      nodeIds.add(bp.id)
+      nodeIds.add(toId)
+    }
+  }
+
+  // Ingress edge iff the entry blueprint has an instance IN THIS AZ (unlike edgesForView's
+  // world-wide "placed anywhere" check).
+  for (const bp of Object.values(doc.blueprints)) {
+    if (!isEntryBlueprint(bp)) continue
+    const placedHere = Object.values(compiled.instances).some(i => i.blueprintId === bp.id && i.azId === azId)
+    if (!placedHere) continue
+    const publicPort = bp.ports.find(p => p.visibility === 'public')!.port
+    edges.push({
+      id: `ingress:${bp.id}`, fromId: INTERNET_NODE, toId: bp.id, target: { kind: 'internet' },
+      port: publicPort, protocol: 'http', status: 'permitted', blockReason: null,
+      totalPaths: 1, blockedPaths: 0,
+    })
+    nodeIds.add(INTERNET_NODE)
+    nodeIds.add(bp.id)
+  }
+
+  const nodes = connNodes(doc).filter(n => nodeIds.has(n.id))
+  return { nodes, edges }
 }

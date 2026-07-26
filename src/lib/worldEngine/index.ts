@@ -13,7 +13,7 @@ import type {
   ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole,
 } from '../world/types'
 import { managedDbEngine } from '../world/types'
-import { routeMatchesPattern, listRoutes } from '../nodeConfig'
+import { routeMatchesPattern, listRoutes, routeIngressBytes } from '../nodeConfig'
 import { createRng, type Rng } from './rng'
 import { createClock, type ClockHandle } from './engineClock'
 import {
@@ -86,6 +86,37 @@ function buildRoutePathById(doc: WorldDoc): Map<string, string> {
   return m
 }
 
+// Per-route wire bytes, resolved once at start. Two conventions on purpose:
+//   cost*  — the client-facing internet-egress line, symmetric 2 KB fallback (routeIngressBytes),
+//            so a world with no authored sizes matches the engine's old flat egress constant.
+//   nic*   — the entry NIC, keeping its asymmetric 512 in / 2048 out fallback so entry NIC
+//            throughput is byte-identical until a route actually authors a size.
+// An authored sizeKb / responseSizeKb overrides BOTH.
+interface RouteWireBytes { costReq: number; costResp: number; nicReq: number; nicResp: number }
+function buildRouteBytesById(doc: WorldDoc): Map<string, RouteWireBytes> {
+  const m = new Map<string, RouteWireBytes>()
+  for (const route of listRoutes(doc.packets)) {
+    const cost = routeIngressBytes(route)
+    m.set(String(route.id), {
+      costReq: cost.reqBytes, costResp: cost.respBytes,
+      nicReq: route.sizeKb != null ? route.sizeKb * 1024 : NIC_REQUEST_BYTES,
+      nicResp: route.responseSizeKb != null ? route.responseSizeKb * 1024 : NIC_RESPONSE_BYTES,
+    })
+  }
+  return m
+}
+
+// The implicit null "default" route (a population with no request mix). Cost keeps the symmetric
+// 2 KB convention; NIC keeps its asymmetric split — both matching pre-packet-sizing behavior.
+const DEFAULT_ROUTE_WIRE_BYTES: RouteWireBytes = {
+  costReq: routeIngressBytes(undefined).reqBytes, costResp: routeIngressBytes(undefined).respBytes,
+  nicReq: NIC_REQUEST_BYTES, nicResp: NIC_RESPONSE_BYTES,
+}
+
+// Per-entry-instance byte-weighted accumulators (Σ rps×bytes over the routes that landed there);
+// divided by the instance's entry rps to get its weighted-average request/response wire size.
+interface EntryByteAccum { costReq: number; costResp: number; nicReq: number; nicResp: number }
+
 // The L7 listener-rule match: the first rule (authored order) whose pattern matches the route's
 // path selects its target group; a route with no path (the implicit default route) or one that
 // matches nothing falls to the LB's default action. L4 LBs carry no rules, so every route lands
@@ -116,6 +147,7 @@ interface EngineState {
   // where Array.includes' O(k) scan multiplies against the hottest loop in the engine.
   entryBlueprintIds: Set<BlueprintId>
   routePathById: Map<string, string>         // routeId → route path, for L7 listener-rule matching
+  routeBytesById: Map<string, RouteWireBytes>  // routeId → per-request wire bytes (cost + NIC)
 
   // Static topology indexes built once at start() (audit ISSUE-032): the per-step health
   // propagation loops read these instead of re-filtering doc.servers/doc.azs per AZ/region
@@ -249,6 +281,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     routeDemands: RouteDemand[],
     into: Record<InstanceId, number>,
     droppedByAz?: Record<AzId, number>,
+    // When supplied, attribute each route's byte sizes to the entry instances that received it:
+    // route the demand into a per-route scratch map, then fold both rps (into `into`) and
+    // byte-weighted sums (into `weightAccum`). Absent ⇒ demand routes straight into `into`, unchanged.
+    weightAccum?: Record<InstanceId, EntryByteAccum>,
   ): void => {
     const s = state!
     const lb = s.compiled.routing.lbRouting[regionId]
@@ -257,6 +293,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     for (const { routeId, rps } of routeDemands) {
       if (rps <= 0) continue
       const path = routeId != null ? s.routePathById.get(routeId) : null
+      const target = weightAccum ? {} : into
       distributeToTargets({
         targetBlueprintIds: matchRouteTargets(path, lb),
         rps,
@@ -266,9 +303,22 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         healthOfScope,
         healthOfInstance,
         cursors: s.routing,
-        into,
+        into: target,
         droppedByAz,
+        weighted: lb.algorithm === 'weighted',
+        azWeights: lb.azWeights,
       })
+      if (weightAccum && target !== into) {
+        const wb = (routeId != null ? s.routeBytesById.get(routeId) : undefined) ?? DEFAULT_ROUTE_WIRE_BYTES
+        for (const iid in target) {
+          const r = (target as Record<InstanceId, number>)[iid]
+          into[iid] = (into[iid] ?? 0) + r
+          let acc = weightAccum[iid]
+          if (!acc) { acc = { costReq: 0, costResp: 0, nicReq: 0, nicResp: 0 }; weightAccum[iid] = acc }
+          acc.costReq += r * wb.costReq; acc.costResp += r * wb.costResp
+          acc.nicReq += r * wb.nicReq; acc.nicResp += r * wb.nicResp
+        }
+      }
     }
   }
 
@@ -340,6 +390,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // ── 3. routing: resolve + build entry demand ──
     const populationRoutes: RoutingSnapshot['populationRoutes'] = []
     const entryDemand: Record<InstanceId, number> = {}
+    // Byte-weighted route sizes per entry instance (slice 1: packet-driven egress). Folded into
+    // per-instance weighted averages after the routing loop, below.
+    const entryByteAccum: Record<InstanceId, EntryByteAccum> = {}
     // Undeliverable rps this step, keyed by the AZ that couldn't serve it (cross-zone-off
     // forfeiture, empty target group, all-down region). Folded into region health + published as
     // a metric so dropped traffic is no longer invisible.
@@ -389,10 +442,23 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         // Rows are pushed even at rps 0 (a Poisson tick can draw zero arrivals) — the routing
         // snapshot is attribution, and drain arcs / inbound lists key off row presence.
         populationRoutes.push({ populationId: pop.id, regionId, rps })
-        distributeViaLb(regionId, splitDemandByMix(rps, pop.requestMix), entryDemand, droppedByAz)
+        distributeViaLb(regionId, splitDemandByMix(rps, pop.requestMix), entryDemand, droppedByAz, entryByteAccum)
       }
     }
     s.lastRoutingSnapshot = { populationRoutes }
+
+    // Weighted-average request/response wire bytes per entry instance, from the route mix that
+    // landed there. `entryBytesByInstance` (cost/2 KB convention) → the solver's internet-egress
+    // seed; `entryNicBytesByInstance` (512/2048 convention) → the entry NIC booking in step 7.
+    const entryBytesByInstance: Record<InstanceId, { reqBytes: number; respBytes: number }> = {}
+    const entryNicBytesByInstance: Record<InstanceId, { reqBytes: number; respBytes: number }> = {}
+    for (const iid in entryByteAccum) {
+      const d = entryDemand[iid]
+      if (!d || d <= 0) continue
+      const acc = entryByteAccum[iid]
+      entryBytesByInstance[iid] = { reqBytes: acc.costReq / d, respBytes: acc.costResp / d }
+      entryNicBytesByInstance[iid] = { reqBytes: acc.nicReq / d, respBytes: acc.nicResp / d }
+    }
 
     // ── 4/5. host scheduling (prev-step load) + VPS ──
     const admittedScaleByServer: Record<ServerId, number> = {}
@@ -509,6 +575,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // Queue model (audit ISSUE-013): fair-share service rates + the persistent queue map
       // (mutated in place) + step length — activates the queueing path in the solver.
       serviceRateByInstance, queueDepth: s.queueDepth, stepSec,
+      // Packet-driven egress (slice 1): per-entry-instance request+response wire bytes seed the
+      // internet-egress byte total by the route mix's actual payload size (absent ⇒ 2 KB fallback).
+      entryBytesByInstance,
       breakerOpen, healthOf: healthOfInstance, roleOf, rng: s.rng,
       // Manual managed-service outages (node-model Phase 5.2): a downed managed service fails every
       // call to it. Read straight from the manual-outage set — managed ids aren't in the per-step
@@ -525,7 +594,17 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const inst = compiled.instances[f.instanceId]
       const nic = inst ? nicByServer[inst.serverId] : undefined
       if (!inst || !nic) continue
-      addNicBytes(nic, f.admittedRps * NIC_REQUEST_BYTES * stepSec, f.admittedRps * NIC_RESPONSE_BYTES * stepSec)
+      // The entry-demand share of this instance's admitted rps carries route-sized payloads; any
+      // remaining (internal-serving) rps keeps the flat NIC split. `entryNicBytesByInstance` already
+      // falls back to 512/2048 for unauthored routes, so an entry-only instance stays byte-identical.
+      const eb = entryNicBytesByInstance[f.instanceId]
+      const entryRps = eb ? Math.min(f.admittedRps, entryDemand[f.instanceId] ?? 0) : 0
+      const internalRps = f.admittedRps - entryRps
+      addNicBytes(
+        nic,
+        (entryRps * (eb ? eb.reqBytes : 0) + internalRps * NIC_REQUEST_BYTES) * stepSec,
+        (entryRps * (eb ? eb.respBytes : 0) + internalRps * NIC_RESPONSE_BYTES) * stepSec,
+      )
     }
 
     // ── 8. breaker record + transition ──
@@ -954,6 +1033,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         running: true, seed, rng: createRng(seed), clock: createClock(DEFAULT_STEP_MS), stepMs: DEFAULT_STEP_MS,
         timeScale: 1, doc, compiled, callbacks, entryBlueprintIds: new Set(entryBlueprints(doc)),
         routePathById: buildRoutePathById(doc),
+        routeBytesById: buildRouteBytesById(doc),
         serversByAz: groupBy(Object.values(doc.servers), sv => sv.azId),
         azsByRegion: groupBy(Object.values(doc.azs), az => az.regionId),
         instancesByServer: groupInstancesByServer(compiled),

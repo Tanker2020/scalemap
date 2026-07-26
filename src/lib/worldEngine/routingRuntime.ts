@@ -123,27 +123,56 @@ export interface DistributeInput {
   healthOfInstance: (id: InstanceId) => HealthState
   cursors: RoutingState
   into: Record<InstanceId, number>                                   // accumulator (mutated)
-  // Undeliverable rps, keyed by the AZ that could not serve it (audit follow-up: cross-zone-off
-  // forfeiture used to vanish silently). A real cross-zone-off NLB FAILS the connections routed to
-  // an AZ with no healthy target, so that share is a failure, not a no-op — every drop point below
-  // credits it here. Optional accumulator (mutated), mirroring `into`; absent ⇒ drops go uncounted
-  // (existing callers/tests unchanged).
+  // Weighted-algorithm inputs (both optional; absent/false ⇒ byte-identical to the pre-weighted
+  // equal split below — round-robin LBs never touch this). When `weighted` is true, each AZ's
+  // share of `rps` is proportional to `azWeights[azId]` (default 1) instead of an equal split;
+  // an all-zero/absent weight set among the candidate AZs falls back to equal, same as
+  // resolveRegion's pickWeighted does for an all-zero region-weight policy.
+  weighted?: boolean
+  azWeights?: Record<AzId, number>
+  // Undeliverable rps, keyed by the AZ that could not serve it. Traffic drops here only when the
+  // WHOLE group can't be served (empty target group, or every target down region-wide) — a
+  // cross-zone-off AZ that merely lacks a healthy target for this group is instead pulled from
+  // rotation and its share redistributed to the serving AZs (see the crossZone-false path), not
+  // failed. Optional accumulator (mutated), mirroring `into`; absent ⇒ drops go uncounted.
   droppedByAz?: Record<AzId, number>
 }
 
 // Distributes `rps` across a target group per the regional LB's cross-zone setting. This is the
 // region→AZ→instance tier (the LB "between the AZs"); the caller has already resolved which
 // target blueprints answer this traffic (default action in L4, a matched listener rule in L7).
-//   crossZone false (NLB default) — each healthy AZ node takes an equal share and serves ONLY
-//     its own AZ's targets (entry-node == serving-AZ). Byte-equivalent to the pre-LB equal-per-AZ
-//     distribution: perAz = rps / healthyAzCount, then one round-robin instance per target
-//     blueprint present in the AZ. An AZ with no target instances forfeits its share.
+//   crossZone false (NLB default) — each AZ node serves ONLY its own AZ's targets (entry-node ==
+//     serving-AZ). The equal per-AZ share (perAz = rps / servingAzCount) is spread over just the
+//     AZs that hold a HEALTHY target for this group: an AZ with none is pulled from rotation (as
+//     AWS drops a zone with no healthy targets out of DNS), so its share REDISTRIBUTES to the
+//     serving AZs instead of failing. Only when NO AZ can serve does the group's traffic drop.
 //   crossZone true (ALB default) — every healthy target instance region-wide gets an equal split
 //     (entry-node decoupled from serving-AZ), so unequal per-AZ instance counts skew the per-AZ
 //     totals toward the AZ with more instances.
+function azWeightOf(azWeights: Record<AzId, number> | undefined, azId: AzId): number {
+  return Math.max(0, azWeights?.[azId] ?? 1)
+}
+
+// Splits `total` across `azIds` proportional to weight when `weighted` is true and at least one
+// candidate carries positive weight; falls back to an equal split otherwise (unweighted mode, or
+// a degenerate all-zero weight set).
+function azShares(azIds: AzId[], total: number, weighted: boolean | undefined, azWeights: Record<AzId, number> | undefined): Map<AzId, number> {
+  const shares = new Map<AzId, number>()
+  if (weighted) {
+    const totalWeight = azIds.reduce((sum, id) => sum + azWeightOf(azWeights, id), 0)
+    if (totalWeight > 0) {
+      for (const id of azIds) shares.set(id, total * azWeightOf(azWeights, id) / totalWeight)
+      return shares
+    }
+  }
+  const per = total / azIds.length
+  for (const id of azIds) shares.set(id, per)
+  return shares
+}
+
 export function distributeToTargets(input: DistributeInput): void {
   const { targetBlueprintIds, rps, crossZone, regionAzSpread, azBlueprintTargets,
-    healthOfScope, healthOfInstance, cursors, into, droppedByAz } = input
+    healthOfScope, healthOfInstance, cursors, into, droppedByAz, weighted, azWeights } = input
   if (rps <= 0) return
   // Credit undeliverable `amount` to `azId` (or spread across the region's AZs when the drop isn't
   // attributable to one AZ — e.g. an empty target group or an all-down region).
@@ -161,32 +190,66 @@ export function distributeToTargets(input: DistributeInput): void {
   if (healthyAzs.length === 0) { drop(null, rps); return }
 
   if (crossZone) {
-    const targets: InstanceId[] = []
+    if (!weighted) {
+      const targets: InstanceId[] = []
+      for (const azId of healthyAzs) {
+        const byBp = azBlueprintTargets[azId] ?? {}
+        for (const bpId of targetBlueprintIds) {
+          for (const iid of byBp[bpId] ?? []) {
+            if (healthOfInstance(iid) !== 'down') targets.push(iid)
+          }
+        }
+      }
+      if (targets.length === 0) { drop(null, rps); return }
+      const per = rps / targets.length
+      for (const iid of targets) into[iid] = (into[iid] ?? 0) + per
+      return
+    }
+    // Weighted: each AZ's total share is proportional to its weight, then split evenly across
+    // that AZ's own healthy targets for the group (unlike the unweighted flat split above, an
+    // AZ's instance COUNT no longer skews its share — only its authored weight does).
+    const byAz: { azId: AzId; targets: InstanceId[] }[] = []
     for (const azId of healthyAzs) {
       const byBp = azBlueprintTargets[azId] ?? {}
+      const targets: InstanceId[] = []
       for (const bpId of targetBlueprintIds) {
         for (const iid of byBp[bpId] ?? []) {
           if (healthOfInstance(iid) !== 'down') targets.push(iid)
         }
       }
+      if (targets.length > 0) byAz.push({ azId, targets })
     }
-    if (targets.length === 0) { drop(null, rps); return }
-    const per = rps / targets.length
-    for (const iid of targets) into[iid] = (into[iid] ?? 0) + per
+    if (byAz.length === 0) { drop(null, rps); return }
+    const shares = azShares(byAz.map(x => x.azId), rps, weighted, azWeights)
+    for (const { azId, targets } of byAz) {
+      const per = (shares.get(azId) ?? 0) / targets.length
+      for (const iid of targets) into[iid] = (into[iid] ?? 0) + per
+    }
     return
   }
 
-  const perAz = rps / healthyAzs.length
+  // Each AZ node serves ONLY its own targets, but an AZ with no HEALTHY target for this group is
+  // pulled from the LB's rotation — mirroring how AWS removes a zone with no healthy targets from
+  // DNS once health checks confirm it — so its share REDISTRIBUTES to the AZs that can serve
+  // rather than failing. `targetsHere` therefore filters on instance health (not mere placement),
+  // and only AZs with a non-empty set stay in the split.
+  const serving: { azId: AzId; byBp: Record<BlueprintId, InstanceId[]>; targetsHere: BlueprintId[] }[] = []
   for (const azId of healthyAzs) {
     const byBp = azBlueprintTargets[azId] ?? {}
-    const targetsHere = targetBlueprintIds.filter(bpId => (byBp[bpId]?.length ?? 0) > 0)
-    // This AZ's node has no healthy target for the traffic routed to it: cross-zone-off can't
-    // spill to another AZ, so the whole per-AZ share fails here (real NLB connection failures).
-    if (targetsHere.length === 0) { drop(azId, perAz); continue }
-    const perBp = perAz / targetsHere.length
+    const targetsHere = targetBlueprintIds.filter(bpId => (byBp[bpId] ?? []).some(iid => healthOfInstance(iid) !== 'down'))
+    if (targetsHere.length > 0) serving.push({ azId, byBp, targetsHere })
+  }
+  // No AZ in the region can serve this group (every target down, or none placed in a healthy AZ):
+  // now the whole share genuinely fails, spread across the region's AZs since it isn't attributable
+  // to one. (A single empty AZ no longer drops — it just left the split above.)
+  if (serving.length === 0) { drop(null, rps); return }
+  const shares = azShares(serving.map(x => x.azId), rps, weighted, azWeights)
+  for (const { azId, byBp, targetsHere } of serving) {
+    const perBp = (shares.get(azId) ?? 0) / targetsHere.length
     for (const bpId of targetsHere) {
       const inst = pickInstance(cursors, azId, bpId, byBp[bpId], healthOfInstance)
-      // pickInstance returns null only when every instance of the blueprint here is down.
+      // targetsHere guarantees ≥1 healthy instance of bpId here, so pickInstance won't return null;
+      // the drop is defensive belt-and-braces that keeps the accounting closed.
       if (inst) into[inst] = (into[inst] ?? 0) + perBp
       else drop(azId, perBp)
     }

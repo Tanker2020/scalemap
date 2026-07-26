@@ -56,22 +56,22 @@ describe('distributeToTargets (regional LB distribution)', () => {
     expect(into['i-b0'] ?? 0).toBe(0)
   })
 
-  // The target service placed in only ONE of the region's AZs, cross-zone off: the other AZ's
-  // per-AZ share can't be served there and is REPORTED as dropped (used to vanish silently).
-  it('cross-zone off reports the empty-AZ per-AZ share as dropped, not silently lost', () => {
+  // The target service placed in only ONE of the region's AZs, cross-zone off: the empty AZ is
+  // pulled from the LB's rotation (AWS drops a zone with no healthy targets out of DNS), so its
+  // share REDISTRIBUTES to the AZ that can serve — nothing is dropped.
+  it('cross-zone off redistributes the empty-AZ share to the serving AZ, dropping nothing', () => {
     const into: Record<string, number> = {}
     const droppedByAz: Record<string, number> = {}
-    // Only az1 hosts the target blueprint; az2 has none.
+    // Only az1 hosts the target blueprint; az2 has none, so az2 leaves the split entirely.
     distributeToTargets({
       targetBlueprintIds: ['bp'], rps: 500, crossZone: false,
       regionAzSpread, azBlueprintTargets: { az1: { bp: ['i-a0'] } },
       healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into, droppedByAz,
     })
-    expect(into['i-a0']).toBe(250)       // az1's half is delivered
-    expect(droppedByAz['az2']).toBe(250) // az2's half (no target here) is reported dropped
+    expect(into['i-a0']).toBe(500)       // az1 is the only serving AZ → it takes the whole ingress
+    expect(droppedByAz['az2'] ?? 0).toBe(0)
     expect(droppedByAz['az1'] ?? 0).toBe(0)
-    // Delivered + dropped accounts for the whole ingress — nothing vanishes.
-    expect((into['i-a0'] ?? 0) + Object.values(droppedByAz).reduce((a, b) => a + b, 0)).toBe(500)
+    expect(Object.values(droppedByAz).reduce((a, b) => a + b, 0)).toBe(0) // nothing forfeited
   })
 
   it('reports the full rps as dropped when the target group is empty (spread across region AZs)', () => {
@@ -96,6 +96,44 @@ describe('distributeToTargets (regional LB distribution)', () => {
     })
     expect(into['i-a0'] ?? 0).toBe(0)
     expect(droppedByAz['az1']).toBe(100)
+  })
+
+  it('weighted + cross-zone off splits per-AZ share by weight, not equally', () => {
+    const into: Record<string, number> = {}
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 100, crossZone: false, weighted: true,
+      azWeights: { az1: 3, az2: 1 },
+      regionAzSpread, azBlueprintTargets,
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into,
+    })
+    // az1 gets 75% of 100 (round-robin claims it on one instance), az2 gets 25%.
+    expect(into['i-a0']).toBe(75)
+    expect(into['i-b0']).toBe(25)
+  })
+
+  it('weighted + cross-zone on splits each AZ total by weight, then evenly across its own targets', () => {
+    const into: Record<string, number> = {}
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 100, crossZone: true, weighted: true,
+      azWeights: { az1: 1, az2: 1 },
+      regionAzSpread, azBlueprintTargets,
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into,
+    })
+    // Equal AZ weights → az1's 50 splits across its 2 instances (25 each), az2's 50 goes whole
+    // to its 1 instance — unlike the unweighted flat split, instance COUNT no longer skews this.
+    expect(into).toEqual({ 'i-a0': 25, 'i-a1': 25, 'i-b0': 50 })
+  })
+
+  it('weighted with an all-zero weight set falls back to an equal split', () => {
+    const into: Record<string, number> = {}
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 100, crossZone: false, weighted: true,
+      azWeights: { az1: 0, az2: 0 },
+      regionAzSpread, azBlueprintTargets,
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into,
+    })
+    expect(into['i-a0']).toBe(50)
+    expect(into['i-b0']).toBe(50)
   })
 })
 

@@ -7,6 +7,7 @@ import {
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
 import { addRoute, routeIdOf } from '../nodeConfig'
+import { computeWorldCost } from '../costModelV2'
 import type { WorldDoc } from '../world/types'
 import type { MetricsBatch, EngineEvent } from './types'
 
@@ -111,40 +112,36 @@ describe('cross-zone-off ingress distribution', () => {
     sim.engine.stop()
   })
 
-  it('forfeits the AZ share with no entry target — HALF the ingress is dropped (cross-zone off)', () => {
+  it('redistributes to the serving AZ when the entry target sits in only one AZ (nothing dropped)', () => {
     const f = twoAzIngress(false)   // entry only in az1
     const sim = drive(f.doc, f.compiled)
     sim.stepFor(20)
     const b = sim.latest()
-    // az1's node gets perAz = 250 → web1 ≈ 250; az2's node has no target → its 250 is dropped.
-    expect(b.instances[f.web1!].rps).toBeGreaterThan(200)
-    expect(b.instances[f.web1!].rps).toBeLessThan(300)
-    expect(b.world.totalRps).toBeGreaterThan(200)
-    expect(b.world.totalRps).toBeLessThan(300)       // only ~250 of the 500 landed
-    expect(b.azs[f.az2].rps).toBe(0)                 // az2 processed nothing
+    // az2 has no entry target, so it is pulled from the regional LB's rotation (AWS drops a zone
+    // with no healthy targets out of DNS) — az1's node absorbs the WHOLE ~500 rather than az2
+    // forfeiting its half. Round-robin isn't broken; the empty AZ simply isn't in the split.
+    expect(b.instances[f.web1!].rps).toBeGreaterThan(450)
+    expect(b.world.totalRps).toBeGreaterThan(450)    // ~all 500 landed
+    expect(b.azs[f.az2].rps ?? 0).toBe(0)            // az2 still processes nothing itself
     sim.engine.stop()
   })
 
-  it('SURFACES the forfeited share: az2 reports droppedRps and the region degrades on display', () => {
+  it('drops NOTHING at the LB when an AZ lacks the entry target — the empty AZ just leaves rotation', () => {
     const f = twoAzIngress(false)   // entry only in az1
     const sim = drive(f.doc, f.compiled)
     sim.stepFor(20)
     const b = sim.latest()
-    // The ~250 rps routed to az2 (no target there) is no longer invisible — it's on az2's metric.
-    expect(b.azs[f.az2].droppedRps ?? 0).toBeGreaterThan(200)
-    expect(b.azs[f.az2].droppedRps ?? 0).toBeLessThan(300)
-    // az1 delivered its share, nothing dropped there.
+    // No forfeiture: the ingress routed to az2 is redistributed to az1, not failed.
+    expect(b.azs[f.az2].droppedRps ?? 0).toBeLessThan(1)
     expect(b.azs[f.az1].droppedRps ?? 0).toBeLessThan(1)
-    // The region roll-up carries it and its DISPLAYED error rate reflects the ~50% failing inbound
-    // (≈ dropped / (served + dropped)), so the region no longer looks fully healthy.
+    // The region roll-up therefore stays healthy — no phantom ~50% error rate from LB drops.
     const region = b.regions[Object.keys(b.regions)[0]]
-    expect(region.droppedRps ?? 0).toBeGreaterThan(200)
-    expect(region.errorRate).toBeGreaterThan(0.4)
-    expect(region.health).not.toBe('healthy')
-    // …but the cascade is NOT triggered: the surviving web instance keeps serving at full health
-    // (dropped is a DISPLAY/metric impairment, never fed into the failover state machine).
+    expect(region.droppedRps ?? 0).toBeLessThan(1)
+    expect(region.errorRate).toBeLessThan(0.05)
+    expect(region.health).toBe('healthy')
+    // The surviving web instance carries the redistributed load at full health.
     expect(b.instances[f.web1!].health).toBe('healthy')
-    expect(b.instances[f.web1!].rps).toBeGreaterThan(200)
+    expect(b.instances[f.web1!].rps).toBeGreaterThan(450)
     sim.engine.stop()
   })
 })
@@ -669,5 +666,63 @@ describe('starved-vs-idle metrics (audit ISSUE-014)', () => {
     sim.stepFor(30)   // recovery hysteresis + traffic resumes
     expect(sim.latest().instances[f.dbInst].health).toBe('healthy')
     sim.engine.stop()
+  })
+})
+
+// Packet-driven egress (slice 1): a route's responseSizeKb drives the client→entry internet byte
+// rate, so the internet-egress cost line varies with the traffic's actual payload size instead of
+// the old flat 2 KB-each-way constant.
+describe('route-driven internet egress bytes', () => {
+  // One region / AZ / server, a single public entry service, one population whose whole mix is a
+  // single route — so internet bytes are exactly (offered rps × the route's request+response size).
+  function singleEntryWorld(responseSizeKb: number | null) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const sv = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[sv.id] = sv
+    const web = publicBlueprint('web', 0); doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, sv.id); doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0); pop.peakRps = 40   // light: no NIC shedding
+    if (responseSizeKb != null) {
+      const route = addRoute(doc.packets, { name: 'api', method: 'GET', path: '/api', sizeKb: 1, responseSizeKb })
+      doc.packets = route.registry
+      pop.requestMix = [{ routeId: routeIdOf(route.route), weight: 1 }]
+    }
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc) }
+  }
+
+  const settle = (f: { doc: WorldDoc; compiled: ReturnType<typeof compileWorld> }) => {
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(6)
+    const b = sim.latest()
+    sim.engine.stop()
+    return b
+  }
+
+  it('a larger response size yields a proportionally larger internet byte rate and cost', () => {
+    const small = settle(singleEntryWorld(4))     // 1 KB req + 4 KB resp
+    const big = settle(singleEntryWorld(256))     // 1 KB req + 256 KB resp
+    expect(big.world.internetEgressBytesPerSec).toBeGreaterThan(small.world.internetEgressBytesPerSec)
+    // Same seed ⇒ same offered-rps trajectory, so the ratio reflects only the size difference:
+    // (1+256)/(1+4) ≈ 51×.
+    const ratio = big.world.internetEgressBytesPerSec / small.world.internetEgressBytesPerSec
+    expect(ratio).toBeGreaterThan(30)
+    // Cost follows the byte rate.
+    const costSmall = computeWorldCost(singleEntryWorld(4).doc, small.world).egress.internetUsd
+    const costBig = computeWorldCost(singleEntryWorld(256).doc, big.world).egress.internetUsd
+    expect(costBig).toBeGreaterThan(costSmall)
+  })
+
+  it('a world with no authored routes keeps the 2 KB-each-way convention (byte-identical)', () => {
+    const b = settle(singleEntryWorld(null))   // implicit default route → fallback sizes
+    // internet bytes are seeded from offered entry rps × 4096 (2 KB req + 2 KB resp); at this light
+    // load offered ≈ admitted, so the ratio to totalRps sits right at 4096.
+    const perReq = b.world.internetEgressBytesPerSec / b.world.totalRps
+    expect(perReq).toBeGreaterThan(3900)
+    expect(perReq).toBeLessThan(4300)
   })
 })

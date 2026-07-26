@@ -227,6 +227,33 @@ describe('RegionConfigTab', () => {
     expect(screen.queryByText(/add a second az/i)).toBeNull()
   })
 
+  it('hides per-AZ weight inputs under round-robin, shows them under weighted', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addAz(regionId, 'us-east-1b')
+    render(<RegionConfigTab regionId={regionId} />)
+    expect(screen.queryByLabelText(/az-weight-/)).toBeNull()
+
+    fireEvent.click(within(screen.getByRole('group', { name: 'lb-algorithm' })).getByText('weighted'))
+    expect(screen.getAllByLabelText(/az-weight-/)).toHaveLength(2)
+  })
+
+  it('editing a per-AZ weight input patches azWeights, defaulting unset AZs to 1', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azA = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const azB = useWorldStore.getState().addAz(regionId, 'us-east-1b')
+    render(<RegionConfigTab regionId={regionId} />)
+    fireEvent.click(within(screen.getByRole('group', { name: 'lb-algorithm' })).getByText('weighted'))
+
+    expect(screen.getByLabelText(`az-weight-${azA}`)).toHaveValue(1)
+    expect(screen.getByLabelText(`az-weight-${azB}`)).toHaveValue(1)
+
+    fireEvent.change(screen.getByLabelText(`az-weight-${azA}`), { target: { value: '3' } })
+    const lb = Object.values(useWorldStore.getState().doc.loadBalancers).find(l => l.regionId === regionId)!
+    expect(lb.azWeights).toEqual({ [azA]: 3 })
+    expect(screen.getByLabelText(`az-weight-${azB}`)).toHaveValue(1) // still defaulted, not persisted
+  })
+
   // T2 review fix (motion-law violation): spec D3 gives the dock exactly ONE ambient stroke
   // (the atlas arc, mounted above the tab bar at region scope) — everything else in every dock
   // is hover-reactive only. EdgeRow's `kit-ripple` class runs a non-hover-gated `animation:

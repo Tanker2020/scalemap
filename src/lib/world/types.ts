@@ -329,6 +329,10 @@ export interface LoadBalancer {
   algorithm: LbAlgorithm
   listenerRules: ListenerRule[]                 // L7 only; [] in L4
   defaultTargetBlueprintId: BlueprintId | null  // ALB "default action"; null = all entry blueprints
+  // Relative per-AZ weight, read only when algorithm === 'weighted' (ignored under
+  // 'round-robin', so switching back is loss-free). Missing/absent AZ ⇒ default weight 1.
+  // Optional so older-authored/serialized LBs need no migration.
+  azWeights?: Record<AzId, number>
 }
 
 export interface WorldDoc {
@@ -403,6 +407,9 @@ export interface CompiledLbRouting {
   algorithm: LbAlgorithm
   rules: { pathPattern: string; targetBlueprintId: BlueprintId }[]
   defaultTargetBlueprintIds: BlueprintId[]
+  // Resolved per-AZ weights (defaulted from the authored LB; {} when absent or algorithm is
+  // 'round-robin' — distributeToTargets only consults this when algorithm === 'weighted').
+  azWeights: Record<AzId, number>
 }
 
 export interface CompiledRouting {

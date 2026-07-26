@@ -127,6 +127,7 @@ describe('lbRouting (regional load balancer compilation)', () => {
       algorithm: 'round-robin',
       rules: [],
       defaultTargetBlueprintIds: [web.id],
+      azWeights: {},
     })
   })
 
