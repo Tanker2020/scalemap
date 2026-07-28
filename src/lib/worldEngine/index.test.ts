@@ -1019,3 +1019,71 @@ describe('log-normal NIC-burst tails (mean-preserving, entry tier — slice 3)',
     expect(bZero.world.internetEgressBytesPerSec).toBe(bUnauthored.world.internetEgressBytesPerSec)
   })
 })
+
+// Coverage gap flagged by the final whole-branch review: no existing test exercises slice 2
+// (cpuMsPerKb CPU blend) and slice 3 (sizeVariance NIC-burst multiplier) authored TOGETHER on the
+// same entry instance. The two features fold from independent accumulator fields (cpuKb vs. varW)
+// off the same per-route RouteWireBytes, so they should not interact — this proves it rather than
+// assuming it.
+describe('packet-driven CPU + NIC-burst variance authored together (slices 2 & 3)', () => {
+  // Same entry-tier fixture shape as slice 2's/slice 3's own describe blocks, but the route/
+  // blueprint author BOTH cpuMsPerKb and sizeVariance at once.
+  function combinedWorld(sizeVariance: number, opts: { nicMbps?: number; responseSizeKb?: number; peakRps?: number } = {}) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const sv = createServer(az.id, getPreset('dedicated-8')!)
+    if (opts.nicMbps != null) sv.specs.nicMbps = opts.nicMbps
+    doc.servers[sv.id] = sv
+    const web = publicBlueprint('web', 0)
+    web.workload = { ...web.workload, cpuMsPerKb: 0.05 }
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, sv.id); doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0); pop.peakRps = opts.peakRps ?? 150
+    const route = addRoute(doc.packets, {
+      name: 'api', method: 'GET', path: '/api', sizeKb: 1, responseSizeKb: opts.responseSizeKb ?? 50, sizeVariance,
+    })
+    doc.packets = route.registry
+    pop.requestMix = [{ routeId: routeIdOf(route.route), weight: 1 }]
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), serverId: sv.id, webIid: instanceId(pl.id, 0) }
+  }
+
+  it('slice 2 CPU blend still drives real, finite CPU usage when the same route also authors sizeVariance', () => {
+    const withBoth = combinedWorld(0.9, { peakRps: 150 })
+    const sim = drive(withBoth.doc, withBoth.compiled)
+    sim.stepFor(15)
+    const b = sim.latest()
+    sim.engine.stop()
+    // sizeVariance never touches the cpuKb accumulator (only the NIC-booking multiplier) — the CPU
+    // blend should be observable (finite, nonzero) exactly as it is in slice 2's own tests.
+    expect(Number.isFinite(b.instances[withBoth.webIid].cpuCoresUsed)).toBe(true)
+    expect(b.instances[withBoth.webIid].cpuCoresUsed).toBeGreaterThan(0)
+    for (const u of b.servers[withBoth.serverId].coreUtilization) expect(Number.isFinite(u)).toBe(true)
+  })
+
+  it("mean internetEgressBytesPerSec / internet-egress cost stays within slice 3's ample-NIC tolerance when cpuMsPerKb is also authored", () => {
+    // Matching slice 3's own ample-NIC test's fixture/tolerance (5%) — cpuMsPerKb only affects the
+    // host scheduler's CPU accounting, never entryBytesByInstance (the egress/cost seed), so adding
+    // it should not widen the sigma=0 vs. sigma>0 egress gap beyond what slice 3 already established.
+    const base = combinedWorld(0, { peakRps: 150 })
+    const burst = combinedWorld(0.9, { peakRps: 150 })
+    const simBase = drive(base.doc, base.compiled)
+    simBase.stepFor(60)
+    const meanEgressBase = simBase.batches.reduce((sum, b) => sum + b.world.internetEgressBytesPerSec, 0) / simBase.batches.length
+    const costBase = computeWorldCost(base.doc, simBase.latest().world).egress.internetUsd
+    simBase.engine.stop()
+    const simBurst = drive(burst.doc, burst.compiled)
+    simBurst.stepFor(60)
+    const meanEgressBurst = simBurst.batches.reduce((sum, b) => sum + b.world.internetEgressBytesPerSec, 0) / simBurst.batches.length
+    const costBurst = computeWorldCost(burst.doc, simBurst.latest().world).egress.internetUsd
+    simBurst.engine.stop()
+
+    const relDiff = Math.abs(meanEgressBurst - meanEgressBase) / meanEgressBase
+    expect(relDiff).toBeLessThan(0.05)
+    const costRelDiff = Math.abs(costBurst - costBase) / costBase
+    expect(costRelDiff).toBeLessThan(0.05)
+  })
+})
