@@ -472,8 +472,9 @@ file (`timelineModel.ts`) rather than computing inline or calling straight into 
 **Frozen-contract note:** `regionData.ts`'s `CROSS_AZ_HOP_MS = 1.5` is a **local mirror**, not an
 import, of `worldEngine/networkRuntime.ts:10`'s private (non-exported) `CROSS_AZ_MS` (confirmed at
 that exact line in the committed source) — the design spec's D5 named `worldEngine/latency.ts` as
-the source, but that file exports only `sampleLatencyMs(p50, p99, rng)` — a function, not a
-constants module; exporting the real constant would be a code change under `worldEngine/`, which
+the source, but that file exports only sampling functions (`sampleLatencyMs(p50, p99, rng)`, plus
+`sampleSizeMultiplier(sigma, rng)` as of the slice-3 NIC-burst-tail work) — not a constants
+module; exporting the real constant would be a code change under `worldEngine/`, which
 this phase's Global Constraints forbid. If the engine ever varies cross-AZ latency, this mirror
 must be updated by hand (or the engine can additively export the constant, at which point the
 mirror becomes a real import — additive, no reshape). Logged in
@@ -2284,9 +2285,9 @@ the 4096 B/req convention — golden guard), `RoutesPanel.test.tsx` (new inputs)
 (1374); `npm run build` clean.
 
 **Still parked (roadmap)** — ~~packet-driven CPU cost~~ **shipped, see slice 2 below**;
-**log-normal** per-packet size variance → tail effects (p99/NIC-burst) via the seeded `rng`;
-**internal-hop** sizing via `BlueprintDependency.packetTemplateId` (cross-AZ/cross-region egress +
-downstream NIC); per-provider egress attribution; connection-type *behavior*.
+~~log-normal per-packet size variance → tail effects (p99/NIC-burst)~~ **shipped, see slice 3
+below**; **internal-hop** sizing via `BlueprintDependency.packetTemplateId` (cross-AZ/cross-region
+egress + downstream NIC); per-provider egress attribution; connection-type *behavior*.
 
 ---
 
@@ -2354,6 +2355,70 @@ than an identical world with a small-request route; a **golden** pair of tests p
 backward-compat invariant directly — `cpuMsPerKb` unset yields byte-for-byte-identical CPU/latency
 metrics across differing route sizes, and `cpuMsPerKb = 0` is identical to leaving it unset
 entirely). Full suite green (1382); `npm run build` clean.
+
+---
+
+## Log-normal NIC-burst tails — slice 3: mean-preserving size jitter drives p99 (2026-07-27)
+
+**Why** — every request was exactly its mean size (slice 1's weighted average), so a NIC never saw
+a momentary payload spike and instance `p99Ms` never reflected bursty large-object traffic. This
+slice adds a **mean-preserving log-normal per-step multiplier** on the NIC byte volume — a fresh
+draw each step, `E[multiplier] = 1` exactly — so realistic p99/NIC-burst tail spikes appear
+**without moving the mean egress-cost line**. Independent of slice 2 (no CPU-blend interaction);
+reuses slice 1/2's `EntryByteAccum` accumulator pattern a third time.
+
+**Schema (`nodeConfig.ts`, low-risk additive)** — `HttpTemplate` gained optional
+`sizeVariance?: number` (the coefficient σ, roughly `0..~1.5`), `RouteFields` + `addRoute`'s
+default (`0`) match. `routeMatchesPattern`/`routeIngressBytes` untouched — σ is NIC-only, never
+part of the cost-byte convention.
+
+**Sampler (`worldEngine/latency.ts`)** — `sampleLatencyMs`'s inline Box-Muller was extracted into
+a shared `boxMullerZ(rng)` helper (two `rng.next()` draws, same formula, so `sampleLatencyMs`'s
+own output/draw-order is unchanged — verified by the full pre-existing suite staying green
+untouched) and reused by the new `sampleSizeMultiplier(sigma, rng)`: `sigma <= 0 ⇒ 1, zero draws`;
+`sigma > 0 ⇒ exp(sigma·boxMullerZ(rng) - sigma²/2)`, exactly two draws.
+
+**Engine (`worldEngine/index.ts` hub)** — `RouteWireBytes` gained `sigma` (`route.sizeVariance ??
+0`, mirroring slice 2's `sizeKb` carry); `DEFAULT_ROUTE_WIRE_BYTES.sigma = 0`. `EntryByteAccum`
+gained `varW`, folded in `distributeViaLb`'s existing per-instance loop (`acc.varW += r *
+wb.sigma`) alongside `cpuKb`/`costReq`/`costResp`/`nicReq`/`nicResp` — no new accumulation path.
+After the routing loop, `entrySizeVarianceByInstance[iid] = acc.varW / entryDemand[iid]`, the same
+divide-by-entry-rps fold as `entryPacketKbByInstance`. Applied at step 7 (the NIC byte-accounting
+loop over `flows`, where `addNicBytes` is called per flow): for each flow, `sigma =
+entrySizeVarianceByInstance[f.instanceId] ?? 0`; `sigma > 0` draws `m =
+sampleSizeMultiplier(sigma, s.rng)` and multiplies ONLY the entry `eb.reqBytes`/`eb.respBytes`
+terms by `m` before booking — the internal-serving (non-entry) rps split and, critically, the
+**separate** `entryBytesByInstance` map (slice 1's cost/egress seed, read by `solveFlows` in step
+6, BEFORE step 7 runs) are never touched. This is what keeps mean internet-egress cost
+untouched — the multiplier physically cannot reach the cost accumulator, not just "shouldn't."
+
+**RNG-order discipline** — the draw is gated on `sigma > 0`, so an unauthored (σ-less) world takes
+the identical branch (`sizeMultiplier = 1`, no `rng.next()` call) it did before this slice — the
+seeded stream, and therefore every existing golden engine test, is completely undisturbed.
+
+**Cost model — no change** (same discipline as slice 2): `flows.ts`'s `internetBytes` seeding and
+`costModelV2.ts` are both untouched by this slice; verified by an explicit tolerance-based
+mean-preserving test, not assumed.
+
+**Visibility — instance `p99Ms` only** (already published un-smoothed, spec decision). AZ/region/
+world p99 aggregation does not exist and is explicitly out of scope; no new metrics plumbing was
+added — the inflated per-step bytes reach `p99Ms` through the existing chain
+(`networkRuntime.ts`'s `evaluateNic`/`settleNic` → `s.nicQueuedLatencyMs` → next step's
+`extraLatencyMsByServer` → `solveFlows`'s `serviceLatencyMs` → the metrics reservoir).
+
+**UI (`RoutesPanel.tsx`)** — a `σ` numeric input sits beside the existing req/resp KB fields (new-
+route row and each `RouteCard`), reusing the existing `sizeField`/`parseKb` pattern exactly.
+
+**Gate** — TDD across `latency.test.ts` (new file: `sampleSizeMultiplier` σ=0 returns exactly 1
+and spies zero `rng.next()` calls; σ>0 draws exactly two; large-N mean ≈ 1; deterministic under a
+fixed seed), `nodeConfig.test.ts` (`sizeVariance` round-trips, defaults to 0),
+`RoutesPanel.test.tsx` (the new input renders + dispatches), `index.test.ts` (a NIC-tight server —
+`nicMbps` overridden post-preset, load sized to sit under cap at σ=0 but spike past it at σ=1 —
+shows a strictly higher `p99Ms` at σ>0; an explicit tolerance-based test holds mean
+`internetEgressBytesPerSec` and `computeWorldCost`'s internet-egress line within 5% between σ=0
+and σ>0 runs at ample NIC headroom; a golden-guard test proves `sizeVariance: 0` is
+metric-identical to leaving the field unauthored entirely). Full suite green (1398); `npm run
+build` clean.
 
 ---
 

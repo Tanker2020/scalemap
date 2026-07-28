@@ -34,14 +34,16 @@ export function RoutesPanel() {
   const [reqSize, setReqSize] = useState('1')
   const [respSize, setRespSize] = useState('4')
   const [connection, setConnection] = useState<ConnectionType>('keep-alive')
+  const [variance, setVariance] = useState('0')
 
   const submit = () => {
     if (!name.trim() || !path.trim()) return
     addRoute({
       name: name.trim(), method, path: path.trim(),
       sizeKb: parseKb(reqSize), responseSizeKb: parseKb(respSize), connectionType: connection,
+      sizeVariance: parseKb(variance),
     })
-    setName(''); setPath('/'); setReqSize('1'); setRespSize('4'); setConnection('keep-alive')
+    setName(''); setPath('/'); setReqSize('1'); setRespSize('4'); setConnection('keep-alive'); setVariance('0')
   }
 
   return (
@@ -77,6 +79,9 @@ export function RoutesPanel() {
         <span style={miniLabel}>resp KB</span>
         <input style={sizeField} type="number" min={0} aria-label="new-route-resp-size" title="response size (KB) — drives egress cost"
           value={respSize} onChange={e => setRespSize(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') submit() }} />
+        <span style={miniLabel}>σ</span>
+        <input style={sizeField} type="number" min={0} step={0.1} aria-label="new-route-variance" title="NIC-burst size variance (sigma) — log-normal jitter driving p99 tails; 0 = none"
+          value={variance} onChange={e => setVariance(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') submit() }} />
         <select style={{ ...field, flex: 1, marginBottom: 0 }} aria-label="new-route-connection" value={connection}
           onChange={e => setConnection(e.target.value as ConnectionType)}>
           {CONNECTIONS.map(c => <option key={c} value={c}>{c}</option>)}
@@ -119,6 +124,9 @@ function RouteCard({ route }: { route: HttpTemplate }) {
         <span style={miniLabel}>resp KB</span>
         <input style={sizeField} type="number" min={0} aria-label={`route-resp-size-${id}`} title="response size (KB) — drives egress cost"
           value={route.responseSizeKb ?? ''} onChange={e => updateRoute(id, { responseSizeKb: parseKb(e.target.value) })} />
+        <span style={miniLabel}>σ</span>
+        <input style={sizeField} type="number" min={0} step={0.1} aria-label={`route-variance-${id}`} title="NIC-burst size variance (sigma) — log-normal jitter driving p99 tails; 0 = none"
+          value={route.sizeVariance ?? 0} onChange={e => updateRoute(id, { sizeVariance: parseKb(e.target.value) })} />
         <select style={{ ...field, flex: 1, marginBottom: 0 }} aria-label={`route-connection-${id}`} value={route.connectionType ?? 'keep-alive'}
           onChange={e => updateRoute(id, { connectionType: e.target.value as ConnectionType })}>
           {CONNECTIONS.map(c => <option key={c} value={c}>{c}</option>)}

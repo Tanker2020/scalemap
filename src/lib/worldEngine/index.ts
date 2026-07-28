@@ -26,6 +26,7 @@ import {
 import { stepHost, type InstanceLoad, type HostStepResult } from './hostScheduler'
 import { createVpsState, stepVps, type VpsState } from './vpsModel'
 import { createNicState, addNicBytes, settleNic, NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES, type NicState } from './networkRuntime'
+import { sampleSizeMultiplier } from './latency'
 import {
   getBreaker, recordWeighted, transition, admitRequest, pathKey, type Breaker,
 } from './breakers'
@@ -95,7 +96,9 @@ function buildRoutePathById(doc: WorldDoc): Map<string, string> {
 // sizeKb (KB, not bytes) is carried alongside the resolved byte fields — the packet-driven CPU
 // blend (slice 2) needs the route's raw request size in KB, not its wire-byte convention, so it
 // is stored directly rather than reconstituted from costReq/1024.
-interface RouteWireBytes { costReq: number; costResp: number; nicReq: number; nicResp: number; sizeKb: number }
+// sigma (slice 3) is the route's authored NIC-burst variance coefficient, carried alongside the
+// resolved byte fields so the entry accumulator below can fold it the same way cpuKb is folded.
+interface RouteWireBytes { costReq: number; costResp: number; nicReq: number; nicResp: number; sizeKb: number; sigma: number }
 function buildRouteBytesById(doc: WorldDoc): Map<string, RouteWireBytes> {
   const m = new Map<string, RouteWireBytes>()
   for (const route of listRoutes(doc.packets)) {
@@ -105,6 +108,7 @@ function buildRouteBytesById(doc: WorldDoc): Map<string, RouteWireBytes> {
       nicReq: route.sizeKb != null ? route.sizeKb * 1024 : NIC_REQUEST_BYTES,
       nicResp: route.responseSizeKb != null ? route.responseSizeKb * 1024 : NIC_RESPONSE_BYTES,
       sizeKb: route.sizeKb,
+      sigma: route.sizeVariance ?? 0,
     })
   }
   return m
@@ -112,18 +116,21 @@ function buildRouteBytesById(doc: WorldDoc): Map<string, RouteWireBytes> {
 
 // The implicit null "default" route (a population with no request mix). Cost keeps the symmetric
 // 2 KB convention; NIC keeps its asymmetric split — both matching pre-packet-sizing behavior.
-// sizeKb mirrors the same 2 KB convention (costReq's fallback, in KB).
+// sizeKb mirrors the same 2 KB convention (costReq's fallback, in KB). sigma 0 — no NIC-burst
+// jitter on the unauthored default route.
 const DEFAULT_ROUTE_WIRE_BYTES: RouteWireBytes = {
   costReq: routeIngressBytes(undefined).reqBytes, costResp: routeIngressBytes(undefined).respBytes,
   nicReq: NIC_REQUEST_BYTES, nicResp: NIC_RESPONSE_BYTES,
   sizeKb: routeIngressBytes(undefined).reqBytes / 1024,
+  sigma: 0,
 }
 
 // Per-entry-instance byte-weighted accumulators (Σ rps×bytes over the routes that landed there);
 // divided by the instance's entry rps to get its weighted-average request/response wire size.
 // cpuKb (slice 2) is the same fold over request sizeKb instead of bytes, feeding the packet-driven
-// CPU blend below.
-interface EntryByteAccum { costReq: number; costResp: number; nicReq: number; nicResp: number; cpuKb: number }
+// CPU blend below. varW (slice 3) is the same fold over the route's sigma, feeding the NIC-burst
+// multiplier at NIC booking (step 7) below.
+interface EntryByteAccum { costReq: number; costResp: number; nicReq: number; nicResp: number; cpuKb: number; varW: number }
 
 // The L7 listener-rule match: the first rule (authored order) whose pattern matches the route's
 // path selects its target group; a route with no path (the implicit default route) or one that
@@ -322,10 +329,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           const r = (target as Record<InstanceId, number>)[iid]
           into[iid] = (into[iid] ?? 0) + r
           let acc = weightAccum[iid]
-          if (!acc) { acc = { costReq: 0, costResp: 0, nicReq: 0, nicResp: 0, cpuKb: 0 }; weightAccum[iid] = acc }
+          if (!acc) { acc = { costReq: 0, costResp: 0, nicReq: 0, nicResp: 0, cpuKb: 0, varW: 0 }; weightAccum[iid] = acc }
           acc.costReq += r * wb.costReq; acc.costResp += r * wb.costResp
           acc.nicReq += r * wb.nicReq; acc.nicResp += r * wb.nicResp
           acc.cpuKb += r * wb.sizeKb
+          acc.varW += r * wb.sigma
         }
       }
     }
@@ -465,6 +473,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // same fold as the byte fields above, over cpuKb instead. Non-entry instances have no key here
     // → effectiveCpuMs below reads 0 for them, unchanged from today.
     const entryPacketKbByInstance: Record<InstanceId, number> = {}
+    // Demand-weighted-average NIC-burst sigma per entry instance (log-normal NIC tails, slice 3) —
+    // same fold again, over sigma instead. Read at NIC booking (step 7) below to draw a
+    // mean-preserving multiplier; absent/0 ⇒ no draw, booking stays byte-identical to pre-slice-3.
+    const entrySizeVarianceByInstance: Record<InstanceId, number> = {}
     for (const iid in entryByteAccum) {
       const d = entryDemand[iid]
       if (!d || d <= 0) continue
@@ -472,6 +484,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       entryBytesByInstance[iid] = { reqBytes: acc.costReq / d, respBytes: acc.costResp / d }
       entryNicBytesByInstance[iid] = { reqBytes: acc.nicReq / d, respBytes: acc.nicResp / d }
       entryPacketKbByInstance[iid] = acc.cpuKb / d
+      entrySizeVarianceByInstance[iid] = acc.varW / d
     }
 
     // Single effective ms/request per instance for this step (packet-driven CPU, slice 2): the
@@ -634,10 +647,16 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const eb = entryNicBytesByInstance[f.instanceId]
       const entryRps = eb ? Math.min(f.admittedRps, entryDemand[f.instanceId] ?? 0) : 0
       const internalRps = f.admittedRps - entryRps
+      // Log-normal NIC-burst tail (slice 3): a fresh mean-1 multiplier each step on the ENTRY
+      // byte terms only — never the internal-serving split, and never entryBytesByInstance (the
+      // separate cost/egress seed above, untouched). sigma <= 0 (unauthored route) draws nothing
+      // and multiplies by exactly 1, so booking stays byte-identical to pre-slice-3.
+      const sigma = entrySizeVarianceByInstance[f.instanceId] ?? 0
+      const sizeMultiplier = sigma > 0 ? sampleSizeMultiplier(sigma, s.rng) : 1
       addNicBytes(
         nic,
-        (entryRps * (eb ? eb.reqBytes : 0) + internalRps * NIC_REQUEST_BYTES) * stepSec,
-        (entryRps * (eb ? eb.respBytes : 0) + internalRps * NIC_RESPONSE_BYTES) * stepSec,
+        (entryRps * (eb ? eb.reqBytes * sizeMultiplier : 0) + internalRps * NIC_REQUEST_BYTES) * stepSec,
+        (entryRps * (eb ? eb.respBytes * sizeMultiplier : 0) + internalRps * NIC_RESPONSE_BYTES) * stepSec,
       )
     }
 

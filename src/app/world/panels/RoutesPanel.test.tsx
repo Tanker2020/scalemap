@@ -60,6 +60,34 @@ describe('RoutesPanel', () => {
     expect(listRoutes(useWorldStore.getState().doc.packets)[0].responseSizeKb).toBe(128)
   })
 
+  // Slice 3: sizeVariance (sigma) — log-normal NIC-burst / p99 jitter coefficient, authored
+  // alongside the existing size fields, defaulting to 0.
+  it('adds a route with an authored sizeVariance', () => {
+    render(<RoutesPanel />)
+    fireEvent.change(screen.getByLabelText('new-route-name'), { target: { value: 'burst' } })
+    fireEvent.change(screen.getByLabelText('new-route-path'), { target: { value: '/burst/*' } })
+    fireEvent.change(screen.getByLabelText('new-route-variance'), { target: { value: '0.8' } })
+    fireEvent.click(screen.getByText('+ Route'))
+    const route = listRoutes(useWorldStore.getState().doc.packets)[0]
+    expect(route).toMatchObject({ name: 'burst', sizeVariance: 0.8 })
+  })
+
+  it('a new route defaults sizeVariance to 0 when left blank', () => {
+    render(<RoutesPanel />)
+    fireEvent.change(screen.getByLabelText('new-route-name'), { target: { value: 'plain' } })
+    fireEvent.change(screen.getByLabelText('new-route-path'), { target: { value: '/plain' } })
+    fireEvent.click(screen.getByText('+ Route'))
+    const route = listRoutes(useWorldStore.getState().doc.packets)[0]
+    expect(route.sizeVariance).toBe(0)
+  })
+
+  it('edits an existing route sizeVariance', () => {
+    const id = useWorldStore.getState().addRoute({ name: 'api', method: 'GET', path: '/api' })
+    render(<RoutesPanel />)
+    fireEvent.change(screen.getByLabelText(`route-variance-${id}`), { target: { value: '1.1' } })
+    expect(listRoutes(useWorldStore.getState().doc.packets)[0].sizeVariance).toBe(1.1)
+  })
+
   it('shows a usage count for routes referenced by a population request mix', () => {
     const id = useWorldStore.getState().addRoute({ name: 'api', method: 'GET', path: '/api' })
     const popId = useWorldStore.getState().addPopulation('nyc', 40, -74)

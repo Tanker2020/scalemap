@@ -43,6 +43,10 @@ export interface HttpTemplate extends BasePacketTemplate {
   // (older serialized routes) falls back to the 2 KB/way convention, so byte totals are unchanged.
   responseSizeKb?: number
   connectionType?: ConnectionType   // see ConnectionType — authored/stored, no sim behavior yet
+  // Log-normal per-step size jitter driving NIC-burst / p99 tails; 0 (or absent) ⇒ none. The
+  // coefficient sigma in a mean-preserving multiplier exp(sigma·z - sigma²/2), applied only to
+  // the entry NIC byte booking (never the cost/egress accumulator). Roughly 0..~1.5.
+  sizeVariance?: number
 }
 
 export interface EventTemplate extends BasePacketTemplate {
@@ -110,6 +114,7 @@ export interface RouteFields {
   sizeKb?: number              // request payload size (KB)
   responseSizeKb?: number      // response payload size (KB) — drives client-facing egress
   connectionType?: ConnectionType
+  sizeVariance?: number        // log-normal NIC-burst/p99 jitter coefficient (sigma), default 0
 }
 
 export function addRoute(reg: PacketRegistry, fields: RouteFields): { registry: PacketRegistry; route: HttpTemplate } {
@@ -117,6 +122,7 @@ export function addRoute(reg: PacketRegistry, fields: RouteFields): { registry: 
   const route: HttpTemplate = {
     id, name: fields.name, protocol: 'http', sizeKb: fields.sizeKb ?? 1,
     responseSizeKb: fields.responseSizeKb ?? 4, connectionType: fields.connectionType ?? 'keep-alive',
+    sizeVariance: fields.sizeVariance ?? 0,
     method: fields.method, path: fields.path, statusCode: 200,
   }
   return {

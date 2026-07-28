@@ -803,3 +803,114 @@ describe('packet-driven CPU (blend model, entry tier — slice 2)', () => {
     expect(bZero.servers[explicitZero.serverId].coreUtilization).toEqual(bUnset.servers[unset.serverId].coreUtilization)
   })
 })
+
+// Log-normal NIC-burst tails (mean-preserving, slice 3): a route's sizeVariance (sigma) draws a
+// fresh mean-1 log-normal multiplier each step on the ENTRY NIC byte booking only (never the
+// internet-egress cost accumulator, which flows.ts seeds separately from entryBytesByInstance).
+// Surfaces as instance p99Ms tail spikes on a NIC-tight server, with mean egress bytes/cost
+// staying ~unchanged over a long run.
+describe('log-normal NIC-burst tails (mean-preserving, entry tier — slice 3)', () => {
+  // One region/AZ/dedicated-8 server, a single public entry service on a single route, one
+  // population whose whole mix is that route. nicMbps is overridden post-preset so tests can
+  // dial the NIC cap independently of vCPU/RAM.
+  function nicBurstWorld(sizeVariance: number, opts: { nicMbps?: number; responseSizeKb?: number; peakRps?: number } = {}) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const sv = createServer(az.id, getPreset('dedicated-8')!)
+    if (opts.nicMbps != null) sv.specs.nicMbps = opts.nicMbps
+    doc.servers[sv.id] = sv
+    const web = publicBlueprint('web', 0); doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, sv.id); doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0); pop.peakRps = opts.peakRps ?? 30
+    const route = addRoute(doc.packets, {
+      name: 'api', method: 'GET', path: '/api', sizeKb: 1, responseSizeKb: opts.responseSizeKb ?? 50, sizeVariance,
+    })
+    doc.packets = route.registry
+    pop.requestMix = [{ routeId: routeIdOf(route.route), weight: 1 }]
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), serverId: sv.id, webIid: instanceId(pl.id, 0) }
+  }
+
+  it('a NIC-tight server shows a higher p99Ms with sigma > 0 than the identical world at sigma = 0', () => {
+    // nicMbps 20 + 35 rps x (1+50) KB keeps the sigma=0 world safely under the NIC cap (no
+    // chronic queuing — p99 reflects only the baseline latency model) while sigma=1's occasional
+    // spikes (median multiplier < 1, tail multiplier several x) push well past 2x cap on the
+    // worst steps, shedding and growing queuedLatencyMs into next step's latency.
+    const base = nicBurstWorld(0, { nicMbps: 20, responseSizeKb: 50, peakRps: 35 })
+    const burst = nicBurstWorld(1.0, { nicMbps: 20, responseSizeKb: 50, peakRps: 35 })
+    const simBase = drive(base.doc, base.compiled)
+    simBase.stepFor(30)
+    const bBase = simBase.latest()
+    simBase.engine.stop()
+    const simBurst = drive(burst.doc, burst.compiled)
+    simBurst.stepFor(30)
+    const bBurst = simBurst.latest()
+    simBurst.engine.stop()
+    expect(bBurst.instances[burst.webIid].p99Ms).toBeGreaterThan(bBase.instances[base.webIid].p99Ms)
+  })
+
+  it('mean internetEgressBytesPerSec / internet-egress cost stays ~unchanged between sigma=0 and sigma>0', () => {
+    // Ample NIC headroom (default dedicated-8 nicMbps, unmodified) — the multiplier only ever
+    // touches NIC booking (never entryBytesByInstance, the separate cost/egress seed), so with
+    // the NIC nowhere near its cap the two runs' egress trajectories should track closely; any
+    // residual gap is pure demand-RNG-stream divergence from the extra per-step draws.
+    const base = nicBurstWorld(0, { peakRps: 150 })
+    const burst = nicBurstWorld(0.9, { peakRps: 150 })
+    const simBase = drive(base.doc, base.compiled)
+    simBase.stepFor(60)
+    const meanEgressBase = simBase.batches.reduce((sum, b) => sum + b.world.internetEgressBytesPerSec, 0) / simBase.batches.length
+    const costBase = computeWorldCost(base.doc, simBase.latest().world).egress.internetUsd
+    simBase.engine.stop()
+    const simBurst = drive(burst.doc, burst.compiled)
+    simBurst.stepFor(60)
+    const meanEgressBurst = simBurst.batches.reduce((sum, b) => sum + b.world.internetEgressBytesPerSec, 0) / simBurst.batches.length
+    const costBurst = computeWorldCost(burst.doc, simBurst.latest().world).egress.internetUsd
+    simBurst.engine.stop()
+
+    const relDiff = Math.abs(meanEgressBurst - meanEgressBase) / meanEgressBase
+    expect(relDiff).toBeLessThan(0.05)
+    const costRelDiff = Math.abs(costBurst - costBase) / costBase
+    expect(costRelDiff).toBeLessThan(0.05)
+  })
+
+  // Backward-compat invariant (non-negotiable, per the task spec): sizeVariance unset must
+  // reproduce today's behavior EXACTLY — the coefficient, not its absence, gates the effect, and
+  // an explicit 0 must be indistinguishable from an unauthored route (golden guard).
+  it('sizeVariance = 0 is metric-identical to sizeVariance left unset entirely (golden guard)', () => {
+    const explicitZero = nicBurstWorld(0, { nicMbps: 20, responseSizeKb: 50, peakRps: 35 })
+    // Build an equivalent world with NO sizeVariance field authored at all (default route form).
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const sv = createServer(az.id, getPreset('dedicated-8')!)
+    sv.specs.nicMbps = 20
+    doc.servers[sv.id] = sv
+    const web = publicBlueprint('web', 0); doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, sv.id); doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0); pop.peakRps = 35
+    const route = addRoute(doc.packets, { name: 'api', method: 'GET', path: '/api', sizeKb: 1, responseSizeKb: 50 })
+    doc.packets = route.registry
+    pop.requestMix = [{ routeId: routeIdOf(route.route), weight: 1 }]
+    doc.populations[pop.id] = pop
+    const unauthored = { doc, compiled: compileWorld(doc), serverId: sv.id, webIid: instanceId(pl.id, 0) }
+
+    const simZero = drive(explicitZero.doc, explicitZero.compiled)
+    simZero.stepFor(30)
+    const bZero = simZero.latest()
+    simZero.engine.stop()
+    const simUnauthored = drive(unauthored.doc, unauthored.compiled)
+    simUnauthored.stepFor(30)
+    const bUnauthored = simUnauthored.latest()
+    simUnauthored.engine.stop()
+
+    expect(bZero.instances[explicitZero.webIid].p99Ms).toBe(bUnauthored.instances[unauthored.webIid].p99Ms)
+    expect(bZero.instances[explicitZero.webIid].p50Ms).toBe(bUnauthored.instances[unauthored.webIid].p50Ms)
+    expect(bZero.instances[explicitZero.webIid].rps).toBe(bUnauthored.instances[unauthored.webIid].rps)
+    expect(bZero.world.internetEgressBytesPerSec).toBe(bUnauthored.world.internetEgressBytesPerSec)
+  })
+})

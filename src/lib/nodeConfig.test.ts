@@ -74,6 +74,24 @@ describe('route helpers over PacketRegistry', () => {
     const reg2 = updateRoute(registry, routeIdOf(route), { responseSizeKb: 64, connectionType: 'short-lived' })
     expect(getRoute(reg2, routeIdOf(route))).toMatchObject({ responseSizeKb: 64, connectionType: 'short-lived' })
   })
+
+  // Slice 3: sizeVariance (sigma) — the log-normal NIC-burst coefficient. Defaults to 0 (no
+  // jitter) so an unauthored route stays byte-identical to pre-slice-3 behavior.
+  it('addRoute defaults sizeVariance to 0', () => {
+    const { route } = addRoute(emptyPacketRegistry(), { name: 'api', method: 'GET', path: '/api' })
+    expect(route.sizeVariance).toBe(0)
+  })
+
+  it('addRoute honors an explicit sizeVariance', () => {
+    const { route } = addRoute(emptyPacketRegistry(), { name: 'img', method: 'GET', path: '/img', sizeVariance: 0.8 })
+    expect(route.sizeVariance).toBe(0.8)
+  })
+
+  it('updateRoute patches sizeVariance and round-trips through getRoute', () => {
+    const { registry, route } = addRoute(emptyPacketRegistry(), { name: 'api', method: 'GET', path: '/api' })
+    const reg2 = updateRoute(registry, routeIdOf(route), { sizeVariance: 1.2 })
+    expect(getRoute(reg2, routeIdOf(route))).toMatchObject({ sizeVariance: 1.2 })
+  })
 })
 
 describe('routeIngressBytes (route → per-request wire bytes, KB×1024)', () => {
