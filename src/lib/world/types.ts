@@ -155,6 +155,10 @@ export interface WorkloadProfile {
   // a share-2 instance gets twice a share-1 sibling's capacity on a saturated host. Optional +
   // additive: absent ⇒ 1 (all instances equal, the pre-fix behavior).
   cpuShares?: number
+  // Additional CPU ms per KB of request payload (packet-driven CPU, slice 2) — blended into
+  // cpuMsPerRequest at the entry tier as cpuMs = cpuMsPerRequest + cpuMsPerKb × sizeKb. Optional +
+  // additive: absent ⇒ 0 (flat per-request cost, the pre-slice-2 behavior).
+  cpuMsPerKb?: number
 }
 
 export type DependencyTarget =

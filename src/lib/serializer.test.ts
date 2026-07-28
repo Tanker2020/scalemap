@@ -59,6 +59,25 @@ describe('scalemap v3 serializer', () => {
     expect(parsed.world).toEqual(world)
   })
 
+  // Packet-driven CPU (slice 2): cpuMsPerKb is an optional, additive WorkloadProfile field —
+  // round-trips when authored, and stays absent (⇒ 0 / flat pre-slice-2 behavior) when not.
+  it('round-trips workload.cpuMsPerKb when authored, and leaves it undefined when not', () => {
+    const world = createWorld()
+    const bp = createBlueprint('api', 0)
+    bp.workload.cpuMsPerKb = 0.75
+    world.blueprints[bp.id] = bp
+    const raw = serializeWorld(world, 'untitled', '2026-07-08T00:00:00.000Z')
+    const parsed = deserializeWorld(raw)
+    expect(parsed.world.blueprints[bp.id].workload.cpuMsPerKb).toBe(0.75)
+
+    const bare = createWorld()
+    const bareBp = createBlueprint('api2', 1)
+    bare.blueprints[bareBp.id] = bareBp
+    const rawBare = serializeWorld(bare, 'untitled', '2026-07-08T00:00:00.000Z')
+    const parsedBare = deserializeWorld(rawBare)
+    expect(parsedBare.world.blueprints[bareBp.id].workload.cpuMsPerKb).toBeUndefined()
+  })
+
   // The additive-normalization block survives the v3 cutover as DEFENSIVE insurance for a
   // hand-authored or partially-constructed v3 file: the serializer itself always writes the full
   // WorldDoc, so a file it produced can never miss these — but a file authored by hand (or by a

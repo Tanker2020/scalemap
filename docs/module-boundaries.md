@@ -2283,11 +2283,77 @@ response-size (KB), and connection-type controls, wired through the existing sto
 the 4096 B/req convention — golden guard), `RoutesPanel.test.tsx` (new inputs). Full suite green
 (1374); `npm run build` clean.
 
-**Still parked (roadmap)** — packet-driven **CPU** cost (blend: service per-KB rate × packet size →
-`WorkloadProfile` + `hostScheduler.ts`); **log-normal** per-packet size variance → tail effects
-(p99/NIC-burst) via the seeded `rng`; **internal-hop** sizing via `BlueprintDependency.packetTemplateId`
-(cross-AZ/cross-region egress + downstream NIC); per-provider egress attribution; connection-type
-*behavior*.
+**Still parked (roadmap)** — ~~packet-driven CPU cost~~ **shipped, see slice 2 below**;
+**log-normal** per-packet size variance → tail effects (p99/NIC-burst) via the seeded `rng`;
+**internal-hop** sizing via `BlueprintDependency.packetTemplateId` (cross-AZ/cross-region egress +
+downstream NIC); per-provider egress attribution; connection-type *behavior*.
+
+---
+
+## Packet-driven CPU — slice 2: request size drives entry-tier CPU/latency (2026-07-27)
+
+**Why** — slice 1 made client-facing egress bytes size-sensitive; a request's CPU/processing cost
+was still a single per-service constant (`WorkloadProfile.cpuMsPerRequest`) — a 2 MB upload and a
+200-byte ping cost the same CPU on the same service. This slice adds a **blend model**: `cpuMs =
+cpuMsPerRequest + cpuMsPerKb × sizeKb`. Scope is deliberately **entry-tier only** — route/packet
+size is known where demand enters but is discarded before internal hops (`entryDemand` is a bare
+`Record<InstanceId, number>`; the flow-solver BFS carries only scalar rps), so internal
+service/DB CPU keeps the flat base.
+
+**Schema (`world/types.ts`, low-risk additive)** — `WorkloadProfile` gained optional
+`cpuMsPerKb?: number`, absent ⇒ 0 (flat, pre-slice-2 behavior). No catalog/factory migration
+needed (`createBlueprint`'s literal `workload` object, `serviceDraft.ts`'s `draftWorkload`) —
+the field is optional and simply absent until authored.
+
+**Engine (`worldEngine/index.ts` hub, `flows.ts`)** — reuses slice 1's `EntryByteAccum`
+machinery exactly, no new routing plumbing: `RouteWireBytes` gained a `sizeKb` field (the route's
+request size in KB, carried alongside — not reconstituted from — the existing byte fields;
+`DEFAULT_ROUTE_WIRE_BYTES.sizeKb` mirrors the same 2 KB fallback convention as `costReq`).
+`EntryByteAccum` gained `cpuKb`, folded in `distributeViaLb`'s existing per-instance loop
+(`acc.cpuKb += r * wb.sizeKb`) alongside `costReq`/`costResp`/`nicReq`/`nicResp`. After the
+routing loop, `entryPacketKbByInstance[iid] = acc.cpuKb / entryDemand[iid]` — the same
+divide-by-entry-rps fold as `entryBytesByInstance`. A new closure, **`effectiveCpuMs(iid, bp)`**,
+collapses the blend into ONE effective ms/request per instance per step: `(bp.workload.
+cpuMsPerRequest ?? 1) + (bp.workload.cpuMsPerKb ?? 0) × (entryPacketKbByInstance[iid] ?? 0)` —
+non-entry instances read 0 KB ⇒ unchanged flat cost. This single value is threaded into every
+`cpuMsPerRequest` read site that previously read the blueprint field directly, so the host
+scheduler's cores AND the flow-solver's latency track size **coherently** (one nonlinear
+rps↔cores conversion never sees two different costs for the same instance): the `InstanceLoad`
+build's `cpuMsPerRequest` field and its `serviceLatencyMs` fallback (both in `index.ts`'s per-step
+host-scheduling loop), the offered-cores health-pressure estimate (`overloadPressureByServer`,
+same file), and `flows.ts`'s `getFlow` p50 seed via a new additive-optional `FlowInput.
+effectiveCpuMsByInstance?: Record<InstanceId, number>` (absent ⇒ the flat `bp.workload.
+cpuMsPerRequest` fallback, so direct-`solveFlows` unit tests are unchanged) — built in `index.ts`
+for entry instances only and passed into the `solveFlows` call alongside `entryBytesByInstance`.
+
+**Cost model — no change** (explicit constraint, not an oversight): `costModelV2.ts` stays
+provisioned-capacity flat, correct for on-demand. This slice changes CPU
+*utilization/latency/capacity* — a large-packet service saturates sooner — not the dollar figure.
+
+**Known display gap (not fixed, out of this slice's scope)** — `metrics.ts`'s per-instance
+`cpuCoresUsed` (published in `InstanceMetrics`, used only for display) computes `rps ×
+workload.cpuMsPerRequest / 1000` directly off the blueprint field, independent of
+`effectiveCpuMsByInstance` — it is not wired to the blended value. An entry instance under a
+large-payload route will show correct `rps` (lower, admission-capped) and `p50Ms` (higher) but an
+understated `cpuCoresUsed` relative to its true scheduled cost. Threading the effective value into
+`metrics.ts` would need a new plumbing path (`accumulateStep`/`buildBatch` don't currently see
+per-instance effective ms) that the task's brief scoped out — flagged here for a future slice, not
+fixed silently.
+
+**UI (`dock/drawers/EditServiceForm.tsx` + `AddServiceForm.tsx`)** — both gained a `cpu / KB`
+numeric field next to `cpu / request`, wired through the existing `tuneWorkload`/`tune` helpers
+(same `numberField` pattern as every other workload field); `AddServiceForm`'s lives in the same
+"advanced" disclosure as its own `cpuMsPerRequest` input.
+
+**Gate** — TDD across `serializer.test.ts` (`cpuMsPerKb` round-trips when authored, stays
+`undefined` when not), `EditServiceForm.test.tsx` (field renders + dispatches `tuneWorkload`),
+`flows.test.ts` (`effectiveCpuMsByInstance` raises the sampled p50; absent/empty ⇒ unchanged
+output — verified against a same-seed baseline), `index.test.ts` (a large-request route with
+`cpuMsPerKb > 0` shows higher server `coreUtilization`, lower admitted `rps`, and higher `p50Ms`
+than an identical world with a small-request route; a **golden** pair of tests proves the
+backward-compat invariant directly — `cpuMsPerKb` unset yields byte-for-byte-identical CPU/latency
+metrics across differing route sizes, and `cpuMsPerKb = 0` is identical to leaving it unset
+entirely). Full suite green (1382); `npm run build` clean.
 
 ---
 

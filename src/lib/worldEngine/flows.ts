@@ -230,6 +230,13 @@ export interface FlowInput {
   // client→entry internet byte total by real payload size. Optional: absent ⇒ the flat
   // BYTES_PER_REQUEST_EACH_WAY convention, so direct-solveFlows unit tests are unchanged.
   entryBytesByInstance?: Record<InstanceId, { reqBytes: number; respBytes: number }>
+  // Per-instance blended ms/request (packet-driven CPU, slice 2): cpuMsPerRequest +
+  // cpuMsPerKb × avgReqSizeKb, computed at the entry tier from the same route-mix signal as
+  // entryBytesByInstance above. Drives the service-latency p50 seed below so a bigger packet
+  // costs more CPU AND takes longer, coherently with the host scheduler's read of the same
+  // value. Optional: absent ⇒ the flat bp.workload.cpuMsPerRequest fallback, so direct
+  // solveFlows unit tests that don't pass this field are unaffected.
+  effectiveCpuMsByInstance?: Record<InstanceId, number>
   breakerOpen: (pathKey: string) => boolean
   healthOf: (instanceId: InstanceId) => HealthState
   // Manual-outage predicate for managed services (node-model Phase 5.2). A managed service can't
@@ -356,7 +363,7 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     if (!f) {
       const inst = compiled.instances[id]
       const bp = inst ? doc.blueprints[inst.blueprintId] : undefined
-      const p50 = Math.max(0.1, bp?.workload.cpuMsPerRequest ?? 1)
+      const p50 = Math.max(0.1, input.effectiveCpuMsByInstance?.[id] ?? bp?.workload.cpuMsPerRequest ?? 1)
       const multiplier = inst ? (latencyMultiplierByServer[inst.serverId] ?? 1) : 1
       const extraMs = inst ? (input.extraLatencyMsByServer?.[inst.serverId] ?? 0) : 0
       f = {

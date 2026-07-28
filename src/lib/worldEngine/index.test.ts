@@ -726,3 +726,80 @@ describe('route-driven internet egress bytes', () => {
     expect(perReq).toBeLessThan(4300)
   })
 })
+
+// Packet-driven CPU (slice 2): a route's request size, blended into cpuMsPerRequest via
+// cpuMsPerKb, drives more CPU pressure / less admitted capacity / higher latency on the entry
+// service that handles it — the same entry-tier accumulator slice 1 built for egress bytes, now
+// also feeding the host scheduler and the flow-solver's latency p50.
+describe('packet-driven CPU (blend model, entry tier — slice 2)', () => {
+  // One region/AZ/dedicated-8 server, a single public entry service on a single route, one
+  // population whose whole mix is that route — so the entry instance's avgReqSizeKb is exactly
+  // the route's authored sizeKb.
+  function cpuBlendWorld(cpuMsPerKb: number | undefined, sizeKb: number, peakRps: number) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const sv = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[sv.id] = sv
+    const web = publicBlueprint('web', 0)
+    if (cpuMsPerKb != null) web.workload = { ...web.workload, cpuMsPerKb }
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, sv.id); doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0); pop.peakRps = peakRps
+    const route = addRoute(doc.packets, { name: 'api', method: 'GET', path: '/api', sizeKb, responseSizeKb: 2 })
+    doc.packets = route.registry
+    pop.requestMix = [{ routeId: routeIdOf(route.route), weight: 1 }]
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), serverId: sv.id, webIid: instanceId(pl.id, 0) }
+  }
+
+  const settle = (f: ReturnType<typeof cpuBlendWorld>) => {
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(15)
+    const b = sim.latest()
+    sim.engine.stop()
+    return b
+  }
+  const avgUtil = (u: number[]) => u.reduce((a, c) => a + c, 0) / u.length
+
+  it('a larger request payload raises CPU pressure, lowers admitted capacity, and raises p50 latency', () => {
+    // dedicated-8 = 8 vCPU ⇒ ~8000 cores-ms/s budget. Small: 5 + 0.05×1 ≈ 5.05ms/req ⇒ ~1584 rps
+    // capacity. Big: 5 + 0.05×300 = 20ms/req ⇒ 400 rps capacity — well under the 600 rps offered.
+    const smallWorld = cpuBlendWorld(0.05, 1, 600)
+    const bigWorld = cpuBlendWorld(0.05, 300, 600)
+    const small = settle(smallWorld)
+    const big = settle(bigWorld)
+
+    expect(avgUtil(big.servers[bigWorld.serverId].coreUtilization))
+      .toBeGreaterThan(avgUtil(small.servers[smallWorld.serverId].coreUtilization))
+    expect(big.instances[bigWorld.webIid].rps).toBeLessThan(small.instances[smallWorld.webIid].rps)
+    expect(big.instances[bigWorld.webIid].p50Ms).toBeGreaterThan(small.instances[smallWorld.webIid].p50Ms)
+  })
+
+  // Backward-compat invariant (non-negotiable, per the task spec): cpuMsPerKb unset/0 must
+  // reproduce today's behavior EXACTLY, regardless of the route's authored size — the coefficient,
+  // not the size signal, gates the effect.
+  it('cpuMsPerKb unset makes CPU/latency/capacity metrics identical across different route sizes (golden)', () => {
+    const tinyRoute = cpuBlendWorld(undefined, 1, 600)
+    const hugeRoute = cpuBlendWorld(undefined, 300, 600)
+    const bTiny = settle(tinyRoute)
+    const bHuge = settle(hugeRoute)
+    expect(bHuge.instances[hugeRoute.webIid].rps).toBe(bTiny.instances[tinyRoute.webIid].rps)
+    expect(bHuge.instances[hugeRoute.webIid].p50Ms).toBe(bTiny.instances[tinyRoute.webIid].p50Ms)
+    expect(bHuge.instances[hugeRoute.webIid].cpuCoresUsed).toBe(bTiny.instances[tinyRoute.webIid].cpuCoresUsed)
+    expect(bHuge.servers[hugeRoute.serverId].coreUtilization).toEqual(bTiny.servers[tinyRoute.serverId].coreUtilization)
+  })
+
+  it('cpuMsPerKb = 0 is byte/metric-identical to cpuMsPerKb left unset entirely', () => {
+    const explicitZero = cpuBlendWorld(0, 300, 600)
+    const unset = cpuBlendWorld(undefined, 300, 600)
+    const bZero = settle(explicitZero)
+    const bUnset = settle(unset)
+    expect(bZero.instances[explicitZero.webIid].rps).toBe(bUnset.instances[unset.webIid].rps)
+    expect(bZero.instances[explicitZero.webIid].p50Ms).toBe(bUnset.instances[unset.webIid].p50Ms)
+    expect(bZero.instances[explicitZero.webIid].cpuCoresUsed).toBe(bUnset.instances[unset.webIid].cpuCoresUsed)
+    expect(bZero.servers[explicitZero.serverId].coreUtilization).toEqual(bUnset.servers[unset.serverId].coreUtilization)
+  })
+})

@@ -91,6 +91,7 @@ export function EditServiceForm({ blueprintId, running, onDone }: EditServiceFor
       )}
 
       {numberField('cpu / request', bp.workload.cpuMsPerRequest, v => tuneWorkload({ cpuMsPerRequest: v }))}
+      {numberField('cpu / KB', bp.workload.cpuMsPerKb ?? 0, v => tuneWorkload({ cpuMsPerKb: v }))}
       {numberField('ram base', bp.workload.ramBaseMb, v => tuneWorkload({ ramBaseMb: v }))}
       {numberField('ram per connection', bp.workload.ramPerConnMb, v => tuneWorkload({ ramPerConnMb: v }))}
       {numberField('disk io per request', bp.workload.diskIoPerRequest, v => tuneWorkload({ diskIoPerRequest: v }))}

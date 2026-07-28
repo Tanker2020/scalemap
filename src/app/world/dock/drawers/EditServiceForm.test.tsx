@@ -40,6 +40,14 @@ describe('EditServiceForm', () => {
     expect(useWorldStore.getState().doc.blueprints[bpId].workload.cpuMsPerRequest).toBe(12)
   })
 
+  it('edits the cpu / KB field via tuneWorkload', () => {
+    const bpId = seedService()
+    render(<EditServiceForm blueprintId={bpId} running={false} onDone={() => {}} />)
+    expect(screen.getByLabelText('cpu / KB')).toHaveValue(0)
+    fireEvent.change(screen.getByLabelText('cpu / KB'), { target: { value: '0.5' } })
+    expect(useWorldStore.getState().doc.blueprints[bpId].workload.cpuMsPerKb).toBe(0.5)
+  })
+
   it('toggles stateful and defaults a volume name', () => {
     const bpId = seedService()
     render(<EditServiceForm blueprintId={bpId} running={false} onDone={() => {}} />)

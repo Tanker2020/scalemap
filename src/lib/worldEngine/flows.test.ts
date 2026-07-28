@@ -809,3 +809,37 @@ describe('solveFlows — queue model (ISSUE-013)', () => {
     expect(qd.get(api.iid)).toBeCloseTo(0, 6)
   })
 })
+
+// Packet-driven CPU (slice 2): effectiveCpuMsByInstance overrides the p50 latency seed
+// (bp.workload.cpuMsPerRequest) per-instance, so a bigger blended ms/request samples a higher
+// service latency. Optional and additive — absent must leave today's output unchanged.
+describe('solveFlows — effectiveCpuMsByInstance (packet-driven CPU, slice 2)', () => {
+  it('raises the sampled serviceLatencyMs p50 for the affected instance', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const base = solveFlows(baseInput(doc, { [api.iid]: 10 }, { rng: createRng(7) }))
+    const boosted = solveFlows(baseInput(doc, { [api.iid]: 10 }, {
+      rng: createRng(7),
+      effectiveCpuMsByInstance: { [api.iid]: base.flows[api.iid].serviceLatencyMs * 5 },
+    }))
+    expect(boosted.flows[api.iid].serviceLatencyMs).toBeGreaterThan(base.flows[api.iid].serviceLatencyMs)
+  })
+
+  it('leaves output unchanged when the field is absent (back-compat)', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const a = solveFlows(baseInput(doc, { [api.iid]: 10 }, { rng: createRng(3) }))
+    const b = solveFlows(baseInput(doc, { [api.iid]: 10 }, { rng: createRng(3) }))
+    expect(a.flows[api.iid].serviceLatencyMs).toBe(b.flows[api.iid].serviceLatencyMs)
+  })
+
+  it('an instance with no entry in effectiveCpuMsByInstance falls back to cpuMsPerRequest', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const withMap = solveFlows(baseInput(doc, { [api.iid]: 10 }, {
+      rng: createRng(9), effectiveCpuMsByInstance: {},
+    }))
+    const withoutMap = solveFlows(baseInput(doc, { [api.iid]: 10 }, { rng: createRng(9) }))
+    expect(withMap.flows[api.iid].serviceLatencyMs).toBe(withoutMap.flows[api.iid].serviceLatencyMs)
+  })
+})

@@ -92,7 +92,10 @@ function buildRoutePathById(doc: WorldDoc): Map<string, string> {
 //   nic*   — the entry NIC, keeping its asymmetric 512 in / 2048 out fallback so entry NIC
 //            throughput is byte-identical until a route actually authors a size.
 // An authored sizeKb / responseSizeKb overrides BOTH.
-interface RouteWireBytes { costReq: number; costResp: number; nicReq: number; nicResp: number }
+// sizeKb (KB, not bytes) is carried alongside the resolved byte fields — the packet-driven CPU
+// blend (slice 2) needs the route's raw request size in KB, not its wire-byte convention, so it
+// is stored directly rather than reconstituted from costReq/1024.
+interface RouteWireBytes { costReq: number; costResp: number; nicReq: number; nicResp: number; sizeKb: number }
 function buildRouteBytesById(doc: WorldDoc): Map<string, RouteWireBytes> {
   const m = new Map<string, RouteWireBytes>()
   for (const route of listRoutes(doc.packets)) {
@@ -101,6 +104,7 @@ function buildRouteBytesById(doc: WorldDoc): Map<string, RouteWireBytes> {
       costReq: cost.reqBytes, costResp: cost.respBytes,
       nicReq: route.sizeKb != null ? route.sizeKb * 1024 : NIC_REQUEST_BYTES,
       nicResp: route.responseSizeKb != null ? route.responseSizeKb * 1024 : NIC_RESPONSE_BYTES,
+      sizeKb: route.sizeKb,
     })
   }
   return m
@@ -108,14 +112,18 @@ function buildRouteBytesById(doc: WorldDoc): Map<string, RouteWireBytes> {
 
 // The implicit null "default" route (a population with no request mix). Cost keeps the symmetric
 // 2 KB convention; NIC keeps its asymmetric split — both matching pre-packet-sizing behavior.
+// sizeKb mirrors the same 2 KB convention (costReq's fallback, in KB).
 const DEFAULT_ROUTE_WIRE_BYTES: RouteWireBytes = {
   costReq: routeIngressBytes(undefined).reqBytes, costResp: routeIngressBytes(undefined).respBytes,
   nicReq: NIC_REQUEST_BYTES, nicResp: NIC_RESPONSE_BYTES,
+  sizeKb: routeIngressBytes(undefined).reqBytes / 1024,
 }
 
 // Per-entry-instance byte-weighted accumulators (Σ rps×bytes over the routes that landed there);
 // divided by the instance's entry rps to get its weighted-average request/response wire size.
-interface EntryByteAccum { costReq: number; costResp: number; nicReq: number; nicResp: number }
+// cpuKb (slice 2) is the same fold over request sizeKb instead of bytes, feeding the packet-driven
+// CPU blend below.
+interface EntryByteAccum { costReq: number; costResp: number; nicReq: number; nicResp: number; cpuKb: number }
 
 // The L7 listener-rule match: the first rule (authored order) whose pattern matches the route's
 // path selects its target group; a route with no path (the implicit default route) or one that
@@ -314,9 +322,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           const r = (target as Record<InstanceId, number>)[iid]
           into[iid] = (into[iid] ?? 0) + r
           let acc = weightAccum[iid]
-          if (!acc) { acc = { costReq: 0, costResp: 0, nicReq: 0, nicResp: 0 }; weightAccum[iid] = acc }
+          if (!acc) { acc = { costReq: 0, costResp: 0, nicReq: 0, nicResp: 0, cpuKb: 0 }; weightAccum[iid] = acc }
           acc.costReq += r * wb.costReq; acc.costResp += r * wb.costResp
           acc.nicReq += r * wb.nicReq; acc.nicResp += r * wb.nicResp
+          acc.cpuKb += r * wb.sizeKb
         }
       }
     }
@@ -452,12 +461,33 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // seed; `entryNicBytesByInstance` (512/2048 convention) → the entry NIC booking in step 7.
     const entryBytesByInstance: Record<InstanceId, { reqBytes: number; respBytes: number }> = {}
     const entryNicBytesByInstance: Record<InstanceId, { reqBytes: number; respBytes: number }> = {}
+    // Demand-weighted-average request size in KB per entry instance (packet-driven CPU, slice 2) —
+    // same fold as the byte fields above, over cpuKb instead. Non-entry instances have no key here
+    // → effectiveCpuMs below reads 0 for them, unchanged from today.
+    const entryPacketKbByInstance: Record<InstanceId, number> = {}
     for (const iid in entryByteAccum) {
       const d = entryDemand[iid]
       if (!d || d <= 0) continue
       const acc = entryByteAccum[iid]
       entryBytesByInstance[iid] = { reqBytes: acc.costReq / d, respBytes: acc.costResp / d }
       entryNicBytesByInstance[iid] = { reqBytes: acc.nicReq / d, respBytes: acc.nicResp / d }
+      entryPacketKbByInstance[iid] = acc.cpuKb / d
+    }
+
+    // Single effective ms/request per instance for this step (packet-driven CPU, slice 2): the
+    // blend `cpuMsPerRequest + cpuMsPerKb × avgReqSizeKb`, collapsed once so every read site below
+    // (host-scheduler cores, latency fallbacks, the flow-solver's p50) uses the SAME number and the
+    // scheduler's nonlinear rps↔cores conversion never sees two different costs for one instance.
+    // Absent size signal (non-entry instance) or unset cpuMsPerKb (default 0) ⇒ the flat
+    // cpuMsPerRequest — byte/metric-identical to pre-slice-2 behavior.
+    const effectiveCpuMs = (iid: InstanceId, bp: WorldDoc['blueprints'][string] | undefined): number =>
+      (bp?.workload.cpuMsPerRequest ?? 1) + (bp?.workload.cpuMsPerKb ?? 0) * (entryPacketKbByInstance[iid] ?? 0)
+    // Entry-instance-only map, handed to the flow solver so its p50 latency sample uses the same
+    // effective value the host scheduler used for cores (optional/additive FlowInput field).
+    const effectiveCpuMsByInstance: Record<InstanceId, number> = {}
+    for (const iid in entryPacketKbByInstance) {
+      const inst = compiled.instances[iid]
+      effectiveCpuMsByInstance[iid] = effectiveCpuMs(iid, inst ? doc.blueprints[inst.blueprintId] : undefined)
     }
 
     // ── 4/5. host scheduling (prev-step load) + VPS ──
@@ -476,11 +506,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         const pf = s.prevFlows[i.id]
         const bp = doc.blueprints[i.blueprintId]
         const admitted = pf?.admittedRps ?? 0
-        const latency = pf?.serviceLatencyMs ?? bp?.workload.cpuMsPerRequest ?? 1
+        const latency = pf?.serviceLatencyMs ?? effectiveCpuMs(i.id, bp)
         const runtime = doc.placements[i.placementId]?.runtime
         return {
           instanceId: i.id,
-          cpuMsPerRequest: bp?.workload.cpuMsPerRequest ?? 1,
+          cpuMsPerRequest: effectiveCpuMs(i.id, bp),
           admittedRps: admitted,
           activeConnections: admitted * (latency / 1000),
           ramBaseMb: bp?.workload.ramBaseMb ?? 0,
@@ -578,6 +608,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // Packet-driven egress (slice 1): per-entry-instance request+response wire bytes seed the
       // internet-egress byte total by the route mix's actual payload size (absent ⇒ 2 KB fallback).
       entryBytesByInstance,
+      // Packet-driven CPU (slice 2): the same entry-tier signal, collapsed into one effective
+      // ms/request per instance, seeds the solver's service-latency p50 so a bigger packet takes
+      // longer AND costs more CPU, coherently with the host scheduler's read of the same value.
+      effectiveCpuMsByInstance,
       breakerOpen, healthOf: healthOfInstance, roleOf, rng: s.rng,
       // Manual managed-service outages (node-model Phase 5.2): a downed managed service fails every
       // call to it. Read straight from the manual-outage set — managed ids aren't in the per-step
@@ -662,7 +696,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       for (const i of resident) {
         const offered = flows[i.id]?.offeredRps ?? 0
         if (offered <= 0) continue
-        offeredCores += (offered * (doc.blueprints[i.blueprintId]?.workload.cpuMsPerRequest ?? 1)) / 1000
+        offeredCores += (offered * effectiveCpuMs(i.id, doc.blueprints[i.blueprintId])) / 1000
       }
       const effVcpu = Math.max(0.0001, server.specs.vcpu * (s.vpsFactor.get(server.id) ?? 1))
       overloadPressureByServer.set(server.id, offeredCores / effVcpu)

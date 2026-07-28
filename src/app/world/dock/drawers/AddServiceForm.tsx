@@ -193,6 +193,14 @@ export function AddServiceForm({ serverId, running, onDone }: AddServiceFormProp
             />
           </div>
           <div style={rowGap}>
+            <label htmlFor="adv-cpukb" style={rowLabel}>cpu / KB (ms)</label>
+            <input
+              id="adv-cpukb" aria-label="cpu / KB" type="number" style={field} disabled={running}
+              value={effectiveWorkload.cpuMsPerKb ?? 0}
+              onChange={e => tune({ cpuMsPerKb: Number(e.target.value) })}
+            />
+          </div>
+          <div style={rowGap}>
             <label htmlFor="adv-rambase" style={rowLabel}>ram base (MB)</label>
             <input
               id="adv-rambase" aria-label="ram base" type="number" style={field} disabled={running}
