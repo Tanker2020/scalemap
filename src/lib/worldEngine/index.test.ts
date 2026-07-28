@@ -6,7 +6,7 @@ import {
 } from '../world/factories'
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
-import { addRoute, routeIdOf } from '../nodeConfig'
+import { addRoute, routeIdOf, updateRoute } from '../nodeConfig'
 import { computeWorldCost } from '../costModelV2'
 import type { WorldDoc } from '../world/types'
 import type { MetricsBatch, EngineEvent } from './types'
@@ -801,6 +801,61 @@ describe('packet-driven CPU (blend model, entry tier — slice 2)', () => {
     expect(bZero.instances[explicitZero.webIid].p50Ms).toBe(bUnset.instances[unset.webIid].p50Ms)
     expect(bZero.instances[explicitZero.webIid].cpuCoresUsed).toBe(bUnset.instances[unset.webIid].cpuCoresUsed)
     expect(bZero.servers[explicitZero.serverId].coreUtilization).toEqual(bUnset.servers[unset.serverId].coreUtilization)
+  })
+
+  // Final-whole-branch-review regression (Critical): route.sizeKb is typed as a non-optional
+  // `number` on HttpTemplate, but can genuinely be `undefined` at runtime — a user blanking the
+  // RoutesPanel "req" size input (parseKb('') -> undefined, written through updateRoute's spread)
+  // or a route saved before slice 1 introduced sizeKb (no per-route normalization on load). Before
+  // the fix, buildRouteBytesById copied `route.sizeKb` raw with no fallback (unlike the sibling
+  // `nicReq` field one line above it, which does guard) — r * undefined = NaN in the entry
+  // accumulator's cpuKb fold, which then poisons effectiveCpuMs even when cpuMsPerKb is completely
+  // UNSET (0 * NaN = NaN, not 0), violating the non-negotiable "cpuMsPerKb unset ⇒ byte/metric-
+  // identical to pre-slice-2" invariant under DEFAULT settings.
+  function undefinedSizeKbWorld(cpuMsPerKb: number | undefined, peakRps: number) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const sv = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[sv.id] = sv
+    const web = publicBlueprint('web', 0)
+    if (cpuMsPerKb != null) web.workload = { ...web.workload, cpuMsPerKb }
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, sv.id); doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0); pop.peakRps = peakRps
+    const added = addRoute(doc.packets, { name: 'api', method: 'GET', path: '/api', sizeKb: 1, responseSizeKb: 2 })
+    const routeId = routeIdOf(added.route)
+    // Simulate a blanked "req size" field / a pre-slice-1 route with no sizeKb normalization on
+    // load: updateRoute's spread writes the `sizeKb` key through with an `undefined` VALUE,
+    // exactly matching RoutesPanel's parseKb('') -> undefined path — NOT the same as never having
+    // authored the field (which addRoute would default to 1).
+    doc.packets = updateRoute(added.registry, routeId, { sizeKb: undefined })
+    pop.requestMix = [{ routeId, weight: 1 }]
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), serverId: sv.id, webIid: instanceId(pl.id, 0) }
+  }
+
+  it('a route with runtime-undefined sizeKb (blanked field / pre-slice-1 route) yields finite metrics under default settings (cpuMsPerKb unset)', () => {
+    const f = undefinedSizeKbWorld(undefined, 600)
+    const b = settle(f)
+    const inst = b.instances[f.webIid]
+    expect(Number.isFinite(inst.p50Ms)).toBe(true)
+    expect(Number.isFinite(inst.p99Ms)).toBe(true)
+    expect(Number.isFinite(inst.cpuCoresUsed)).toBe(true)
+    for (const u of b.servers[f.serverId].coreUtilization) expect(Number.isFinite(u)).toBe(true)
+  })
+
+  it('a route with runtime-undefined sizeKb yields finite, sensible metrics with cpuMsPerKb > 0 set (fallback participates in the blend, not just avoids a crash)', () => {
+    const f = undefinedSizeKbWorld(0.05, 600)
+    const b = settle(f)
+    const inst = b.instances[f.webIid]
+    expect(Number.isFinite(inst.p50Ms)).toBe(true)
+    expect(Number.isFinite(inst.p99Ms)).toBe(true)
+    expect(Number.isFinite(inst.cpuCoresUsed)).toBe(true)
+    expect(inst.cpuCoresUsed).toBeGreaterThan(0)
+    for (const u of b.servers[f.serverId].coreUtilization) expect(Number.isFinite(u)).toBe(true)
   })
 })
 

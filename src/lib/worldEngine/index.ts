@@ -107,7 +107,12 @@ function buildRouteBytesById(doc: WorldDoc): Map<string, RouteWireBytes> {
       costReq: cost.reqBytes, costResp: cost.respBytes,
       nicReq: route.sizeKb != null ? route.sizeKb * 1024 : NIC_REQUEST_BYTES,
       nicResp: route.responseSizeKb != null ? route.responseSizeKb * 1024 : NIC_RESPONSE_BYTES,
-      sizeKb: route.sizeKb,
+      // route.sizeKb is typed as a non-optional `number` on HttpTemplate but can genuinely be
+      // `undefined` at runtime (a blanked RoutesPanel "req" size input, or a route saved before
+      // slice 1 introduced sizeKb with no per-route normalization on load) — guarded the same way
+      // its nicReq sibling above is, falling back to the same 2 KB convention DEFAULT_ROUTE_WIRE_BYTES
+      // uses (review fix: unguarded, this NaN'd cpuKb even with cpuMsPerKb unset — 0 * NaN = NaN).
+      sizeKb: route.sizeKb ?? (routeIngressBytes(undefined).reqBytes / 1024),
       sigma: route.sizeVariance ?? 0,
     })
   }
