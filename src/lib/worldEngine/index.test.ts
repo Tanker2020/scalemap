@@ -876,6 +876,56 @@ describe('log-normal NIC-burst tails (mean-preserving, entry tier — slice 3)',
     expect(costRelDiff).toBeLessThan(0.05)
   })
 
+  it('mean internetEgressBytesPerSec / internet-egress cost stays ~unchanged under NIC stress too (review fix)', () => {
+    // Same NIC-tight fixture as the p99-tail test above (nicMbps 20, 50 KB responses, 35 rps) —
+    // deliberately NOT the ample-NIC fixture the previous test uses, so this exercises the exact
+    // path the reviewer flagged: with the entry NIC pinned near/over its cap, sigma>0's per-step
+    // multiplier pushes some steps past 2x cap, triggering deliveredFraction < 1 -> queuedLatencyMs
+    // -> next-step extraLatencyMsByServer -> admission/backpressure feedback in solveFlows. The
+    // question is whether that feedback loop can bias the *volume* of admitted entry rps in a way
+    // that leaks into internetEgressBytesPerSec.
+    //
+    // It structurally can't: totals.internetBytes (flows.ts) is seeded from `entryDemand` — the
+    // OFFERED per-step rps computed during routing/LB distribution, BEFORE solveFlows' queue/
+    // admission logic ever runs — multiplied by the route's mean req+resp bytes (entryBytesByInstance,
+    // which sizeVariance never touches). NIC backpressure only ever throttles ADMITTED rps and adds
+    // latency; it never rewrites entryDemand or entryBytesByInstance. So even under sustained NIC
+    // stress, the egress/cost line should track the sigma=0 run to within ordinary RNG-stream
+    // divergence — the same mechanism the ample-NIC test above attributes its residual gap to,
+    // just with more per-step draws (sampleSizeMultiplier fires on every stressed step here,
+    // vs. rarely under ample headroom) shifting the shared seeded rng stream further apart.
+    const base = nicBurstWorld(0, { nicMbps: 20, responseSizeKb: 50, peakRps: 35 })
+    const burst = nicBurstWorld(1.0, { nicMbps: 20, responseSizeKb: 50, peakRps: 35 })
+    const simBase = drive(base.doc, base.compiled)
+    simBase.stepFor(60)
+    const meanEgressBase = simBase.batches.reduce((sum, b) => sum + b.world.internetEgressBytesPerSec, 0) / simBase.batches.length
+    const costBase = computeWorldCost(base.doc, simBase.latest().world).egress.internetUsd
+    simBase.engine.stop()
+    const simBurst = drive(burst.doc, burst.compiled)
+    simBurst.stepFor(60)
+    const meanEgressBurst = simBurst.batches.reduce((sum, b) => sum + b.world.internetEgressBytesPerSec, 0) / simBurst.batches.length
+    const costBurst = computeWorldCost(burst.doc, simBurst.latest().world).egress.internetUsd
+    simBurst.engine.stop()
+
+    // Wider than the ample-NIC test's 5% — NIC-tight legitimately introduces more step-to-step
+    // demand-RNG divergence between the two runs (sampleSizeMultiplier fires on nearly every
+    // stressed step here, vs. rarely under ample headroom, shifting more subsequent Box-Muller
+    // draws in the shared seeded stream), and `costBase`/`costBurst` are single last-step
+    // snapshots (matching the ample-NIC test's style above) rather than run means, so they also
+    // inherit whatever NIC-delivered-fraction noise that one step happens to be sitting in.
+    // Measured on this fixture: mean-egress relDiff ~3.1%, cost relDiff ~8.0% (both deterministic
+    // under the fixed seed=1 `drive()` uses). 15% gives ~5x headroom on the byte mean and ~1.9x
+    // headroom on the noisier single-step cost figure, while still being tight enough to catch a
+    // real bias: injecting the exact leak this test guards against — scaling entryBytesByInstance
+    // (the cost/egress seed) by the previous step's NIC deliveredFraction, simulating admission
+    // backpressure leaking into the cost line — pushed costRelDiff to ~20.9%, well past this
+    // threshold (verified locally, reverted before commit; see task report for detail).
+    const relDiff = Math.abs(meanEgressBurst - meanEgressBase) / meanEgressBase
+    expect(relDiff).toBeLessThan(0.15)
+    const costRelDiff = Math.abs(costBurst - costBase) / costBase
+    expect(costRelDiff).toBeLessThan(0.15)
+  })
+
   // Backward-compat invariant (non-negotiable, per the task spec): sizeVariance unset must
   // reproduce today's behavior EXACTLY — the coefficient, not its absence, gates the effect, and
   // an explicit 0 must be indistinguishable from an unauthored route (golden guard).
