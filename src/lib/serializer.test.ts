@@ -192,6 +192,62 @@ describe('scalemap v3 serializer', () => {
     expect(parsed.world.blueprints[bp.id].dependencies[0].writeFraction).toBe(0.35)
   })
 
+  // Packet library: the deprecated single-slot packetTemplateId is folded into a 1-entry mix on
+  // load, and — the regression floor — a document written before the library existed must come
+  // back BIT-IDENTICAL, since that identity is what keeps the engine's byte totals unchanged.
+  describe('packet-library normalization', () => {
+    function depWorld(dep: Record<string, unknown>) {
+      const world = createWorld()
+      const bp = createBlueprint('api', 0)
+      bp.dependencies = [{
+        id: 'dep-1', target: { kind: 'blueprint', blueprintId: 'bp-db' },
+        port: 5432, protocol: 'db', packetTemplateId: null, ...dep,
+      } as never]
+      world.blueprints[bp.id] = bp
+      return { world, bpId: bp.id }
+    }
+
+    it('migrates a non-null packetTemplateId into a 1-entry packetMix', () => {
+      const { world, bpId } = depWorld({ packetTemplateId: 7 })
+      const parsed = deserializeWorld(serializeWorld(world, 'legacy', '2026-07-28T00:00:00.000Z'))
+      expect(parsed.world.blueprints[bpId].dependencies[0].packetMix).toEqual([{ packetId: 7, weight: 1 }])
+    })
+
+    it('leaves an already-bound mix alone rather than clobbering it with the legacy slot', () => {
+      const mix = [{ packetId: 3, weight: 2 }]
+      const { world, bpId } = depWorld({ packetTemplateId: 7, packetMix: mix })
+      const parsed = deserializeWorld(serializeWorld(world, 'both', '2026-07-28T00:00:00.000Z'))
+      expect(parsed.world.blueprints[bpId].dependencies[0].packetMix).toEqual(mix)
+    })
+
+    it('REGRESSION FLOOR: a packetTemplateId-null world round-trips completely untouched', () => {
+      const { world, bpId } = depWorld({})
+      const parsed = deserializeWorld(serializeWorld(world, 'floor', '2026-07-28T00:00:00.000Z'))
+      expect(parsed.world.blueprints[bpId].dependencies[0].packetMix).toBeUndefined()
+      expect(parsed.world).toEqual(world)
+    })
+
+    it('leaves defaultPacket absent on load — absence IS the 2 KB convention', () => {
+      const parsed = deserializeWorld(serializeWorld(createWorld(), 'd', '2026-07-28T00:00:00.000Z'))
+      expect(parsed.world.packets.defaultPacket).toBeUndefined()
+    })
+
+    it('round-trips an authored defaultPacket and a bound route packetMix', () => {
+      const world = createWorld()
+      world.packets = {
+        ...world.packets,
+        defaultPacket: { reqKb: 8, respKb: 16 },
+        templates: {
+          1: { id: 1, name: 'r', protocol: 'http', method: 'GET', path: '/a', statusCode: 200, sizeKb: 1, packetMix: [{ packetId: 2, weight: 1 }] },
+          2: { id: 2, name: 'q', protocol: 'db', sizeKb: 1, queryType: 'write', isWAL: true, resultSizeKb: 32 },
+        },
+        nextId: 3,
+      }
+      const parsed = deserializeWorld(serializeWorld(world, 'pk', '2026-07-28T00:00:00.000Z'))
+      expect(parsed.world.packets).toEqual(world.packets)
+    })
+  })
+
   // audit ISSUE-012: the boundary must reject present-but-invalid values (a string hourlyUsd
   // poisons computeWorldCost into NaN; an unknown policy left routing scores undefined) while
   // keeping the defensive leniency for MISSING additive fields tested above.

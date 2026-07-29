@@ -723,3 +723,123 @@ describe('world.store — reference-sharing history (ISSUE-031)', () => {
     expect(useWorldStore.getState().doc).toBe(seed)
   })
 })
+
+// ─── Packet library + blueprint duplication (packet-library phase) ───────────────────────────
+describe('world.store — packet library', () => {
+  const st = () => useWorldStore.getState()
+  const dbFields = (over: Record<string, unknown> = {}) => ({
+    name: 'query', protocol: 'db' as const, sizeKb: 1, queryType: 'read' as const,
+    isWAL: false, resultSizeKb: 64, ...over,
+  })
+
+  it('addPacket stores a pathless template and shares the route id space', () => {
+    const routeId = st().addRoute({ name: 'r', method: 'GET', path: '/api' })
+    const packetId = st().addPacket(dbFields())
+    expect(packetId).toBe(Number(routeId) + 1)
+    expect(st().doc.packets.templates[packetId]).toMatchObject({ protocol: 'db', name: 'query' })
+    expect(st().doc.packets.nextId).toBe(packetId + 1)
+  })
+
+  it('updatePacket replaces the shape wholesale on a protocol switch', () => {
+    const id = st().addPacket(dbFields())
+    st().updatePacket(id, { name: 'evt', protocol: 'event', sizeKb: 3, topic: 't', eventType: 'x', deliveryMode: 'at-most-once' })
+    expect(st().doc.packets.templates[id]).toEqual({ id, name: 'evt', protocol: 'event', sizeKb: 3, topic: 't', eventType: 'x', deliveryMode: 'at-most-once' })
+  })
+
+  it('duplicatePacket copies under a fresh id with a non-nesting (copy) name', () => {
+    const id = st().addPacket(dbFields({ colorOverride: '#abcdef' }))
+    const copy = st().duplicatePacket(id)!
+    expect(st().doc.packets.templates[copy]).toMatchObject({ name: 'query (copy)', colorOverride: '#abcdef' })
+    const copy2 = st().duplicatePacket(copy)!
+    expect(st().doc.packets.templates[copy2].name).toBe('query (copy 2)')
+    expect(st().duplicatePacket(9999)).toBeNull()
+  })
+
+  it('setDependencyPacketMix binds a mix and strips weight-0 rows', () => {
+    const { bpId } = buildChain()
+    const webId = st().addBlueprint('web')
+    const depId = st().connectServices(webId, { kind: 'blueprint', blueprintId: bpId }, { port: 8080, protocol: 'http', autoProvision: false })
+    const p1 = st().addPacket(dbFields())
+    const p2 = st().addPacket(dbFields({ name: 'other' }))
+    st().setDependencyPacketMix(webId, depId, [{ packetId: p1, weight: 3 }, { packetId: p2, weight: 0 }])
+    expect(st().doc.blueprints[webId].dependencies[0].packetMix).toEqual([{ packetId: p1, weight: 3 }])
+    // an all-zero mix unbinds entirely rather than storing an empty array
+    st().setDependencyPacketMix(webId, depId, [{ packetId: p1, weight: 0 }])
+    expect(st().doc.blueprints[webId].dependencies[0].packetMix).toBeUndefined()
+  })
+
+  it('setDependencyWireSize patches only the leg it names, clamped at 0', () => {
+    const { bpId } = buildChain()
+    const webId = st().addBlueprint('web')
+    const depId = st().connectServices(webId, { kind: 'blueprint', blueprintId: bpId }, { port: 8080, protocol: 'http', autoProvision: false })
+    st().setDependencyWireSize(webId, depId, { reqKb: 40 })
+    st().setDependencyWireSize(webId, depId, { respKb: -5 })
+    const dep = st().doc.blueprints[webId].dependencies[0]
+    expect(dep.reqKb).toBe(40)
+    expect(dep.respKb).toBe(0)
+  })
+
+  it('removePacket cascades — scrubbed from dependency mixes AND route mixes', () => {
+    const { bpId } = buildChain()
+    const webId = st().addBlueprint('web')
+    const depId = st().connectServices(webId, { kind: 'blueprint', blueprintId: bpId }, { port: 8080, protocol: 'http', autoProvision: false })
+    const routeId = st().addRoute({ name: 'r', method: 'GET', path: '/api' })
+    const doomed = st().addPacket(dbFields())
+    const kept = st().addPacket(dbFields({ name: 'kept' }))
+    st().setDependencyPacketMix(webId, depId, [{ packetId: doomed, weight: 1 }, { packetId: kept, weight: 1 }])
+    st().setRoutePacketMix(routeId, [{ packetId: doomed, weight: 1 }])
+
+    st().removePacket(doomed)
+    expect(st().doc.packets.templates[doomed]).toBeUndefined()
+    expect(st().doc.blueprints[webId].dependencies[0].packetMix).toEqual([{ packetId: kept, weight: 1 }])
+    // the route's mix held only the deleted packet ⇒ unbound, not left as an empty array
+    expect(st().doc.packets.templates[Number(routeId)]).toMatchObject({ packetMix: undefined })
+  })
+
+  it('setDefaultPacket sets and clears the world-level tier-3 fallback', () => {
+    st().setDefaultPacket({ reqKb: 8, respKb: 16 })
+    expect(st().doc.packets.defaultPacket).toEqual({ reqKb: 8, respKb: 16 })
+    st().setDefaultPacket(null)
+    expect(st().doc.packets).not.toHaveProperty('defaultPacket')
+  })
+
+  it('packet mutations are undoable and mark the file dirty', () => {
+    useFileStore.getState().markSaved()
+    const before = st().doc
+    st().addPacket(dbFields())
+    expect(useFileStore.getState().dirty).toBe(true)
+    st().undo()
+    expect(st().doc).toBe(before)
+  })
+})
+
+describe('world.store — duplicateBlueprint', () => {
+  const st = () => useWorldStore.getState()
+
+  it('deep-copies the definition with fresh dependency ids and NO placements', () => {
+    const { bpId, serverId } = buildChain()
+    const depTarget = st().addBlueprint('db')
+    const depId = st().connectServices(bpId, { kind: 'blueprint', blueprintId: depTarget }, { port: 5432, protocol: 'db', autoProvision: false })
+    st().addPlacement(bpId, serverId)
+
+    const copyId = st().duplicateBlueprint(bpId)!
+    const doc = st().doc
+    const src = doc.blueprints[bpId]
+    const copy = doc.blueprints[copyId]
+
+    expect(copy.name).toBe('api (copy)')
+    expect(copy.dependencies).toHaveLength(1)
+    expect(copy.dependencies[0].id).not.toBe(depId)
+    expect(copy.dependencies[0].target).toEqual(src.dependencies[0].target)
+    expect(Object.values(doc.placements).some(p => p.blueprintId === copyId)).toBe(false)
+    // deep, not shallow: mutating the copy's nested workload must not touch the original
+    expect(copy.workload).not.toBe(src.workload)
+    expect(copy.workload).toEqual(src.workload)
+  })
+
+  it('returns null for an unknown id and does not touch the document', () => {
+    const before = st().doc
+    expect(st().duplicateBlueprint('nope')).toBeNull()
+    expect(st().doc).toBe(before)
+  })
+})

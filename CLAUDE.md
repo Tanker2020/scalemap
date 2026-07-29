@@ -159,12 +159,18 @@ src/
                                     # constellation), FloorPlanHeader (az minimap,
                                     # AzConfigTab), ServerFaceplate (+ drawers/: Hardware/
                                     # Firewall/Services/Placement, one open at a time)
-      panels/                       # WorldPanel dock tabs — world scope only: Topology, Managed,
-                                    # Connections, Traffic, Routes, Analysis (+ AiReviewSection),
-                                    # Events, Cost. (Blueprints/Placements tabs were removed in
-                                    # node-model Phase 5 — services are authored via the VPS door
-                                    # (dock/drawers/AddServiceForm) + Connections; ManagedPanel
-                                    # holds the cloud-managed appliances.) Region/AZ/server scope
+      panels/                       # WorldPanel dock tabs — world scope only: Topology,
+                                    # Blueprints, Packets, Managed, Connections, Traffic, Routes,
+                                    # Analysis (+ AiReviewSection), Events, Cost. Blueprints and
+                                    # Packets are the two global LIBRARIES (reusable definitions,
+                                    # independent of where they run) — Blueprints returned
+                                    # 2026-07-28 as a CATALOG only: services are still authored
+                                    # via the VPS door (dock/drawers/AddServiceForm) + Connections,
+                                    # and the Placements tab stays gone. ManagedPanel holds the
+                                    # cloud-managed appliances. PacketMixEditor/NumberField are
+                                    # shared controls (the mix editor is also used by
+                                    # connections/ConnectionsView's EdgeInspector).
+                                    # Region/AZ/server scope
                                     # show a narrower Config/Analysis/Events/Cost set instead,
                                     # with Config rendered by dock/'s instrument components above
                                     # (see docs/module-boundaries.md §S-§V)
@@ -173,6 +179,10 @@ src/
     world/                        # Pure document model + compiler — the schema of .scalemap v3
       types.ts                     # WorldDoc entities + CompiledWorld output types
       factories.ts, instanceCatalog.ts, regionGeo.ts, populationLabel.ts
+      packetDraft.ts               # Pure draft logic for PacketModal (mirrors managedDraft.ts) —
+                                    # defaultPacketDraft/draftFromPacket/draftToTemplate/
+                                    # applyProtocolChange. Never emits a `path`, which is what
+                                    # keeps a library packet out of the route view
       rackModel.ts                 # Pure rack capacity/placement model (Polish 3): Rack/
                                     # RackPosition types live in types.ts; this file has
                                     # serverHeightU/rackUsedU/canAssign/autoArrangePlan — no
@@ -195,12 +205,23 @@ src/
                                    # request client
     costModelV2.ts, cloudRegistry.ts, regionConfig.ts
     serializer.ts                 # .scalemap v3 (de)serialization (v1/v2 rejected on load)
-    nodeConfig.ts                 # Packet-template types + route-catalog helpers. The canvas-era
+    nodeConfig.ts                 # Packet-template types + BOTH registry views. The canvas-era
                                    # NODE_CONFIG icon registry / node-edge sim-config types were
                                    # removed 2026-07-12; the surviving PacketRegistry was REVIVED
-                                   # in the Phase 2 route system — its HttpTemplates are the L7
-                                   # "routes" (listRoutes/addRoute/…/routeMatchesPattern here),
-                                   # now held in WorldDoc.packets and authored via RoutesPanel
+                                   # in the Phase 2 route system and widened 2026-07-28 into one id
+                                   # space with two views — listRoutes (http WITH a path = the L7
+                                   # route catalog, authored via RoutesPanel) and listPackets
+                                   # (pathless, any protocol = the packet library, authored via
+                                   # PacketsPanel). Both live in WorldDoc.packets
+    connectionModel.ts            # The ONE connection-semantics point (companion to
+                                   # packetResolve): connectionClassOf's protocol-wins rule,
+                                   # profileFor/resolveConnectionProfile, and activeConnections —
+                                   # the SINGLE Little's-law formula both engine call sites use
+    packetResolve.ts              # The ONE mix→wire-bytes resolution point: resolveWireSize's
+                                   # four-tier fallback (bound mix → inline KB → registry default
+                                   # → 2 KB), db write-fraction/WAL derivation, routeIngressBytes,
+                                   # and pickPacketByIndex (rng-FREE particle packet choice —
+                                   # drawing rng at render time would break replay determinism)
     theme.ts                      # DARK_COLORS/LIGHT_COLORS/CATEGORY_COLORS/FONT — the
                                    # --color-* token source for both themes
     tauri.ts / tauriMock.ts       # Tauri command wrappers + browser-dev localStorage/fetch
@@ -253,16 +274,62 @@ array. Add new rules there; don't special-case execution elsewhere. Rules never 
 `compiled.findings` — the Analysis tab merges both lists and suppresses the compile-side
 duplicate of any rule that re-surfaces a compile finding (e.g. `blocked-dependency-path`).
 
-**Packet system's current role (revived as the route catalog, Phase 2):** the Flyweight
+**Packet system — ONE registry, TWO views (route catalog + packet library):** the Flyweight
 packet-template types (`PacketTemplate`/`PacketMode`/`PacketRegistry`, `src/lib/nodeConfig.ts`)
-survive from the deleted canvas app; the Phase 2 regional-LB route system revived them as the L7
-**route catalog**. The registry now lives in `WorldDoc.packets` (mutate()-managed, serialized
-inside `world`; the old vestigial top-level `.scalemap` `packets` slot is migrated in on load),
-its HTTP-protocol templates ARE the "routes" (`nodeConfig.ts` `listRoutes`/`addRoute`/…), and it
-is authored via `panels/RoutesPanel.tsx` (world-scope `routes` tab). `ClientPopulation.requestMix`
-maps routes→weights; a region's L7 LB `listenerRules` map route paths→services. Internal
-service-to-service per-route routing is still parked (ingress-only L7). The non-http template
-kinds (event/stream/db) remain type-only — no authoring UI.
+survive from the deleted canvas app. `WorldDoc.packets` is a single monotonic id space
+(mutate()-managed, serialized inside `world`; the old vestigial top-level `.scalemap` `packets`
+slot is migrated in on load), and what a template IS depends on whether it carries a path:
+
+- **`listRoutes`** — http templates WITH a path = the Phase 2 L7 **route catalog**, authored in
+  `panels/RoutesPanel.tsx` (world-scope `routes` tab). `ClientPopulation.requestMix` maps
+  routes→weights; a region's L7 LB `listenerRules` map route paths→services.
+- **`listPackets`** — every template WITHOUT a path = the global **packet library** (all four
+  protocols, each with request/response size, burst variance, and a colour), authored in
+  `panels/PacketsPanel.tsx` + `PacketModal.tsx`. A `PacketMixEntry[]` binds packets to a
+  service→service edge (`BlueprintDependency.packetMix`, via the Connections graph's
+  `EdgeInspector`) or, "advanced", to a route.
+
+`src/lib/packetResolve.ts` is the ONE place a mix becomes wire bytes — a four-tier fallback
+(bound mix → the carrier's inline req/resp KB → `PacketRegistry.defaultPacket` → 2 KB each way).
+Payload size now drives **cost, NIC saturation, and per-KB CPU on every hop**, not just ingress:
+the flow solver's `depBytesById` sizes cross-AZ/cross-region egress, NIC is booked per downstream
+row on BOTH endpoints, and inbound internal KB feeds `cpuMsPerKb` (one-step lagged off
+`prevFlows`). db packets additionally derive an edge's `writeFraction` from their `queryType` and
+apply WAL write amplification. Every new field is optional, so a pre-existing `.scalemap` loads
+and simulates byte-identically. Internal service-to-service per-route routing is still parked
+(ingress-only L7), as are async `event` / persistent `stream` DELIVERY semantics — those kinds are
+authored, sized, and (for `stream`) connection-modelled today, but not yet simulated as
+asynchronous.
+
+**Connection semantics — the other half of a packet (2026-07-29):** `ConnectionType`
+(`keep-alive`/`short-lived`/`streaming`) was authored-and-inert schema from Phase 2 until this
+phase; it is now LIVE. Where payload size says how much data a call moves, connection type says
+how long the connection is held and what establishing it costs — the difference between a
+CPU-bound and a RAM-bound failure. `src/lib/connectionModel.ts` is the ONE place that lives:
+`connections = rps × (latencyShare × latency/1000 + extraHold + fixedHold)`, where `keep-alive` is
+the exact historical identity (the regression floor), `short-lived` adds a 15 ms handshake + 100 ms
+linger hold tail and 2 ms/req of handshake CPU, and `streaming` decouples from latency entirely for
+an authored `holdSeconds` (default 30 s). `protocol` WINS over `connectionType` for the non-http
+kinds: `stream` → streaming, `db`/`event` → keep-alive. Both tiers are covered — routes (entry) and
+packets bound to edges (internal), blended per instance by rps share.
+
+⚠ **The two-call-site invariant.** Little's law is computed in exactly TWO places — the host
+scheduler's `InstanceLoad.activeConnections` (which drives RAM growth and OOM victim selection) and
+`metrics.ts`'s published `InstanceMetrics.activeConnections` (which drives every view and the
+`ram-oversubscribed` analysis rule). **Both MUST call `connectionModel`'s `activeConnections()`.**
+If only one is ever made aware of a change, the RAM the scheduler enforces silently diverges from
+the RAM the user is shown. `index.test.ts`'s `DIVERGENCE GUARD` test exists solely to catch that.
+There is deliberately NO connection ceiling/refusal path — RAM is the constraint, so
+`hostScheduler`'s existing OOM path and `capacity.ts`'s `ram-oversubscribed` fire with zero new
+code. Caveat: a saved world that already picked `short-lived`/`streaming` WILL change behavior on
+load — that is the point of the phase, but it is a real change to existing documents.
+
+**Global blueprint library:** `panels/BlueprintsPanel.tsx` + `BlueprintModal.tsx` (world-scope
+`blueprints` tab) give `ServiceBlueprint` — always a global, reusable definition — the catalog
+surface it lost in node-model Phase 5. It does NOT resurrect the retired generic-blueprint
+authoring model: creating a service is still the VPS door (`dock/drawers/AddServiceForm`), and
+dependencies are still authored in the Connections graph. `duplicateBlueprint` deep-copies a
+definition with fresh dependency ids and no placements.
 
 **LLM reviewer + key security (non-negotiable):** `src/lib/llmReview.ts` builds a review context
 from the compiled world + deterministic findings + aggregated metrics (never raw instance maps),
@@ -420,6 +487,11 @@ progress — do not assume any of it exists:
   serialized into `.scalemap`)
 - Streaming LLM responses / request cancellation (today's review request is a single blocking
   round trip with one retry; no cancel button, no token streaming)
+- Connection POOL modeling (pool size, checkout wait, pool-exhaustion queueing) and a connection
+  CEILING / refusal path — connection semantics are live, but RAM is deliberately the only
+  constraint (see the two-call-site invariant above); a `WorkloadProfile.maxConnections` mirroring
+  `managedDbRuntimeFor`'s `connectionRefusedRps` is the natural follow-up
+- Wire-protocol sub-enum (HTTP/2 multiplexing, gRPC streams, WebSocket) beneath `ConnectionType`
 
 
 When making changes to the codebase refer to the [module boundaries](docs/module-boundaries.md) document to understand which files are low-risk to modify in parallel and which are high-conflict "hub" files that require careful coordination, and try to utilize codegraph mcp server if possible to understand the fan-in and fan-out of the files you are modifying. And after every new feature/change update the docs/module-boundaries.md file to reflect the new architecture and module boundaries.

@@ -24,7 +24,13 @@ import type { ServerId } from '../../lib/world/types'
 // 2026-07-19 (node-model Phase 5): dropped 'blueprints' and 'placements' — the generic-blueprint
 // authoring model was retired. Services are now authored via the VPS door (AddServiceForm) + the
 // Connections tab; managed cloud appliances get their own 'managed' tab (ManagedPanel).
-export type PanelTab = 'topology' | 'managed' | 'connections' | 'traffic' | 'routes' | 'analysis' | 'events' | 'cost' | 'config'
+// 2026-07-28 (packet library): gained 'packets' and 'blueprints'. Packets are the reusable
+// payload definitions bound to service→service edges (the internal-hop sibling of 'routes').
+// 'blueprints' RETURNS — the Phase-5 removal left ServiceBlueprint, a genuinely global reusable
+// entity, discoverable only through a host already running it; this is the missing library
+// surface, not a revival of the retired generic-blueprint authoring model (the VPS door remains
+// the way a service gets onto a host).
+export type PanelTab = 'topology' | 'blueprints' | 'packets' | 'managed' | 'connections' | 'traffic' | 'routes' | 'analysis' | 'events' | 'cost' | 'config'
 
 export interface SceneOverlayTarget { kind: 'region' | 'population'; id: string }
 

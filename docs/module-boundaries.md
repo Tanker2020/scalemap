@@ -3905,3 +3905,247 @@ zones that can serve and the traffic redistributes. The fix aligns the engine wi
   unchanged (they still drop). `index.test.ts` "cross-zone-off ingress distribution" — the
   forfeit/surfaced pair became redistribute/no-drop (`web1` ≈ full 500, region stays healthy). No
   contract or `.scalemap` change (pure engine-distribution semantics + metrics, both ephemeral).
+
+---
+
+## Packet Library + Global Blueprints (2026-07-28)
+
+Two authoring gaps with one root cause — reusable definitions had no library surface, and packet
+payloads stopped at the front door.
+
+### The registry now has two views (`src/lib/nodeConfig.ts`)
+
+`WorldDoc.packets` stays ONE `PacketRegistry` with ONE monotonic id space; what a template *is*
+depends on whether it carries a path:
+
+- `listRoutes(reg)` — http templates **with** a non-empty path → the L7 route catalog (Phase 2
+  semantics unchanged: population `requestMix`, LB `listenerRules`, the entry byte/CPU tier).
+  Returns the narrowed `RouteTemplate = HttpTemplate & { path: string }`, which is what let
+  `HttpTemplate.path` become optional without a single `!` at the ~12 consumer sites.
+- `listPackets(reg)` — every template **without** a path, all four protocols → the packet library
+  bound to service→service edges.
+
+Sizing fields (`responseSizeKb`, `sizeVariance`) moved from `HttpTemplate` onto
+`BasePacketTemplate`; `colorOverride` became live (particle tint). The three dormant kinds
+(`db`/`event`/`stream`) gained real authoring. **Deleted:** `WorkloadDemand`/`WorkloadTier`/
+`BasePacketTemplate.workload` — zero readers, and the name collided confusingly with the LIVE
+`WorkloadProfile` in `world/types.ts` that the engine actually reads. New: `PacketMixEntry`,
+`PacketRegistry.defaultPacket`, and packet CRUD (`addPacket`/`updatePacket`/`removePacket`/
+`duplicatePacket`, `PacketFields` — note the **distributive** omit, since a plain
+`Omit<PacketTemplate,'id'>` collapses the union to its common keys).
+
+### `src/lib/packetResolve.ts` (NEW) — the one resolution point
+
+Pure, node-testable, dependency-free (registry types only). `resolveWireSize(reg, mix, inlineReq,
+inlineResp)` is the single place the four-tier fallback lives:
+
+> bound mix (weighted mean) → carrier's inline req/resp KB → `reg.defaultPacket` → 2 KB each way
+
+Tier 4 (`DEFAULT_PACKET_BYTES_EACH_WAY`) is why an existing `.scalemap` simulates byte-identically,
+and `sigma === 0` there means **zero rng draws**, so the seeded stream is untouched. Also owns
+`routeIngressBytes` (**moved here from `nodeConfig.ts`** — the resolver needs the constant as a
+*value*, so keeping it in `nodeConfig` would have been an import cycle) and `pickPacketByIndex`
+(rng-free, radical-inverse weighted pick for particles). db semantics live here too: `resultSizeKb`
+supplies the response leg, `queryType` derives `writeFraction`, `isWAL` sets `amplification`.
+
+### Model + persistence
+
+`BlueprintDependency` gained `packetMix?` / `reqKb?` / `respKb?` (all optional, so existing files
+load and simulate unchanged); `packetTemplateId` is now documented DEPRECATED and a non-null value
+is migrated to a 1-entry mix in `deserializeWorld`. `HttpTemplate` gained `packetMix?` (a route's
+"advanced" binding). **No version bump** — `serializer.ts`'s additive normalization absorbed it.
+`defaultPacket` is deliberately NOT seeded on load: its absence IS the 2 KB convention.
+
+### Store (`world.store.ts`, hub file)
+
+New actions, all through `mutate()` (undo/dirty free): `addPacket`/`updatePacket`/`removePacket`/
+`duplicatePacket`, `setDefaultPacket`, `setDependencyPacketMix`, `setDependencyWireSize`,
+`setRoutePacketMix`, `duplicateBlueprint`. Two cascades matter: `removePacket` scrubs the id from
+every dependency mix **and** every route mix (mirroring `removeRoute`'s `requestMix` scrub), and
+`duplicateBlueprint` deep-copies with **fresh dependency ids and no placements**. Copy naming
+reuses a generalized `nextCopyName` in `world/populationLabel.ts` (non-nesting: `api (copy)` then
+`api (copy 2)`).
+
+### UI
+
+Two new world-scope tabs — the dock order is now
+`Topology | Blueprints | Packets | Managed | Connections | Traffic | Routes | Analysis | Events | Cost`
+(four wiring points, as ever: `ui.store.ts`'s `PanelTab` then `dock/scope.ts`'s `WORLD_TABS` then
+`WorldPanel.tsx`'s `TAB_LABELS` + its header/body switches).
+
+| File | Role |
+|---|---|
+| `panels/PacketsPanel.tsx` (new) | Default-packet row + the packet list (colour swatch, `#id`, protocol chip, sizes, `N edges / M routes` usage, edit/dup/x) |
+| `panels/PacketModal.tsx` (new) | All packet config. `ManagedServiceModal`'s shell verbatim: portal, backdrop close, **capture-phase Escape** (so `WorldShell`'s nav-level Escape doesn't also fire), one-time store snapshot per open (so one save is one undo entry), and its **own** `<fieldset disabled={running}>` because `createPortal` escapes `WorldPanel`'s |
+| `lib/world/packetDraft.ts` (new) | Pure draft logic, mirroring `managedDraft.ts` — `defaultPacketDraft`/`draftFromPacket`/`draftToTemplate`/`applyProtocolChange`. Never emits a `path`, which is exactly what keeps a library packet out of the route view |
+| `panels/BlueprintsPanel.tsx` (new) | The service-definition catalog: workload summary, `N hosts / M AZs` (or `not placed`), dep count, edit/dup/x. Does **not** resurrect the retired generic-blueprint authoring model — creating a service is still the VPS door (`dock/drawers/AddServiceForm`) |
+| `panels/BlueprintModal.tsx` (new) | Identity / workload / ports / state / dbConfig, plus a **read-only** `CONNECTIONS (n)` section with a jump to the graph — relationships are authored there, not in a second weaker editor |
+| `panels/PacketMixEditor.tsx` (new) | The one weighted-mix control, shared by `EdgeInspector` and `RouteCard`. Lifted from `TrafficPanel`'s `RequestMixEditor` rather than written a third time; TrafficPanel keeps its own because it binds ROUTES by string id, not packets by numeric id |
+| `panels/NumberField.tsx` (new) | Lifted verbatim out of `TrafficPanel.tsx` when `PacketMixEditor` needed the same control. `kit.tsx`'s `DerivedField` is the richer sibling; this is the bare one that fits a dense mix row |
+| `connections/ConnectionsView.tsx` | `EdgeInspector` gained an OUTGOING PACKETS section (mix + inline req/resp KB, greyed while a mix is bound). When a **db** mix is bound the manual write-fraction slider is replaced by a read-only derived readout — one source of truth |
+| `panels/RoutesPanel.tsx` | `RouteCard` gained an `advanced` disclosure holding the same editor; it opens itself when a mix is already bound, so a binding is never hidden |
+
+### Engine (`worldEngine/index.ts`, `flows.ts` — hub files)
+
+- **Cost.** `buildDepWireBytes(doc)` (a direct sibling of `buildRouteBytesById`) resolves every
+  dependency once at `start()` into `EngineState.depBytesById`, handed to the solver as the new
+  optional `FlowInput.depBytesById`. `bucketBytes(hopClass, rps, depId?)` sizes the request and
+  response legs independently; **WAL amplification applies only to the write share of the request
+  leg**. Omitting the field reproduces `rps x 2048 x 2` exactly. A bound db mix's derived write
+  fraction also supersedes `dep.writeFraction` at `managedRefusedRps`. **No `costModelV2.ts`
+  change** — those bytes already flow through `totals.crossAzBytes`/`crossRegionBytes` into the
+  metrics EMAs and on to the cost model.
+- **NIC (the one genuine restructure).** The aggregate `internalRps x 512/2048` term on the
+  *serving* side is **replaced** (not supplemented — that would double-count the callee) by a
+  per-downstream-row booking on **both endpoints**: caller sends the request / receives the
+  response, callee the mirror. One `sampleSizeMultiplier` draw per row, shared by both endpoints,
+  gated on `sigma > 0` so an unauthored world draws nothing. **This is a deliberate behavior
+  change**: caller-side NIC was previously unmodelled, so a world with fat internal hops now sees
+  uplink pressure on the *producing* server that it did not before.
+- **CPU.** `effectiveCpuMs` gained an internal inbound-KB signal derived from `s.prevFlows`
+  (**one-step lag**, the same pattern `admittedScale` and `managedDbRuntime` already use, since CPU
+  is computed before `solveFlows`). The entry and internal size signals combine as a **max**, not a
+  sum — they are alternative descriptions of "the average request this instance serves".
+- **Particles.** `VisualParticle.packetId?: number | null` (additive; logged in
+  `.superpowers/sdd/contract-drift.md`) and `colorHint` resolving to the packet's `colorOverride`.
+  The pick is index-keyed, never rng — see the drift log for why that is load-bearing for replay.
+
+### Tests
+
+`packetResolve.test.ts` (four-tier fallback, weighted mixes, db write fraction, WAL amplification,
+interleaving), `nodeConfig.test.ts` (the two views are disjoint), `serializer.test.ts` (migration +
+the untouched-round-trip regression floor), `world.store.test.ts` (CRUD + both cascades +
+duplication), `PacketModal`/`BlueprintModal`/`PacketsPanel` (jsdom), `ConnectionsView.test.tsx`
+(edge binding + the derived write fraction), `flows.test.ts` (byte scaling + the omitted-field
+floor), `index.test.ts` (fat packet driving egress/NIC/CPU, plus determinism and the
+unauthored-world floor), `serverParticles.test.ts` (packet identity + purity).
+
+---
+
+## Connection Semantics (2026-07-29)
+
+`ConnectionType` had existed since the Phase 2 route system as **authored, persisted, and
+completely inert** schema — every reference was a `<select>`, a type declaration, or draft
+plumbing. Picking `streaming` over `short-lived` moved not one number. This phase makes all three
+drive live behavior.
+
+Where the packet library gave payload SIZE teeth on every hop (bytes → egress cost, NIC saturation,
+per-KB CPU), connection type is its missing half: size says how much data a call moves, connection
+type says **how long the connection is held and what establishing it costs**. That is what
+separates a CPU-bound failure from a RAM-bound one.
+
+### `src/lib/connectionModel.ts` (NEW) — the one connection-semantics point
+
+Pure, node-testable, dependency-free (registry types only) — deliberately the same shape as
+`packetResolve.ts` beside it, reusing its weighted-mean and dangling-entry conventions.
+
+| Export | Role |
+|---|---|
+| `HANDSHAKE_MS` 15 / `HANDSHAKE_CPU_MS` 2 / `LINGER_MS` 100 / `DEFAULT_HOLD_SEC` 30 | Engine constants — handshake/linger vary far less than hold time, which is why only hold time is authored |
+| `ConnectionProfile` | `{ latencyShare, fixedHoldSec, extraHoldSec, handshakeCpuMs }` |
+| `KEEP_ALIVE_PROFILE` | The frozen identity — `latencyShare 1`, everything else 0 |
+| `connectionClassOf(tpl)` | The **protocol-wins** rule (below) |
+| `profileFor(cls, holdSeconds?)` | One pure class → its profile |
+| `resolveConnectionProfile(reg, mix, fallback?)` | Weighted blend across a bound mix |
+| `activeConnections(rps, latencyMs, p)` | **THE formula** — see the two-call-site invariant below |
+
+One formula, three parameterizations:
+
+| Class | hold | handshake CPU | Failure mode it creates |
+|---|---|---|---|
+| `keep-alive` | `latencyMs / 1000` | 0 | **Exactly the pre-phase behavior** — the regression floor |
+| `short-lived` | `(latencyMs + 15 + 100) / 1000` | 2 ms/req | CPU-bound earlier; churn also inflates RAM |
+| `streaming` | `holdSeconds` (authored, default 30 s) | ~0 (amortized) | Connections decouple from latency → RAM-bound at low rps |
+
+**Protocol wins for the non-http kinds.** `ConnectionType` only exists on `HttpTemplate`, but
+`protocol` describes the same axis and is the stronger statement: `stream` → `streaming` (a stream
+IS a persistent connection), `db` → `keep-alive` (real clients pool), `event` → `keep-alive`
+(broker connections are long-lived and shared), `http` → its authored `connectionType`.
+
+**`latencyShare: number`, not `latencyCoupled: boolean`** — a boolean cannot survive blending: a
+50/50 keep-alive + streaming mix is *half* latency-coupled and a boolean would have to round it to
+one class. Carrying the coupled SHARE makes the struct closed under the weighted mean, so every
+field blends linearly and each pure class is a corner of that space.
+
+### ⚠ THE TWO-CALL-SITE INVARIANT (the load-bearing constraint of this phase)
+
+Little's law was **duplicated** in the engine before this phase:
+
+| Site | Feeds |
+|---|---|
+| `worldEngine/index.ts` — `InstanceLoad.activeConnections` | `hostScheduler`'s RAM growth + **OOM victim selection** |
+| `worldEngine/metrics.ts` — `InstanceMetrics.activeConnections` | The published metric → every view + `capacity.ts`'s `ram-oversubscribed` |
+
+If only one had been made connection-aware, the RAM the scheduler *enforces* would silently diverge
+from the RAM the user is *shown* — by ~1000x on a streaming world. **Both now call
+`connectionModel`'s `activeConnections()`.** Any future change to connection math goes in that one
+function; `index.test.ts`'s `DIVERGENCE GUARD` test exists solely to catch a re-duplication.
+
+### Schema (no version bump, no serializer migration)
+
+`HttpTemplate.holdSeconds?` and `StreamTemplate.holdSeconds?` (+ `RouteFields.holdSeconds`), both
+optional ⇒ an existing `.scalemap` v3 loads and simulates byte-identically; `serializer.ts` already
+round-trips the registry wholesale. `draftToTemplate` emits `holdSeconds` **only** for
+streaming-http and stream — persisting it on a keep-alive route would recreate exactly the
+authored-but-inert schema this phase set out to eliminate.
+
+### Engine (`worldEngine/index.ts`, `metrics.ts` — hub files)
+
+- **Two start-time maps**, direct siblings of the byte maps: `buildRouteConnProfiles(doc)` →
+  `EngineState.routeConnById` (a bound mix wins, else the route's own `connectionType`/
+  `holdSeconds`) and `buildDepConnProfiles(doc)` → `depConnById` (an unbound edge → keep-alive,
+  since a service→service hop has always been modelled as pooled).
+- **Two demand-weighted folds**, extending the ones the packet work already built rather than
+  adding new passes: `EntryByteAccum` gained `connLatW`/`connFixedW`/`connExtraW`/`connHsW`
+  (accumulated in `distributeViaLb`), and the `s.prevFlows` fold producing
+  `internalPacketKbByInstance` gained the same four keyed by `row.toInstanceId` — same **one-step
+  lag**, same rationale as the CPU signal it sits inside.
+- **Blended by rps share** into one `connProfileByInstance`, so an instance serving both clients
+  and internal callers reads a true weighted profile instead of letting one tier arbitrarily win.
+  Weights count only tiers that actually contributed, so a missing tier dilutes nothing.
+- **Handshake CPU** extends the existing blend to
+  `cpuMsPerRequest + cpuMsPerKb × sizeKb + handshakeCpuMs`. Because `effectiveCpuMs` already
+  collapses to the ONE value read by host-scheduler cores, the latency fallback, and the solver's
+  p50 seed, the adder inherits all three — a short-lived route both costs more CPU and takes longer,
+  coherently. `effectiveCpuMsByInstance` widened to cover instances with a profile but no size
+  signal; a no-op for keep-alive because `flows.ts:375`'s fallback is the identical expression.
+- **`buildBatch` gained an optional trailing `connProfiles` param** defaulting to the keep-alive
+  identity — the same additive-by-omission discipline `starved`/`entryBytesByInstance`/`depBytesById`
+  already use, so every existing direct-`buildBatch` test stays green by omission.
+
+### Deliberately NOT changed
+
+`hostScheduler.ts` needs no edit — it consumes `activeConnections` and already does the right thing
+(`:128` RAM growth, `:138` OOM victim selection). Nor does `analysis/rules/capacity.ts`, which
+already reads `lastBatch.instances[].activeConnections` and even labels the live per-connection
+portion: **streaming RAM blow-ups surface in Analysis with zero new rule code.** No connection
+ceiling / refusal path — RAM is the constraint (locked decision); `maxConnections` on
+`WorkloadProfile`, mirroring `managedDbRuntimeFor`'s `connectionRefusedRps`, is the natural
+follow-up if a sharper failure axis is wanted.
+
+### UI
+
+| File | Change |
+|---|---|
+| `panels/PacketModal.tsx` | `hold sec` input in the HTTP section (streaming only) and in the STREAM section (always); `CONNECTION_HINT` explainers naming the **failure mode** each class creates, replacing the "no simulation behavior yet" line |
+| `panels/RoutesPanel.tsx` | `hold s` input on `RouteCard`, shown only when the route is streaming |
+| `panels/PacketsPanel.tsx` | A `conn` chip (`short-lived` / `streaming · 30s`) shown only when the resolved class differs from keep-alive — chipping the default on every row would be noise. Reads the RESOLVED class, so a stream packet chips correctly despite carrying no `connectionType` |
+| `lib/world/packetDraft.ts` | `holdSeconds?: string` on `PacketDraft` (blank-means-fallback, same idiom as the size fields) |
+
+### Tests
+
+`connectionModel.test.ts` (23: the keep-alive identity asserted with `toBe`, the three profiles,
+protocol-wins, weighted blends, dangling/zero-weight fallthrough); `index.test.ts`'s
+`connection semantics` block (short-lived costs >2x CPU at identical rps; streaming shows >100x
+connections with CPU unchanged and `connections === rps × holdSec`; the 30 s default; streaming
+OOMs where keep-alive does not; the **divergence guard**; seeded determinism with streaming bound);
+`capacity.test.ts` (a streaming service trips `ram-oversubscribed` at an rps its keep-alive twin
+handles — asserted on the **peak-connection** batch, because a service that oversubscribed is
+OOM-killed within the first steps, which is itself the two paths agreeing).
+
+### Behavior-change caveat
+
+Routes have always *defaulted* to `keep-alive` (`addRoute`), so existing worlds are safe. But a
+world where someone already picked `short-lived` or `streaming` — inert until now — **will change
+behavior on load**. That is the intent of the feature, but it is a real behavior change to saved
+documents.

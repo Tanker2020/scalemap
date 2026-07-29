@@ -1,6 +1,6 @@
 // World document entities (normalized, id-keyed) + compiled output types.
 // Spec: docs/superpowers/specs/2026-07-08-world-model-multiscale-simulation-design.md §3
-import type { PacketRegistry } from '../nodeConfig'
+import type { PacketMixEntry, PacketRegistry } from '../nodeConfig'
 
 export type RegionId = string
 export type AzId = string
@@ -170,7 +170,15 @@ export interface BlueprintDependency {
   target: DependencyTarget
   port: number
   protocol: 'http' | 'db' | 'event' | 'stream'
+  // DEPRECATED single-template slot (always written null since the node model landed). A non-null
+  // value in an older file is migrated to a 1-entry `packetMix` on load; nothing reads it.
   packetTemplateId: number | null
+  // What this edge puts on the wire per call (packet library). When present and non-empty the mix
+  // supersedes reqKb/respKb below; both are optional, and their absence is what makes an existing
+  // world resolve to the historical flat 2 KB each way. See src/lib/packetResolve.ts.
+  packetMix?: PacketMixEntry[]
+  reqKb?: number      // inline tier-2 request size, ignored while a mix is bound
+  respKb?: number     // inline tier-2 response size, ignored while a mix is bound
   // Fraction of this dependency's call volume that MUTATES the target, 0..1 (node-model Phase 3).
   // Only meaningful when the target is a DB blueprint: writes route to the primary (SQL) / all
   // nodes (NoSQL), reads to the replicas. Absent ⇒ 0 (pure reads), which for a non-DB target is

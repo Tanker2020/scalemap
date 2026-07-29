@@ -56,7 +56,10 @@ export function deriveScope(nav: NavSnapshot, selectedServerId: string | null, d
 // node-model Phase 5: the generic 'blueprints'/'placements' tabs were removed (services are now
 // authored via the VPS door + the Connections tab). 'managed' holds the cloud-managed appliances
 // that have no floor-node home; 'connections' answers how services talk to each other.
-const WORLD_TABS: PanelTab[] = ['topology', 'managed', 'connections', 'traffic', 'routes', 'analysis', 'events', 'cost']
+// packet library (2026-07-28): 'blueprints' and 'packets' sit next to 'topology' as the two
+// global LIBRARIES — reusable definitions that exist independently of where they run — ahead of
+// the tabs that describe a specific wiring (managed/connections/traffic/routes).
+const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'packets', 'managed', 'connections', 'traffic', 'routes', 'analysis', 'events', 'cost']
 const SCOPED_TABS: PanelTab[] = ['config', 'analysis', 'events', 'cost']
 
 export function scopeTabs(scope: DockScope): PanelTab[] {

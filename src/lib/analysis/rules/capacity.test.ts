@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { scenario } from '../__fixtures__/worlds'
 import { runAnalysis } from '../runAnalysis'
 import { greatCircleKm } from '../../world/regionGeo'
+import { compileWorld } from '../../world/compileWorld'
+import { createWorldEngine } from '../../worldEngine'
+import { addRoute, routeIdOf } from '../../nodeConfig'
 import type { AnalysisFinding } from '../types'
 import type { MetricsBatch } from '../../worldEngine/types'
 
@@ -51,6 +54,60 @@ describe('capacity: ram-oversubscribed', () => {
     // 5000 live connections × 8 MB = 40000 MB of growth ⇒ over the 32768 MB host.
     const batch = { servers: {}, instances: { [iid]: { activeConnections: 5000 } } } as unknown as MetricsBatch
     const f = ids(runAnalysis(s.doc, compiled, batch), 'ram-oversubscribed')
+    expect(f).toHaveLength(1)
+    expect(f[0].why).toMatch(/per-connection/)
+  })
+
+  // Connection semantics, end to end: a STREAMING service holds connections for its authored hold
+  // duration instead of for its request latency, so its per-connection RAM explodes at a throughput
+  // an identical keep-alive service handles for free. The rule needs no new code for this — it
+  // already reads lastBatch.instances[].activeConnections — but that only works because the ENGINE
+  // now publishes a connection-aware number. This test is what ties the two together.
+  it('a streaming service trips the rule at an rps its keep-alive twin handles fine', () => {
+    const build = (connectionType: 'keep-alive' | 'streaming') => {
+      const s = scenario()
+      const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+      const srv = s.server(az.id)                 // dedicated-8 → 32768 MB
+      const bp = s.blueprint('web')
+      bp.ports = [{ port: 8080, protocol: 'tcp', visibility: 'public' }]
+      bp.workload = { cpuMsPerRequest: 1, ramBaseMb: 500, ramPerConnMb: 4, diskIoPerRequest: 0 }
+      s.placement(bp.id, srv.id)                  // process runtime — no memLimit cap
+      const added = addRoute(s.doc.packets, {
+        name: 'feed', method: 'GET', path: '/feed', sizeKb: 1, responseSizeKb: 1, connectionType,
+      })
+      s.doc.packets = added.registry
+      const pop = s.population('nyc', 40.7, -74.0)
+      pop.peakRps = 400
+      pop.requestMix = [{ routeId: routeIdOf(added.route), weight: 1 }]
+      return s
+    }
+
+    // The PEAK-connection batch, not the last one: a streaming service this oversubscribed is
+    // OOM-killed by the host scheduler within the first steps (which is the feature working — the
+    // same connection count drives both paths), so the final batch is a post-collapse zero. The
+    // analysis rule's job is to explain the batch where the pressure is visible.
+    const peakBatchFor = (s: ReturnType<typeof scenario>) => {
+      const compiled = compileWorld(s.doc)
+      const engine = createWorldEngine(1)
+      const batches: MetricsBatch[] = []
+      engine.start(s.doc, compiled, { onMetrics: b => batches.push(b), onEvent: () => {}, onHealthChange: () => {} })
+      engine.__test_step(100)   // 10 s of 100 ms steps
+      engine.stop()
+      const conns = (b: MetricsBatch) =>
+        Object.values(b.instances).reduce((m, i) => Math.max(m, i.activeConnections), 0)
+      const peak = batches.reduce((best, b) => (conns(b) > conns(best) ? b : best), batches[0])
+      return { compiled, peak, peakConns: conns(peak) }
+    }
+
+    const ka = build('keep-alive'); const kaRun = peakBatchFor(ka)
+    // ~400 rps × ~1 ms ⇒ well under one connection: 500 MB base, nowhere near the 32 GB host.
+    expect(kaRun.peakConns).toBeLessThan(1)
+    expect(ids(runAnalysis(ka.doc, kaRun.compiled, kaRun.peak), 'ram-oversubscribed')).toHaveLength(0)
+
+    const st = build('streaming'); const stRun = peakBatchFor(st)
+    // ~400 rps × 30 s ⇒ ~12,000 connections × 4 MB ⇒ ~48 GB, over the 32 GB host.
+    expect(stRun.peakConns).toBeGreaterThan(5000)
+    const f = ids(runAnalysis(st.doc, stRun.compiled, stRun.peak), 'ram-oversubscribed')
     expect(f).toHaveLength(1)
     expect(f[0].why).toMatch(/per-connection/)
   })

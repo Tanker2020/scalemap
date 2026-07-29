@@ -13,7 +13,12 @@ import type {
   ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole,
 } from '../world/types'
 import { managedDbEngine } from '../world/types'
-import { routeMatchesPattern, listRoutes, routeIngressBytes } from '../nodeConfig'
+import { routeMatchesPattern, listRoutes } from '../nodeConfig'
+import { pickPacketByIndex, resolveWireSize, routeIngressBytes, type WireSize } from '../packetResolve'
+import {
+  activeConnections, profileFor, resolveConnectionProfile, KEEP_ALIVE_PROFILE,
+  type ConnectionProfile,
+} from '../connectionModel'
 import { createRng, type Rng } from './rng'
 import { createClock, type ClockHandle } from './engineClock'
 import {
@@ -98,10 +103,26 @@ function buildRoutePathById(doc: WorldDoc): Map<string, string> {
 // is stored directly rather than reconstituted from costReq/1024.
 // sigma (slice 3) is the route's authored NIC-burst variance coefficient, carried alongside the
 // resolved byte fields so the entry accumulator below can fold it the same way cpuKb is folded.
+//
+// PACKET MIX (packet library): a route may instead BIND library packets, exactly like a
+// dependency edge does — same registry, same `resolveWireSize`. When a mix is bound it supersedes
+// everything, including the asymmetric NIC convention: the mix authors real sizes for both legs,
+// so inheriting a 512-in fallback alongside a real 5 MB request would be incoherent. cost and NIC
+// therefore agree on the resolved bytes, and sigma/sizeKb come from the mix's weighted mean.
+// An UNBOUND route keeps its historical chain untouched — that is the regression floor.
 interface RouteWireBytes { costReq: number; costResp: number; nicReq: number; nicResp: number; sizeKb: number; sigma: number }
 function buildRouteBytesById(doc: WorldDoc): Map<string, RouteWireBytes> {
   const m = new Map<string, RouteWireBytes>()
   for (const route of listRoutes(doc.packets)) {
+    if ((route.packetMix?.length ?? 0) > 0) {
+      const w = resolveWireSize(doc.packets, route.packetMix, route.sizeKb, route.responseSizeKb)
+      m.set(String(route.id), {
+        costReq: w.reqBytes, costResp: w.respBytes,
+        nicReq: w.reqBytes, nicResp: w.respBytes,
+        sizeKb: w.sizeKb, sigma: w.sigma,
+      })
+      continue
+    }
     const cost = routeIngressBytes(route)
     m.set(String(route.id), {
       costReq: cost.reqBytes, costResp: cost.respBytes,
@@ -117,6 +138,58 @@ function buildRouteBytesById(doc: WorldDoc): Map<string, RouteWireBytes> {
     })
   }
   return m
+}
+
+// Per-ROUTE connection profile, resolved once at start — the connection-semantics sibling of
+// buildRouteBytesById above. Bytes say how much a request moves; this says how LONG its connection
+// is held and what establishing it costs, which is what separates a CPU-bound failure from a
+// RAM-bound one.
+//
+// A bound packet mix wins (same precedence as sizing: the mix authors the real behavior), and it
+// applies the protocol-wins rule inside resolveConnectionProfile. An UNBOUND route reads its own
+// connectionType + holdSeconds. Either way an unauthored route resolves to KEEP_ALIVE_PROFILE,
+// which activeConnections() treats as the exact historical identity — the regression floor.
+function buildRouteConnProfiles(doc: WorldDoc): Map<string, ConnectionProfile> {
+  const m = new Map<string, ConnectionProfile>()
+  for (const route of listRoutes(doc.packets)) {
+    m.set(String(route.id), (route.packetMix?.length ?? 0) > 0
+      ? resolveConnectionProfile(doc.packets, route.packetMix, route.connectionType ?? 'keep-alive')
+      : profileFor(route.connectionType ?? 'keep-alive', route.holdSeconds))
+  }
+  return m
+}
+
+// Per-DEPENDENCY connection profile — the internal-hop sibling of buildRouteConnProfiles. An edge
+// with no bound mix has nothing to say about connection behavior, so it falls to keep-alive: a
+// service→service hop has always been modelled as pooled, and that is the no-op.
+function buildDepConnProfiles(doc: WorldDoc): Record<string, ConnectionProfile> {
+  const out: Record<string, ConnectionProfile> = {}
+  for (const bp of Object.values(doc.blueprints)) {
+    for (const dep of bp.dependencies) {
+      out[dep.id] = resolveConnectionProfile(doc.packets, dep.packetMix)
+    }
+  }
+  return out
+}
+
+// Per-DEPENDENCY wire bytes, resolved once at start — the internal-hop sibling of
+// buildRouteBytesById above. Every service→service call used to book a flat 2 KB each way
+// regardless of what it carried; this resolves each edge's bound packet mix (or its inline sizes,
+// or the world default) through the shared four-tier fallback so a 5 MB blob upload and a 200-byte
+// health check stop looking identical to cost, the NIC, and the CPU model.
+//
+// The db-derived write fraction is folded in here rather than at the call sites: a bound db mix
+// speaks for the read/write split (that is what the UI shows), and everything downstream —
+// WAL amplification, managed-DB refusal — reads this one resolved number.
+function buildDepWireBytes(doc: WorldDoc): Record<string, WireSize> {
+  const out: Record<string, WireSize> = {}
+  for (const bp of Object.values(doc.blueprints)) {
+    for (const dep of bp.dependencies) {
+      const wire = resolveWireSize(doc.packets, dep.packetMix, dep.reqKb, dep.respKb)
+      out[dep.id] = { ...wire, writeFraction: wire.writeFraction ?? dep.writeFraction ?? 0 }
+    }
+  }
+  return out
 }
 
 // The implicit null "default" route (a population with no request mix). Cost keeps the symmetric
@@ -135,7 +208,29 @@ const DEFAULT_ROUTE_WIRE_BYTES: RouteWireBytes = {
 // cpuKb (slice 2) is the same fold over request sizeKb instead of bytes, feeding the packet-driven
 // CPU blend below. varW (slice 3) is the same fold over the route's sigma, feeding the NIC-burst
 // multiplier at NIC booking (step 7) below.
-interface EntryByteAccum { costReq: number; costResp: number; nicReq: number; nicResp: number; cpuKb: number; varW: number }
+// connLatW/connFixedW/connExtraW/connHsW are the same fold once more, over the four ConnectionProfile
+// fields — giving each entry instance the demand-weighted connection behavior of the route mix that
+// actually landed on it, rather than one route arbitrarily speaking for all of them.
+interface EntryByteAccum {
+  costReq: number; costResp: number; nicReq: number; nicResp: number; cpuKb: number; varW: number
+  connLatW: number; connFixedW: number; connExtraW: number; connHsW: number
+}
+
+// A demand-weighted running sum of ConnectionProfiles, used identically by the entry and internal
+// folds below. Kept as one helper so the two tiers can never drift apart in how they blend.
+interface ProfileAccum { lat: number; fixed: number; extra: number; hs: number }
+const addProfile = (acc: ProfileAccum, p: ConnectionProfile, weight: number): void => {
+  acc.lat += weight * p.latencyShare
+  acc.fixed += weight * p.fixedHoldSec
+  acc.extra += weight * p.extraHoldSec
+  acc.hs += weight * p.handshakeCpuMs
+}
+const meanProfile = (acc: ProfileAccum, totalWeight: number): ConnectionProfile => ({
+  latencyShare: acc.lat / totalWeight,
+  fixedHoldSec: acc.fixed / totalWeight,
+  extraHoldSec: acc.extra / totalWeight,
+  handshakeCpuMs: acc.hs / totalWeight,
+})
 
 // The L7 listener-rule match: the first rule (authored order) whose pattern matches the route's
 // path selects its target group; a route with no path (the implicit default route) or one that
@@ -168,6 +263,15 @@ interface EngineState {
   entryBlueprintIds: Set<BlueprintId>
   routePathById: Map<string, string>         // routeId → route path, for L7 listener-rule matching
   routeBytesById: Map<string, RouteWireBytes>  // routeId → per-request wire bytes (cost + NIC)
+  // routeId → connection profile (hold duration + handshake CPU), and its per-dependency sibling
+  // for internal hops. Built once at start() from the frozen doc, exactly like the byte maps above.
+  routeConnById: Map<string, ConnectionProfile>
+  depConnById: Record<string, ConnectionProfile>
+  // dependencyId → per-call wire bytes for INTERNAL hops (packet library). The direct sibling of
+  // routeBytesById above: routes size the client→entry tier, this sizes every service→service
+  // hop. Built once at start() from the frozen doc; a plain object (not a Map) so it can be
+  // handed to solveFlows' `depBytesById` field without a per-step conversion.
+  depBytesById: Record<string, WireSize>
 
   // Static topology indexes built once at start() (audit ISSUE-032): the per-step health
   // propagation loops read these instead of re-filtering doc.servers/doc.azs per AZ/region
@@ -330,15 +434,28 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       })
       if (weightAccum && target !== into) {
         const wb = (routeId != null ? s.routeBytesById.get(routeId) : undefined) ?? DEFAULT_ROUTE_WIRE_BYTES
+        // The implicit default route (a population with no request mix) is keep-alive — the
+        // identity, so an unauthored world's connection counts are untouched.
+        const cp = (routeId != null ? s.routeConnById.get(routeId) : undefined) ?? KEEP_ALIVE_PROFILE
         for (const iid in target) {
           const r = (target as Record<InstanceId, number>)[iid]
           into[iid] = (into[iid] ?? 0) + r
           let acc = weightAccum[iid]
-          if (!acc) { acc = { costReq: 0, costResp: 0, nicReq: 0, nicResp: 0, cpuKb: 0, varW: 0 }; weightAccum[iid] = acc }
+          if (!acc) {
+            acc = {
+              costReq: 0, costResp: 0, nicReq: 0, nicResp: 0, cpuKb: 0, varW: 0,
+              connLatW: 0, connFixedW: 0, connExtraW: 0, connHsW: 0,
+            }
+            weightAccum[iid] = acc
+          }
           acc.costReq += r * wb.costReq; acc.costResp += r * wb.costResp
           acc.nicReq += r * wb.nicReq; acc.nicResp += r * wb.nicResp
           acc.cpuKb += r * wb.sizeKb
           acc.varW += r * wb.sigma
+          acc.connLatW += r * cp.latencyShare
+          acc.connFixedW += r * cp.fixedHoldSec
+          acc.connExtraW += r * cp.extraHoldSec
+          acc.connHsW += r * cp.handshakeCpuMs
         }
       }
     }
@@ -482,6 +599,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // same fold again, over sigma instead. Read at NIC booking (step 7) below to draw a
     // mean-preserving multiplier; absent/0 ⇒ no draw, booking stays byte-identical to pre-slice-3.
     const entrySizeVarianceByInstance: Record<InstanceId, number> = {}
+    // Demand-weighted connection profile per ENTRY instance (connection semantics) — the same fold
+    // again, over the four ConnectionProfile fields.
+    const entryConnProfileByInstance: Record<InstanceId, ConnectionProfile> = {}
     for (const iid in entryByteAccum) {
       const d = entryDemand[iid]
       if (!d || d <= 0) continue
@@ -490,20 +610,105 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       entryNicBytesByInstance[iid] = { reqBytes: acc.nicReq / d, respBytes: acc.nicResp / d }
       entryPacketKbByInstance[iid] = acc.cpuKb / d
       entrySizeVarianceByInstance[iid] = acc.varW / d
+      entryConnProfileByInstance[iid] = meanProfile(
+        { lat: acc.connLatW, fixed: acc.connFixedW, extra: acc.connExtraW, hs: acc.connHsW }, d)
     }
+
+    // Demand-weighted-average INTERNAL inbound request KB per instance (packet library). The
+    // entry fold above only sees client→entry traffic; a service that receives fat internal
+    // payloads pays cpuMsPerKb on them too, or a blob-ingesting worker would look free.
+    //
+    // ONE-STEP LAG, deliberately: CPU is computed BEFORE solveFlows, so this step's downstream
+    // rows do not exist yet — the signal is read from `s.prevFlows`, the same pattern
+    // `admittedScale` and `managedDbRuntime` already use. At the engine's step rate the lag is
+    // invisible except in the first tick after a step change in load.
+    //
+    // The SAME fold also carries the internal tier's connection profile (connection semantics):
+    // a service called over streaming or short-lived connections pays for them whether the traffic
+    // arrived from a client or from another service.
+    const internalPacketKbByInstance: Record<InstanceId, number> = {}
+    const internalConnProfileByInstance: Record<InstanceId, ConnectionProfile> = {}
+    const internalRpsByInstance: Record<InstanceId, number> = {}
+    {
+      const acc: Record<InstanceId, { kb: number; rps: number } & ProfileAccum> = {}
+      for (const pf of Object.values(s.prevFlows)) {
+        for (const row of pf.downstream) {
+          const toId = row.toInstanceId
+          if (row.blocked || row.rps <= 0 || toId == null) continue
+          // buildDepWireBytes covers every authored dependency, so a miss here means a stale row
+          // (compile drift) — skip it rather than invent a size for it.
+          const wire = s.depBytesById[row.dependencyId]
+          if (!wire) continue
+          const kb = wire.reqBytes / 1024
+          const a = acc[toId] ?? (acc[toId] = { kb: 0, rps: 0, lat: 0, fixed: 0, extra: 0, hs: 0 })
+          a.kb += row.rps * kb
+          a.rps += row.rps
+          addProfile(a, s.depConnById[row.dependencyId] ?? KEEP_ALIVE_PROFILE, row.rps)
+        }
+      }
+      for (const iid in acc) {
+        if (acc[iid].rps <= 0) continue
+        internalPacketKbByInstance[iid] = acc[iid].kb / acc[iid].rps
+        internalRpsByInstance[iid] = acc[iid].rps
+        internalConnProfileByInstance[iid] = meanProfile(acc[iid], acc[iid].rps)
+      }
+    }
+
+    // The instance's ONE connection profile, blending the two tiers by rps share so a service that
+    // serves both clients and internal callers reads a true weighted profile instead of letting one
+    // tier arbitrarily win. Both maps absent ⇒ no key ⇒ every reader below falls back to
+    // KEEP_ALIVE_PROFILE, the exact pre-phase behavior.
+    const connProfileByInstance: Record<InstanceId, ConnectionProfile> = {}
+    for (const iid of new Set([...Object.keys(entryConnProfileByInstance), ...Object.keys(internalConnProfileByInstance)])) {
+      const e = entryConnProfileByInstance[iid]
+      const n = internalConnProfileByInstance[iid]
+      const entryRps = e ? (entryDemand[iid] ?? 0) : 0
+      const internalRps = n ? (internalRpsByInstance[iid] ?? 0) : 0
+      // Weights count only the tiers that actually contributed a profile, so a missing tier
+      // dilutes nothing.
+      const total = entryRps + internalRps
+      if (total <= 0) continue
+      const blend: ProfileAccum = { lat: 0, fixed: 0, extra: 0, hs: 0 }
+      if (e) addProfile(blend, e, entryRps)
+      if (n) addProfile(blend, n, internalRps)
+      connProfileByInstance[iid] = meanProfile(blend, total)
+    }
+    const connProfileOf = (iid: InstanceId): ConnectionProfile =>
+      connProfileByInstance[iid] ?? KEEP_ALIVE_PROFILE
 
     // Single effective ms/request per instance for this step (packet-driven CPU, slice 2): the
     // blend `cpuMsPerRequest + cpuMsPerKb × avgReqSizeKb`, collapsed once so every read site below
     // (host-scheduler cores, latency fallbacks, the flow-solver's p50) uses the SAME number and the
     // scheduler's nonlinear rps↔cores conversion never sees two different costs for one instance.
-    // Absent size signal (non-entry instance) or unset cpuMsPerKb (default 0) ⇒ the flat
-    // cpuMsPerRequest — byte/metric-identical to pre-slice-2 behavior.
-    const effectiveCpuMs = (iid: InstanceId, bp: WorldDoc['blueprints'][string] | undefined): number =>
-      (bp?.workload.cpuMsPerRequest ?? 1) + (bp?.workload.cpuMsPerKb ?? 0) * (entryPacketKbByInstance[iid] ?? 0)
-    // Entry-instance-only map, handed to the flow solver so its p50 latency sample uses the same
-    // effective value the host scheduler used for cores (optional/additive FlowInput field).
+    // Absent size signal (an instance nothing calls and no client reaches) or unset cpuMsPerKb
+    // (default 0) ⇒ the flat cpuMsPerRequest — byte/metric-identical to pre-slice-2 behavior.
+    //
+    // The two size signals are combined as a max, not a sum: they are alternative descriptions of
+    // "the average request this instance serves", not two separate request streams. An instance
+    // with only one of them reads exactly that one.
+    //
+    // CONNECTION SEMANTICS extends the same blend with a third term:
+    //   cpuMs = cpuMsPerRequest + cpuMsPerKb × sizeKb + handshakeCpuMs
+    // Because effectiveCpuMs already collapses to the ONE value read by the host scheduler's cores,
+    // the latency fallback, and the solver's p50 seed, the handshake adder inherits all three for
+    // free — a short-lived route both costs more CPU and takes longer, coherently. keep-alive and
+    // streaming contribute 0 here, so only short-lived traffic moves this number.
+    const effectiveCpuMs = (iid: InstanceId, bp: WorldDoc['blueprints'][string] | undefined): number => {
+      const kb = Math.max(entryPacketKbByInstance[iid] ?? 0, internalPacketKbByInstance[iid] ?? 0)
+      return (bp?.workload.cpuMsPerRequest ?? 1)
+        + (bp?.workload.cpuMsPerKb ?? 0) * kb
+        + connProfileOf(iid).handshakeCpuMs
+    }
+    // Handed to the flow solver so its p50 latency sample uses the same effective value the host
+    // scheduler used for cores (optional/additive FlowInput field). Covers every instance carrying
+    // EITHER size signal OR a connection profile — a short-lived route's handshake CPU must reach
+    // the solver even on an instance with no authored packet sizes at all.
     const effectiveCpuMsByInstance: Record<InstanceId, number> = {}
-    for (const iid in entryPacketKbByInstance) {
+    for (const iid of new Set([
+      ...Object.keys(entryPacketKbByInstance),
+      ...Object.keys(internalPacketKbByInstance),
+      ...Object.keys(connProfileByInstance),
+    ])) {
       const inst = compiled.instances[iid]
       effectiveCpuMsByInstance[iid] = effectiveCpuMs(iid, inst ? doc.blueprints[inst.blueprintId] : undefined)
     }
@@ -530,7 +735,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           instanceId: i.id,
           cpuMsPerRequest: effectiveCpuMs(i.id, bp),
           admittedRps: admitted,
-          activeConnections: admitted * (latency / 1000),
+          // Connection semantics: one of the TWO call sites of the Little's-law formula (the other
+          // is metrics.ts's published InstanceMetrics.activeConnections). Both go through
+          // connectionModel's activeConnections() so the RAM the scheduler enforces here — and
+          // OOM-kills on — can never diverge from the RAM the user is shown. With the keep-alive
+          // identity this is bit-for-bit the old `admitted * (latency / 1000)`.
+          activeConnections: activeConnections(admitted, latency, connProfileOf(i.id)),
           ramBaseMb: bp?.workload.ramBaseMb ?? 0,
           ramPerConnMb: bp?.workload.ramPerConnMb ?? 0,
           memLimitMb: runtime && runtime.type === 'container' ? runtime.memLimitMb : null,
@@ -630,6 +840,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // ms/request per instance, seeds the solver's service-latency p50 so a bigger packet takes
       // longer AND costs more CPU, coherently with the host scheduler's read of the same value.
       effectiveCpuMsByInstance,
+      // Packet library: per-dependency wire bytes for internal hops, so cross-AZ/cross-region
+      // egress (and the managed-DB write fraction) respond to what the edge actually carries.
+      depBytesById: s.depBytesById,
       breakerOpen, healthOf: healthOfInstance, roleOf, rng: s.rng,
       // Manual managed-service outages (node-model Phase 5.2): a downed managed service fails every
       // call to it. Read straight from the manual-outage set — managed ids aren't in the per-step
@@ -642,27 +855,53 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // Ingress = request payloads in, egress = response payloads out — no longer symmetric.
     // Settlement (deliveredFraction / queuedLatencyMs) happens once per server AFTER step 10's
     // metrics accumulate (which reads the per-step counters), feeding the NEXT step.
+    //
+    // TWO tiers, booked separately:
+    //   entry    — client→instance demand, sized by the route mix that landed there (unchanged).
+    //   internal — service→service calls, sized PER DEPENDENCY ROW by the packet library.
+    //
+    // The internal tier is the packet-library restructure. It used to be one aggregate term on
+    // the SERVING side (`internalRps × 512/2048`), which could not vary by what the edge carried
+    // and never touched the caller's NIC at all. It is now booked per downstream row on BOTH
+    // endpoints — the caller sends the request and receives the response, the callee the mirror —
+    // which is what makes a fat internal payload saturate the uplink of the service producing it.
+    // The old aggregate term is REPLACED, not supplemented: booking both here and there would
+    // double-count the callee.
     for (const f of Object.values(flows)) {
       const inst = compiled.instances[f.instanceId]
       const nic = inst ? nicByServer[inst.serverId] : undefined
       if (!inst || !nic) continue
-      // The entry-demand share of this instance's admitted rps carries route-sized payloads; any
-      // remaining (internal-serving) rps keeps the flat NIC split. `entryNicBytesByInstance` already
-      // falls back to 512/2048 for unauthored routes, so an entry-only instance stays byte-identical.
+      // `entryNicBytesByInstance` already falls back to 512/2048 for unauthored routes, so an
+      // entry instance stays byte-identical.
       const eb = entryNicBytesByInstance[f.instanceId]
       const entryRps = eb ? Math.min(f.admittedRps, entryDemand[f.instanceId] ?? 0) : 0
-      const internalRps = f.admittedRps - entryRps
-      // Log-normal NIC-burst tail (slice 3): a fresh mean-1 multiplier each step on the ENTRY
-      // byte terms only — never the internal-serving split, and never entryBytesByInstance (the
-      // separate cost/egress seed above, untouched). sigma <= 0 (unauthored route) draws nothing
-      // and multiplies by exactly 1, so booking stays byte-identical to pre-slice-3.
-      const sigma = entrySizeVarianceByInstance[f.instanceId] ?? 0
-      const sizeMultiplier = sigma > 0 ? sampleSizeMultiplier(sigma, s.rng) : 1
-      addNicBytes(
-        nic,
-        (entryRps * (eb ? eb.reqBytes * sizeMultiplier : 0) + internalRps * NIC_REQUEST_BYTES) * stepSec,
-        (entryRps * (eb ? eb.respBytes * sizeMultiplier : 0) + internalRps * NIC_RESPONSE_BYTES) * stepSec,
-      )
+      if (entryRps > 0 && eb) {
+        // Log-normal NIC-burst tail (slice 3): a fresh mean-1 multiplier each step on the ENTRY
+        // byte terms only — never entryBytesByInstance (the separate cost/egress seed above,
+        // untouched). sigma <= 0 (unauthored route) draws nothing and multiplies by exactly 1.
+        const sigma = entrySizeVarianceByInstance[f.instanceId] ?? 0
+        const m = sigma > 0 ? sampleSizeMultiplier(sigma, s.rng) : 1
+        addNicBytes(nic, entryRps * eb.reqBytes * m * stepSec, entryRps * eb.respBytes * m * stepSec)
+      }
+
+      // Internal hops this instance ORIGINATES. Blocked rows never reach the wire. A managed
+      // target has no server of ours, so only the caller's side is booked for it.
+      for (const row of f.downstream) {
+        if (row.blocked || row.rps <= 0) continue
+        const wire = s.depBytesById[row.dependencyId]
+        const reqBytes = wire?.reqBytes ?? NIC_REQUEST_BYTES
+        const respBytes = wire?.respBytes ?? NIC_RESPONSE_BYTES
+        // ONE draw per row, shared by both endpoints — the same packet is on both wires. The
+        // `sigma > 0` gate is what keeps an unauthored world's seeded rng stream bit-identical.
+        const sigma = wire?.sigma ?? 0
+        const m = sigma > 0 ? sampleSizeMultiplier(sigma, s.rng) : 1
+        const req = row.rps * reqBytes * m * stepSec
+        const resp = row.rps * respBytes * m * stepSec
+        addNicBytes(nic, resp, req)   // caller: response in, request out
+        const toId = row.toInstanceId
+        const toNic = toId != null ? nicByServer[compiled.instances[toId]?.serverId ?? ''] : undefined
+        if (toNic) addNicBytes(toNic, req, resp)   // callee: request in, response out
+      }
     }
 
     // ── 8. breaker record + transition ──
@@ -831,7 +1070,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           }
         }
       }
-      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved)
+      // connProfileByInstance is THIS step's blend — the published connection count must be
+      // computed from the same profile the host scheduler just enforced RAM against.
+      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance)
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
       s.tracer.sample(flows, compiled, doc, simMs, entryId => populationsForEntry(entryId), managedDbRt)
@@ -1012,7 +1253,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       if (isEntry && f.offeredRps > 0) {
         const n = Math.min(MAX_AZ_PARTICLES, Math.round((f.offeredRps / PARTICLE_RATIO) * drain))
         for (let k = 0; k < n && particles.length < MAX_AZ_PARTICLES; k++) {
-          particles.push({ id: pid++, fromId: 'edge:client', toId: from.serverId, progress: frac(phase + k * 0.137), protocol: 'http', blocked: false, colorHint: bp?.color ?? null })
+          particles.push({ id: pid++, fromId: 'edge:client', toId: from.serverId, progress: frac(phase + k * 0.137), protocol: 'http', blocked: false, colorHint: bp?.color ?? null, packetId: null })
         }
       }
       for (const row of f.downstream) {
@@ -1021,11 +1262,20 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         const dep = bp?.dependencies.find(d => d.id === row.dependencyId)
         const n = Math.min(MAX_AZ_PARTICLES, Math.max(row.blocked ? 1 : 0, Math.round(row.rps / PARTICLE_RATIO)))
         for (let k = 0; k < n && particles.length < MAX_AZ_PARTICLES; k++) {
-          particles.push({ id: pid++, fromId: from.serverId, toId, progress: frac(phase + k * 0.191), protocol: dep?.protocol ?? 'http', blocked: row.blocked, colorHint: bp?.color ?? null })
+          const packetId = pickPacketByIndex(dep?.packetMix, k)
+          particles.push({ id: pid++, fromId: from.serverId, toId, progress: frac(phase + k * 0.191), protocol: dep?.protocol ?? 'http', blocked: row.blocked, colorHint: packetColor(packetId) ?? bp?.color ?? null, packetId })
         }
       }
     }
     return particles
+  }
+
+  // A bound packet's own tint, when it has one. Falls through to null so the caller keeps its
+  // existing blueprint-color behavior — an authored colorOverride is the ONLY thing that changes
+  // a particle's hue, so an unauthored world renders exactly as before.
+  function packetColor(packetId: number | null): string | null {
+    if (packetId == null) return null
+    return state!.doc.packets.templates[packetId]?.colorOverride ?? null
   }
 
   // Server-scope particles (D3): every off-server endpoint collapses to the NIC; the view routes
@@ -1045,7 +1295,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       if (isEntry && f.offeredRps > 0) {
         const n = Math.min(MAX_SERVER_PARTICLES, Math.round(f.offeredRps / PARTICLE_RATIO))
         for (let k = 0; k < n && particles.length < MAX_SERVER_PARTICLES; k++) {
-          particles.push({ id: pid++, fromId: nicId, toId: from.id, progress: frac(phase + k * 0.137), protocol: 'http', blocked: false, colorHint: fromBp?.color ?? null })
+          particles.push({ id: pid++, fromId: nicId, toId: from.id, progress: frac(phase + k * 0.137), protocol: 'http', blocked: false, colorHint: fromBp?.color ?? null, packetId: null })
         }
       }
       for (const row of f.downstream) {
@@ -1057,7 +1307,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         const colorHint = resident ? (s.doc.blueprints[target!.blueprintId]?.color ?? null) : (fromBp?.color ?? null)
         const n = Math.min(MAX_SERVER_PARTICLES, Math.max(row.blocked ? 1 : 0, Math.round(row.rps / PARTICLE_RATIO)))
         for (let k = 0; k < n && particles.length < MAX_SERVER_PARTICLES; k++) {
-          particles.push({ id: pid++, fromId: from.id, toId, progress: frac(phase + k * 0.191), protocol: dep?.protocol ?? 'http', blocked: row.blocked, colorHint })
+          const packetId = pickPacketByIndex(dep?.packetMix, k)
+          particles.push({ id: pid++, fromId: from.id, toId, progress: frac(phase + k * 0.191), protocol: dep?.protocol ?? 'http', blocked: row.blocked, colorHint: packetColor(packetId) ?? colorHint, packetId })
         }
       }
     }
@@ -1092,6 +1343,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         timeScale: 1, doc, compiled, callbacks, entryBlueprintIds: new Set(entryBlueprints(doc)),
         routePathById: buildRoutePathById(doc),
         routeBytesById: buildRouteBytesById(doc),
+        routeConnById: buildRouteConnProfiles(doc),
+        depBytesById: buildDepWireBytes(doc),
+        depConnById: buildDepConnProfiles(doc),
         serversByAz: groupBy(Object.values(doc.servers), sv => sv.azId),
         azsByRegion: groupBy(Object.values(doc.azs), az => az.regionId),
         instancesByServer: groupInstancesByServer(compiled),

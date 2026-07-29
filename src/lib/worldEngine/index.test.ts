@@ -7,6 +7,7 @@ import {
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
 import { addRoute, routeIdOf, updateRoute } from '../nodeConfig'
+import type { HttpTemplate, ConnectionType } from '../nodeConfig'
 import { computeWorldCost } from '../costModelV2'
 import type { WorldDoc } from '../world/types'
 import type { MetricsBatch, EngineEvent } from './types'
@@ -1085,5 +1086,384 @@ describe('packet-driven CPU + NIC-burst variance authored together (slices 2 & 3
     expect(relDiff).toBeLessThan(0.05)
     const costRelDiff = Math.abs(costBurst - costBase) / costBase
     expect(costRelDiff).toBeLessThan(0.05)
+  })
+})
+
+// ─── Packet library: internal hops carry real payloads (cost + NIC + CPU) ────────────────────
+// Before this, every service→service call booked a flat 2 KB of egress and a flat 512/2048 of
+// NIC on the SERVING side only — a service shipping 5 MB blobs was indistinguishable from one
+// sending health checks. These tests pin the three consequences (dollars, NIC saturation, CPU)
+// and, most importantly, that an unauthored world is unchanged.
+describe('packet-driven internal hops', () => {
+  // api (entry, az1) → store (az2): one cross-AZ dependency, tunable NIC and packet binding.
+  function crossAzPair(opts: { nicMbps?: number; peakRps?: number; cpuMsPerKb?: number } = {}) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az1 = createAz(r.id, 'us-east-1a')
+    const az2 = createAz(r.id, 'us-east-1b')
+    doc.regions[r.id] = r; doc.azs[az1.id] = az1; doc.azs[az2.id] = az2
+    const s1 = createServer(az1.id, getPreset('dedicated-8')!)
+    const s2 = createServer(az2.id, getPreset('dedicated-8')!)
+    if (opts.nicMbps != null) s2.specs = { ...s2.specs, nicMbps: opts.nicMbps }
+    doc.servers[s1.id] = s1; doc.servers[s2.id] = s2
+
+    const api = publicBlueprint('api', 0)
+    const store = createBlueprint('store', 1)
+    if (opts.cpuMsPerKb != null) store.workload = { ...store.workload, cpuMsPerKb: opts.cpuMsPerKb }
+    api.dependencies = [{
+      id: 'd-store', target: { kind: 'blueprint', blueprintId: store.id },
+      port: 8080, protocol: 'http', packetTemplateId: null,
+    }]
+    Object.assign(doc.blueprints, { [api.id]: api, [store.id]: store })
+    const pl1 = createPlacement(api.id, s1.id); doc.placements[pl1.id] = pl1
+    const pl2 = createPlacement(store.id, s2.id); doc.placements[pl2.id] = pl2
+    const pop = createPopulation('nyc', 40.7, -74.0); pop.peakRps = opts.peakRps ?? 100
+    doc.populations[pop.id] = pop
+    return { doc, apiInst: instanceId(pl1.id, 0), storeInst: instanceId(pl2.id, 0), s2: s2.id }
+  }
+
+  // Binds a 5 MB request / 1 KB response packet to the single dependency.
+  function bindFatPacket(doc: WorldDoc, over: Record<string, unknown> = {}) {
+    doc.packets = {
+      ...doc.packets,
+      templates: { ...doc.packets.templates, 1: { id: 1, name: 'blob', protocol: 'http', method: 'PUT', statusCode: 200, sizeKb: 5120, responseSizeKb: 1, ...over } },
+      nextId: 2,
+    }
+    for (const bp of Object.values(doc.blueprints)) {
+      bp.dependencies = bp.dependencies.map(d => ({ ...d, packetMix: [{ packetId: 1, weight: 1 }] }))
+    }
+  }
+
+  it('a fat internal packet multiplies the cross-AZ egress bill', () => {
+    const flat = crossAzPair()
+    const simFlat = drive(flat.doc, compileWorld(flat.doc))
+    simFlat.stepFor(20)
+
+    const fat = crossAzPair()
+    bindFatPacket(fat.doc)
+    const simFat = drive(fat.doc, compileWorld(fat.doc))
+    simFat.stepFor(20)
+
+    const flatBytes = simFlat.latest().world.crossAzBytesPerSec
+    const fatBytes = simFat.latest().world.crossAzBytesPerSec
+    expect(flatBytes).toBeGreaterThan(0)
+    // 5 MB + 1 KB per call vs the old 2 KB + 2 KB — three orders of magnitude, not a nudge.
+    expect(fatBytes).toBeGreaterThan(flatBytes * 500)
+  })
+
+  it('a fat internal packet saturates the CALLEE NIC and sheds throughput', () => {
+    // 100 Mbps NIC: 100 rps × 5 MB is far past the cap, where the flat 2 KB model saw no pressure.
+    const flat = crossAzPair({ nicMbps: 100 })
+    const simFlat = drive(flat.doc, compileWorld(flat.doc))
+    simFlat.stepFor(20)
+
+    const fat = crossAzPair({ nicMbps: 100 })
+    bindFatPacket(fat.doc)
+    const simFat = drive(fat.doc, compileWorld(fat.doc))
+    simFat.stepFor(20)
+
+    // 100 Mbps cap; the flat model books ~2 KB/call, the fat one 5 MB.
+    expect(simFlat.latest().servers[flat.s2].nicInMbps).toBeLessThan(50)
+    expect(simFat.latest().servers[fat.s2].nicInMbps).toBeGreaterThan(
+      simFlat.latest().servers[flat.s2].nicInMbps * 100)
+    // and the saturation is felt as shed throughput on the callee
+    expect(simFat.latest().instances[fat.storeInst].rps)
+      .toBeLessThan(simFlat.latest().instances[flat.storeInst].rps)
+  })
+
+  it('inbound internal KB drives cpuMsPerKb on the RECEIVER (one-step lagged)', () => {
+    // Deliberately NOT the 5 MB packet: that saturates the callee's NIC first and sheds its
+    // traffic to nothing, so there is no CPU left to measure. 64 KB is well under the NIC
+    // ceiling and still 128× the flat 0.5 KB default.
+    const flat = crossAzPair({ cpuMsPerKb: 0.5, peakRps: 20 })
+    const simFlat = drive(flat.doc, compileWorld(flat.doc))
+    simFlat.stepFor(20)
+
+    const fat = crossAzPair({ cpuMsPerKb: 0.5, peakRps: 20 })
+    bindFatPacket(fat.doc, { sizeKb: 64 })
+    const simFat = drive(fat.doc, compileWorld(fat.doc))
+    simFat.stepFor(20)
+
+    // 64 KB × 0.5 ms/KB (32 ms) dwarfs the flat per-request cost — the receiver's CPU shows it.
+    const meanCore = (cores: number[]) => cores.reduce((a, b) => a + b, 0) / cores.length
+    expect(meanCore(simFat.latest().servers[fat.s2].coreUtilization))
+      .toBeGreaterThan(meanCore(simFlat.latest().servers[flat.s2].coreUtilization))
+  })
+
+  it('REGRESSION FLOOR: two runs of the same unauthored world are identical', () => {
+    // Same doc both times — a second crossAzPair() would mint fresh entity ids and the batches
+    // would differ on keys alone, proving nothing about the engine.
+    const f = crossAzPair()
+    const compiled = compileWorld(f.doc)
+    const simA = drive(f.doc, compiled); simA.stepFor(30)
+    const simB = drive(f.doc, compiled); simB.stepFor(30)
+    expect(simB.latest()).toEqual(simA.latest())
+  })
+
+  it('a bound mix stays deterministic — same seed, identical batches, even with sigma > 0', () => {
+    const f = crossAzPair()
+    bindFatPacket(f.doc, { sizeVariance: 0.8 })
+    const compiled = compileWorld(f.doc)
+    const simA = drive(f.doc, compiled); simA.stepFor(30)
+    const simB = drive(f.doc, compiled); simB.stepFor(30)
+    expect(simB.latest()).toEqual(simA.latest())
+  })
+
+  it('an unauthored world draws NO rng for internal size jitter (the seeded stream is untouched)', () => {
+    // Proof by consequence: if the unauthored path drew from s.rng, adding a sigma-carrying
+    // packet elsewhere in the SAME world would be the only way to shift the stream. Instead we
+    // check the stronger property directly — an unauthored run equals a run whose only difference
+    // is a packet that exists but is bound to nothing.
+    const plain = crossAzPair()
+    const withUnboundPacket = crossAzPair()
+    withUnboundPacket.doc.packets = {
+      ...withUnboundPacket.doc.packets,
+      templates: { 1: { id: 1, name: 'unused', protocol: 'http', method: 'GET', statusCode: 200, sizeKb: 9999, sizeVariance: 1.4 } },
+      nextId: 2,
+    }
+    const simA = drive(plain.doc, compileWorld(plain.doc)); simA.stepFor(20)
+    const simB = drive(withUnboundPacket.doc, compileWorld(withUnboundPacket.doc)); simB.stepFor(20)
+    // The two docs mint different entity ids, so compare the world aggregates with the
+    // id-carrying populationRoutes dropped — the numbers are the claim.
+    const rollup = (b: MetricsBatch) => { const { populationRoutes: _drop, ...rest } = b.world; return rest }
+    expect(rollup(simB.latest())).toEqual(rollup(simA.latest()))
+  })
+})
+
+// A route can bind library packets instead of authoring inline sizes — the same registry and the
+// same resolver the dependency edges use. Before this wiring the binding was authored, persisted
+// and displayed but had ZERO simulation effect.
+describe('route packet binding', () => {
+  // One entry service, one population whose whole mix is a single route.
+  function routeWorld(mutate: (doc: WorldDoc, routeId: string) => void) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const sv = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[sv.id] = sv
+    const web = publicBlueprint('web', 0); doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, sv.id); doc.placements[pl.id] = pl
+
+    const added = addRoute(doc.packets, { name: 'upload', method: 'POST', path: '/upload' })
+    doc.packets = added.registry
+    const routeId = routeIdOf(added.route)
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 50
+    pop.requestMix = [{ routeId, weight: 1 }]
+    doc.populations[pop.id] = pop
+
+    mutate(doc, routeId)
+    return { doc, sv: sv.id }
+  }
+
+  // Adds a 4 MB-response packet to the registry and binds it to the route.
+  const bindBigPacket = (doc: WorldDoc, routeId: string) => {
+    const id = doc.packets.nextId
+    doc.packets = {
+      ...doc.packets,
+      templates: {
+        ...doc.packets.templates,
+        [id]: { id, name: 'photo', protocol: 'http', method: 'POST', statusCode: 200, sizeKb: 8, responseSizeKb: 4096 },
+        // spread narrows to the union otherwise — the route IS an HttpTemplate by construction
+        [Number(routeId)]: { ...(doc.packets.templates[Number(routeId)] as HttpTemplate), packetMix: [{ packetId: id, weight: 1 }] },
+      },
+      nextId: id + 1,
+    }
+  }
+
+  it('a packet bound to a route drives the internet-egress byte rate', () => {
+    const plain = routeWorld(() => {})
+    const simPlain = drive(plain.doc, compileWorld(plain.doc)); simPlain.stepFor(20)
+
+    const bound = routeWorld(bindBigPacket)
+    const simBound = drive(bound.doc, compileWorld(bound.doc)); simBound.stepFor(20)
+
+    // default route sizes are 1 KB up / 4 KB back; the bound packet is 8 KB / 4096 KB.
+    expect(simBound.latest().world.internetEgressBytesPerSec)
+      .toBeGreaterThan(simPlain.latest().world.internetEgressBytesPerSec * 100)
+  })
+
+  it('a bound mix supersedes the route inline sizes rather than being ignored', () => {
+    const inlineOnly = routeWorld((doc, routeId) => {
+      doc.packets.templates[Number(routeId)] = {
+        ...(doc.packets.templates[Number(routeId)] as HttpTemplate), sizeKb: 1, responseSizeKb: 1,
+      }
+    })
+    const both = routeWorld((doc, routeId) => {
+      doc.packets.templates[Number(routeId)] = {
+        ...(doc.packets.templates[Number(routeId)] as HttpTemplate), sizeKb: 1, responseSizeKb: 1,
+      }
+      bindBigPacket(doc, routeId)
+    })
+    const simInline = drive(inlineOnly.doc, compileWorld(inlineOnly.doc)); simInline.stepFor(20)
+    const simBoth = drive(both.doc, compileWorld(both.doc)); simBoth.stepFor(20)
+
+    expect(simBoth.latest().world.internetEgressBytesPerSec)
+      .toBeGreaterThan(simInline.latest().world.internetEgressBytesPerSec * 100)
+  })
+
+  it('a route-bound packet also saturates the entry NIC (cost and NIC agree on the resolved size)', () => {
+    const plain = routeWorld(() => {})
+    const bound = routeWorld(bindBigPacket)
+    const simPlain = drive(plain.doc, compileWorld(plain.doc)); simPlain.stepFor(20)
+    const simBound = drive(bound.doc, compileWorld(bound.doc)); simBound.stepFor(20)
+
+    expect(simBound.latest().servers[bound.sv].nicOutMbps)
+      .toBeGreaterThan(simPlain.latest().servers[plain.sv].nicOutMbps * 50)
+  })
+
+  it('REGRESSION FLOOR: an unbound route is byte-identical to before the binding existed', () => {
+    // A packet that EXISTS but is bound to nothing must not touch the route tier at all.
+    const plain = routeWorld(() => {})
+    const unbound = routeWorld(doc => {
+      doc.packets = {
+        ...doc.packets,
+        templates: { ...doc.packets.templates, 99: { id: 99, name: 'idle', protocol: 'http', method: 'GET', statusCode: 200, sizeKb: 9999, sizeVariance: 1.2 } },
+        nextId: 100,
+      }
+    })
+    const simPlain = drive(plain.doc, compileWorld(plain.doc)); simPlain.stepFor(20)
+    const simUnbound = drive(unbound.doc, compileWorld(unbound.doc)); simUnbound.stepFor(20)
+
+    const rollup = (b: MetricsBatch) => { const { populationRoutes: _drop, ...rest } = b.world; return rest }
+    expect(rollup(simUnbound.latest())).toEqual(rollup(simPlain.latest()))
+  })
+})
+
+// ─── Connection semantics (keep-alive / short-lived / streaming) ──────────────
+// The phase's claim is that connection TYPE — not just payload size — drives live behavior:
+// connection count, per-connection RAM, and handshake CPU. keep-alive is the identity, so every
+// test here is differential: the same world, the same rps, one field changed.
+describe('connection semantics', () => {
+  // One region / one AZ / one 8-core server / one entry service fed by ONE authored route, so the
+  // only thing distinguishing the runs below is that route's connection type.
+  const connWorld = (
+    connectionType: ConnectionType,
+    opts: { holdSeconds?: number; ramPerConnMb?: number; ramMb?: number } = {},
+  ) => {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const sv = createServer(az.id, getPreset('dedicated-8')!)
+    if (opts.ramMb != null) sv.specs.ramMb = opts.ramMb
+    doc.servers[sv.id] = sv
+    const web = publicBlueprint('web', 0)
+    web.workload = {
+      cpuMsPerRequest: 1, ramBaseMb: 100, ramPerConnMb: opts.ramPerConnMb ?? 0, diskIoPerRequest: 0,
+    }
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, sv.id); doc.placements[pl.id] = pl
+
+    const added = addRoute(doc.packets, {
+      name: 'api', method: 'GET', path: '/api', sizeKb: 1, responseSizeKb: 1,
+      connectionType, holdSeconds: opts.holdSeconds,
+    })
+    doc.packets = added.registry
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 400
+    pop.requestMix = [{ routeId: routeIdOf(added.route), weight: 1 }]
+    doc.populations[pop.id] = pop
+
+    return { doc, compiled: compileWorld(doc), sv: sv.id, inst: instanceId(pl.id, 0) }
+  }
+
+  const run = (f: ReturnType<typeof connWorld>, seconds = 20) => {
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(seconds)
+    return sim
+  }
+  const cores = (b: MetricsBatch, svId: string) => b.servers[svId].coreUtilization[0]
+
+  it('short-lived costs MORE CPU than keep-alive at identical rps', () => {
+    const kaW = connWorld('keep-alive'); const slW = connWorld('short-lived')
+    const ka = run(kaW); const sl = run(slW)
+
+    // Same offered load — what follows is CPU per request, not more requests.
+    expect(sl.latest().instances[slW.inst].rps).toBeCloseTo(ka.latest().instances[kaW.inst].rps, 0)
+    // cpuMsPerRequest 1 + HANDSHAKE_CPU_MS 2 = 3x the CPU per request.
+    expect(cores(sl.latest(), slW.sv)).toBeGreaterThan(cores(ka.latest(), kaW.sv) * 2)
+
+    ka.engine.stop(); sl.engine.stop()
+  })
+
+  it('short-lived also holds each connection longer than keep-alive (handshake + linger tail)', () => {
+    const kaW = connWorld('keep-alive'); const slW = connWorld('short-lived')
+    const ka = run(kaW); const sl = run(slW)
+    expect(sl.latest().instances[slW.inst].activeConnections)
+      .toBeGreaterThan(ka.latest().instances[kaW.inst].activeConnections)
+    ka.engine.stop(); sl.engine.stop()
+  })
+
+  it('streaming shows FAR more connections at the same rps, without extra CPU', () => {
+    const kaW = connWorld('keep-alive'); const stW = connWorld('streaming', { holdSeconds: 30 })
+    const ka = run(kaW); const st = run(stW)
+    const i1 = ka.latest().instances[kaW.inst]
+    const i2 = st.latest().instances[stW.inst]
+
+    expect(i2.rps).toBeCloseTo(i1.rps, 0)                     // identical throughput
+    expect(i2.activeConnections).toBeGreaterThan(i1.activeConnections * 100)
+    // Streaming amortizes its handshake, so CPU is untouched — the RAM axis is the whole point.
+    expect(cores(st.latest(), stW.sv)).toBeCloseTo(cores(ka.latest(), kaW.sv), 5)
+    // Little's law with a FIXED hold: connections == rps × holdSec, latency irrelevant.
+    expect(i2.activeConnections).toBeCloseTo(i2.rps * 30, 6)
+
+    ka.engine.stop(); st.engine.stop()
+  })
+
+  it('an unauthored holdSeconds falls back to the 30 s default', () => {
+    const w = connWorld('streaming')
+    const st = run(w)
+    const i = st.latest().instances[w.inst]
+    expect(i.activeConnections).toBeCloseTo(i.rps * 30, 6)
+    st.engine.stop()
+  })
+
+  it('streaming RAM triggers an OOM that keep-alive does not', () => {
+    // 0.05 MB/conn: keep-alive holds well under one connection (~0 MB over a 100 MB base) while
+    // streaming holds thousands — over a 512 MB host it is the connection MODEL that kills it.
+    const ka = run(connWorld('keep-alive', { ramPerConnMb: 0.05, ramMb: 512 }), 4)
+    const st = run(connWorld('streaming', { holdSeconds: 30, ramPerConnMb: 0.05, ramMb: 512 }), 4)
+
+    expect(ka.events.some(e => e.kind === 'oom_kill')).toBe(false)
+    expect(st.events.some(e => e.kind === 'oom_kill')).toBe(true)
+    ka.engine.stop(); st.engine.stop()
+  })
+
+  // THE divergence guard. Little's law lives in exactly two places — the host scheduler's
+  // InstanceLoad (which drives ramUsedMb and the OOM victim choice) and the published
+  // InstanceMetrics (which drives the UI and the ram-oversubscribed analysis rule). If only one
+  // were made connection-aware they would silently disagree by ~1000x on a streaming world; this
+  // is the test that would have caught the formula being duplicated.
+  it('DIVERGENCE GUARD: scheduler-side and metrics-side connection RAM agree', () => {
+    const w = connWorld('streaming', { holdSeconds: 30, ramPerConnMb: 0.01, ramMb: 32768 })
+    const st = run(w)
+    const b = st.latest()
+    const schedulerRam = b.servers[w.sv].ramUsedMb                          // from stepHost
+    const metricsRam = b.servers[w.sv].ramByInstance                        // from InstanceMetrics
+      .reduce((sum, r) => sum + r.ramMb, 0)
+
+    // Both must be dominated by connection RAM, not the 100 MB base — i.e. both saw ~12,000 conns.
+    expect(schedulerRam).toBeGreaterThan(150)
+    expect(metricsRam).toBeGreaterThan(150)
+    // They read slightly different inputs by design (raw admitted/serviceLatencyMs vs EMA'd
+    // rps/p50Ms), so they are not identical — but a formula divergence is orders of magnitude.
+    expect(schedulerRam / metricsRam).toBeGreaterThan(0.5)
+    expect(schedulerRam / metricsRam).toBeLessThan(2)
+    st.engine.stop()
+  })
+
+  it('stays deterministic under a fixed seed with streaming bound', () => {
+    // ONE world driven twice — two connWorld() calls would mint different entity ids (the
+    // factories stamp a counter + timestamp), which says nothing about the engine.
+    const w = connWorld('streaming', { holdSeconds: 45 })
+    const a = run(w)
+    const b = run(w)
+    expect(JSON.stringify(a.engine.getReplayFrames())).toEqual(JSON.stringify(b.engine.getReplayFrames()))
+    a.engine.stop(); b.engine.stop()
   })
 })

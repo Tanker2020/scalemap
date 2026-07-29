@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   emptyPacketRegistry, listRoutes, getRoute, addRoute, updateRoute, removeRoute,
-  routeMatchesPattern, routeIdOf, routeIngressBytes,
+  routeMatchesPattern, routeIdOf,
+  listPackets, getPacket, addPacket, updatePacket, removePacket, duplicatePacket,
 } from './nodeConfig'
-import type { PacketRegistry, EventTemplate } from './nodeConfig'
+import type { PacketRegistry, EventTemplate, DbTemplate } from './nodeConfig'
 
 describe('route helpers over PacketRegistry', () => {
   it('emptyPacketRegistry is a generic, empty registry', () => {
@@ -94,20 +95,57 @@ describe('route helpers over PacketRegistry', () => {
   })
 })
 
-describe('routeIngressBytes (route → per-request wire bytes, KB×1024)', () => {
-  it('reads sizeKb / responseSizeKb off the route', () => {
-    const { route } = addRoute(emptyPacketRegistry(), { name: 'img', method: 'GET', path: '/img', sizeKb: 3, responseSizeKb: 10 })
-    expect(routeIngressBytes(route)).toEqual({ reqBytes: 3072, respBytes: 10240 })
+// ─── Packet library: the registry's second view (pathless templates, any protocol) ───────────
+const dbFields = (over: Partial<DbTemplate> = {}) => ({
+  name: 'query', protocol: 'db' as const, sizeKb: 1, queryType: 'read' as const, isWAL: false,
+  resultSizeKb: 64, ...over,
+})
+
+describe('packet library helpers over the same PacketRegistry', () => {
+  it('addPacket assigns from the SAME monotonic id space as addRoute', () => {
+    const { registry: reg1 } = addRoute(emptyPacketRegistry(), { name: 'api', method: 'GET', path: '/api' })
+    const { registry: reg2, packet } = addPacket(reg1, dbFields())
+    expect(packet.id).toBe(2)
+    expect(reg2.nextId).toBe(3)
   })
 
-  it('falls back to 2 KB each way when the route is absent (the implicit default route)', () => {
-    expect(routeIngressBytes(undefined)).toEqual({ reqBytes: 2048, respBytes: 2048 })
+  it('listPackets returns pathless templates of every protocol, id-sorted', () => {
+    let reg = emptyPacketRegistry()
+    reg = addRoute(reg, { name: 'route', method: 'GET', path: '/api' }).registry
+    reg = addPacket(reg, dbFields({ name: 'db-read' })).registry
+    reg = addPacket(reg, { name: 'evt', protocol: 'event', sizeKb: 2, topic: 't', eventType: 'x', deliveryMode: 'at-least-once' }).registry
+    reg = addPacket(reg, { name: 'blob', protocol: 'http', sizeKb: 5000, method: 'PUT', statusCode: 200 }).registry
+    expect(listPackets(reg).map(p => p.name)).toEqual(['db-read', 'evt', 'blob'])
   })
 
-  it('falls back to 2 KB for the response when only the request size is authored', () => {
-    // A route carrying a request size but no response size (e.g. an older serialized template).
-    const route = { id: 1, name: 'api', protocol: 'http' as const, sizeKb: 1, method: 'GET' as const, path: '/api', statusCode: 200 }
-    expect(routeIngressBytes(route)).toEqual({ reqBytes: 1024, respBytes: 2048 })
+  it('the two views are disjoint — a route never shows up as a packet and vice versa', () => {
+    let reg = emptyPacketRegistry()
+    reg = addRoute(reg, { name: 'route', method: 'GET', path: '/api' }).registry
+    const { registry, packet } = addPacket(reg, dbFields())
+    expect(listRoutes(registry).map(r => r.name)).toEqual(['route'])
+    expect(listPackets(registry).map(p => p.name)).toEqual(['query'])
+    expect(getRoute(registry, String(packet.id))).toBeUndefined()
+    expect(getPacket(registry, 1)).toBeUndefined()
+  })
+
+  it('updatePacket replaces the shape wholesale so a protocol switch strands no fields', () => {
+    const { registry, packet } = addPacket(emptyPacketRegistry(), dbFields())
+    const reg2 = updatePacket(registry, packet.id, {
+      name: 'now-a-stream', protocol: 'stream', sizeKb: 9, streamId: 's1', compressionType: 'gzip',
+    })
+    const updated = getPacket(reg2, packet.id)
+    expect(updated).toEqual({ id: packet.id, name: 'now-a-stream', protocol: 'stream', sizeKb: 9, streamId: 's1', compressionType: 'gzip' })
+    expect(updated).not.toHaveProperty('queryType')
+  })
+
+  it('removePacket deletes it; duplicatePacket deep-copies under a fresh id', () => {
+    const { registry, packet } = addPacket(emptyPacketRegistry(), dbFields({ colorOverride: '#ff0000' }))
+    const dup = duplicatePacket(registry, packet.id, 'query (copy)')
+    expect(dup).not.toBeNull()
+    expect(dup!.packet.id).toBe(packet.id + 1)
+    expect(dup!.packet).toMatchObject({ name: 'query (copy)', colorOverride: '#ff0000', protocol: 'db' })
+    expect(getPacket(removePacket(dup!.registry, packet.id), packet.id)).toBeUndefined()
+    expect(duplicatePacket(registry, 999, 'nope')).toBeNull()
   })
 })
 

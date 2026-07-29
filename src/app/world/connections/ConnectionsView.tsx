@@ -19,6 +19,10 @@ import {
   connNodes, edgesForView, layoutNodes, INTERNET_NODE,
   NODE_W, NODE_H, type ConnEdge, type ConnNode, type EdgeStatus,
 } from '../../../lib/world/connections'
+import type { PacketMixEntry, PacketRegistry } from '../../../lib/nodeConfig'
+import { resolveWireSize } from '../../../lib/packetResolve'
+import { PacketMixEditor } from '../panels/PacketMixEditor'
+import { NumberField } from '../panels/NumberField'
 
 const MARGIN = 40
 
@@ -218,12 +222,22 @@ export function ConnectionsView({ open, onClose }: ConnectionsViewProps): ReactE
             const targetBp = doc.blueprints[selectedEdge.toId]
             const dbTarget = targetBp?.kind === 'db-sql' || targetBp?.kind === 'db-nosql'
             const currentDep = doc.blueprints[selectedEdge.fromId]?.dependencies.find(x => x.id === selectedEdge.id)
+            // The Internet ingress edge is synthetic (no BlueprintDependency behind it), so there
+            // is nothing to bind packets to — its byte sizes come from the ROUTE the client emits.
+            const bindable = currentDep != null
             return (
               <EdgeInspector edge={selectedEdge} nodeById={nodeById}
                 dbTarget={dbTarget}
                 dbEngine={targetBp?.dbConfig?.engine ?? null}
                 writeFraction={currentDep?.writeFraction ?? 0}
                 onWriteFraction={w => store.setDependencyWriteFraction(selectedEdge.fromId, selectedEdge.id, w)}
+                registry={doc.packets}
+                packetMix={bindable ? currentDep.packetMix : undefined}
+                reqKb={currentDep?.reqKb}
+                respKb={currentDep?.respKb}
+                bindable={bindable}
+                onPacketMix={mix => store.setDependencyPacketMix(selectedEdge.fromId, selectedEdge.id, mix)}
+                onWireSize={patch => store.setDependencyWireSize(selectedEdge.fromId, selectedEdge.id, patch)}
                 onFix={() => store.fixReachability(selectedEdge.fromId, selectedEdge.id)}
                 onRemove={() => {
                   if (selectedEdge.fromId === INTERNET_NODE) store.setInternetFacing(selectedEdge.toId, selectedEdge.port, false)
@@ -329,13 +343,31 @@ function DraftBar({ draft, nodeById, onChange, onCommit, onCancel }: {
   )
 }
 
-function EdgeInspector({ edge, nodeById, dbTarget, dbEngine, writeFraction, onWriteFraction, onFix, onRemove, onClose }: {
+function EdgeInspector({
+  edge, nodeById, dbTarget, dbEngine, writeFraction, onWriteFraction,
+  registry, packetMix, reqKb, respKb, bindable, onPacketMix, onWireSize,
+  onFix, onRemove, onClose,
+}: {
   edge: ConnEdge; nodeById: Record<string, ConnNode>
   dbTarget: boolean; dbEngine: 'sql' | 'nosql' | null; writeFraction: number; onWriteFraction: (w: number) => void
+  registry: PacketRegistry
+  packetMix: PacketMixEntry[] | undefined
+  reqKb: number | undefined; respKb: number | undefined
+  /** False for the synthetic Internet ingress edge — no dependency exists to bind packets to. */
+  bindable: boolean
+  onPacketMix: (mix: PacketMixEntry[]) => void
+  onWireSize: (patch: { reqKb?: number; respKb?: number }) => void
   onFix: () => void; onRemove: () => void; onClose: () => void
 }) {
   const fixable = edge.fromId !== INTERNET_NODE && (edge.status === 'blocked' || edge.status === 'partial')
-  const writePct = Math.round(writeFraction * 100)
+  // A db packet mix SPEAKS for the write fraction (its queryType mix derives it), so the manual
+  // slider yields to a read-only readout rather than offering a second, contradicting source of
+  // truth. resolveWireSize returns undefined when no db packet is bound, which is exactly the
+  // "keep the hand-authored value" case.
+  const wire = resolveWireSize(registry, packetMix, reqKb, respKb)
+  const mixBound = (packetMix?.length ?? 0) > 0
+  const derivedWrite = wire.writeFraction
+  const writePct = Math.round((derivedWrite ?? writeFraction) * 100)
   return (
     <div style={{ width: 240, borderLeft: '1px solid var(--color-node-border)', padding: 14, background: 'var(--color-surface)', overflow: 'auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -357,16 +389,47 @@ function EdgeInspector({ edge, nodeById, dbTarget, dbEngine, writeFraction, onWr
             <span>reads {100 - writePct}%</span>
             <span>writes {writePct}%</span>
           </div>
-          <input
-            type="range" min={0} max={100} step={5} value={writePct}
-            aria-label="write fraction"
-            style={{ width: '100%', marginTop: 4 }}
-            onChange={e => onWriteFraction(Number(e.target.value) / 100)}
-          />
+          {derivedWrite != null ? (
+            <div style={{ marginTop: 4, fontSize: 9.5, color: 'var(--kit-teal)' }}>
+              derived from the bound db packets — edit their query types to change it
+            </div>
+          ) : (
+            <input
+              type="range" min={0} max={100} step={5} value={writePct}
+              aria-label="write fraction"
+              style={{ width: '100%', marginTop: 4 }}
+              onChange={e => onWriteFraction(Number(e.target.value) / 100)}
+            />
+          )}
           <div style={{ marginTop: 4, fontSize: 9.5, color: 'var(--color-text-muted)' }}>
             {dbEngine === 'nosql'
               ? 'writes spread across every node (scales out)'
               : 'writes go to the primary (single-writer ceiling)'}
+          </div>
+        </div>
+      )}
+      {bindable && (
+        // What this edge actually puts on the wire. Until something is bound here, every internal
+        // hop in the world books the same flat default — this is where a 5 MB blob upload stops
+        // looking like a 200-byte health check to the cost model, the NIC, and the CPU.
+        <div style={{ marginTop: 12, borderTop: '1px solid var(--color-node-border)', paddingTop: 10 }}>
+          <div style={{ font: '600 10px var(--font-mono)', color: 'var(--color-text-muted)' }}>▸ OUTGOING PACKETS</div>
+          <PacketMixEditor
+            registry={registry} mix={packetMix} onChange={onPacketMix} idPrefix={`edge-mix-${edge.id}`}
+            emptyHint="No packets defined. Add them in the Packets tab to give this hop real payload sizes."
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, opacity: mixBound ? 0.4 : 1 }}>
+            <span style={{ fontSize: 9.5, color: 'var(--color-text-muted)' }}>req</span>
+            <NumberField label={`edge-req-kb-${edge.id}`} value={reqKb ?? 0} min={0} max={Infinity}
+              onCommit={n => onWireSize({ reqKb: n })} />
+            <span style={{ fontSize: 9.5, color: 'var(--color-text-muted)' }}>resp KB</span>
+            <NumberField label={`edge-resp-kb-${edge.id}`} value={respKb ?? 0} min={0} max={Infinity}
+              onCommit={n => onWireSize({ respKb: n })} />
+          </div>
+          <div style={{ marginTop: 4, fontSize: 9.5, color: 'var(--color-text-muted)' }}>
+            {mixBound
+              ? `bound mix wins — ${Math.round(wire.reqBytes / 1024)} KB up · ${Math.round(wire.respBytes / 1024)} KB back`
+              : `inline sizes — ${Math.round(wire.reqBytes / 1024)} KB up · ${Math.round(wire.respBytes / 1024)} KB back`}
           </div>
         </div>
       )}

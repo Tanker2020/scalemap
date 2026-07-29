@@ -843,3 +843,64 @@ describe('solveFlows — effectiveCpuMsByInstance (packet-driven CPU, slice 2)',
     expect(withMap.flows[api.iid].serviceLatencyMs).toBe(withoutMap.flows[api.iid].serviceLatencyMs)
   })
 })
+
+// ─── Packet-driven internal-hop bytes (packet library) ───────────────────────────────────────
+// The old model booked `rps × 2048 × 2` for EVERY service→service call regardless of payload.
+// `depBytesById` is the optional FlowInput that makes those bytes reflect what the edge carries;
+// omitting it must reproduce the old constant exactly, which is the regression floor.
+describe('depBytesById — packet-sized internal hops', () => {
+  function crossAzWorld() {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az1 = createAz(region.id, 'us-east-1a')
+    const az2 = createAz(region.id, 'us-east-1b')
+    Object.assign(doc.regions, { [region.id]: region })
+    Object.assign(doc.azs, { [az1.id]: az1, [az2.id]: az2 })
+    const s1 = createServer(az1.id, getPreset('dedicated-8')!)
+    const s2 = createServer(az2.id, getPreset('dedicated-8')!)
+    Object.assign(doc.servers, { [s1.id]: s1, [s2.id]: s2 })
+    const api = addService(doc, 'api', s1.id, 0)
+    const blob = addService(doc, 'blob', s2.id, 1)
+    api.bp.dependencies = [dep('d-blob', blob.bp.id)]
+    return { doc, api }
+  }
+
+  it('omitting depBytesById reproduces the historical rps × 2 KB × 2', () => {
+    const { doc, api } = crossAzWorld()
+    const { totals } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(totals.crossAzBytes).toBe(100 * BYTES_PER_REQUEST_EACH_WAY * 2)
+  })
+
+  it('a bound packet scales cross-AZ bytes by its actual payload size', () => {
+    const { doc, api } = crossAzWorld()
+    const { totals } = solveFlows({
+      ...baseInput(doc, { [api.iid]: 100 }),
+      depBytesById: {
+        'd-blob': { reqBytes: 5 * 1024 * 1024, respBytes: 1024, sizeKb: 5120, sigma: 0, amplification: 1 },
+      },
+    })
+    expect(totals.crossAzBytes).toBe(100 * (5 * 1024 * 1024 + 1024))
+  })
+
+  it('WAL amplification doubles only the WRITE share of the request leg', () => {
+    const { doc, api } = crossAzWorld()
+    const wire = { reqBytes: 1000, respBytes: 200, sizeKb: 1, sigma: 0, amplification: 2 }
+    const run = (writeFraction: number) => solveFlows({
+      ...baseInput(doc, { [api.iid]: 100 }),
+      depBytesById: { 'd-blob': { ...wire, writeFraction } },
+    }).totals.crossAzBytes
+
+    expect(run(0)).toBe(100 * (1000 + 200))          // all reads — amplification is inert
+    expect(run(1)).toBe(100 * (2000 + 200))          // all writes — request written twice
+    expect(run(0.5)).toBe(100 * (1500 + 200))        // half and half
+  })
+
+  it('a dependency with no entry in the map keeps the flat fallback', () => {
+    const { doc, api } = crossAzWorld()
+    const { totals } = solveFlows({
+      ...baseInput(doc, { [api.iid]: 100 }),
+      depBytesById: { 'some-other-dep': { reqBytes: 9e6, respBytes: 9e6, sizeKb: 1, sigma: 0, amplification: 1 } },
+    })
+    expect(totals.crossAzBytes).toBe(100 * BYTES_PER_REQUEST_EACH_WAY * 2)
+  })
+})

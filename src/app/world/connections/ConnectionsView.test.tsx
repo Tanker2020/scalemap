@@ -83,3 +83,73 @@ describe('ConnectionsView', () => {
     expect(container).toBeEmptyDOMElement()
   })
 })
+
+// ─── Edge packet binding (packet-library phase) ──────────────────────────────────────────────
+describe('ConnectionsView — EdgeInspector packet binding', () => {
+  const st = () => useWorldStore.getState()
+  const addDbPacket = (name: string, over: Record<string, unknown> = {}) => st().addPacket({
+    name, protocol: 'db', sizeKb: 2, queryType: 'read', isWAL: false, resultSizeKb: 64, ...over,
+  } as never)
+
+  // The write-fraction control only exists when the edge points AT a db blueprint, so the
+  // seed makes the target a real SQL appliance rather than the default 'api' kind.
+  function seedEdge() {
+    const { apiId, dbId } = seedApiDb()
+    st().updateBlueprint(dbId, { kind: 'db-sql', dbConfig: { engine: 'sql', storageGb: 100 } })
+    const depId = st().connectServices(apiId, { kind: 'blueprint', blueprintId: dbId },
+      { port: 5432, protocol: 'db', autoProvision: true })
+    return { apiId, dbId, depId }
+  }
+
+  it('binds a packet mix to the selected edge', () => {
+    const { apiId, depId } = seedEdge()
+    const packetId = addDbPacket('query')
+    render(<ConnectionsView open onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId(`conn-edge-${depId}`))
+
+    const weight = screen.getByLabelText(`edge-mix-${depId}-${packetId}`)
+    fireEvent.change(weight, { target: { value: '1' } })
+    fireEvent.blur(weight)
+
+    expect(st().doc.blueprints[apiId].dependencies[0].packetMix).toEqual([{ packetId, weight: 1 }])
+  })
+
+  it('the inline req/resp KB fields write tier-2 sizes when no mix is bound', () => {
+    const { apiId, depId } = seedEdge()
+    render(<ConnectionsView open onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId(`conn-edge-${depId}`))
+
+    const req = screen.getByLabelText(`edge-req-kb-${depId}`)
+    fireEvent.change(req, { target: { value: '512' } })
+    fireEvent.blur(req)
+    expect(st().doc.blueprints[apiId].dependencies[0].reqKb).toBe(512)
+    // and the readout reflects the resolver, not the raw field
+    expect(screen.getByText(/512 KB up/)).toBeTruthy()
+  })
+
+  it('a bound db mix REPLACES the manual write-fraction slider with its derived value', () => {
+    const { apiId, depId } = seedEdge()
+    const writePacket = addDbPacket('insert', { queryType: 'write' })
+    render(<ConnectionsView open onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId(`conn-edge-${depId}`))
+    // manual slider present while unbound
+    expect(screen.getByLabelText('write fraction')).toBeTruthy()
+
+    const weight = screen.getByLabelText(`edge-mix-${depId}-${writePacket}`)
+    fireEvent.change(weight, { target: { value: '1' } })
+    fireEvent.blur(weight)
+
+    expect(screen.queryByLabelText('write fraction')).toBeNull()
+    expect(screen.getByText(/derived from the bound db packets/)).toBeTruthy()
+    expect(screen.getByText('writes 100%')).toBeTruthy()
+    void apiId
+  })
+
+  it('the synthetic Internet ingress edge offers no packet binding (its sizes come from routes)', () => {
+    const { apiId } = seedApiDb()
+    st().setInternetFacing(apiId, 8080, true)
+    render(<ConnectionsView open onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId(`conn-edge-ingress:${apiId}`))
+    expect(screen.queryByText('▸ OUTGOING PACKETS')).toBeNull()
+  })
+})

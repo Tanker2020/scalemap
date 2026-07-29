@@ -6,6 +6,9 @@ import type {
   ManagedServiceMetrics, HealthState,
 } from './types'
 import type { InstanceFlow } from './flows'
+// Aliased on import: the local `activeConnections` binding below is the computed VALUE per
+// instance, and shadowing the function would make the one-formula invariant unreadable.
+import { activeConnections as activeConnectionsOf, KEEP_ALIVE_PROFILE, type ConnectionProfile } from '../connectionModel'
 import { managedDbCeilings } from './flows'
 import { managedCapacityRps, managedLatencyMs, MANAGED_P99_OVER_P50 } from '../managedCapacity'
 import { managedDbEngine } from '../world/types'
@@ -210,6 +213,16 @@ export function buildBatch(
   // activeConnections need no special drain: the EMA'd rps already decays them exponentially
   // (~70%/s at α=0.3), the keep-alive-drain shape the audit asks for.
   starved?: Set<InstanceId>,
+  // Per-instance connection profile for THIS batch (connection semantics). Optional and defaulting
+  // to the keep-alive identity, so every existing direct-buildBatch caller/test is unchanged by
+  // omission — the same additive-by-omission discipline `starved` and the byte maps already use.
+  //
+  // CRITICAL: this is one of exactly TWO sites computing active connections; the other is the host
+  // scheduler's InstanceLoad in worldEngine/index.ts. Both call connectionModel's
+  // activeConnections(). If only one were profile-aware, the RAM the scheduler enforces (and
+  // OOM-kills on) would silently diverge from the RAM published here and read by the UI and the
+  // `ram-oversubscribed` analysis rule.
+  connProfiles?: Record<InstanceId, ConnectionProfile>,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
   const servers: Record<ServerId, ServerMetrics> = {}
@@ -255,7 +268,9 @@ export function buildBatch(
     // to ~30% of its size, hiding exactly the transients a tail metric exists to show. The
     // multi-second reservoir already steadies it; p50 keeps the EMA for stable display.
     const p99Ms = percentile(sorted, 0.99)
-    const activeConnections = rps * (p50Ms / 1000)          // Little's law
+    // Little's law, parameterized by the instance's connection profile (see connProfiles above).
+    // keep-alive ⇒ exactly the historical `rps * (p50Ms / 1000)`.
+    const activeConnections = activeConnectionsOf(rps, p50Ms, connProfiles?.[inst.id] ?? KEEP_ALIVE_PROFILE)
     const workload = bp?.workload ?? { cpuMsPerRequest: 0, ramBaseMb: 0, ramPerConnMb: 0, diskIoPerRequest: 0 }
     // Starved override (audit ISSUE-014): an instance silenced by a down upstream must not read
     // as healthy-and-idle. Only lifts 'healthy' to 'degraded' — real degraded/down states win.

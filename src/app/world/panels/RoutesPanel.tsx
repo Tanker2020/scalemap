@@ -9,8 +9,10 @@ import { useState, type CSSProperties } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { listRoutes, routeIdOf } from '../../../lib/nodeConfig'
 import type { HttpTemplate, ConnectionType } from '../../../lib/nodeConfig'
+import { DEFAULT_HOLD_SEC } from '../../../lib/connectionModel'
 import { SectionHeader, Explainer } from '../ui/kit'
 import { field, smallBtn, dangerBtn, row } from './panelStyles'
+import { PacketMixEditor } from './PacketMixEditor'
 
 const METHODS: HttpTemplate['method'][] = ['GET', 'POST', 'PUT', 'DELETE']
 const CONNECTIONS: ConnectionType[] = ['keep-alive', 'short-lived', 'streaming']
@@ -96,8 +98,13 @@ function RouteCard({ route }: { route: HttpTemplate }) {
   const doc = useWorldStore(s => s.doc)
   const updateRoute = useWorldStore(s => s.updateRoute)
   const removeRoute = useWorldStore(s => s.removeRoute)
+  const setRoutePacketMix = useWorldStore(s => s.setRoutePacketMix)
   const id = routeIdOf(route)
   const usage = Object.values(doc.populations).filter(p => p.requestMix?.some(e => e.routeId === id)).length
+  // A bound packet mix supersedes the inline sizes above (packetResolve's tier 1 over tier 2), so
+  // the simple fields grey out rather than silently having no effect.
+  const mixBound = (route.packetMix?.length ?? 0) > 0
+  const [advanced, setAdvanced] = useState(mixBound)
 
   return (
     <div style={{ background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)', borderRadius: 8, padding: 10, marginTop: 8 }}>
@@ -117,7 +124,7 @@ function RouteCard({ route }: { route: HttpTemplate }) {
         <input style={{ ...field, flex: 1, marginBottom: 0 }} aria-label={`route-path-${id}`}
           value={route.path} onChange={e => updateRoute(id, { path: e.target.value })} />
       </div>
-      <div style={{ ...row, marginTop: 4, marginBottom: 0 }}>
+      <div style={{ ...row, marginTop: 4, marginBottom: 0, opacity: mixBound ? 0.4 : 1 }}>
         <span style={miniLabel}>req</span>
         <input style={sizeField} type="number" min={0} aria-label={`route-req-size-${id}`} title="request size (KB)"
           value={route.sizeKb ?? ''} onChange={e => updateRoute(id, { sizeKb: parseKb(e.target.value) })} />
@@ -131,7 +138,39 @@ function RouteCard({ route }: { route: HttpTemplate }) {
           onChange={e => updateRoute(id, { connectionType: e.target.value as ConnectionType })}>
           {CONNECTIONS.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
+        {/* Only streaming holds for an authored duration — keep-alive and short-lived derive their
+            hold from request latency, so the input would be inert for them. */}
+        {route.connectionType === 'streaming' && (
+          <>
+            <span style={miniLabel}>hold s</span>
+            <input style={sizeField} type="number" min={0} aria-label={`route-hold-${id}`}
+              title={`how long a streaming connection is held open (s) — drives connection count and per-connection RAM; blank = ${DEFAULT_HOLD_SEC}s`}
+              placeholder={String(DEFAULT_HOLD_SEC)}
+              value={route.holdSeconds ?? ''} onChange={e => updateRoute(id, { holdSeconds: parseKb(e.target.value) })} />
+          </>
+        )}
       </div>
+      <div style={{ ...row, marginTop: 6, marginBottom: 0 }}>
+        <button className="kit-press" style={{ ...smallBtn, padding: '2px 6px', fontSize: 9.5 }}
+          aria-label={`route-advanced-${id}`} aria-expanded={advanced}
+          onClick={() => setAdvanced(a => !a)}>
+          {advanced ? 'advanced ▾' : 'advanced ▸'}
+        </button>
+        {mixBound && <span style={{ ...miniLabel, color: 'var(--kit-teal)' }}>packet mix bound</span>}
+      </div>
+      {advanced && (
+        <div style={{ marginTop: 4 }}>
+          <div style={{ fontSize: 9.5, color: 'var(--color-text-muted)' }}>
+            bind library packets instead of the inline sizes above — the weighted mean of the mix
+            becomes this route's wire size
+          </div>
+          <PacketMixEditor
+            registry={doc.packets} mix={route.packetMix} idPrefix={`route-mix-${id}`}
+            onChange={mix => setRoutePacketMix(id, mix)}
+            emptyHint="No packets defined yet — add them in the Packets tab."
+          />
+        </div>
+      )}
     </div>
   )
 }

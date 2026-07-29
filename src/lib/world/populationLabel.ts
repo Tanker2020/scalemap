@@ -20,3 +20,20 @@ export function nextPopulationLabel(populations: Record<PopulationId, ClientPopu
   }
   return `pop-${max + 1}`
 }
+
+// The same "don't hand out a name someone already has" scan, generalized for the duplicate
+// actions (blueprints, packets). Copying a copy does NOT nest — `api (copy)` duplicates to
+// `api (copy 2)`, not `api (copy) (copy)` — so a user leaning on the button repeatedly gets a
+// readable series instead of a run-on. Names are free text, not ids; this is a courtesy, and
+// nothing downstream depends on uniqueness.
+const COPY_NAME_RE = /^(.*) \(copy(?: (\d+))?\)$/
+
+export function nextCopyName(existingNames: Iterable<string>, sourceName: string): string {
+  const m = COPY_NAME_RE.exec(sourceName)
+  const base = m ? m[1] : sourceName
+  const taken = new Set(existingNames)
+  if (!taken.has(`${base} (copy)`)) return `${base} (copy)`
+  let n = 2
+  while (taken.has(`${base} (copy ${n})`)) n++
+  return `${base} (copy ${n})`
+}

@@ -148,3 +148,58 @@ describe('buildServerParticles', () => {
     expect(last.particles.every(p => p.toId !== f.apiInst)).toBe(true)  // az uses serverId endpoints
   })
 })
+
+// ─── Packet identity on particles (packet library) ───────────────────────────────────────────
+// A particle now carries WHICH library packet it represents, and takes that packet's colour when
+// one is authored. The pick must be a pure function of the particle index — particles are rebuilt
+// from renderAll at wall-clock frame rate, so an rng draw here would make the seeded stream
+// depend on frame rate and break replay.
+describe('particle packet binding', () => {
+  it('tags particles with the bound packet id and uses its colour override', () => {
+    const f = fixture()
+    f.doc.packets = {
+      ...f.doc.packets,
+      templates: {
+        7: { id: 7, name: 'blob', protocol: 'http', method: 'PUT', statusCode: 200, sizeKb: 512, colorOverride: '#ff00ff' },
+      },
+      nextId: 8,
+    }
+    for (const bp of Object.values(f.doc.blueprints)) {
+      bp.dependencies = bp.dependencies.map(d => ({ ...d, packetMix: [{ packetId: 7, weight: 1 }] }))
+    }
+
+    const frame = serverFrame(f.doc, f.s1.id)
+    const tagged = frame.particles.filter(p => p.packetId === 7)
+    expect(tagged.length).toBeGreaterThan(0)
+    expect(tagged.every(p => p.colorHint === '#ff00ff')).toBe(true)
+    // entry particles have no dependency behind them, so no packet
+    expect(frame.particles.some(p => p.packetId == null)).toBe(true)
+  })
+
+  it('leaves packetId null and colours unchanged when nothing is bound', () => {
+    const f = fixture()
+    const frame = serverFrame(f.doc, f.s1.id)
+    expect(frame.particles.every(p => p.packetId == null)).toBe(true)
+  })
+
+  it('the pick is a pure function of the frame — two renders at the same wall clock agree', () => {
+    const f = fixture()
+    f.doc.packets = {
+      ...f.doc.packets,
+      templates: {
+        1: { id: 1, name: 'a', protocol: 'http', method: 'GET', statusCode: 200, sizeKb: 1, colorOverride: '#111111' },
+        2: { id: 2, name: 'b', protocol: 'http', method: 'GET', statusCode: 200, sizeKb: 1, colorOverride: '#222222' },
+      },
+      nextId: 3,
+    }
+    for (const bp of Object.values(f.doc.blueprints)) {
+      bp.dependencies = bp.dependencies.map(d => ({ ...d, packetMix: [{ packetId: 1, weight: 3 }, { packetId: 2, weight: 1 }] }))
+    }
+    const a = serverFrame(f.doc, f.s1.id)
+    const b = serverFrame(f.doc, f.s1.id)
+    expect(b.particles.map(p => p.packetId)).toEqual(a.particles.map(p => p.packetId))
+    // and both packets actually appear — the weighted round-robin is not degenerate
+    const ids = new Set(a.particles.map(p => p.packetId).filter(x => x != null))
+    expect(ids.size).toBeGreaterThan(1)
+  })
+})

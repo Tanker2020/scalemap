@@ -23,6 +23,7 @@ import { getDbInstanceClass } from '../dbInstanceClasses'
 // Type-only: managedDbRuntime.ts imports managedDbCeilings from here, so a VALUE import would be a
 // runtime cycle. `import type` erases at compile time and keeps the dependency one-way.
 import type { ManagedDbRuntime } from '../managedDbRuntime'
+import type { WireSize } from '../packetResolve'
 
 // 2KB per request in EACH direction (request out + response back, so every hop books
 // 2 x 2048 bytes per request). A deliberately simple Phase-2 constant — packet templates
@@ -230,6 +231,14 @@ export interface FlowInput {
   // client→entry internet byte total by real payload size. Optional: absent ⇒ the flat
   // BYTES_PER_REQUEST_EACH_WAY convention, so direct-solveFlows unit tests are unchanged.
   entryBytesByInstance?: Record<InstanceId, { reqBytes: number; respBytes: number }>
+  // Per-DEPENDENCY wire bytes (packet library): what one call over this edge actually puts on
+  // the wire, resolved once at start from the edge's bound packet mix / inline sizes / the world
+  // default (src/lib/packetResolve.ts). Makes the internal-hop egress bill respond to payload
+  // size instead of booking a flat 2 KB each way for every service→service call, and carries the
+  // db-derived write fraction that supersedes the edge's hand-authored slider. Optional: absent
+  // ⇒ the flat BYTES_PER_REQUEST_EACH_WAY convention, so direct-solveFlows unit tests are
+  // unchanged.
+  depBytesById?: Record<string, WireSize>
   // Per-instance blended ms/request (packet-driven CPU, slice 2): cpuMsPerRequest +
   // cpuMsPerKb × avgReqSizeKb, computed at the entry tier from the same route-mix signal as
   // entryBytesByInstance above. Drives the service-latency p50 seed below so a bigger packet
@@ -411,8 +420,20 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     }
   }
 
-  const bucketBytes = (hopClass: HopClass, rps: number): void => {
-    const bytes = rps * BYTES_PER_REQUEST_EACH_WAY * 2   // request + response
+  // Bytes a hop books against the cross-zone egress lines. With a dependency's resolved wire size
+  // in hand the request and response legs are sized independently; without one (no depId, or no
+  // depBytesById supplied) both fall back to the flat 2 KB convention, reproducing exactly the
+  // pre-packet-library `rps × 2048 × 2`.
+  //
+  // WAL amplification applies ONLY to the write share of the request leg — a WAL-backed write is
+  // written twice (log + data pages), a read is not, and the response leg is unaffected either
+  // way. amplification 1 (no WAL, or no db packet bound) leaves the term at exactly reqBytes.
+  const bucketBytes = (hopClass: HopClass, rps: number, depId?: string): void => {
+    const wire = depId != null ? input.depBytesById?.[depId] : undefined
+    const reqBytes = wire?.reqBytes ?? BYTES_PER_REQUEST_EACH_WAY
+    const respBytes = wire?.respBytes ?? BYTES_PER_REQUEST_EACH_WAY
+    const amplified = reqBytes * (1 + (wire?.writeFraction ?? 0) * ((wire?.amplification ?? 1) - 1))
+    const bytes = rps * (amplified + respBytes)
     if (hopClass === 'cross-az') totals.crossAzBytes += bytes
     else if (hopClass === 'cross-region') totals.crossRegionBytes += bytes
     // localhost / same-az transfer is free — no cost line for it
@@ -573,7 +594,11 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
           const rt = ms ? input.managedDbRuntime?.[ms.id] : undefined
           const throttled = rt
             ? share * rt.refusalFraction
-            : (ms ? managedRefusedRps(share, dep.writeFraction ?? 0, ms) : 0)
+            // A bound db packet mix DERIVES the write fraction from its query types, and is the
+            // single source of truth when present — the edge's hand-authored slider is hidden in
+            // that case (ConnectionsView's EdgeInspector), so reading it here would contradict
+            // what the user sees.
+            : (ms ? managedRefusedRps(share, input.depBytesById?.[dep.id]?.writeFraction ?? dep.writeFraction ?? 0, ms) : 0)
           const timedOut = rt ? (share - throttled) * rt.timeoutErrorFraction : 0
           const refused = throttled + timedOut
           const admittedToMs = share - refused
@@ -588,7 +613,7 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
               const msId = path.to.managedServiceId
               totals.managedEgressBytes[msId] = (totals.managedEgressBytes[msId] ?? 0) + admittedToMs * responseKb * 1024
             } else {
-              bucketBytes(path.hopClass, admittedToMs)
+              bucketBytes(path.hopClass, admittedToMs, dep.id)
             }
           }
           // Two separate blocked rows so the metric can tell the failure modes apart.
@@ -604,7 +629,7 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
         }
 
         addDownstream(flow, dep.id, target, share, path.hopClass, false)
-        bucketBytes(path.hopClass, share)
+        bucketBytes(path.hopClass, share, dep.id)
 
         const toId = path.to.instanceId
         if (chainHas(item, toId)) continue          // cycle guard: row recorded, no re-entry

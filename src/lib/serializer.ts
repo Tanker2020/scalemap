@@ -128,13 +128,28 @@ export function deserializeWorld(raw: string): ScalemapFileV3 {
   //    undefined). Prefer world.packets; else fold the legacy slot in; else empty (implicit
   //    default route ⇒ the pre-route scalar distribution).
   //  • `connectionLayout` (Connections editor) — default {} (auto tree-layout fallback).
+  //  • `blueprints[].dependencies[].packetMix` (packet library) — an older file may carry the
+  //    DEPRECATED single-slot `packetTemplateId`; a non-null value is folded into a 1-entry mix so
+  //    the intent survives the slot's retirement. Null (every file the app has ever written) is
+  //    left exactly as-is, which is what keeps byte totals unchanged.
   const legacyPackets = (data as { packets?: PacketRegistry }).packets
   const servers = Object.fromEntries(Object.entries(src.world.servers).map(([id, server]) =>
     [id, server.rack === undefined ? { ...server, rack: null } : server]))
+  const blueprints = Object.fromEntries(Object.entries(src.world.blueprints).map(([id, bp]) => {
+    const deps = bp.dependencies ?? []
+    if (!deps.some(d => d.packetTemplateId != null && d.packetMix == null)) return [id, bp]
+    return [id, {
+      ...bp,
+      dependencies: deps.map(d => (d.packetTemplateId != null && d.packetMix == null)
+        ? { ...d, packetMix: [{ packetId: d.packetTemplateId, weight: 1 }] }
+        : d),
+    }]
+  }))
   const normalizedWorld: WorldDoc = {
     ...src.world,
     routing,
     servers,
+    blueprints,
     racks: src.world.racks ?? {},
     loadBalancers: src.world.loadBalancers ?? {},
     packets: src.world.packets ?? legacyPackets ?? emptyPacketRegistry(),

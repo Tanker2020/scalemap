@@ -23,7 +23,11 @@ import {
 import {
   addRoute as addRouteToRegistry, updateRoute as updateRouteInRegistry,
   removeRoute as removeRouteFromRegistry, routeIdOf, type RouteFields,
+  addPacket as addPacketToRegistry, updatePacket as updatePacketInRegistry,
+  removePacket as removePacketFromRegistry, duplicatePacket as duplicatePacketInRegistry,
+  getPacket, listPackets, type PacketFields, type PacketMixEntry,
 } from '../../lib/nodeConfig'
+import { nextCopyName } from '../../lib/world/populationLabel'
 import { useFileStore } from './file.store'
 import { useSimulationStore } from './simulation.store'
 
@@ -110,6 +114,8 @@ interface WorldStore {
   addBlueprint: (name: string) => string
   updateBlueprint: (id: string, patch: Partial<ServiceBlueprint>) => void
   removeBlueprint: (id: string) => void
+  /** Deep-copies a blueprint (fresh dependency ids, NO placements) — returns the new id, or null. */
+  duplicateBlueprint: (id: string) => string | null
   // Service-connections layer (app/world/connections/): author a service→service/managed edge
   // (intent) and, when autoProvision is on, open the firewall + bind the port in the same undo
   // step. disconnect drops just the intent; fixReachability re-provisions a blocked edge;
@@ -119,6 +125,10 @@ interface WorldStore {
   fixReachability: (fromBpId: string, depId: string) => void
   /** Sets a dependency's read/write split (node-model Phase 3); clamped to [0,1]. */
   setDependencyWriteFraction: (fromBpId: string, depId: string, writeFraction: number) => void
+  /** Binds (or, with an empty mix, unbinds) the packets this edge puts on the wire per call. */
+  setDependencyPacketMix: (fromBpId: string, depId: string, mix: PacketMixEntry[]) => void
+  /** The edge's inline tier-2 sizes, used only while no packet mix is bound. */
+  setDependencyWireSize: (fromBpId: string, depId: string, patch: { reqKb?: number; respKb?: number }) => void
   setInternetFacing: (bpId: string, port: number, exposed: boolean) => void
   // Connections-editor node layout: store a single dragged node's override (one undo step per
   // drag) or clear every override back to the auto tree-layout ("auto-arrange").
@@ -140,6 +150,17 @@ interface WorldStore {
   addRoute: (fields: RouteFields) => string
   updateRoute: (routeId: string, patch: Partial<RouteFields>) => void
   removeRoute: (routeId: string) => void
+  /** The route's "advanced" packet binding — supersedes its inline sizeKb/responseSizeKb. */
+  setRoutePacketMix: (routeId: string, mix: PacketMixEntry[]) => void
+  // Packet library (the registry's pathless view). Same monotonic id space as the routes above.
+  addPacket: (fields: PacketFields) => number
+  /** Replaces a packet's shape wholesale (a protocol switch strands no fields). */
+  updatePacket: (packetId: number, fields: PacketFields) => void
+  /** Deletes a packet AND scrubs its id from every dependency and route mix bound to it. */
+  removePacket: (packetId: number) => void
+  duplicatePacket: (packetId: number) => number | null
+  /** The world-level tier-3 wire-size default; `null` clears it back to the 2 KB convention. */
+  setDefaultPacket: (value: { reqKb: number; respKb: number } | null) => void
   addRack: (azId: AzId) => void
   updateRack: (id: RackId, patch: Partial<Pick<Rack, 'label' | 'capacityU'>>) => void
   removeRack: (id: RackId) => void
@@ -299,6 +320,27 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       return stripDependencies(scrubBlueprintFromLbs({ ...d, blueprints, placements }, id),
         dep => dep.target.kind === 'blueprint' && dep.target.blueprintId === id)
     }),
+    // A blueprint is a GLOBAL, reusable definition — duplicating one gives you a second definition
+    // to diverge from, deliberately with NO placements (the copy is not running anywhere until you
+    // mount it) and with fresh dependency ids, since dep ids are unique per document and the copy's
+    // edges must be independently editable/removable from the original's.
+    duplicateBlueprint: (id) => {
+      const src = get().doc.blueprints[id]
+      if (!src) return null
+      const newId = nextWorldId('bp')
+      mutate(d => {
+        const bp = d.blueprints[id]
+        if (!bp) return d
+        const copy: ServiceBlueprint = {
+          ...structuredClone(bp),
+          id: newId,
+          name: nextCopyName(Object.values(d.blueprints).map(b => b.name), bp.name),
+          dependencies: bp.dependencies.map(dep => ({ ...structuredClone(dep), id: nextWorldId('dep') })),
+        }
+        return { ...d, blueprints: { ...d.blueprints, [newId]: copy } }
+      })
+      return newId
+    },
 
     connectServices: (fromBpId, target, opts) => {
       const depId = nextWorldId('dep')
@@ -329,6 +371,32 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       return { ...d, blueprints: { ...d.blueprints, [fromBpId]: {
         ...bp,
         dependencies: bp.dependencies.map(dep => dep.id === depId ? { ...dep, writeFraction: w } : dep),
+      } } }
+    }),
+    setDependencyPacketMix: (fromBpId, depId, mix) => mutate(d => {
+      const bp = d.blueprints[fromBpId]
+      if (!bp) return d
+      // Weight-0 rows are the editor's "not in the mix" state; strip them here so the stored
+      // document only ever holds live bindings and the resolver never has to reason about them.
+      const clean = mix.filter(e => Number.isFinite(e.weight) && e.weight > 0)
+      return { ...d, blueprints: { ...d.blueprints, [fromBpId]: {
+        ...bp,
+        dependencies: bp.dependencies.map(dep => dep.id === depId
+          ? { ...dep, packetMix: clean.length > 0 ? clean : undefined }
+          : dep),
+      } } }
+    }),
+    setDependencyWireSize: (fromBpId, depId, patch) => mutate(d => {
+      const bp = d.blueprints[fromBpId]
+      if (!bp) return d
+      const clamp = (v: number | undefined) => v == null || !Number.isFinite(v) ? undefined : Math.max(0, v)
+      return { ...d, blueprints: { ...d.blueprints, [fromBpId]: {
+        ...bp,
+        dependencies: bp.dependencies.map(dep => dep.id === depId ? {
+          ...dep,
+          ...('reqKb' in patch ? { reqKb: clamp(patch.reqKb) } : {}),
+          ...('respKb' in patch ? { respKb: clamp(patch.respKb) } : {}),
+        } : dep),
       } } }
     }),
     setInternetFacing: (bpId, port, exposed) => mutate(d => {
@@ -448,6 +516,70 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       }))
       return { ...d, packets, populations }
     }),
+    setRoutePacketMix: (routeId, mix) => mutate(d => {
+      const existing = d.packets.templates[Number(routeId)]
+      if (!existing || existing.protocol !== 'http') return d
+      const clean = mix.filter(e => Number.isFinite(e.weight) && e.weight > 0)
+      return { ...d, packets: { ...d.packets, templates: { ...d.packets.templates,
+        [existing.id]: { ...existing, packetMix: clean.length > 0 ? clean : undefined } } } }
+    }),
+
+    // ─── Packet library CRUD ──────────────────────────────────────────────────
+    // Same registry, same monotonic id space as the routes above (a packet is a template with no
+    // path), so these ride mutate() for undo/dirty identically. The new id is the registry's
+    // pre-mutation nextId, captured inside the synchronous transform.
+    addPacket: (fields) => {
+      let id = 0
+      mutate(d => {
+        const { registry, packet } = addPacketToRegistry(d.packets, fields)
+        id = packet.id
+        return { ...d, packets: registry }
+      })
+      return id
+    },
+    updatePacket: (packetId, fields) => mutate(d => ({ ...d, packets: updatePacketInRegistry(d.packets, packetId, fields) })),
+    // Deleting a packet scrubs its id out of every binding — dependency mixes AND route mixes —
+    // mirroring removeRoute's requestMix cascade. Without this, an edge would keep a dangling
+    // entry; the resolver ignores dangling ids defensively, but a stored one would resurface
+    // wrongly if the id were later reissued (it can't be — nextId is monotonic — but the document
+    // should not carry references to things that don't exist).
+    removePacket: (packetId) => mutate(d => {
+      const scrub = (mix: PacketMixEntry[] | undefined): PacketMixEntry[] | undefined => {
+        if (!mix) return undefined
+        const next = mix.filter(e => e.packetId !== packetId)
+        return next.length === mix.length ? mix : (next.length > 0 ? next : undefined)
+      }
+      const registry = removePacketFromRegistry(d.packets, packetId)
+      const templates = Object.fromEntries(Object.entries(registry.templates).map(([id, t]) => {
+        if (t.protocol !== 'http' || t.packetMix == null) return [id, t]
+        return [id, { ...t, packetMix: scrub(t.packetMix) }]
+      }))
+      const blueprints = Object.fromEntries(Object.entries(d.blueprints).map(([id, bp]) => {
+        if (!bp.dependencies.some(dep => dep.packetMix?.some(e => e.packetId === packetId))) return [id, bp]
+        return [id, { ...bp, dependencies: bp.dependencies.map(dep => ({ ...dep, packetMix: scrub(dep.packetMix) })) }]
+      }))
+      return { ...d, packets: { ...registry, templates }, blueprints }
+    }),
+    duplicatePacket: (packetId) => {
+      const reg = get().doc.packets
+      const src = getPacket(reg, packetId)
+      if (!src) return null
+      let id: number | null = null
+      mutate(d => {
+        const name = nextCopyName(listPackets(d.packets).map(p => p.name), src.name)
+        const result = duplicatePacketInRegistry(d.packets, packetId, name)
+        if (!result) return d
+        id = result.packet.id
+        return { ...d, packets: result.registry }
+      })
+      return id
+    },
+    setDefaultPacket: (value) => mutate(d => ({
+      ...d,
+      packets: value == null
+        ? (({ defaultPacket: _drop, ...rest }) => rest)(d.packets)
+        : { ...d.packets, defaultPacket: { reqKb: Math.max(0, value.reqKb), respKb: Math.max(0, value.respKb) } },
+    })),
 
     addRack: (azId) => mutate(d => {
       const count = Object.values(d.racks).filter(r => r.azId === azId).length

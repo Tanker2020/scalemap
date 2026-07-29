@@ -15,6 +15,7 @@ import type { ClientPopulation, DiurnalPattern, RegionId, RoutingPolicyKind } fr
 import { listRoutes, routeIdOf } from '../../../lib/nodeConfig'
 import { nextPopulationLabel } from '../../../lib/world/populationLabel'
 import { field, smallBtn, dangerBtn, row } from './panelStyles'
+import { NumberField } from './NumberField'
 import { SectionHeader, DerivedField, Segmented, Explainer } from '../ui/kit'
 import { ttlLagHint, populationLanding } from '../ui/derived'
 import { useCompiledWorld } from '../useCompiledWorld'
@@ -25,32 +26,8 @@ export interface TrafficPanelProps {
   selectedPopulationId: string | null
 }
 
-const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n))
-
-// Same "Number.isFinite, clamp, keep last valid" convention as
-// src/app/world/server/inspectorForms.tsx's NumberField (local text buffer, commits on
-// blur/Enter, reverts on non-numeric input) — generalized with explicit min/max bounds, since
-// that file's version only ever floor-clamps to `>=0` and lat/lon here need a symmetric range.
-// On a successful commit the buffer is also reset to the CLAMPED value, so an out-of-range
-// entry (e.g. lat 999) visibly snaps to the clamped figure (90) rather than leaving "999"
-// displayed while the store silently holds 90.
-function NumberField({ label, value, min, max, onCommit }: {
-  label: string; value: number; min: number; max: number; onCommit: (n: number) => void
-}) {
-  const [text, setText] = useState(String(value))
-  return (
-    <input
-      aria-label={label} style={{ ...field, width: 56, marginBottom: 0 }} value={text}
-      onChange={e => setText(e.target.value)}
-      onBlur={() => {
-        const n = Number(text)
-        if (Number.isFinite(n)) { const c = clamp(n, min, max); onCommit(c); setText(String(c)) }
-        else setText(String(value))
-      }}
-      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-    />
-  )
-}
+// NumberField moved to ./NumberField.tsx when PacketMixEditor needed the same control — same
+// component, same behavior, one definition.
 
 const armedBtn = { border: '1px solid var(--color-accent)', color: 'var(--color-accent)' } as const
 

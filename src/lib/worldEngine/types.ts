@@ -187,7 +187,13 @@ export interface VisualParticle {
   progress: number               // 0..1 along the view's path for this pair
   protocol: 'http' | 'db' | 'event' | 'stream'
   blocked: boolean               // render as refused burst at gate/target
-  colorHint: string | null       // blueprint signature color when known
+  colorHint: string | null       // blueprint signature color, or the bound packet's colorOverride
+  // Which library packet this particle represents, when the hop has a packet mix bound
+  // (null on entry particles, unbound hops, and every pre-packet-library frame). Additive —
+  // logged in .superpowers/sdd/contract-drift.md. Chosen by an index-based weighted round-robin
+  // (packetResolve's pickPacketByIndex), NEVER by rng: particles are rebuilt at wall-clock frame
+  // rate, so drawing here would make the seeded stream depend on frame rate and break replay.
+  packetId?: number | null
 }
 
 export interface VisualArc {                 // globe scope

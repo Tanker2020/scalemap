@@ -1,5 +1,7 @@
 import { useState, useMemo, useEffect, useLayoutEffect, useRef, type CSSProperties } from 'react'
 import { TopologyPanel } from './TopologyPanel'
+import { BlueprintsPanel } from './BlueprintsPanel'
+import { PacketsPanel } from './PacketsPanel'
 import { ManagedPanel } from './ManagedPanel'
 import { ConnectionsPanel } from './ConnectionsPanel'
 import { isEntryBlueprint } from '../../../lib/world/connections'
@@ -12,7 +14,7 @@ import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { useUiStore, type PanelTab } from '../../store/ui.store'
 import { runAnalysis } from '../../../lib/analysis/runAnalysis'
-import { listRoutes } from '../../../lib/nodeConfig'
+import { listRoutes, listPackets } from '../../../lib/nodeConfig'
 import { EventsTab } from '../EventsTab'
 import { CostTab } from '../CostTab'
 import { panel, sectionLabel } from './panelStyles'
@@ -62,7 +64,7 @@ function SignatureHeader({ glyph, accent, summary, summaryColor }: SignatureHead
 }
 
 const TAB_LABELS: Record<PanelTab, string> = {
-  topology: 'Topology', managed: 'Managed',
+  topology: 'Topology', blueprints: 'Blueprints', packets: 'Packets', managed: 'Managed',
   connections: 'Connections', traffic: 'Traffic',
   routes: 'Routes', analysis: 'Analysis', events: 'Events', cost: 'Cost', config: 'Config',
 }
@@ -186,6 +188,22 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
       }
       break
     }
+    case 'blueprints': {
+      // Blueprints are DEFINITIONS; the useful second number is how many are actually mounted
+      // somewhere, since an unplaced blueprint costs nothing and simulates nothing.
+      const nBlueprints = Object.keys(doc.blueprints).length
+      const placed = new Set(Object.values(doc.placements).map(p => p.blueprintId)).size
+      header = {
+        glyph: '❒', accent: 'var(--kit-cat-compute)',
+        summary: `${nBlueprints} service${nBlueprints === 1 ? '' : 's'} · ${placed} placed`,
+      }
+      break
+    }
+    case 'packets': {
+      const nPackets = listPackets(doc.packets).length
+      header = { glyph: '❑', accent: 'var(--kit-cat-messaging)', summary: `${nPackets} packet${nPackets === 1 ? '' : 's'}` }
+      break
+    }
     case 'managed': {
       const nManaged = Object.keys(doc.managedServices).length
       header = { glyph: '🗄', accent: 'var(--kit-cat-storage)', summary: `${nManaged} managed service${nManaged === 1 ? '' : 's'}` }
@@ -298,6 +316,8 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
         {scope.kind === 'world' ? (
           <>
             {tab === 'topology' && <TopologyPanel />}
+            {tab === 'blueprints' && <BlueprintsPanel openConnections={openConnections} />}
+            {tab === 'packets' && <PacketsPanel />}
             {tab === 'managed' && <ManagedPanel />}
             {tab === 'connections' && <ConnectionsPanel onOpenGraph={openConnections} />}
             {tab === 'traffic' && (
