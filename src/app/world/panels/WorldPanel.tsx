@@ -25,6 +25,7 @@ import { AzConfigTab } from '../dock/AzConfigTab'
 import { ServerFaceplate } from '../dock/ServerFaceplate'
 import { deriveScope, scopeTabs, type DockScope } from '../dock/scope'
 import { scopedEvents, scopedFindings, scopedCost } from '../dock/scopeData'
+import { regionEvents } from '../region/regionData'
 import type { CompileFinding } from '../../../lib/world/types'
 import type { AnalysisFinding } from '../../../lib/analysis/types'
 import type { EngineEvent } from '../../../lib/worldEngine/types'
@@ -137,7 +138,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
   )
   const analysisCount = scopedFindingsResult.analysis.length + scopedFindingsResult.compile.length
   const scopedEventsList = useMemo(
-    () => scopedEvents(scope, doc, compiled, events, displayBatch),
+    () => scopedEvents(scope, doc, compiled, events, displayBatch, regionEvents),
     [scope, doc, compiled, events, displayBatch],
   )
   const scopedCostResult = useMemo(

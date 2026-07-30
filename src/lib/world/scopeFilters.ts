@@ -10,8 +10,17 @@
 import type { WorldDoc, CompiledWorld, CompileFinding } from './types'
 import type { EngineEvent, MetricsBatch } from '../worldEngine/types'
 import type { AnalysisFinding } from '../analysis/types'
-import { regionEvents } from '../../app/world/region/regionData'
 import type { DockScope } from '../../app/world/dock/scope'
+
+// Shape of app/world/region/regionData.ts's `regionEvents` — deliberately typed structurally
+// here rather than imported (`import type { regionEvents } ...` isn't legal for a value's type;
+// `typeof regionEvents` would still force a value import elsewhere), so this file stays free of
+// ANY import from `app/` beyond the type-only `DockScope` above (module-boundary review,
+// ai-chat-assistant Task 3 fix round 1). Region-scope delegation to the real `regionEvents` is
+// now the CALLER's responsibility — see `scopedEvents` below.
+type RegionEventsFn = (
+  regionId: string, doc: WorldDoc, compiled: CompiledWorld, events: EngineEvent[], batch: MetricsBatch | null,
+) => EngineEvent[]
 
 // Entity closure per D2's literal definition — "region -> its AZs/servers/instances" / "server
 // -> itself + its instances" — extended symmetrically for az ("itself + its servers + their
@@ -79,16 +88,23 @@ function managedServiceIdsInScope(doc: WorldDoc, scope: DockScope): string[] {
 }
 
 // World scope: every event, unfiltered (same array reference — no defensive copy needed, callers
-// already treat this as read-only). Region scope MUST delegate to the existing `regionEvents`
+// already treat this as read-only). Region scope SHOULD delegate to the existing `regionEvents`
 // (region/regionData.ts) rather than reimplement its id-closure logic (it additionally folds in
-// population routing, which `scopeEntityIds` deliberately does not model). Az/server scope
-// generalizes the same "events whose affected ids intersect this scope's entities" shape via
-// `scopeEntityIds`.
+// population routing, which `scopeEntityIds` deliberately does not model) — but this module must
+// not import an `app/`-level value (module-boundary review, fix round 1), so the caller injects
+// it as `regionEventsFn`. Every in-repo caller (`scopeData.ts`'s re-export as consumed by
+// `WorldPanel.tsx`) passes the real `regionEvents` and gets byte-identical behavior to before the
+// move. Without an injected fn (e.g. a caller that only wants the generic entity-closure
+// semantics), region scope falls back to the same generic `scopeEntityIds` filter az/server scope
+// uses below — equivalent to `regionEvents` whenever `batch` is null (no population routes to
+// fold in), but WITHOUT population-routed-client inclusion once a batch is present. Az/server
+// scope always uses the generic form via `scopeEntityIds`.
 export function scopedEvents(
   scope: DockScope, doc: WorldDoc, compiled: CompiledWorld, events: EngineEvent[], batch: MetricsBatch | null,
+  regionEventsFn?: RegionEventsFn,
 ): EngineEvent[] {
   if (scope.kind === 'world') return events
-  if (scope.kind === 'region') return regionEvents(scope.regionId, doc, compiled, events, batch)
+  if (scope.kind === 'region' && regionEventsFn) return regionEventsFn(scope.regionId, doc, compiled, events, batch)
 
   const ids = scopeEntityIds(scope, doc, compiled)
   if (!ids) return events // unreachable (only 'world' returns null, handled above) — defensive
