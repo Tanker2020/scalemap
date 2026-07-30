@@ -588,7 +588,7 @@ the two PARKED items needing engine work) are out of Phase-5 scope and remain op
 ### O. Analysis engine + LLM reviewer + Settings — Phase 6 final layer (`src/lib/analysis/`, `src/lib/llmReview.ts`, `src/app/world/SettingsModal.tsx`, `src/app/world/panels/AnalysisTab.tsx`/`AiReviewSection.tsx`, 2026-07-10)
 
 The rebuild's final phase. Layer 1 is a deterministic analysis-rule engine — three families
-(`structural`/`network`/`capacity`, 13 rules total across Tasks 1–3) run over `compileWorld`'s
+(`structural`/`network`/`capacity`, 15 rules total across Tasks 1–3) run over `compileWorld`'s
 output (+ the latest `MetricsBatch`, optional), replacing the plain `Findings` tab with a
 family-grouped `Analysis` tab that merges unsuppressed compile findings and gives every affected
 entity id a clickable navigation chip (Task 4). Layer 2 is an on-demand LLM architecture review
@@ -3905,3 +3905,142 @@ zones that can serve and the traffic redistributes. The fix aligns the engine wi
   unchanged (they still drop). `index.test.ts` "cross-zone-off ingress distribution" — the
   forfeit/surfaced pair became redistribute/no-drop (`web1` ≈ full 500, region stays healthy). No
   contract or `.scalemap` change (pure engine-distribution semantics + metrics, both ephemeral).
+
+---
+
+### Z. AI chat assistant — read-only multi-turn overlay (`src/lib/aiChat/`, `src/app/world/ai/`, ai-chat-assistant plan, 2026-07-30)
+
+A 13-task addition sitting entirely on top of the compiled world + engine's existing read surface
+— no new engine hooks, no new store fields on `world.store`/`simulation.store` beyond a brand-new
+sibling `chat.store.ts`, and no mutation path of any kind (this is an advisor, not an editor).
+
+**`src/lib/llmClient.ts` (Task 1) — the shared transport seam.** `chatComplete(settings, messages,
+options?, chat?)` wraps the Rust-side `llm_chat` Tauri command (`tauri.ts`'s `llmChat`, §O) behind
+one typed `ChatMessage[]`/`ChatOptions` surface, parsing the OpenAI-compatible envelope and
+throwing on a non-JSON body, an `error` field, a missing/empty `choices`, or a non-string
+completion. `src/lib/llmReview.ts`'s one-shot architecture review was rewired to call this same
+function instead of hand-rolling its own request — the two AI surfaces (review, chat) now share
+exactly one HTTP-shaped seam, so a transport fix (retry, timeout, envelope-parsing) lands once.
+
+**`src/lib/world/dependents.ts` (Task 2) — the reverse-dependency index.** `dependencyIndexFor(doc,
+compiled)` builds (and `WeakMap`-caches, keyed by the `CompiledWorld` reference so a recompile
+invalidates it for free) four maps from `doc.blueprints[*].dependencies` (design-time) and
+`compiled.paths` filtered to `verdict === 'permitted'` only (runtime-resolved) — blueprint↔blueprint
+and instance↔instance, both directions. `blastRadius(rootId, doc, compiled, opts?)` BFS-walks
+`dependentInstances` outward from whatever `rootId` resolves to (an instance id directly, or every
+instance hosted by a server/AZ/region id) up to `maxDepth` (default 8), returning `direct`/
+`transitive`/`depthOf`. This is a new, general-purpose primitive — not chat-specific — consumed by
+`eventCausality.ts` below to answer "what did this event actually affect" without hand-walking
+`compiled.paths` again.
+
+**`src/lib/aiChat/eventCausality.ts` (Task 4).** `decodeAffected(kind, affected)` is the one place
+that knows each `EngineEventKind`'s positional `affected` array layout (e.g. `oom_kill`'s
+`[instanceId, serverId?]` vs `primary_failback`'s "promoted id is last, first-failed id is first if
+present") and turns it into a uniform `{ primaryId, secondaryId }`. `buildCausalEpisodes(frames, doc,
+compiled)` scans `ReplayFrame[]` for seed events (`critical` severity or one of five seed kinds —
+`breaker_open`/`failover_started`/`health_check_failed`/`replica_promoted`/`connection_refused`),
+collapses repeats of the same `kind|primaryId|secondaryId` within a 30s window, and for each episode
+computes a before/after error-rate snapshot, a `blastRadius`-derived `consequences` list (dependents
+whose errorRate spiked inside a 15s window), any `unexplainedSpikes` (spiked instances the blast
+radius does NOT explain — the model is told this gap exists rather than silently omitting it), and
+`followOnEvents` (other events in the window naming a dependent). Returns the 8 most recent
+episodes. Pure — no store/React import, `node`-env testable.
+
+**`src/lib/aiChat/context.ts` (Task 5) — the digest/attachment builder.** The one place the compiled
+world + live state become text an LLM sees. `buildChatDigest(input: ChatContextInput)` is
+always-on, small, and rollup-only (world/routing summary, per-blueprint dependency summary, a
+liveState top-8-by-utilization/top-8-by-errorRate truncation — never a full instance/server map,
+per the security canary tests in `context.test.ts` — a findings-by-rule index, an event-kind
+histogram, and a fixed `LIMITATIONS` list telling the model what this app does NOT model, e.g. no
+queue-depth signal, no connection-pool ceiling, so it can't hallucinate features that don't exist).
+`buildContextBlock(attachments, input)` renders the user's OPT-IN attachments at full detail —
+`events` (causal episodes), `replay` (last 60 frames' world-level rollup), `findings` (the raw
+finding list), `topology` (the full `WorldDoc`, opt-in only since it can be large), or a single
+`entity` by id. **Structural key-security guarantee, not just convention:** neither function's
+signature accepts an `LlmSettings` parameter at all — there is no code path by which the API key
+could reach the context payload, independent of any reviewer discipline.
+
+**`src/lib/aiChat/prompt.ts` (Task 6) — `ASSISTANT_SYSTEM_PROMPT`,** the fixed system message
+describing the assistant's read-only role and citation convention (backtick-wrapped entity ids).
+**`src/lib/aiChat/index.ts` — `requestAssistantTurn`/`HISTORY_TURN_CAP` (12 turns, 24 messages),**
+the per-turn orchestrator: system prompt → one system message carrying `digest` + opt-in
+`attachmentBlock` → capped history → the user's question, at `temperature: 0.2`.
+
+**`src/lib/aiChat/formatResponse.ts` (Task 7) — a hand-rolled markdown-subset parser,** no new
+dependency added. `formatResponse(raw, resolveEntity)` splits fenced code blocks (` ``` `) from
+prose, then within prose splits paragraphs/headings (`##`/`###`)/bullet lists, and within a
+paragraph's inline text distinguishes `**bold**`, `` `code` ``, and `` `code` `` tokens that
+`resolveEntity` recognizes as a live entity id (rendered as a clickable citation instead of a code
+span) — see `citations.ts` next. Returns a typed `Block[]`/`Span[]` tree for the UI to render, never
+raw HTML — there is no `dangerouslySetInnerHTML` anywhere in `src/app/world/ai/` (verified by the
+Task 13 verification grep).
+
+**`src/lib/aiChat/citations.ts` (Task 9) — `buildCitationIndex(doc, compiled)`,** a simple
+`WeakMap`-cached `Set`-backed lookup of every known entity id (regions/AZs/servers/blueprints/
+managed services/populations/placements/compiled instances). Deliberately NOT a regex scanner over
+the model's raw text — `formatResponse.ts` above already isolates the backtick-delimited tokens;
+this module only answers "is this token a real id" for each one.
+
+**`src/lib/world/scopeFilters.ts` (Task 3) — moved out of `src/app/world/dock/scopeData.ts`.**
+`scopeEntityIds`/`scopedEvents`/`scopedFindings` (Polish 4 T1, §S) are mechanical, behavior-
+identical moves — `scopeData.ts` now just re-exports them, so every existing call site
+(`WorldPanel.tsx`'s dock tabs) is unaffected. The move exists so `lib/aiChat/context.ts` can reuse
+the same scoping logic without `lib/` importing from `app/` (a boundary this repo otherwise holds
+firm). One wrinkle: `scopedEvents`'s region-scope branch used to call `app/world/region/
+regionData.ts`'s `regionEvents` directly (it additionally folds in population-routed-client ids
+that the generic entity-closure walk doesn't model) — that's a value import from `app/`, not
+legal in the new location. Fixed by turning it into an **injected parameter**: `scopedEvents` now
+takes an optional `regionEventsFn` matching `regionEvents`'s exact signature; every in-repo caller
+(`scopeData.ts`'s re-export path) passes the real `regionEvents` and gets byte-identical behavior,
+while a caller with no injected fn (there are none yet) falls back to the generic
+`scopeEntityIds`-based filter, which is a strict behavioral subset (misses population-routed
+events) rather than a crash. The only remaining `app/`-rooted import in the file is a type-only
+`import type { DockScope }` — erased at compile time, judged acceptable rather than worth a further
+`DockScope` relocation.
+
+**`src/app/world/entityNav.ts` (Task 8) — extracted from `AnalysisTab.tsx`.** `navigateToEntity`/
+`entityLabel`/the `NavApi` interface used to live in `AnalysisTab.tsx`, with `AiReviewSection.tsx`
+importing `navigateToEntity` back out of it while `AnalysisTab.tsx` imported the `AiReviewSection`
+component — a genuine ESM import cycle (harmless in practice given React's lazy module evaluation,
+but real, and now avoidable). Both helpers (plus the newly-exported `entityLabel`, previously
+private) moved to this new file; `AnalysisTab.tsx` re-exports `navigateToEntity`/`entityLabel` only
+(not `NavApi`, which has no external consumer) so no other call site needed to change its import
+path. `entityNav.ts` is now also the chat assistant's citation-click handler's dependency — clicking
+an `EntityChip` in a rendered response calls the same `navigateToEntity` the Analysis tab's
+affected-entity chips already used.
+
+**`src/app/store/chat.store.ts` (Task 10) — `useChatStore`, Zustand, no middleware.** Holds the
+transcript (`turns: ChatTurn[]`), the composer draft, the selected attachment set, and a
+generation-counter pair — `requestGen`/`inFlightTurnId` — mirroring `simulation.store.ts`'s
+`eventGen` idiom (§K: bumped on `stop()`/`start()`/`resetSession()` to orphan a stale event-buffer
+flush). `beginTurn()` captures the current `requestGen` and hands it back to the caller; `resolveTurn`/
+`failTurn` no-op if the gen they're called with no longer matches the store's current `requestGen`;
+`abandonInFlight()` (called on overlay close or when the user fires a new turn while one is still
+pending) bumps `requestGen`, silently orphaning any in-flight resolve/reject. The store itself stays
+fully synchronous — no store in this app has async actions — so the actual `await`ed LLM round trip
+lives in `src/app/world/ai/sendChatTurn.ts` instead, which reads `useChatStore.getState()` directly
+(store-outside-async-fn, the same shape `SimControls.tsx`'s `start(doc, compiled)` call uses at the
+simulation-store seam, §1J).
+
+**`src/app/world/ai/` — the overlay UI (Task 11), wired into `WorldShell.tsx` (Task 12).**
+`AssistantView.tsx`/`ChatComposer.tsx`/`ChatTranscript.tsx`/`AttachmentBar.tsx`/
+`ResponseBlocks.tsx`/`EntityChip.tsx` follow `src/app/world/connections/ConnectionsView.tsx`'s exact
+overlay recipe verbatim — a portal mounted at `document.body`, a full-stage backdrop, a
+capture-phase `Escape` listener. `WorldShell.tsx` mounts `<AssistantView/>` unconditionally beside
+`<ConnectionsView/>`, gated by a new local `chatOpen` boolean toggled from a header button placed
+next to the existing ⚙ Settings button. **Deliberate divergence from every other portal surface in
+the app: `AssistantView.tsx` does NOT wrap its body in `<fieldset disabled={running}>`.** Every
+other dock/overlay surface disables its controls while the simulation is running (the editing-lock
+convention traced back to §1A's legacy `canvas.store` gate, formalized as one `WorldPanel.tsx`
+choke point in §1J Task 13) — but the assistant has nothing to protect: it never mutates `world`/
+`simulation` state, so there is no risk of a stale/racing edit. More than that, being usable WHILE
+the simulation runs is the point — mid-run diagnosis ("why did `web-2` just OOM") is the assistant's
+primary use case, exactly mirroring `WorldPanel.tsx`'s pre-existing Events-tab exemption
+(`disabled={running && tab !== 'events'}`, §1J). LLM settings are loaded fresh via `loadLlmSettings()`
+(`src/lib/tauri.ts`) on every send rather than cached in the store or read once at mount, so a
+mid-session endpoint/key change in the Settings modal takes effect on the assistant's very next
+turn without requiring a reload.
+
+**Net new dependency count: zero.** `formatResponse.ts`'s markdown-subset parser and
+`citations.ts`'s id lookup are both hand-rolled specifically to avoid pulling in a markdown/HTML
+sanitization library for a surface that never touches `innerHTML`.
