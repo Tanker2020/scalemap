@@ -25,7 +25,7 @@ vi.mock('../../../lib/aiChat', async (importOriginal) => {
 
 beforeEach(() => {
   useWorldStore.getState().newWorld()
-  useChatStore.setState({ turns: [], draft: '', selected: [], requestGen: 0, inFlightTurnId: null })
+  useChatStore.setState({ turns: [], draft: '', selected: [], requestGen: 0, inFlightTurnId: null, windowRect: null })
   // Default: resolves immediately with a canned answer. Individual tests below override this
   // with their own controllable promise to simulate a still-pending turn.
   vi.mocked(requestAssistantTurn).mockReset().mockResolvedValue('mock answer')
@@ -118,5 +118,61 @@ describe('AssistantView', () => {
     const turns = useChatStore.getState().turns
     expect(turns.find(t => t.id === firstTurnId)?.status).toBe('pending')
     expect(turns.find(t => t.id === secondTurnId)?.answer).toBe('second answer')
+  })
+
+  it('dragging the header moves the window by the drag delta', async () => {
+    render(<AssistantView open={true} onClose={() => {}} openSettings={() => {}} />)
+    const header = screen.getByText('AI Assistant').closest('div') as HTMLElement
+    // windowRect starts null (beforeEach), so the rendered position comes from the computed
+    // default — read it off the DOM rather than the store so this test doesn't depend on
+    // jsdom's exact viewport dimensions or assume windowRect is already set.
+    const surface = header.parentElement as HTMLElement
+    const startLeft = parseFloat(surface.style.left)
+    const startTop = parseFloat(surface.style.top)
+
+    fireEvent.pointerDown(header, { clientX: 100, clientY: 100 })
+    fireEvent.pointerMove(window, { clientX: 150, clientY: 130 })
+    fireEvent.pointerUp(window)
+
+    const rect = useChatStore.getState().windowRect
+    expect(rect).not.toBeNull()
+    expect(rect!.x).toBe(startLeft + 50)
+    expect(rect!.y).toBe(startTop + 30)
+  })
+
+  it('clicking a header button does not start a drag', () => {
+    const onClose = vi.fn()
+    render(<AssistantView open={true} onClose={onClose} openSettings={() => {}} />)
+    const closeBtn = screen.getByText('close')
+    fireEvent.pointerDown(closeBtn, { clientX: 200, clientY: 10 })
+    fireEvent.pointerMove(window, { clientX: 400, clientY: 300 })
+    fireEvent.pointerUp(window)
+    // windowRect should still be unset (or unchanged) — the drag never engaged for a button target.
+    expect(useChatStore.getState().windowRect).toBeNull()
+  })
+
+  it('resizing from the corner handle updates stored width/height and respects the minimum size', async () => {
+    render(<AssistantView open={true} onClose={() => {}} openSettings={() => {}} />)
+    const handle = screen.getByRole('button', { name: 'resize' })
+    fireEvent.pointerDown(handle, { clientX: 500, clientY: 500 })
+    fireEvent.pointerMove(window, { clientX: 100, clientY: 100 }) // drag far up-left — should clamp to the floor
+    fireEvent.pointerUp(window)
+    const rect = useChatStore.getState().windowRect!
+    expect(rect.width).toBe(380)
+    expect(rect.height).toBe(320)
+  })
+
+  it('position/size survive a close-then-reopen cycle within the same session', async () => {
+    const { rerender } = render(<AssistantView open={true} onClose={() => {}} openSettings={() => {}} />)
+    const header = screen.getByText('AI Assistant').closest('div') as HTMLElement
+    fireEvent.pointerDown(header, { clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(window, { clientX: 20, clientY: 20 })
+    fireEvent.pointerUp(window)
+    const rectAfterDrag = useChatStore.getState().windowRect
+
+    rerender(<AssistantView open={false} onClose={() => {}} openSettings={() => {}} />)
+    rerender(<AssistantView open={true} onClose={() => {}} openSettings={() => {}} />)
+
+    expect(useChatStore.getState().windowRect).toEqual(rectAfterDrag)
   })
 })

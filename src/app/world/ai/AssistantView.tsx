@@ -1,12 +1,13 @@
-// The read-only AI chat assistant overlay — full-stage portal (same recipe as
-// connections/ConnectionsView.tsx: fixed backdrop, centered surface, capture-phase Escape).
-// Builds a fresh ChatContextInput from the live doc/compiled/simulation state on every render
-// and hands it to sendChatTurn.ts, which owns the actual request lifecycle via chat.store.ts.
-import { useEffect, useCallback, useMemo } from 'react'
+// The read-only AI chat assistant overlay — a floating, non-modal window (hand-rolled drag via
+// the header + resize via the corner handle, no new dependency). Builds a fresh ChatContextInput
+// from the live doc/compiled/simulation state on every render and hands it to sendChatTurn.ts,
+// which owns the actual request lifecycle via chat.store.ts. Position/size persist for the
+// session in chat.store.ts's windowRect field (in-memory only, dies on app restart).
+import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
 import { useReducedMotion } from 'framer-motion'
-import { useChatStore } from '../../store/chat.store'
+import { useChatStore, type WindowRect } from '../../store/chat.store'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { useCompiledWorld } from '../useCompiledWorld'
@@ -19,35 +20,91 @@ import { AttachmentBar } from './AttachmentBar'
 import type { ChatTurn } from '../../store/chat.store'
 import type { ChatContextInput } from '../../../lib/aiChat/context'
 
-const backdrop: CSSProperties = {
-  position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
-  display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+const WINDOW_MIN_WIDTH = 380
+const WINDOW_MIN_HEIGHT = 320
+const WINDOW_DEFAULT_WIDTH = 720
+const WINDOW_DEFAULT_HEIGHT = 600
+// Minimum px of the window that must stay reachable on every edge after a drag — prevents
+// dragging the header fully off-screen and losing the window with no way to grab it back.
+const EDGE_MARGIN = 40
+
+function clampRect(rect: WindowRect): WindowRect {
+  const width = Math.max(WINDOW_MIN_WIDTH, Math.min(rect.width, window.innerWidth))
+  const height = Math.max(WINDOW_MIN_HEIGHT, Math.min(rect.height, window.innerHeight))
+  const minX = EDGE_MARGIN - width
+  const maxX = window.innerWidth - EDGE_MARGIN
+  const minY = 0
+  const maxY = Math.max(0, window.innerHeight - EDGE_MARGIN)
+  const x = Math.max(minX, Math.min(rect.x, maxX))
+  const y = Math.max(minY, Math.min(rect.y, maxY))
+  return { x, y, width, height }
 }
-const surface: CSSProperties = {
-  width: '94vw', height: '90vh', background: 'var(--color-surface)',
-  border: '1px solid var(--color-node-border)', borderRadius: 8,
-  display: 'flex', flexDirection: 'column',
-  font: '11px var(--font-mono)', color: 'var(--color-text-primary)',
-}
+
 const headerStyle: CSSProperties = {
   display: 'flex', justifyContent: 'space-between', alignItems: 'center',
   padding: '8px 12px', borderBottom: '1px solid var(--color-node-border)',
+  cursor: 'grab', userSelect: 'none', flexShrink: 0,
 }
 
 export function AssistantView({ open, onClose, openSettings }: {
   open: boolean; onClose: () => void; openSettings: () => void
 }) {
   const doc = useWorldStore(s => s.doc)
-  // useCompiledWorld() reads `doc` from the store itself (module-level WeakMap cache keyed by
-  // doc identity — see useCompiledWorld.ts) — it does NOT take doc as an argument.
   const compiled = useCompiledWorld()
   const events = useSimulationStore(s => s.events)
   const latestBatch = useSimulationStore(s => s.latestBatch)
   const running = useSimulationStore(s => s.running)
   const batchSimMs = latestBatch?.simMs ?? null
-  // getReplayFrames is non-reactive (same convention as TimelineV2.tsx) — batchSimMs is its change signal
   const replayFrames = useMemo(() => useSimulationStore.getState().getReplayFrames(), [batchSimMs])
   const reducedMotion = useReducedMotion() ?? false
+
+  const storedRect = useChatStore(s => s.windowRect)
+  const setWindowRect = useChatStore(s => s.setWindowRect)
+  // Computed once per mount from the viewport size at that time — only matters until the user's
+  // first drag/resize, after which storedRect always wins.
+  const defaultRect = useMemo<WindowRect>(() => ({
+    width: WINDOW_DEFAULT_WIDTH, height: WINDOW_DEFAULT_HEIGHT,
+    x: Math.max(0, (window.innerWidth - WINDOW_DEFAULT_WIDTH) / 2),
+    y: Math.max(0, (window.innerHeight - WINDOW_DEFAULT_HEIGHT) / 2),
+  }), [])
+  // Ephemeral, only set while a drag/resize is actively in progress — lets the window visually
+  // track the pointer without writing to the store on every pointermove. Committed to the store
+  // once, on pointerup.
+  const [liveRect, setLiveRect] = useState<WindowRect | null>(null)
+  const liveRectRef = useRef<WindowRect | null>(null)
+  const dragState = useRef<{ mode: 'move' | 'resize'; startX: number; startY: number; startRect: WindowRect } | null>(null)
+  const rect = liveRect ?? storedRect ?? defaultRect
+
+  const onDragMove = useCallback((e: PointerEvent) => {
+    const ds = dragState.current
+    if (!ds) return
+    const dx = e.clientX - ds.startX
+    const dy = e.clientY - ds.startY
+    const next = clampRect(ds.mode === 'move'
+      ? { ...ds.startRect, x: ds.startRect.x + dx, y: ds.startRect.y + dy }
+      : { ...ds.startRect, width: ds.startRect.width + dx, height: ds.startRect.height + dy })
+    liveRectRef.current = next
+    setLiveRect(next)
+  }, [])
+
+  const onDragEnd = useCallback(() => {
+    window.removeEventListener('pointermove', onDragMove)
+    window.removeEventListener('pointerup', onDragEnd)
+    if (liveRectRef.current) setWindowRect(liveRectRef.current)
+    dragState.current = null
+    liveRectRef.current = null
+    setLiveRect(null)
+  }, [onDragMove, setWindowRect])
+
+  const beginDrag = useCallback((e: ReactPointerEvent<HTMLElement>, mode: 'move' | 'resize') => {
+    if (mode === 'move' && (e.target as HTMLElement).closest('button')) return
+    e.preventDefault()
+    dragState.current = { mode, startX: e.clientX, startY: e.clientY, startRect: rect }
+    liveRectRef.current = rect
+    setLiveRect(rect)
+    window.addEventListener('pointermove', onDragMove)
+    window.addEventListener('pointerup', onDragEnd)
+  }, [rect, onDragMove, onDragEnd])
 
   // Closing the overlay abandons any turn still in flight — otherwise a late resolve/fail from
   // a question the user has already walked away from would silently land in the transcript (or
@@ -85,14 +142,9 @@ export function AssistantView({ open, onClose, openSettings }: {
 
   const send = useCallback(async (question: string) => {
     // Loaded fresh on every send, NOT cached — matching AiReviewSection.tsx's own
-    // `await loadLlmSettings()`-per-request convention. Caching a snapshot at mount time would
-    // leave the assistant silently stuck on stale settings after a user fixes their LLM endpoint
-    // in the ⚙ Settings modal and returns to retry a question, with no indication why every send
-    // still fails.
+    // `await loadLlmSettings()`-per-request convention.
     const settings = await loadLlmSettings()
     const selected = useChatStore.getState().selected
-    // A new question supersedes a still-pending one rather than letting both race to resolve —
-    // abandon before beginTurn() (inside sendChatTurn) starts the new one.
     if (useChatStore.getState().inFlightTurnId) useChatStore.getState().abandonInFlight()
     await sendChatTurn(settings, question, selected, contextInput)
   }, [contextInput])
@@ -101,27 +153,51 @@ export function AssistantView({ open, onClose, openSettings }: {
 
   if (!open) return null
 
+  const surfaceStyle: CSSProperties = {
+    position: 'fixed', left: rect.x, top: rect.y, width: rect.width, height: rect.height,
+    background: 'var(--color-surface)', border: '1px solid var(--color-node-border)', borderRadius: 8,
+    display: 'flex', flexDirection: 'column',
+    font: '11px var(--font-mono)', color: 'var(--color-text-primary)',
+    zIndex: 1000, boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+  }
+  const resizeHandleStyle: CSSProperties = {
+    position: 'absolute', bottom: 0, right: 0, width: 14, height: 14, cursor: 'nwse-resize',
+    background: `linear-gradient(135deg, transparent 0%, transparent 40%, var(--color-node-border) 40%,
+      var(--color-node-border) 45%, transparent 45%, transparent 65%, var(--color-node-border) 65%,
+      var(--color-node-border) 70%, transparent 70%, transparent 90%, var(--color-node-border) 90%,
+      var(--color-node-border) 95%, transparent 95%)`,
+  }
+
+  // Deliberately NO backdrop <div> — this window is floating/non-modal (design spec §3): clicks
+  // on the globe/region/AZ/server views and other panels behind it work normally while it's open.
+  // There is no click-outside-to-close; Escape (handled above) is the only dismiss affordance
+  // besides the "close" button.
   return createPortal(
-    <div style={backdrop} onClick={handleClose}>
-      <div style={surface} onClick={e => e.stopPropagation()}>
-        <div style={headerStyle}>
-          <span>AI Assistant</span>
-          <div>
-            <button onClick={openSettings} style={{ marginRight: 8 }}>settings</button>
-            <button onClick={handleClose}>close</button>
-          </div>
+    <div style={surfaceStyle} onClick={e => e.stopPropagation()}>
+      <div style={headerStyle} onPointerDown={e => beginDrag(e, 'move')}>
+        <span>AI Assistant</span>
+        <div>
+          <button onClick={openSettings} style={{ marginRight: 8 }}>settings</button>
+          <button onClick={handleClose}>close</button>
         </div>
-        <AttachmentBar contextInput={contextInput} running={running} />
-        <ChatTranscript doc={doc} compiled={compiled} onNavigated={handleClose} onRetry={retry} reducedMotion={reducedMotion} />
-        {/*
-          Deliberately NO <fieldset disabled={running}> wrapping the body below — unlike every
-          other portal surface in the app (see WorldPanel.tsx's `disabled={running && tab !==
-          'events'}`). This overlay is a read-only advisor that never mutates the world, and
-          "what just went wrong" is inherently a mid-run question — mirroring WorldPanel's own
-          Events-tab exemption. Do not paste a fieldset back in when copying this file's recipe.
-        */}
-        <ChatComposer onSend={send} disabled={false} />
       </div>
+      <AttachmentBar contextInput={contextInput} running={running} />
+      <ChatTranscript doc={doc} compiled={compiled} onNavigated={handleClose} onRetry={retry} reducedMotion={reducedMotion} />
+      {/*
+        Deliberately NO <fieldset disabled={running}> wrapping the body below — unlike every
+        other portal surface in the app (see WorldPanel.tsx's `disabled={running && tab !==
+        'events'}`). This overlay is a read-only advisor that never mutates the world, and
+        "what just went wrong" is inherently a mid-run question — mirroring WorldPanel's own
+        Events-tab exemption. Do not paste a fieldset back in when copying this file's recipe.
+      */}
+      <ChatComposer onSend={send} disabled={false} />
+      <div
+        role="button"
+        aria-label="resize"
+        tabIndex={-1}
+        style={resizeHandleStyle}
+        onPointerDown={e => beginDrag(e, 'resize')}
+      />
     </div>,
     document.body,
   )
