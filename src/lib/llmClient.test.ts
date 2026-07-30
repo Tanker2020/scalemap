@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { chatComplete } from './llmClient'
-import type { LlmSettings } from './llmReview'
+import type { LlmSettings } from './tauri'
 
 const settings: LlmSettings = { baseUrl: 'http://x', apiKey: 'k', model: 'm' }
 

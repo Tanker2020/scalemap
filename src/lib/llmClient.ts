@@ -1,5 +1,4 @@
-import { llmChat } from './tauri'
-import type { LlmSettings } from './llmReview'
+import { llmChat, type LlmSettings } from './tauri'
 
 export type ChatRole = 'system' | 'user' | 'assistant'
 export interface ChatMessage { role: ChatRole; content: string }
