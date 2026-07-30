@@ -1,9 +1,4 @@
 // On-demand AI architecture review UI (Phase 6, D8). Mounted at the top of AnalysisTab.
-// A circular import with AnalysisTab.tsx is deliberate and safe here: AnalysisTab imports the
-// AiReviewSection COMPONENT, and this file imports AnalysisTab's navigateToEntity HELPER — both
-// bindings are used only inside render/event-handler bodies (never at module top-level), so ESM's
-// live-binding resolution handles the cycle the same way React container/child components
-// routinely reference each other's siblings-exported helpers.
 import { useEffect, useMemo, useState, type CSSProperties, type ReactElement } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
@@ -12,7 +7,7 @@ import { useCompiledWorld } from '../useCompiledWorld'
 import { runAnalysis } from '../../../lib/analysis/runAnalysis'
 import { loadLlmSettings } from '../../../lib/tauri'
 import { buildReviewContext, requestReview, type AiIssue } from '../../../lib/llmReview'
-import { navigateToEntity } from './AnalysisTab'
+import { navigateToEntity, entityLabel } from '../entityNav'
 import { CATEGORY_COLORS } from '../../../lib/theme'
 
 export interface AiReviewSectionProps {
@@ -106,7 +101,7 @@ export function AiReviewSection({ openSettings }: AiReviewSectionProps): ReactEl
           <div style={{ color: 'var(--color-text-muted)' }}>{`${issue.estimated_effort} effort`}</div>
           <div style={{ display: 'flex', gap: 4, marginTop: 2, flexWrap: 'wrap' }}>
             {issue.affected.map(id => (
-              <button key={id} style={smallBtnStyle} onClick={() => navigateToEntity(id, doc, compiled, useNavStore.getState())}>{id}</button>
+              <button key={id} style={smallBtnStyle} onClick={() => navigateToEntity(id, doc, compiled, useNavStore.getState())}>{entityLabel(id, doc, compiled)}</button>
             ))}
           </div>
         </div>

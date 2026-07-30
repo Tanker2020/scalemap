@@ -10,27 +10,9 @@ import type { AnalysisFinding, AnalysisFamily, AnalysisSeverity } from '../../..
 import type { WorldDoc, CompiledWorld, CompileFinding } from '../../../lib/world/types'
 import { SectionHeader } from '../ui/kit'
 import { AiReviewSection } from './AiReviewSection'
+import { navigateToEntity, entityLabel } from '../entityNav'
 
-export interface NavApi {
-  goRegion: (regionId: string) => void
-  goAz: (regionId: string, azId: string) => void
-  goServer: (regionId: string, azId: string, serverId: string) => void
-}
-
-// Resolve an entity id against doc → compiled maps and navigate; returns whether nav happened.
-export function navigateToEntity(id: string, doc: WorldDoc, compiled: CompiledWorld, nav: NavApi): boolean {
-  if (doc.regions[id]) { nav.goRegion(id); return true }
-  const az = doc.azs[id]
-  if (az) { nav.goAz(az.regionId, id); return true }
-  const server = doc.servers[id]
-  if (server) {
-    const a = doc.azs[server.azId]
-    if (a) { nav.goServer(a.regionId, a.id, id); return true }
-  }
-  const inst = compiled.instances[id]
-  if (inst) { nav.goServer(inst.regionId, inst.azId, inst.serverId); return true }
-  return false // blueprint/placement/population/managed → no nav (shown in panels)
-}
+export { navigateToEntity, entityLabel } from '../entityNav'
 
 // Compile findings not already claimed by a blocked-dependency-path analysis finding (D4).
 export function unsuppressedCompileFindings(analysis: AnalysisFinding[], compile: CompileFinding[]): CompileFinding[] {
@@ -55,18 +37,6 @@ const sevChip = (sev: AnalysisSeverity | 'error' | 'warning'): CSSProperties => 
   background: sev === 'critical' || sev === 'error' ? 'var(--color-danger)'
     : sev === 'warning' ? 'var(--color-warning)' : 'var(--color-text-muted)',
 })
-
-function entityLabel(id: string, doc: WorldDoc, compiled: CompiledWorld): string {
-  if (doc.regions[id]) return doc.regions[id].catalogId
-  if (doc.azs[id]) return doc.azs[id].label
-  if (doc.servers[id]) return doc.servers[id].label
-  if (doc.blueprints[id]) return doc.blueprints[id].name
-  if (doc.managedServices[id]) return doc.managedServices[id].label
-  if (doc.populations[id]) return doc.populations[id].label
-  const inst = compiled.instances[id]
-  if (inst) return `${doc.servers[inst.serverId]?.label ?? inst.serverId}·${doc.blueprints[inst.blueprintId]?.name ?? ''}`
-  return id
-}
 
 function AffectedChips({ ids, doc, compiled }: { ids: string[]; doc: WorldDoc; compiled: CompiledWorld }) {
   return (
