@@ -25,6 +25,12 @@ const CATEGORY_VAR: Record<Attachment['kind'], string> = {
 function chipStyle(active: boolean, colorVar: string): CSSProperties {
   const color = `var(${colorVar})`
   return {
+    // The sr-only checkbox input inside this label is `position: absolute` — without this, it
+    // resolves against the nearest positioned ancestor, which (with the window now floating via
+    // AssistantView's `position: fixed` surface) is that surface itself, physically placing the
+    // invisible-but-focusable input at the window's top-left corner instead of inside its own
+    // chip. `relative` here makes it resolve against the chip, where it belongs.
+    position: 'relative',
     display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer',
     font: '10px var(--font-mono)', padding: '3px 8px 3px 6px', borderRadius: 5, marginRight: 4,
     border: `1px solid ${active ? color : 'var(--color-node-border)'}`,
@@ -90,7 +96,7 @@ export function AttachmentBar({ contextInput, running }: { contextInput: ChatCon
         const colorVar = CATEGORY_VAR[a.kind]
         const inputId = `chat-attachment-${attachmentKey(a)}`
         return (
-          <label key={attachmentKey(a)} htmlFor={inputId} style={chipStyle(active, colorVar)} title={`~${preview.tokens} tokens`}>
+          <label key={attachmentKey(a)} htmlFor={inputId} className="chat-attachment-chip" style={chipStyle(active, colorVar)} title={`~${preview.tokens} tokens`}>
             <input id={inputId} type="checkbox" checked={active} onChange={() => toggle(a)} style={srOnly} />
             <span style={boxStyle(active, colorVar)} aria-hidden="true">{active ? '✓' : ''}</span>
             <span>{preview.label} · ~{preview.tokens}tok</span>

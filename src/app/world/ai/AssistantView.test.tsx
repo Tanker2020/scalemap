@@ -37,13 +37,29 @@ describe('AssistantView', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('Escape closes without triggering nav.up()', () => {
+  it('Escape closes when the assistant surface has focus, without triggering nav.up()', () => {
     const onClose = vi.fn()
     useNavStore.setState({ level: 'server' } as never)
     render(<AssistantView open={true} onClose={onClose} openSettings={() => {}} />)
+    // The assistant is non-modal now (no backdrop), so its Escape handler only fires — and
+    // consumes the event — when focus is actually inside the assistant surface. Focus the
+    // composer textarea to represent "the user is interacting with the assistant."
+    const textarea = screen.getByPlaceholderText(/Ask about/i)
+    textarea.focus()
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(onClose).toHaveBeenCalled()
     expect(useNavStore.getState().level).toBe('server')
+  })
+
+  it('Escape does NOT close the assistant (and does not stop propagation) when focus is outside it', () => {
+    const onClose = vi.fn()
+    render(<AssistantView open={true} onClose={onClose} openSettings={() => {}} />)
+    // Focus stays on document.body (nothing inside the assistant is focused) — mirrors a user
+    // who has clicked into the globe/region/server view behind the non-modal window while it
+    // stays open, and is now pressing Escape to act on THAT view, not the assistant.
+    ;(document.activeElement as HTMLElement | null)?.blur?.()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
   })
 
   it('Enter sends, Shift+Enter does not', async () => {
@@ -67,6 +83,7 @@ describe('AssistantView', () => {
     const onClose = vi.fn()
     render(<AssistantView open={true} onClose={onClose} openSettings={() => {}} />)
     const textarea = screen.getByPlaceholderText(/Ask about/i)
+    textarea.focus() // Escape below must land inside the (now non-modal) assistant surface.
     fireEvent.change(textarea, { target: { value: 'what happened' } })
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
 
@@ -190,5 +207,21 @@ describe('AssistantView', () => {
     // effect should have already removed the window-level listeners.
     fireEvent.pointerUp(window)
     expect(useChatStore.getState().windowRect).toBeNull()
+  })
+
+  it('re-clamps an out-of-viewport stored windowRect on render, instead of stranding the window', () => {
+    // jsdom's default viewport is 1024x768 — a rect stored while the app window was much larger
+    // (or before an OS-level resize/undock shrank it) can now sit entirely outside the current
+    // viewport, with no "reset position" affordance anywhere in the UI to recover it.
+    useChatStore.getState().setWindowRect({ x: 5000, y: 5000, width: 720, height: 600 })
+    render(<AssistantView open={true} onClose={() => {}} openSettings={() => {}} />)
+    const header = screen.getByText('AI Assistant').closest('div') as HTMLElement
+    const surface = header.parentElement as HTMLElement
+    const left = parseFloat(surface.style.left)
+    const top = parseFloat(surface.style.top)
+    expect(left).not.toBe(5000)
+    expect(top).not.toBe(5000)
+    expect(left).toBeLessThanOrEqual(window.innerWidth)
+    expect(top).toBeLessThanOrEqual(window.innerHeight)
   })
 })

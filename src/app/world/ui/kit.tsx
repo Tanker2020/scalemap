@@ -97,6 +97,15 @@ button:active:not(:disabled) { transform: scale(0.96); }
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
+/* AttachmentBar.tsx's chips use a sr-only (clip-rect-hidden) real <input type="checkbox"> for
+   keyboard/screen-reader operability, styled via a sibling <span> checkmark — so the input's own
+   :focus-visible outline is invisible (it's clipped away with the input itself). This gives the
+   chip's visible <label> a focus ring when the hidden input inside it has focus, same intent as
+   :focus-visible above but scoped to the label ancestor via :focus-within. */
+.chat-attachment-chip:focus-within {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
 `
   document.head.appendChild(style)
 }

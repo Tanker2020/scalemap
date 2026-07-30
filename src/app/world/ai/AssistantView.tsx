@@ -31,6 +31,10 @@ const EDGE_MARGIN = 40
 function clampRect(rect: WindowRect): WindowRect {
   const width = Math.max(WINDOW_MIN_WIDTH, Math.min(rect.width, window.innerWidth))
   const height = Math.max(WINDOW_MIN_HEIGHT, Math.min(rect.height, window.innerHeight))
+  // minX/minY are re-derived from the FINAL width/height above (not whatever was passed in),
+  // so a resize (which keeps x/y fixed while growing width/height) re-validates the same
+  // left/top EDGE_MARGIN guarantee a move gets — this is what keeps a stranded-off-viewport
+  // rect (e.g. after the app window itself shrinks) recoverable on the read path too.
   const minX = EDGE_MARGIN - width
   const maxX = window.innerWidth - EDGE_MARGIN
   const minY = 0
@@ -60,20 +64,37 @@ export function AssistantView({ open, onClose, openSettings }: {
 
   const storedRect = useChatStore(s => s.windowRect)
   const setWindowRect = useChatStore(s => s.setWindowRect)
-  // Computed once per mount from the viewport size at that time — only matters until the user's
-  // first drag/resize, after which storedRect always wins.
-  const defaultRect = useMemo<WindowRect>(() => ({
+  // AssistantView is always-mounted (only `open` gates the `return null` below), so a useMemo([])
+  // here would capture the viewport at APP STARTUP, not at first open. Computed fresh on every
+  // render instead (cheap — four arithmetic reads of window.inner{Width,Height}) so it reflects
+  // the CURRENT viewport whenever it's actually used (i.e. before the user's first drag/resize,
+  // after which storedRect always wins).
+  const defaultRect: WindowRect = {
     width: WINDOW_DEFAULT_WIDTH, height: WINDOW_DEFAULT_HEIGHT,
     x: Math.max(0, (window.innerWidth - WINDOW_DEFAULT_WIDTH) / 2),
     y: Math.max(0, (window.innerHeight - WINDOW_DEFAULT_HEIGHT) / 2),
-  }), [])
+  }
   // Ephemeral, only set while a drag/resize is actively in progress — lets the window visually
   // track the pointer without writing to the store on every pointermove. Committed to the store
   // once, on pointerup.
   const [liveRect, setLiveRect] = useState<WindowRect | null>(null)
   const liveRectRef = useRef<WindowRect | null>(null)
   const dragState = useRef<{ mode: 'move' | 'resize'; startX: number; startY: number; startRect: WindowRect } | null>(null)
-  const rect = liveRect ?? storedRect ?? defaultRect
+  const surfaceRef = useRef<HTMLDivElement | null>(null)
+  // Re-clamped on every render (not just mid-drag) — otherwise a stored rect that was valid when
+  // saved but is now off-viewport (the app window itself got resized/moved smaller) would strand
+  // the window permanently, with no "reset position" affordance anywhere in the UI.
+  const rect = clampRect(liveRect ?? storedRect ?? defaultRect)
+
+  // Forces a re-render when the viewport changes so a stored-but-now-out-of-bounds rect gets
+  // visually corrected immediately (via the clampRect call above) rather than waiting on some
+  // unrelated state change to trigger the next render.
+  const [, setResizeTick] = useState(0)
+  useEffect(() => {
+    const onViewportResize = () => setResizeTick(t => t + 1)
+    window.addEventListener('resize', onViewportResize)
+    return () => window.removeEventListener('resize', onViewportResize)
+  }, [])
 
   const onDragMove = useCallback((e: PointerEvent) => {
     const ds = dragState.current
@@ -90,7 +111,17 @@ export function AssistantView({ open, onClose, openSettings }: {
   const onDragEnd = useCallback(() => {
     window.removeEventListener('pointermove', onDragMove)
     window.removeEventListener('pointerup', onDragEnd)
-    if (liveRectRef.current) setWindowRect(liveRectRef.current)
+    window.removeEventListener('pointercancel', onDragEnd)
+    const committed = liveRectRef.current
+    const start = dragState.current?.startRect
+    // A zero-movement header click (pointerdown+pointerup with no pointermove between them)
+    // still runs this path — only commit to the store if the rect actually changed, and always
+    // clamp what gets committed so a first-ever interaction against an unclamped defaultRect
+    // can't persist an out-of-bounds rect.
+    const changed = !!committed && (!start
+      || start.x !== committed.x || start.y !== committed.y
+      || start.width !== committed.width || start.height !== committed.height)
+    if (changed) setWindowRect(clampRect(committed!))
     dragState.current = null
     liveRectRef.current = null
     setLiveRect(null)
@@ -104,6 +135,10 @@ export function AssistantView({ open, onClose, openSettings }: {
     setLiveRect(rect)
     window.addEventListener('pointermove', onDragMove)
     window.addEventListener('pointerup', onDragEnd)
+    // pointercancel can fire mid-drag on some platforms/input methods (e.g. a touch/pen input
+    // interrupted by the OS) — without handling it, dragState/listeners would be left dangling
+    // with no pointerup ever arriving to clean them up.
+    window.addEventListener('pointercancel', onDragEnd)
   }, [rect, onDragMove, onDragEnd])
 
   // Closing the overlay abandons any turn still in flight — otherwise a late resolve/fail from
@@ -116,10 +151,18 @@ export function AssistantView({ open, onClose, openSettings }: {
     onClose()
   }, [onClose])
 
+  // The window is non-modal (no backdrop) — the user can click into the globe/region/server
+  // views behind it and keep working while the assistant stays open. Escape must therefore only
+  // close the assistant (and swallow the event so WorldShell.tsx's own Escape handler — nav.up(),
+  // disarming placeMode — doesn't ALSO fire) when the assistant surface actually has focus. If
+  // focus is elsewhere (the user's actual interaction target is the world behind it), let the
+  // event through untouched so WorldShell's bubble-phase handler receives it normally.
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      const active = document.activeElement
+      if (!surfaceRef.current || !active || !surfaceRef.current.contains(active)) return
       e.stopPropagation(); e.preventDefault()
       handleClose()
     }
@@ -137,6 +180,7 @@ export function AssistantView({ open, onClose, openSettings }: {
     return () => {
       window.removeEventListener('pointermove', onDragMove)
       window.removeEventListener('pointerup', onDragEnd)
+      window.removeEventListener('pointercancel', onDragEnd)
     }
   }, [onDragMove, onDragEnd])
 
@@ -186,7 +230,7 @@ export function AssistantView({ open, onClose, openSettings }: {
   // There is no click-outside-to-close; Escape (handled above) is the only dismiss affordance
   // besides the "close" button.
   return createPortal(
-    <div style={surfaceStyle} onClick={e => e.stopPropagation()}>
+    <div ref={surfaceRef} style={surfaceStyle}>
       <div style={headerStyle} onPointerDown={e => beginDrag(e, 'move')}>
         <span>AI Assistant</span>
         <div>

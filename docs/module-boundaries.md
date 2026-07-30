@@ -4031,22 +4031,32 @@ simulation-store seam, §1J).
 
 **`src/app/world/ai/` — the overlay UI (Task 11), wired into `WorldShell.tsx` (Task 12).**
 `AssistantView.tsx`/`ChatComposer.tsx`/`ChatTranscript.tsx`/`AttachmentBar.tsx`/
-`ResponseBlocks.tsx`/`EntityChip.tsx` follow `src/app/world/connections/ConnectionsView.tsx`'s exact
-overlay recipe verbatim — a portal mounted at `document.body`, a full-stage backdrop, a
-capture-phase `Escape` listener. `WorldShell.tsx` mounts `<AssistantView/>` unconditionally beside
-`<ConnectionsView/>`, gated by a new local `chatOpen` boolean toggled from a header button placed
-next to the existing ⚙ Settings button. **Deliberate divergence from every other portal surface in
-the app: `AssistantView.tsx` does NOT wrap its body in `<fieldset disabled={running}>`.** Every
-other dock/overlay surface disables its controls while the simulation is running (the editing-lock
-convention traced back to §1A's legacy `canvas.store` gate, formalized as one `WorldPanel.tsx`
-choke point in §1J Task 13) — but the assistant has nothing to protect: it never mutates `world`/
-`simulation` state, so there is no risk of a stale/racing edit. More than that, being usable WHILE
-the simulation runs is the point — mid-run diagnosis ("why did `web-2` just OOM") is the assistant's
-primary use case, exactly mirroring `WorldPanel.tsx`'s pre-existing Events-tab exemption
-(`disabled={running && tab !== 'events'}`, §1J). LLM settings are loaded fresh via `loadLlmSettings()`
-(`src/lib/tauri.ts`) on every send rather than cached in the store or read once at mount, so a
-mid-session endpoint/key change in the Settings modal takes effect on the assistant's very next
-turn without requiring a reload.
+`ResponseBlocks.tsx`/`EntityChip.tsx` originally followed `src/app/world/connections/ConnectionsView.tsx`'s
+overlay recipe verbatim (portal + full-stage backdrop + capture-phase `Escape`), but a later 3-task
+UI revamp (2026-07-30) turned it into a **floating, draggable, resizable, non-modal window** instead:
+the backdrop is gone (clicks reach the globe/region/AZ/server views behind it while the assistant
+stays open), the header is a hand-rolled pointer-event drag surface, and the bottom-right corner is
+a resize handle — no new dependency for either. Position/size persist for the session in
+`chat.store.ts`'s new `windowRect: WindowRect | null` field (in-memory only, dies on app restart);
+`AssistantView.tsx`'s `clampRect()` keeps the rect on-screen on every render (not just mid-drag),
+recovering a stored rect that's gone out-of-bounds after the app window itself was resized. Because
+the window is now non-modal, its capture-phase `Escape` handler only closes it (and stops
+propagation) when `document.activeElement` is actually inside the assistant surface — otherwise the
+event passes through untouched to `WorldShell.tsx`'s own bubble-phase `Escape` handler (`nav.up()`,
+disarming `placeMode`), which would previously never have fired while the assistant was open.
+`WorldShell.tsx` mounts `<AssistantView/>` unconditionally beside `<ConnectionsView/>`, gated by a
+local `chatOpen` boolean toggled from a header button placed next to the existing ⚙ Settings button.
+**Deliberate divergence from every other portal surface in the app: `AssistantView.tsx` does NOT
+wrap its body in `<fieldset disabled={running}>`.** Every other dock/overlay surface disables its
+controls while the simulation is running (the editing-lock convention traced back to §1A's legacy
+`canvas.store` gate, formalized as one `WorldPanel.tsx` choke point in §1J Task 13) — but the
+assistant has nothing to protect: it never mutates `world`/`simulation` state, so there is no risk
+of a stale/racing edit. More than that, being usable WHILE the simulation runs is the point —
+mid-run diagnosis ("why did `web-2` just OOM") is the assistant's primary use case, exactly
+mirroring `WorldPanel.tsx`'s pre-existing Events-tab exemption (`disabled={running && tab !==
+'events'}`, §1J). LLM settings are loaded fresh via `loadLlmSettings()` (`src/lib/tauri.ts`) on every
+send rather than cached in the store or read once at mount, so a mid-session endpoint/key change in
+the Settings modal takes effect on the assistant's very next turn without requiring a reload.
 
 **Net new dependency count: zero.** `formatResponse.ts`'s markdown-subset parser and
 `citations.ts`'s id lookup are both hand-rolled specifically to avoid pulling in a markdown/HTML
