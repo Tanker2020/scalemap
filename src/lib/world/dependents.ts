@@ -27,6 +27,7 @@ function buildIndex(doc: WorldDoc, compiled: CompiledWorld): DependencyIndex {
   const dependentInstances = new Map<string, string[]>()
   const dependencyTargets = new Map<string, string[]>()
   for (const path of compiled.paths) {
+    if (path.verdict !== 'permitted') continue
     const targetId = path.to.kind === 'instance' ? path.to.instanceId : path.to.managedServiceId
     push(dependencyTargets, path.fromInstanceId, targetId)
     push(dependentInstances, targetId, path.fromInstanceId)

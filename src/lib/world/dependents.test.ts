@@ -55,6 +55,36 @@ describe('dependencyIndexFor', () => {
     const second = dependencyIndexFor(doc, { ...compiled })
     expect(first).not.toBe(second)
   })
+
+  it('excludes blocked paths from instance-level maps', () => {
+    const { doc, compiled } = makeFixture()
+    // Add a blocked path that should not be indexed
+    compiled.paths.push({
+      id: 'p3', dependencyId: 'dep-3', fromInstanceId: 'api-1',
+      to: { kind: 'instance', instanceId: 'web-1' }, verdict: 'blocked',
+    } as never)
+    const idx = dependencyIndexFor(doc, compiled)
+    // The blocked path should not appear in the maps
+    // web-1 should have no dependents (the blocked path from api-1 is excluded)
+    expect(idx.dependentInstances.get('web-1')).toBeUndefined()
+    // api-1 should only have managed-db as a dependency (the blocked path to web-1 is excluded)
+    expect(idx.dependencyTargets.get('api-1')).toEqual(['managed-db'])
+  })
+
+  it('does not traverse blocked paths in blastRadius', () => {
+    const { doc, compiled } = makeFixture()
+    // Add a blocked path from api-1 to web-1
+    compiled.paths.push({
+      id: 'p3', dependencyId: 'dep-3', fromInstanceId: 'api-1',
+      to: { kind: 'instance', instanceId: 'web-1' }, verdict: 'blocked',
+    } as never)
+    const result = blastRadius('s2', doc, compiled) // server hosting api-1
+    // web-1 should still be reachable via the permitted path from web-1 to api-1
+    expect(result.direct).toContain('web-1')
+    // But the backward blocked path should not create a cycle or include api-1 in dependents of web-1
+    const resultFromWeb = blastRadius('s1', doc, compiled) // server hosting web-1
+    expect(resultFromWeb.direct).not.toContain('api-1')
+  })
 })
 
 describe('blastRadius', () => {
