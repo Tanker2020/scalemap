@@ -38,7 +38,7 @@ function parseInline(text: string, resolveEntity: (token: string) => boolean): S
 
 export function formatResponse(raw: string, resolveEntity: (token: string) => boolean): Block[] {
   const blocks: Block[] = []
-  const fenceRe = /```(\w*)\n?/g
+  const fenceRe = /```(\w*)[^\n]*\n?/g
   let cursor = 0
   let match: RegExpExecArray | null
 

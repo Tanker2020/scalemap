@@ -5,6 +5,7 @@ import { blastRadius } from '../world/dependents'
 export interface CausalEpisode {
   seedEventId: string
   kind: EngineEventKind
+  severity: EngineEvent['severity']
   startMs: number
   repeatedForMs: number
   roles: { primaryId: string; secondaryId: string | null }
@@ -118,7 +119,7 @@ export function buildCausalEpisodes(
       }
 
       const episode: CausalEpisode = {
-        seedEventId: e.id, kind: e.kind, startMs: f.simMs, repeatedForMs: 0,
+        seedEventId: e.id, kind: e.kind, severity: e.severity, startMs: f.simMs, repeatedForMs: 0,
         roles: { primaryId, secondaryId }, before, after,
         consequences, followOnEvents, unexplainedSpikes, message: e.message,
       }
@@ -127,5 +128,18 @@ export function buildCausalEpisodes(
     }
   }
 
-  return episodes.sort((a, b) => b.startMs - a.startMs).slice(0, 8)
+  return selectTopEpisodes(episodes, 8)
+}
+
+// Pure recency would let a cluster of low-severity episodes near the tail of the buffer (e.g.
+// connection_refused, rate-limited to ~1/sec but able to re-seed a new episode every ~30s) push
+// an earlier `critical` episode (oom_kill, breaker_open on a critical dependency, ...) out of the
+// window entirely — undermining the "what went wrong" diagnosis this feature exists for. Critical
+// episodes are therefore always kept; remaining slots are filled by recency among the rest.
+function selectTopEpisodes(episodes: CausalEpisode[], limit: number): CausalEpisode[] {
+  const byRecency = [...episodes].sort((a, b) => b.startMs - a.startMs)
+  const critical = byRecency.filter(e => e.severity === 'critical')
+  const rest = byRecency.filter(e => e.severity !== 'critical')
+  const combined = [...critical, ...rest.slice(0, Math.max(0, limit - critical.length))]
+  return combined.sort((a, b) => b.startMs - a.startMs).slice(0, limit)
 }

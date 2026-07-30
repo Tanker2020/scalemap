@@ -3984,19 +3984,26 @@ this module only answers "is this token a real id" for each one.
 **`src/lib/world/scopeFilters.ts` (Task 3) — moved out of `src/app/world/dock/scopeData.ts`.**
 `scopeEntityIds`/`scopedEvents`/`scopedFindings` (Polish 4 T1, §S) are mechanical, behavior-
 identical moves — `scopeData.ts` now just re-exports them, so every existing call site
-(`WorldPanel.tsx`'s dock tabs) is unaffected. The move exists so `lib/aiChat/context.ts` can reuse
-the same scoping logic without `lib/` importing from `app/` (a boundary this repo otherwise holds
-firm). One wrinkle: `scopedEvents`'s region-scope branch used to call `app/world/region/
-regionData.ts`'s `regionEvents` directly (it additionally folds in population-routed-client ids
-that the generic entity-closure walk doesn't model) — that's a value import from `app/`, not
-legal in the new location. Fixed by turning it into an **injected parameter**: `scopedEvents` now
-takes an optional `regionEventsFn` matching `regionEvents`'s exact signature; every in-repo caller
-(`scopeData.ts`'s re-export path) passes the real `regionEvents` and gets byte-identical behavior,
-while a caller with no injected fn (there are none yet) falls back to the generic
-`scopeEntityIds`-based filter, which is a strict behavioral subset (misses population-routed
-events) rather than a crash. The only remaining `app/`-rooted import in the file is a type-only
-`import type { DockScope }` — erased at compile time, judged acceptable rather than worth a further
-`DockScope` relocation.
+(`WorldPanel.tsx`'s dock tabs) is unaffected. The move was originally planned so `lib/aiChat/
+context.ts` could reuse the same per-scope filtering without `lib/` importing from `app/` (a
+boundary this repo otherwise holds firm) — **that reuse never actually happened.** `context.ts`'s
+final digest/attachment design (see below) only offers whole-world toggles (`events`/`replay`/
+`findings`/`topology`) plus a single `entity`-by-id attachment, not a scoped ("just this region/AZ")
+view, so there was nothing in `context.ts` for `scopeEntityIds`/`scopedEvents`/`scopedFindings` to
+do — `context.ts` imports only `dependencyIndexFor` and `buildCausalEpisodes`. The three functions
+remain exactly as useful where they landed (a legitimate `lib/`-level home, still the right call
+independent of the aiChat tie-in) and are still consumed solely by `scopeData.ts`/`WorldPanel.tsx`,
+their original call site. One wrinkle survives from the original move: `scopedEvents`'s
+region-scope branch used to call `app/world/region/regionData.ts`'s `regionEvents` directly (it
+additionally folds in population-routed-client ids that the generic entity-closure walk doesn't
+model) — that's a value import from `app/`, not legal in the new location. Fixed by turning it into
+an **injected parameter**: `scopedEvents` now takes an optional `regionEventsFn` matching
+`regionEvents`'s exact signature; every in-repo caller (`scopeData.ts`'s re-export path) passes the
+real `regionEvents` and gets byte-identical behavior, while a caller with no injected fn (there are
+none yet) falls back to the generic `scopeEntityIds`-based filter, which is a strict behavioral
+subset (misses population-routed events) rather than a crash. The only remaining `app/`-rooted
+import in the file is a type-only `import type { DockScope }` — erased at compile time, judged
+acceptable rather than worth a further `DockScope` relocation.
 
 **`src/app/world/entityNav.ts` (Task 8) — extracted from `AnalysisTab.tsx`.** `navigateToEntity`/
 `entityLabel`/the `NavApi` interface used to live in `AnalysisTab.tsx`, with `AiReviewSection.tsx`

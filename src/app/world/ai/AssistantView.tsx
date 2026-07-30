@@ -49,25 +49,39 @@ export function AssistantView({ open, onClose, openSettings }: {
   const replayFrames = useMemo(() => useSimulationStore.getState().getReplayFrames(), [batchSimMs])
   const reducedMotion = useReducedMotion() ?? false
 
+  // Closing the overlay abandons any turn still in flight — otherwise a late resolve/fail from
+  // a question the user has already walked away from would silently land in the transcript (or
+  // mutate inFlightTurnId) the next time the overlay reopens. abandonInFlight() bumps
+  // chat.store.ts's requestGen, which makes resolveTurn/failTurn's gen check a no-op for that
+  // turn (see sendChatTurn.ts).
+  const handleClose = useCallback(() => {
+    if (useChatStore.getState().inFlightTurnId) useChatStore.getState().abandonInFlight()
+    onClose()
+  }, [onClose])
+
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       e.stopPropagation(); e.preventDefault()
-      onClose()
+      handleClose()
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [open, onClose])
+  }, [open, handleClose])
 
-  const contextInput: ChatContextInput = {
+  // Memoized so a metrics tick (latestBatch/events churn roughly once a second while a sim runs)
+  // doesn't force a full runAnalysis() pass + rebuild the whole ChatContextInput on every render —
+  // real jank risk on larger worlds, and the whole point of NOT gating this overlay behind
+  // `disabled={running}` is that it has to stay responsive mid-run.
+  const contextInput: ChatContextInput = useMemo(() => ({
     doc, compiled,
     findings: runAnalysis(doc, compiled, latestBatch ?? null),
     compileFindings: compiled.findings,
     latestBatch: latestBatch ?? null,
     events,
     replayFrames,
-  }
+  }), [doc, compiled, latestBatch, events, replayFrames])
 
   const send = useCallback(async (question: string) => {
     // Loaded fresh on every send, NOT cached — matching AiReviewSection.tsx's own
@@ -77,6 +91,9 @@ export function AssistantView({ open, onClose, openSettings }: {
     // still fails.
     const settings = await loadLlmSettings()
     const selected = useChatStore.getState().selected
+    // A new question supersedes a still-pending one rather than letting both race to resolve —
+    // abandon before beginTurn() (inside sendChatTurn) starts the new one.
+    if (useChatStore.getState().inFlightTurnId) useChatStore.getState().abandonInFlight()
     await sendChatTurn(settings, question, selected, contextInput)
   }, [contextInput])
 
@@ -85,17 +102,17 @@ export function AssistantView({ open, onClose, openSettings }: {
   if (!open) return null
 
   return createPortal(
-    <div style={backdrop} onClick={onClose}>
+    <div style={backdrop} onClick={handleClose}>
       <div style={surface} onClick={e => e.stopPropagation()}>
         <div style={headerStyle}>
           <span>AI Assistant</span>
           <div>
             <button onClick={openSettings} style={{ marginRight: 8 }}>settings</button>
-            <button onClick={onClose}>close</button>
+            <button onClick={handleClose}>close</button>
           </div>
         </div>
         <AttachmentBar contextInput={contextInput} running={running} />
-        <ChatTranscript doc={doc} compiled={compiled} onNavigated={onClose} onRetry={retry} reducedMotion={reducedMotion} />
+        <ChatTranscript doc={doc} compiled={compiled} onNavigated={handleClose} onRetry={retry} reducedMotion={reducedMotion} />
         {/*
           Deliberately NO <fieldset disabled={running}> wrapping the body below — unlike every
           other portal surface in the app (see WorldPanel.tsx's `disabled={running && tab !==

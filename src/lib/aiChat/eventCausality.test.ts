@@ -93,4 +93,30 @@ describe('buildCausalEpisodes', () => {
     expect(episodes).toHaveLength(1)
     expect(episodes[0].repeatedForMs).toBeGreaterThanOrEqual(2000)
   })
+
+  it('keeps an early critical episode even when 10+ later low-severity episodes would otherwise push it out of the top 8', () => {
+    const doc = { blueprints: {}, placements: {}, managedServices: {} } as unknown as WorldDoc
+    const compiled = { instances: {}, paths: [], findings: [], routing: {} } as unknown as CompiledWorld
+
+    const oomEvent: EngineEvent = {
+      id: 'e-oom', simMs: 0, kind: 'oom_kill', severity: 'critical',
+      message: 'instA OOM-killed on srvX', affected: ['instA', 'srvX'],
+    }
+    const frames: ReplayFrame[] = [frame(0, [oomEvent], {})]
+
+    // Flood 12 well-separated connection_refused episodes AFTER the oom_kill — each > 30s apart
+    // (WINDOW_MS * 2) so none collapse into the previous one, all more recent than the oom episode.
+    for (let i = 1; i <= 12; i++) {
+      const ms = i * 60_000
+      const refused: EngineEvent = {
+        id: `e-refused-${i}`, simMs: ms, kind: 'connection_refused', severity: 'warning',
+        message: 'x refused on y', affected: [`instR${i}`, `instS${i}`],
+      }
+      frames.push(frame(ms, [refused], {}))
+    }
+
+    const episodes = buildCausalEpisodes(frames, doc, compiled)
+    expect(episodes.length).toBeLessThanOrEqual(8)
+    expect(episodes.some(e => e.kind === 'oom_kill')).toBe(true)
+  })
 })

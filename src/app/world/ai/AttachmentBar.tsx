@@ -2,6 +2,7 @@
 // as an `entity` attachment) shown with a live token-cost preview per chip and a running total —
 // context.ts's attachmentPreview/estimateTokens do the actual sizing, this is presentation only.
 import type { CSSProperties } from 'react'
+import { useMemo } from 'react'
 import { useChatStore } from '../../store/chat.store'
 import { attachmentPreview, attachmentKey, type Attachment, type ChatContextInput } from '../../../lib/aiChat/context'
 import { useUiStore } from '../../store/ui.store'
@@ -19,20 +20,32 @@ export function AttachmentBar({ contextInput, running }: { contextInput: ChatCon
   const toggle = useChatStore(s => s.toggleAttachment)
   const selectedServerId = useUiStore(s => s.selectedServerId)
 
-  const base: Attachment[] = [{ kind: 'events' }, { kind: 'replay' }, { kind: 'findings' }, { kind: 'topology' }]
-  const entityAttachment: Attachment | null = selectedServerId ? { kind: 'entity', id: selectedServerId } : null
-  const options = entityAttachment ? [...base, entityAttachment] : base
+  // `options` (which servers/entity is attachable) only changes when the selected server changes,
+  // but the previews inside it — attachmentPreview() for 'topology' does a full
+  // JSON.stringify(contextInput.doc) — must be recomputed whenever contextInput itself changes
+  // (a new doc/compiled/batch). Memoizing both keeps this from re-stringifying the whole world on
+  // every ~1s metrics tick while the assistant stays open mid-run.
+  const options = useMemo<Attachment[]>(() => {
+    const base: Attachment[] = [{ kind: 'events' }, { kind: 'replay' }, { kind: 'findings' }, { kind: 'topology' }]
+    const entityAttachment: Attachment | null = selectedServerId ? { kind: 'entity', id: selectedServerId } : null
+    return entityAttachment ? [...base, entityAttachment] : base
+  }, [selectedServerId])
+
+  const previews = useMemo(
+    () => new Map(options.map(a => [attachmentKey(a), attachmentPreview(a, contextInput)])),
+    [options, contextInput],
+  )
 
   // attachmentKey() is the same identity chat.store.ts's toggleAttachment uses for its own
   // dedup — matching it here (rather than a separate JSON.stringify comparison) keeps "selected"
   // and "keyed for React" in exact lockstep with the store's notion of attachment identity.
   const isSelected = (a: Attachment) => selected.some(s => attachmentKey(s) === attachmentKey(a))
-  const totalTokens = selected.reduce((sum, a) => sum + attachmentPreview(a, contextInput).tokens, 0)
+  const totalTokens = selected.reduce((sum, a) => sum + (previews.get(attachmentKey(a))?.tokens ?? attachmentPreview(a, contextInput).tokens), 0)
 
   return (
     <div style={{ padding: '4px 8px', borderTop: '1px solid var(--color-node-border)' }}>
       {options.map(a => {
-        const preview = attachmentPreview(a, contextInput)
+        const preview = previews.get(attachmentKey(a))!
         return (
           <button key={attachmentKey(a)} style={chip(isSelected(a))} onClick={() => toggle(a)} title={`~${preview.tokens} tokens`}>
             {preview.label} · ~{preview.tokens}tok

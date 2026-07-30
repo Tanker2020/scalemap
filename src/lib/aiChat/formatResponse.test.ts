@@ -12,6 +12,13 @@ describe('formatResponse', () => {
     expect(code.text).toBe('const x = 1')
   })
 
+  it('consumes trailing info-string text on the opening fence line instead of leaking it into the code', () => {
+    const blocks = formatResponse('```js extra info\nconst x = 1\n```', noEntities)
+    const code = blocks[0] as { kind: 'code'; lang: string | null; text: string }
+    expect(code.lang).toBe('js')
+    expect(code.text).toBe('const x = 1')
+  })
+
   it('handles an unterminated fence by taking the remainder', () => {
     const blocks = formatResponse('```\nno closing fence here', noEntities)
     expect(blocks).toHaveLength(1)
