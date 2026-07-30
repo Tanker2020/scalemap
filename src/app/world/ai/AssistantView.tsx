@@ -127,6 +127,19 @@ export function AssistantView({ open, onClose, openSettings }: {
     return () => window.removeEventListener('keydown', onKey, true)
   }, [open, handleClose])
 
+  // Defensive cleanup for a drag/resize left in progress when this component unmounts (e.g.
+  // WorldShell itself unmounts mid-drag, or — in the real Tauri webview — the pointer leaves the
+  // surface entirely and no pointerup ever reaches beginDrag's listeners). Without this, onDragEnd
+  // still fires on an eventual pointerup and writes a stale windowRect via the zustand store even
+  // after the owning component is gone, and/or the listener leaks for the rest of the session.
+  // Removing a listener that was never added or was already removed is a harmless no-op.
+  useEffect(() => {
+    return () => {
+      window.removeEventListener('pointermove', onDragMove)
+      window.removeEventListener('pointerup', onDragEnd)
+    }
+  }, [onDragMove, onDragEnd])
+
   // Memoized so a metrics tick (latestBatch/events churn roughly once a second while a sim runs)
   // doesn't force a full runAnalysis() pass + rebuild the whole ChatContextInput on every render —
   // real jank risk on larger worlds, and the whole point of NOT gating this overlay behind

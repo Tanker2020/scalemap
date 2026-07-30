@@ -175,4 +175,20 @@ describe('AssistantView', () => {
 
     expect(useChatStore.getState().windowRect).toEqual(rectAfterDrag)
   })
+
+  it('unmounting mid-drag removes the window listeners instead of leaking a late pointerup into the store', () => {
+    const { unmount } = render(<AssistantView open={true} onClose={() => {}} openSettings={() => {}} />)
+    const header = screen.getByText('AI Assistant').closest('div') as HTMLElement
+
+    fireEvent.pointerDown(header, { clientX: 100, clientY: 100 })
+    fireEvent.pointerMove(window, { clientX: 150, clientY: 130 })
+    // Unmount while the drag is still in progress — the component (and thus onClose) is gone
+    // before pointerup ever fires, mirroring WorldShell unmounting mid-drag.
+    unmount()
+
+    // A pointerup that arrives after unmount must NOT write a stale windowRect: the cleanup
+    // effect should have already removed the window-level listeners.
+    fireEvent.pointerUp(window)
+    expect(useChatStore.getState().windowRect).toBeNull()
+  })
 })
