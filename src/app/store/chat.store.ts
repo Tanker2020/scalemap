@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Attachment } from '../../lib/aiChat/context'
+import { attachmentKey, type Attachment } from '../../lib/aiChat/context'
 
 export interface ChatTurn {
   id: string
@@ -29,12 +29,6 @@ interface ChatStore {
   abandonInFlight: () => void
 }
 
-function attachmentKeyLocal(a: Attachment): string {
-  if (a.kind === 'entity') return `entity:${a.id}`
-  if (a.kind === 'traces') return `traces:${JSON.stringify(a.scope)}`
-  return a.kind
-}
-
 let nextTurnId = 0
 
 export const useChatStore = create<ChatStore>((set, get) => ({
@@ -47,9 +41,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   setDraft: (d) => set({ draft: d }),
 
   toggleAttachment: (a) => set(state => {
-    const key = attachmentKeyLocal(a)
-    const exists = state.selected.some(s => attachmentKeyLocal(s) === key)
-    return { selected: exists ? state.selected.filter(s => attachmentKeyLocal(s) !== key) : [...state.selected, a] }
+    const key = attachmentKey(a)
+    const exists = state.selected.some(s => attachmentKey(s) === key)
+    return { selected: exists ? state.selected.filter(s => attachmentKey(s) !== key) : [...state.selected, a] }
   }),
 
   clearAttachments: () => set({ selected: [] }),
@@ -67,6 +61,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     return { turnId, gen }
   },
 
+  // The store itself stays synchronous (no async actions, matching every other store in this
+  // app) — the actual LLM request happens outside it, in sendChatTurn.ts. `gen` is the
+  // requestGen captured at beginTurn() time; comparing it against the CURRENT requestGen here
+  // mirrors simulation.store.ts's `eventGen` idiom (bumped on stop()/start()/resetSession() to
+  // orphan a stale event-buffer flush) — abandonInFlight() bumps requestGen so a late resolve/
+  // fail from an abandoned turn is dropped instead of overwriting a newer turn's state.
   resolveTurn: (turnId, gen, answer) => {
     if (gen !== get().requestGen) return
     set(state => ({

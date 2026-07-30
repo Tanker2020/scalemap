@@ -4,6 +4,12 @@ import { estimateTokens, buildChatDigest, buildContextBlock, type Attachment, ty
 import type { LlmSettings } from '../../../lib/tauri'
 import { llmChat } from '../../../lib/tauri'
 
+// chat.store.ts stays synchronous by design (no store in this app has async actions), so the
+// actual await'ed LLM round-trip lives here instead. The turnId/gen captured from beginTurn()
+// are passed straight through to resolveTurn/failTurn — that gen check is the same
+// generation-counter idiom simulation.store.ts uses for its `eventGen` (orphaning a stale
+// event-buffer flush after stop()/start()/resetSession()): if abandonInFlight() bumped
+// requestGen while this request was in flight, the resolve/fail below becomes a silent no-op.
 export async function sendChatTurn(
   settings: LlmSettings,
   question: string,
