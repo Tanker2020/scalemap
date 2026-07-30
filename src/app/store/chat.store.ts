@@ -13,16 +13,20 @@ export interface ChatTurn {
   error: string
 }
 
+export interface WindowRect { x: number; y: number; width: number; height: number }
+
 interface ChatStore {
   turns: ChatTurn[]
   draft: string
   selected: Attachment[]
   requestGen: number
   inFlightTurnId: string | null
+  windowRect: WindowRect | null
   setDraft: (d: string) => void
   toggleAttachment: (a: Attachment) => void
   clearAttachments: () => void
   clearTranscript: () => void
+  setWindowRect: (rect: WindowRect) => void
   beginTurn: (question: string, attachments: Attachment[], contextTokens: number, worldChangedSincePrev: boolean) => { turnId: string; gen: number }
   resolveTurn: (turnId: string, gen: number, answer: string) => void
   failTurn: (turnId: string, gen: number, message: string) => void
@@ -37,8 +41,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   selected: [],
   requestGen: 0,
   inFlightTurnId: null,
+  windowRect: null,
 
   setDraft: (d) => set({ draft: d }),
+
+  setWindowRect: (rect) => set({ windowRect: rect }),
 
   toggleAttachment: (a) => set(state => {
     const key = attachmentKey(a)

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { useChatStore } from './chat.store'
 
 beforeEach(() => {
-  useChatStore.setState({ turns: [], draft: '', selected: [], requestGen: 0, inFlightTurnId: null })
+  useChatStore.setState({ turns: [], draft: '', selected: [], requestGen: 0, inFlightTurnId: null, windowRect: null })
 })
 
 describe('chat.store', () => {
@@ -61,5 +61,20 @@ describe('chat.store', () => {
     useChatStore.getState().clearTranscript()
     expect(useChatStore.getState().turns).toEqual([])
     expect(useChatStore.getState().draft).toBe('hello')
+  })
+
+  it('windowRect defaults to null', () => {
+    expect(useChatStore.getState().windowRect).toBeNull()
+  })
+
+  it('setWindowRect updates the field', () => {
+    useChatStore.getState().setWindowRect({ x: 10, y: 20, width: 500, height: 400 })
+    expect(useChatStore.getState().windowRect).toEqual({ x: 10, y: 20, width: 500, height: 400 })
+  })
+
+  it('setWindowRect replaces the previous rect wholesale', () => {
+    useChatStore.getState().setWindowRect({ x: 10, y: 20, width: 500, height: 400 })
+    useChatStore.getState().setWindowRect({ x: 0, y: 0, width: 720, height: 600 })
+    expect(useChatStore.getState().windowRect).toEqual({ x: 0, y: 0, width: 720, height: 600 })
   })
 })
