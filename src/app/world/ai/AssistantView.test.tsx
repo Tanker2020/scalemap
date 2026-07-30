@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { AssistantView } from './AssistantView'
 import { useChatStore } from '../../store/chat.store'
 import { useNavStore } from '../../store/nav.store'
@@ -34,13 +34,15 @@ describe('AssistantView', () => {
     expect(useNavStore.getState().level).toBe('server')
   })
 
-  it('Enter sends, Shift+Enter does not', () => {
+  it('Enter sends, Shift+Enter does not', async () => {
     render(<AssistantView open={true} onClose={() => {}} openSettings={() => {}} />)
     const textarea = screen.getByPlaceholderText(/Ask about/i)
     fireEvent.change(textarea, { target: { value: 'hello' } })
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true })
     expect(useChatStore.getState().turns).toHaveLength(0)
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
-    expect(useChatStore.getState().turns.length).toBeGreaterThan(0)
+    // send() is async (it awaits a fresh loadLlmSettings() call before beginTurn) — assert once
+    // the turn has actually landed instead of assuming synchronous completion.
+    await waitFor(() => expect(useChatStore.getState().turns.length).toBeGreaterThan(0))
   })
 })

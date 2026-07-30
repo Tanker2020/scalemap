@@ -3,7 +3,7 @@
 // context.ts's attachmentPreview/estimateTokens do the actual sizing, this is presentation only.
 import type { CSSProperties } from 'react'
 import { useChatStore } from '../../store/chat.store'
-import { attachmentPreview, type Attachment, type ChatContextInput } from '../../../lib/aiChat/context'
+import { attachmentPreview, attachmentKey, type Attachment, type ChatContextInput } from '../../../lib/aiChat/context'
 import { useUiStore } from '../../store/ui.store'
 
 const chip = (active: boolean): CSSProperties => ({
@@ -23,7 +23,10 @@ export function AttachmentBar({ contextInput, running }: { contextInput: ChatCon
   const entityAttachment: Attachment | null = selectedServerId ? { kind: 'entity', id: selectedServerId } : null
   const options = entityAttachment ? [...base, entityAttachment] : base
 
-  const isSelected = (a: Attachment) => selected.some(s => JSON.stringify(s) === JSON.stringify(a))
+  // attachmentKey() is the same identity chat.store.ts's toggleAttachment uses for its own
+  // dedup — matching it here (rather than a separate JSON.stringify comparison) keeps "selected"
+  // and "keyed for React" in exact lockstep with the store's notion of attachment identity.
+  const isSelected = (a: Attachment) => selected.some(s => attachmentKey(s) === attachmentKey(a))
   const totalTokens = selected.reduce((sum, a) => sum + attachmentPreview(a, contextInput).tokens, 0)
 
   return (
@@ -31,7 +34,7 @@ export function AttachmentBar({ contextInput, running }: { contextInput: ChatCon
       {options.map(a => {
         const preview = attachmentPreview(a, contextInput)
         return (
-          <button key={JSON.stringify(a)} style={chip(isSelected(a))} onClick={() => toggle(a)} title={`~${preview.tokens} tokens`}>
+          <button key={attachmentKey(a)} style={chip(isSelected(a))} onClick={() => toggle(a)} title={`~${preview.tokens} tokens`}>
             {preview.label} · ~{preview.tokens}tok
           </button>
         )

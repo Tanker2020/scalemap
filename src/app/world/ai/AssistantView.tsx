@@ -2,7 +2,7 @@
 // connections/ConnectionsView.tsx: fixed backdrop, centered surface, capture-phase Escape).
 // Builds a fresh ChatContextInput from the live doc/compiled/simulation state on every render
 // and hands it to sendChatTurn.ts, which owns the actual request lifecycle via chat.store.ts.
-import { useEffect, useCallback, useMemo, useState } from 'react'
+import { useEffect, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import type { CSSProperties } from 'react'
 import { useReducedMotion } from 'framer-motion'
@@ -11,7 +11,7 @@ import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { runAnalysis } from '../../../lib/analysis/runAnalysis'
-import { loadLlmSettings, type LlmSettings } from '../../../lib/tauri'
+import { loadLlmSettings } from '../../../lib/tauri'
 import { sendChatTurn } from './sendChatTurn'
 import { ChatComposer } from './ChatComposer'
 import { ChatTranscript } from './ChatTranscript'
@@ -49,18 +49,6 @@ export function AssistantView({ open, onClose, openSettings }: {
   const replayFrames = useMemo(() => useSimulationStore.getState().getReplayFrames(), [batchSimMs])
   const reducedMotion = useReducedMotion() ?? false
 
-  // Settings are loaded once up front (not awaited per-send) so that sending a question is a
-  // SYNCHRONOUS call into sendChatTurn: sendChatTurn's own beginTurn() runs before its first
-  // `await` regardless, but gating the call itself behind `await loadLlmSettings()` here would
-  // push that synchronous turn-creation behind a microtask, which the composer's Enter-to-send
-  // contract (and this file's own tests) expect to be visible immediately.
-  const [settings, setSettings] = useState<LlmSettings>({ baseUrl: '', apiKey: '', model: '' })
-  useEffect(() => {
-    let alive = true
-    loadLlmSettings().then(s => { if (alive) setSettings(s) })
-    return () => { alive = false }
-  }, [])
-
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
@@ -81,14 +69,18 @@ export function AssistantView({ open, onClose, openSettings }: {
     replayFrames,
   }
 
-  const send = useCallback((question: string) => {
+  const send = useCallback(async (question: string) => {
+    // Loaded fresh on every send, NOT cached — matching AiReviewSection.tsx's own
+    // `await loadLlmSettings()`-per-request convention. Caching a snapshot at mount time would
+    // leave the assistant silently stuck on stale settings after a user fixes their LLM endpoint
+    // in the ⚙ Settings modal and returns to retry a question, with no indication why every send
+    // still fails.
+    const settings = await loadLlmSettings()
     const selected = useChatStore.getState().selected
-    // Fire-and-forget: sendChatTurn is async (it awaits the LLM round trip), but its beginTurn()
-    // call happens synchronously before that await, so the pending turn appears immediately.
-    void sendChatTurn(settings, question, selected, contextInput)
-  }, [settings, contextInput])
+    await sendChatTurn(settings, question, selected, contextInput)
+  }, [contextInput])
 
-  const retry = useCallback((turn: ChatTurn) => { send(turn.question) }, [send])
+  const retry = useCallback((turn: ChatTurn) => { void send(turn.question) }, [send])
 
   if (!open) return null
 
