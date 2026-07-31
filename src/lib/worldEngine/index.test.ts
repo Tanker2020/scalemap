@@ -1165,11 +1165,54 @@ describe('packet-driven internal hops', () => {
 
     // 100 Mbps cap; the flat model books ~2 KB/call, the fat one 5 MB.
     expect(simFlat.latest().servers[flat.s2].nicInMbps).toBeLessThan(50)
+    // Re-baselined (audit ISSUE-009): this assertion pre-dates the NIC-ceiling fix and expected a
+    // >100x gap — which was only reachable because the OLD flat-divisor ceiling let ALL 100 rps of
+    // 5 MB calls through uncapped, booking ~4 Gbps on a 100 Mbps NIC (physically impossible; the
+    // exact bug this issue fixes). The FIXED ceiling now throttles admission to near the NIC's real
+    // line rate before those bytes ever reach the wire, so the fat scenario's nicInMbps is
+    // correctly bounded near the 100 Mbps cap rather than exploding with packet size — the gap
+    // versus the flat scenario (measured ~9x: 1.69 -> 15.33 Mbps) is real but far smaller than the
+    // old, physically-impossible number. Hand-verified: the fat scenario's rps assertion below
+    // shows the callee throttled to well under 1 rps (was ~100 pre-fix), which is what "the NIC is
+    // now the actual bottleneck" looks like.
     expect(simFat.latest().servers[fat.s2].nicInMbps).toBeGreaterThan(
-      simFlat.latest().servers[flat.s2].nicInMbps * 100)
+      simFlat.latest().servers[flat.s2].nicInMbps * 5)
     // and the saturation is felt as shed throughput on the callee
     expect(simFat.latest().instances[fat.storeInst].rps)
       .toBeLessThan(simFlat.latest().instances[flat.storeInst].rps)
+  })
+
+  // Audit ISSUE-009's own before/after: a 5 MB edge on a 100 Mbps NIC has a true physical ceiling
+  // of (100e6/8) / 5,242,880 ≈ 2.4 rps — nowhere near the ~6,103 rps the old flat-2KB-divisor
+  // ceiling implied (which is why the callee used to admit the FULL ~100 rps offered, unthrottled).
+  it('caps admitted rps near the true NIC ceiling for a large payload, not the flat-divisor one', () => {
+    const fat = crossAzPair({ nicMbps: 100 })
+    bindFatPacket(fat.doc)
+    const sim = drive(fat.doc, compileWorld(fat.doc))
+    sim.stepFor(20)
+    // Pre-fix this was ~100 (offered rps, fully admitted — the bug). Loose upper bound around the
+    // ~2.4 rps true ceiling, allowing for queueing/CPU also playing a role.
+    expect(sim.latest().instances[fat.storeInst].rps).toBeLessThan(10)
+    sim.engine.stop()
+  })
+
+  // Regression floor: an edge with NO authored size (the default 2 KB convention) must reduce the
+  // ceiling formula to EXACTLY the pre-fix flat-divisor value — every existing world with no
+  // authored packet sizes keeps its exact NIC-ceiling behavior.
+  it('an unauthored (default 2 KB) edge keeps the exact pre-fix NIC ceiling behavior', () => {
+    // 1 Mbps: tight enough that the flat 2 KB divisor genuinely binds (matches the NIC
+    // backpressure describe block above, which asserts this same scenario shifts throughput).
+    const base = crossAzPair({ nicMbps: 1000 })
+    const simBase = drive(base.doc, compileWorld(base.doc))
+    simBase.stepFor(6)
+    const capped = crossAzPair({ nicMbps: 1 })
+    const simCapped = drive(capped.doc, compileWorld(capped.doc))
+    simCapped.stepFor(6)
+    // Unauthored default-size traffic still sheds at a tight NIC exactly like before this issue —
+    // same shape of assertion as the pre-existing 'NIC backpressure (audit ISSUE-002)' block.
+    expect(simCapped.latest().instances[capped.storeInst].rps)
+      .toBeLessThan(simBase.latest().instances[base.storeInst].rps * 0.7)
+    simBase.engine.stop(); simCapped.engine.stop()
   })
 
   it('inbound internal KB drives cpuMsPerKb on the RECEIVER (one-step lagged)', () => {

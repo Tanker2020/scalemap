@@ -668,8 +668,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const internalPacketKbByInstance: Record<InstanceId, number> = {}
     const internalConnProfileByInstance: Record<InstanceId, ConnectionProfile> = {}
     const internalRpsByInstance: Record<InstanceId, number> = {}
+    // Demand-weighted-average INBOUND response bytes per instance (audit ISSUE-009) — the SAME
+    // fold as the request-side kb above, widened to also carry `wire.respBytes` (already in scope
+    // from the same `wire` lookup, so this is one extra accumulator field, not a new resolution
+    // point). Feeds the NIC service-rate ceiling below: the ceiling used to divide by a flat
+    // module constant regardless of what an instance's actual traffic was sized as.
+    const internalRespBytesByInstance: Record<InstanceId, number> = {}
     {
-      const acc: Record<InstanceId, { kb: number; rps: number } & ProfileAccum> = {}
+      const acc: Record<InstanceId, { kb: number; respBytes: number; rps: number } & ProfileAccum> = {}
       for (const pf of Object.values(s.prevFlows)) {
         for (const row of pf.downstream) {
           const toId = row.toInstanceId
@@ -679,8 +685,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           const wire = s.depBytesById[row.dependencyId]
           if (!wire) continue
           const kb = wire.reqBytes / 1024
-          const a = acc[toId] ?? (acc[toId] = { kb: 0, rps: 0, lat: 0, fixed: 0, extra: 0, hs: 0 })
+          const a = acc[toId] ?? (acc[toId] = { kb: 0, respBytes: 0, rps: 0, lat: 0, fixed: 0, extra: 0, hs: 0 })
           a.kb += row.rps * kb
+          a.respBytes += row.rps * wire.respBytes
           a.rps += row.rps
           addProfile(a, s.depConnById[row.dependencyId] ?? KEEP_ALIVE_PROFILE, row.rps)
         }
@@ -688,6 +695,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       for (const iid in acc) {
         if (acc[iid].rps <= 0) continue
         internalPacketKbByInstance[iid] = acc[iid].kb / acc[iid].rps
+        internalRespBytesByInstance[iid] = acc[iid].respBytes / acc[iid].rps
         internalRpsByInstance[iid] = acc[iid].rps
         internalConnProfileByInstance[iid] = meanProfile(acc[iid], acc[iid].rps)
       }
@@ -798,14 +806,27 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       const host = stepHost(server, loads, effectiveVcpu, s.rng)
       hostResults[server.id] = host
       // Fold the NIC's ABSOLUTE line-rate ceiling into each instance's capacity (audit
-      // ISSUE-002 × ISSUE-013): the worst byte direction governs (mirrors evaluateNic), shared
-      // across resident instances by the same cpu-share weights. Without this the queue model
-      // would never feel the NIC — a fraction multiplied onto an ample CPU rate doesn't bite.
-      const nicCeilingRps =
-        ((server.specs.nicMbps * 1e6) / 8) / Math.max(NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES)
+      // ISSUE-002 × ISSUE-013 × ISSUE-009): bandwidth is split across resident instances by the
+      // same cpu-share weights, THEN each instance's own share of bytes/sec converts to a
+      // per-instance rps ceiling using THAT instance's own resolved wire size — not a flat 2 KB
+      // module constant. A large-payload edge (bulk export, big DB result sets) used to model
+      // orders-of-magnitude more NIC throughput than physically possible, because the divisor
+      // never looked at what the instance's actual traffic was sized as, even though the exact
+      // resolved-size signals it needs (`entryNicBytesByInstance`/`internalPacketKbByInstance`/
+      // `internalRespBytesByInstance`, above) are already built this same step for the CPU blend.
+      const nicCeilingBytesPerSec = (server.specs.nicMbps * 1e6) / 8
       const totalShares = loads.reduce((sum, l) => sum + Math.max(0, l.cpuShares ?? 1), 0) || 1
+      const fallbackWireBytes = Math.max(NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES)
       for (const l of loads) {
-        const nicShare = nicCeilingRps * (Math.max(0, l.cpuShares ?? 1) / totalShares)
+        const eb = entryNicBytesByInstance[l.instanceId]
+        const reqBytes = Math.max(eb?.reqBytes ?? 0, (internalPacketKbByInstance[l.instanceId] ?? 0) * 1024)
+        const respBytes = Math.max(eb?.respBytes ?? 0, internalRespBytesByInstance[l.instanceId] ?? 0)
+        // The worst byte direction governs (mirrors evaluateNic) — falls back to the historical
+        // flat constant when this instance has no resolvable traffic yet this step (cold start /
+        // zero rps), which is exactly today's pre-fix behavior for that case.
+        const effectiveWireBytes = Math.max(reqBytes, respBytes) || fallbackWireBytes
+        const instanceBandwidthShare = nicCeilingBytesPerSec * (Math.max(0, l.cpuShares ?? 1) / totalShares)
+        const nicShare = instanceBandwidthShare / effectiveWireBytes
         serviceRateByInstance[l.instanceId] =
           Math.min(host.serviceRateByInstance[l.instanceId] ?? 0, nicShare)
       }

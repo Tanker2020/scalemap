@@ -4638,3 +4638,43 @@ is the identical instance across an az- and a server-scope renderer) and a froze
 - `index.test.ts` — two renderer scopes' empty `arcs`/`particles` fields are `toBe` the same
   instance; `Object.isFrozen` on the shared instance is `true`. Both verified to FAIL with the fix
   reverted.
+
+## Multi-Protocol Connection Audit — Wave 4: capacity truth (`audit-spec.md`, 2026-07-31)
+
+### ISSUE-009 — NIC service-rate ceiling sized off resolved wire bytes (`index.ts`)
+
+The per-server NIC ceiling (`serviceRateByInstance`, step 4/5) divided the NIC's line-rate bytes/
+sec by the flat module constant `Math.max(NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES)` (2048) REGARDLESS
+of what an instance's traffic was actually sized as — even though NIC byte BOOKING (step 7) was
+already fully packet-aware. A 5 MB edge on a 1 Gbps NIC modeled a ~61,035 rps ceiling instead of the
+true ~24 rps — the NIC never became the bottleneck for large-payload edges (bulk export, big DB
+result sets, `stream` framing), exactly where NIC modeling matters most.
+
+Fixed by splitting the ceiling into two steps — split the server's bandwidth (bytes/sec) across
+resident instances by cpu-share weight FIRST (the physically shared resource), THEN convert each
+instance's own bandwidth share into an rps ceiling using THAT instance's own resolved wire size —
+reusing signals already built this same step for the packet-driven CPU blend: `entryNicBytesByInstance`
+(entry-tier req/resp bytes) and a WIDENED internal-tier fold (`internalPacketKbByInstance`'s sibling,
+new `internalRespBytesByInstance` — one extra accumulator field on the SAME loop that already reads
+`wire.respBytes`, not a new resolution point). The worst byte direction still governs (mirrors
+`evaluateNic`); an instance with no resolvable traffic yet this step falls back to the exact
+pre-fix flat constant — which is also what an UNAUTHORED (default 2 KB) edge algebraically reduces
+to, so every existing world with no authored packet sizes keeps byte-identical NIC-ceiling behavior.
+
+⚠ Unlike Waves 1/3, this is NOT purely additive: any EXISTING world with an authored large payload
+now throttles far more aggressively (correctly). One pre-existing test (`'a fat internal packet
+saturates the CALLEE NIC and sheds throughput'`) asserted a >100x nicInMbps gap between a 2 KB and
+a 5 MB scenario — reachable only because the OLD ceiling let the ENTIRE 100 rps of 5 MB calls
+through uncapped, booking ~4 Gbps on a 100 Mbps NIC (physically impossible — the exact bug this
+issue fixes). Hand-verified the corrected numbers (measured ~9x gap, 1.69→15.33 Mbps) and
+re-baselined that one assertion with a comment explaining why, following the ISSUE-003 re-baseline
+discipline (Global Constraint 4's sanctioned exception): every changed literal individually
+verified as physically correct, not merely different.
+
+### Tests
+
+- `index.test.ts` — a 5 MB edge on a 100 Mbps NIC now admits well under 10 rps (was ~100,
+  effectively uncapped, pre-fix); an unauthored default-2KB edge at a tight NIC keeps the exact
+  pre-fix shed-throughput behavior (regression floor, matching the pre-existing NIC-backpressure
+  describe block's own assertion shape). Verified to FAIL with the fix reverted (measured 81 rps
+  admitted pre-fix vs the <10 rps bound).
