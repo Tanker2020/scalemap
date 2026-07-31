@@ -30,7 +30,14 @@ export interface BasePacketTemplate {
   id: number
   name: string
   protocol: PacketProtocol
-  sizeKb: number            // request/packet payload size
+  // Request/packet payload size (KB). Optional because it is genuinely absent at runtime — a
+  // blanked RoutesPanel "req" input, or a route serialized before sizeKb existed, with no
+  // per-route normalization on load. Declaring it non-optional gave every reader a guarantee the
+  // data does not honour: an unguarded `sizeKb * x` yields NaN, and once NaN reaches
+  // serviceRateByInstance every comparison against it silently evaluates false, so an
+  // over-capacity instance stops being flagged. Resolve it through packetResolve's fallback
+  // chain rather than reading it raw (audit ISSUE-018).
+  sizeKb?: number
   // Response payload size (KB). Drives the client-facing internet-egress byte rate (and thus the
   // internet-egress cost line) via routeIngressBytes → the engine's entry tier, and the response
   // leg of every internal hop via packetResolve. Optional: absent (older serialized routes) falls
@@ -176,7 +183,11 @@ export function addRoute(reg: PacketRegistry, fields: RouteFields): { registry: 
 export function updateRoute(reg: PacketRegistry, routeId: RouteId, patch: Partial<RouteFields>): PacketRegistry {
   const existing = reg.templates[Number(routeId)]
   if (!existing || existing.protocol !== 'http') return reg
-  const updated: HttpTemplate = { ...existing, ...patch } as HttpTemplate
+  // `existing.protocol !== 'http'` above already narrowed this to HttpTemplate, and every
+  // RouteFields key is HttpTemplate-legal — so the merge type-checks without an assertion. The
+  // previous `as HttpTemplate` defeated exactly the discriminant checking that catches a patch
+  // carrying another protocol's fields (audit ISSUE-018).
+  const updated: HttpTemplate = { ...existing, ...patch }
   return { ...reg, templates: { ...reg.templates, [existing.id]: updated } }
 }
 
@@ -207,9 +218,28 @@ export function getPacket(reg: PacketRegistry, packetId: number): PacketTemplate
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 export type PacketFields = DistributiveOmit<PacketTemplate, 'id'>
 
+// Rebuild a PacketTemplate from its id-less fields with the discriminant CHECKED. A blanket
+// `{ ...fields, id } as PacketTemplate` compiles even when `fields` carries another protocol's
+// keys — e.g. an EventTemplate's `topic` stranded on an object whose protocol is 'db' — which is
+// precisely the cross-contamination TypeScript's discriminated-union narrowing exists to catch.
+// Branching per protocol makes it verify each kind; the `never` default turns a fifth
+// PacketProtocol into a compile error here instead of a silent fallthrough (audit ISSUE-018).
+function withPacketId(fields: PacketFields, id: number): PacketTemplate {
+  switch (fields.protocol) {
+    case 'http':   return { ...fields, id }
+    case 'event':  return { ...fields, id }
+    case 'stream': return { ...fields, id }
+    case 'db':     return { ...fields, id }
+    default: {
+      const exhaustive: never = fields
+      return exhaustive
+    }
+  }
+}
+
 export function addPacket(reg: PacketRegistry, fields: PacketFields): { registry: PacketRegistry; packet: PacketTemplate } {
   const id = reg.nextId
-  const packet = { ...fields, id } as PacketTemplate
+  const packet = withPacketId(fields, id)
   return {
     registry: { ...reg, templates: { ...reg.templates, [id]: packet }, nextId: id + 1 },
     packet,
@@ -221,7 +251,7 @@ export function addPacket(reg: PacketRegistry, fields: PacketFields): { registry
 // partial that would leave the previous protocol's fields stranded on the object.
 export function updatePacket(reg: PacketRegistry, packetId: number, fields: PacketFields): PacketRegistry {
   if (getPacket(reg, packetId) == null) return reg
-  const updated = { ...fields, id: packetId } as PacketTemplate
+  const updated = withPacketId(fields, packetId)
   return { ...reg, templates: { ...reg.templates, [packetId]: updated } }
 }
 

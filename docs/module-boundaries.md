@@ -4305,3 +4305,102 @@ the Settings modal takes effect on the assistant's very next turn without requir
 **Net new dependency count: zero.** `formatResponse.ts`'s markdown-subset parser and
 `citations.ts`'s id lookup are both hand-rolled specifically to avoid pulling in a markdown/HTML
 sanitization library for a surface that never touches `innerHTML`.
+
+---
+
+## Multi-Protocol Connection Audit — Wave 1: divergence and type bugs (`audit-spec.md`, 2026-07-31)
+
+Four small, independent fixes sharing one root cause: **a derived quantity computed twice — once
+for enforcement, once for display — which then drift, so the user is shown a number the simulator
+is not using.** The repo already defended this failure mode exactly once (the `DIVERGENCE GUARD`
+test in `worldEngine/index.test.ts`, pinning the two `activeConnections()` call sites). Wave 1
+closes three more instances of it and adds a guard to each. **A fix that corrects the number
+without adding the guard does not close the issue** — that is the wave's operating rule.
+
+No file in this wave touches `worldEngine/types.ts`'s frozen render contract. Every new parameter
+is optional and defaults to the pre-existing behaviour, so an existing `.scalemap` loads and
+simulates byte-identically and no pre-existing numeric assertion in the suite changed value.
+
+### ISSUE-001 — DB write-fraction (`flows.ts`, `managedDbRuntime.ts`, `worldEngine/index.ts`)
+
+A bound db packet mix DERIVES `writeFraction` from its query types, and `ConnectionsView.tsx`'s
+`EdgeInspector` hides the hand-authored slider once a mix is bound (`:369-370`) — so the raw
+`BlueprintDependency.writeFraction` stays at its default while the user is shown the derived value.
+Two consumers still read the raw field:
+
+- `flows.ts:557`'s `splitDependencyShares` — which admitted rps goes to a SQL primary (writes) vs
+  its replicas (reads). A 100%-write mix routed entirely to the replicas, so **the single-writer
+  ceiling the primary/replica split exists to model silently never bound.**
+- `managedDbRuntime.ts:169`'s `aggregateManagedDbLoad` — splits `totalRps` into
+  `offeredWrite`/`offeredRead` before measuring each against `writeCeiling`/`readCeiling`. A
+  100%-write mix measured against `readCeiling` (5x larger on `sql.small`), so a DB that should
+  have been visibly refusing read as comfortably under capacity.
+
+Both now read the already-resolved value from `buildDepWireBytes` (`index.ts:184-193`), where the
+fallback chain (bound mix → dependency field → 0) already lived. **No third derivation was
+introduced**; `managedDbRuntime.ts` stays free of a `packetResolve` import and takes the resolved
+map as an optional, structurally-typed parameter. Note `flows.ts:601`'s managed-service branch
+already used the correct chain — the file was internally inconsistent 44 lines apart.
+
+⚠ `WireSize.writeFraction === undefined` means **"no db packet in the mix"**, NOT "0% writes" — the
+edge's own field must survive. Both consumers use the three-step `?? ... ?? 0` chain, not `?? 0`.
+
+### ISSUE-011 / ISSUE-012 — published CPU and RAM (`metrics.ts`)
+
+Adjacent lines in the same `InstanceMetrics` literal, both read-side only; no enforcement formula
+changed.
+
+- **`cpuCoresUsed`** was `rps × workload.cpuMsPerRequest` (the RAW authored value) while the host
+  scheduler budgets cores off `effectiveCpuMs` = `cpuMsPerRequest + cpuMsPerKb × kb +
+  handshakeCpuMs` (`index.ts:696-701`, fed to `InstanceLoad.cpuMsPerRequest` at `:736`). On a
+  `short-lived` route that omits a flat 2 ms/req handshake term — a measured **2.37x gap** — and
+  the understated figure sat beside a correctly-sourced `coreUtilization` on the same server card.
+  `buildBatch` now takes the same `effectiveCpuMsByInstance` map the scheduler was given.
+- **`ramMb`** was published unclamped while `hostScheduler.ts:127-133` clamps the identical
+  quantity to the container's `memLimitMb` before OOM accounting. A 512 MB-limited container
+  displayed 900 MB — an impossible reading, on the exact panel a user opens right after an
+  `oom_kill` event — and it let the per-server sum of `ramByInstance` exceed the clamped
+  `ramUsedMb` beside it. `buildBatch` now reads `memLimitMb` **the same way `index.ts:746` does**,
+  so the two cannot disagree about the limit for one instance.
+
+⚠ ISSUE-012's engine-level guard is an exact **bound**, not an exact equality: an over-limit
+container is OOM-killed and restarts on a 5 s timer, so the two sides are sampled at different
+points of that cycle. The exact-equality assertion lives in `metrics.test.ts`, where `buildBatch`
+is called directly and the phase is controlled.
+
+### ISSUE-018 — `sizeKb` optionality and discriminated-union construction (`nodeConfig.ts`)
+
+`BasePacketTemplate.sizeKb` was declared `number` but is genuinely `undefined` at runtime (a
+blanked `RoutesPanel` "req" input, or a route serialized before the field existed, with no
+per-route normalization on load). The type is now `sizeKb?: number`, matching reality. **Auditing
+every reader found all of them already guarded** (`packetResolve.ts:46,98`; `index.ts:129,136`;
+`PacketsPanel`/`RoutesPanel`/`packetDraft`'s `asString`) — so this is a pure soundness change with
+no latent NaN path left open, and `tsc` surfaced zero new errors. Resolve `sizeKb` through
+`packetResolve`'s fallback chain rather than reading it raw.
+
+`addPacket`/`updatePacket` built their result with a blanket `{ ...fields, id } as PacketTemplate`,
+which compiles even when the fields carry another protocol's keys — precisely the cross-
+contamination discriminated-union narrowing exists to catch. Construction now goes through one
+`withPacketId()` helper that branches per protocol with a `never` default, so **a fifth
+`PacketProtocol` becomes a compile error there instead of a silent fallthrough**. `updateRoute`'s
+`as HttpTemplate` is gone too (the `protocol !== 'http'` guard above it already narrows). The
+`(t as HttpTemplate).path` reads in `listPackets`/`getPacket` remain: they are read-only narrowing
+inside a `protocol !== 'http' ||` short-circuit, not construction, and carry no soundness risk.
+
+### Tests
+
+Every bug-catching assertion in this wave was verified to FAIL with its fix reverted (via
+`git stash push <file>`), and every regression-floor assertion passes both before and after.
+
+- `flows.test.ts` — derived value governs primary/replica routing; absent `writeFraction` still
+  falls back to the edge's field; **DIVERGENCE GUARD** pinning the fraction `EdgeInspector`
+  displays to the fraction routing splits on, for a non-degenerate 70/30 mix, through the one
+  shared `resolveWireSize` both call.
+- `managedDbRuntime.test.ts` — first coverage of `aggregateManagedDbLoad`; asserts the resolved
+  split is what decides whether the single-writer ceiling binds.
+- `metrics.test.ts` — effective-value CPU, clamped RAM, `ramByInstance` strata bound, plus two
+  regression floors (omitted map, process placement).
+- `index.test.ts` — CPU and RAM **DIVERGENCE GUARD**s beside the existing connection-RAM one.
+- `packetResolve.test.ts` / `nodeConfig.test.ts` — absent `sizeKb` never yields NaN (including
+  blended with a sized packet); all four protocols round-trip through the exhaustive constructor
+  with their kind-specific fields intact.

@@ -131,6 +131,47 @@ describe('routeIngressBytes (unchanged behavior, moved from nodeConfig)', () => 
     const route = { id: 1, name: 'api', protocol: 'http' as const, sizeKb: 1, method: 'GET' as const, path: '/api', statusCode: 200 }
     expect(routeIngressBytes(route)).toEqual({ reqBytes: 1024, respBytes: 2048 })
   })
+
+  // audit ISSUE-018: sizeKb is genuinely absent at runtime (a blanked RoutesPanel "req" input, or
+  // a route serialized before the field existed). It is now typed optional to match — this fixture
+  // omits it with NO cast, which would not have compiled while the field was declared `number`.
+  it('an absent sizeKb resolves to the 2 KB convention, never NaN', () => {
+    const route = { id: 1, name: 'api', protocol: 'http' as const, method: 'GET' as const, path: '/api', statusCode: 200 }
+    const bytes = routeIngressBytes(route)
+    expect(bytes).toEqual({ reqBytes: DEFAULT_PACKET_BYTES_EACH_WAY, respBytes: DEFAULT_PACKET_BYTES_EACH_WAY })
+    expect(Number.isFinite(bytes.reqBytes)).toBe(true)
+  })
+})
+
+// audit ISSUE-018 — the NaN path the optional type closes off. An unguarded `sizeKb * 1024`
+// yields NaN, and once NaN reaches serviceRateByInstance every comparison against it evaluates
+// false, so an over-capacity instance silently stops being flagged. The resolver must never
+// emit one.
+describe('resolveWireSize — an absent sizeKb never produces NaN', () => {
+  it('a mix entry with no sizeKb falls back to the registry/2 KB default', () => {
+    // No cast: the field is optional, so a template genuinely lacking it is representable.
+    const { reg, id } = seed({ name: 'sizeless', protocol: 'http', method: 'POST', statusCode: 200 } as PacketFields)
+    const w = resolveWireSize(reg, [{ packetId: id.sizeless, weight: 1 }])
+    expect(w.reqBytes).toBe(DEFAULT_PACKET_BYTES_EACH_WAY)
+    expect(w.sizeKb).toBe(2)
+    for (const v of [w.reqBytes, w.respBytes, w.sizeKb, w.sigma, w.amplification]) {
+      expect(Number.isFinite(v)).toBe(true)
+    }
+  })
+
+  it('blends a sizeless packet with a sized one without poisoning the result', () => {
+    const { reg, id } = seed(
+      { name: 'sizeless', protocol: 'http', method: 'POST', statusCode: 200 } as PacketFields,
+      httpPacket('sized', 10, 10),
+    )
+    const w = resolveWireSize(reg, [
+      { packetId: id.sizeless, weight: 1 },
+      { packetId: id.sized, weight: 1 },
+    ])
+    // 50/50 of the 2 KB default and 10 KB ⇒ 6 KB, not NaN.
+    expect(w.reqBytes).toBeCloseTo(0.5 * DEFAULT_PACKET_BYTES_EACH_WAY + 0.5 * 10 * KB, 6)
+    expect(Number.isNaN(w.reqBytes)).toBe(false)
+  })
 })
 
 describe('pickPacketByIndex — deterministic, rng-free particle tinting', () => {
