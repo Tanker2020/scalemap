@@ -50,7 +50,7 @@ Core systems that exist today:
   DNS TTL + health-check tuning. (Auto-baseline synthetic per-region demand was removed
   2026-07-15 — all traffic now originates from authored populations.)
 - **Analysis engine** (`src/lib/analysis/`) — three rule families (structural/network-security/
-  capacity, 13 rules) run over the compiled world plus the latest metrics batch, rendered in an
+  capacity, 15 rules) run over the compiled world plus the latest metrics batch, rendered in an
   `Analysis` tab merged with compile findings, with clickable affected-entity chips that jump to
   the region/AZ/server in question.
 - **LLM architecture reviewer** (`src/lib/llmReview.ts`) — on-demand, schema-validated review
@@ -58,6 +58,11 @@ Core systems that exist today:
   findings. The actual HTTP call is Rust-side (`llm_chat` Tauri command — a webview `fetch` to
   arbitrary hosts dies on CORS); settings persist to the app data dir and are never serialized
   into `.scalemap`, logged, or echoed unmasked (see Key Architecture Decisions).
+- **AI chat assistant** (`src/lib/aiChat/`, `src/app/world/ai/`) — a read-only, multi-turn chat
+  overlay (toggled from a header button beside ⚙ Settings) that answers questions about the
+  live/compiled world using the same `llmClient.ts` transport seam as the one-shot reviewer above,
+  grounded in an always-on context digest plus opt-in scoped attachments (entity detail, recent
+  events, causal episodes) — it never mutates the world or the simulation.
 - **Cost model** (`src/lib/costModelV2.ts`) — per-server hourly cost + managed-service pricing
   (`cloudRegistry.ts`) rolled up by region/AZ, plus tiered cross-AZ/cross-region/internet egress
   costed off live simulated byte rates.
@@ -340,7 +345,10 @@ The API key is NEVER serialized into `.scalemap` (settings never touch `world.st
 `serializer`), NEVER logged or `console.*`'d, NEVER included in the review-context payload,
 REDACTED from every error string on both the Rust and TS sides, and rendered only masked
 (`•••• <last4>`) after save — the Settings modal's password input never echoes a saved key back
-into its value.
+into its value. The same canary now also covers the AI chat assistant: `src/lib/aiChat/context.ts`'s
+digest/attachment builders (`buildChatDigest`/`buildContextBlock`) never receive an `LlmSettings`
+parameter at all — a structural guarantee, not just a convention — so there is no code path by
+which the API key could reach the context payload sent to the model.
 
 **Theme:** `--color-*` CSS custom properties (`theme.ts`'s `DARK_COLORS`/`LIGHT_COLORS`,
 bootstrapped by `App.tsx`'s `useThemeBootstrap`) are the only sanctioned color source for new UI
@@ -483,10 +491,16 @@ progress — do not assume any of it exists:
 - Spot-instance cost/interruption modeling
 - Managed-service pseudo-internals (today's `ManagedService` is a black-box cost/routing
   target, not a simulated internal engine)
-- LLM review persistence/history (today's AI cards are ephemeral — never persisted, never
-  serialized into `.scalemap`)
+- LLM review persistence/history (both AI surfaces — the one-shot architecture review's cards
+  AND the multi-turn chat assistant's transcript — are ephemeral, in-memory only, never persisted
+  and never serialized into `.scalemap`; closing the assistant or reloading the world discards
+  the conversation)
 - Streaming LLM responses / request cancellation (today's review request is a single blocking
-  round trip with one retry; no cancel button, no token streaming)
+  round trip with one retry; no cancel button, no token streaming. The chat assistant adds a
+  generation-counter **abandon** mechanism — `chat.store.ts`'s `requestGen`/`inFlightTurnId` lets
+  a stale turn's late resolve be discarded on close/retry — but this is not true request
+  cancellation: `llm_chat` itself is un-abortable once dispatched, with a fixed 60s Rust-side
+  timeout)
 - Connection POOL modeling (pool size, checkout wait, pool-exhaustion queueing) and a connection
   CEILING / refusal path — connection semantics are live, but RAM is deliberately the only
   constraint (see the two-call-site invariant above); a `WorkloadProfile.maxConnections` mirroring

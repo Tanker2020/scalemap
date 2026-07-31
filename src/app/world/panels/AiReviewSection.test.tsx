@@ -91,8 +91,9 @@ describe('AiReviewSection', () => {
     render(<AiReviewSection openSettings={() => {}} />)
     await waitFor(() => expect(screen.getByText('Review architecture')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Review architecture'))
-    await waitFor(() => expect(screen.getByText(region.id)).toBeInTheDocument())
-    fireEvent.click(screen.getByText(region.id))
+    // entityLabel resolves a region id to its catalogId ('us-east-1'), not the raw generated id
+    await waitFor(() => expect(screen.getByText(region.catalogId)).toBeInTheDocument())
+    fireEvent.click(screen.getByText(region.catalogId))
     expect(useNavStore.getState().level).toBe('region')
     expect(useNavStore.getState().regionId).toBe(region.id)
   })

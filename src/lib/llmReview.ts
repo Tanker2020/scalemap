@@ -7,6 +7,7 @@ import type { WorldDoc, CompiledWorld } from './world/types'
 import type { MetricsBatch } from './worldEngine/types'
 import type { AnalysisFinding } from './analysis/types'
 import { llmChat, type LlmSettings } from './tauri'
+import { chatComplete, type ChatMessage } from './llmClient'
 
 export interface AiIssue {
   title: string
@@ -102,20 +103,6 @@ radius, sequencing, cost/perf tradeoffs). ${SCHEMA_HINT}`
 
 const CORRECTIVE_NOTE = `Your previous reply was not valid JSON matching the schema. ${SCHEMA_HINT}`
 
-interface ChatMessage { role: string; content: string }
-
-async function callAndExtractContent(
-  settings: LlmSettings,
-  messages: ChatMessage[],
-  chat: typeof llmChat,
-): Promise<string> {
-  const body = { model: settings.model, response_format: { type: 'json_object' }, messages }
-  const raw = await chat(settings.baseUrl, settings.apiKey, JSON.stringify(body))
-  const parsed = JSON.parse(raw) as { error?: { message?: string }; choices?: { message: { content: string } }[] }
-  if (parsed.error) throw new Error(parsed.error.message ?? 'LLM error')
-  return parsed.choices![0].message.content
-}
-
 export async function requestReview(
   settings: LlmSettings,
   context: string,
@@ -125,29 +112,16 @@ export async function requestReview(
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: context },
   ]
-  const content = await callAndExtractContent(settings, messages, chat)
+  const content = await chatComplete(settings, messages, { jsonMode: true }, chat)
   try {
     return validateReviewResponse(content)
   } catch {
     const retryMessages: ChatMessage[] = [...messages, { role: 'system', content: CORRECTIVE_NOTE }]
-    const retryContent = await callAndExtractContent(settings, retryMessages, chat)
-    return validateReviewResponse(retryContent) // rethrows on a second failure — no further retry
+    const retryContent = await chatComplete(settings, retryMessages, { jsonMode: true }, chat)
+    return validateReviewResponse(retryContent)
   }
 }
 
 export async function pingLlm(settings: LlmSettings, chat: typeof llmChat = llmChat): Promise<void> {
-  const body = { model: settings.model, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }
-  const raw = await chat(settings.baseUrl, settings.apiKey, JSON.stringify(body))
-  // llm_chat returns the body for ANY HTTP status, so "the request went through" is not
-  // "the credentials work" — a 401's error envelope must fail the connection test.
-  let parsed: { error?: { message?: string }; choices?: unknown[] }
-  try {
-    parsed = JSON.parse(raw) as typeof parsed
-  } catch {
-    throw new Error('endpoint returned a non-JSON response — check the base URL')
-  }
-  if (parsed.error) throw new Error(parsed.error.message ?? 'LLM error')
-  if (!Array.isArray(parsed.choices) || parsed.choices.length === 0) {
-    throw new Error('endpoint responded without a completion — check the base URL and model')
-  }
+  await chatComplete(settings, [{ role: 'user', content: 'ping' }], { maxTokens: 1 }, chat)
 }

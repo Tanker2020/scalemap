@@ -20,6 +20,7 @@ import { openWorldViaDialog, saveWorld } from './fileOps'
 import { SettingsModal } from './SettingsModal'
 import { ConnectionsView } from './connections/ConnectionsView'
 import { FirewallRulesModal } from './server/FirewallRulesModal'
+import { AssistantView } from './ai/AssistantView'
 
 const hdrBtn: CSSProperties = {
   background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
@@ -39,6 +40,7 @@ export function WorldShell() {
   const running = useSimulationStore(s => s.running)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [connectionsOpen, setConnectionsOpen] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
   const [firewallRulesServerId, setFirewallRulesServerId] = useState<string | null>(null)
   const openFirewallRules = (serverId: string) => setFirewallRulesServerId(serverId)
   // Lifted here (not into GlobeView) because GlobeView and WorldPanel are SIBLINGS in the flex
@@ -136,6 +138,7 @@ export function WorldShell() {
         <Breadcrumb />
         <SimControls />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button className="kit-press" style={hdrBtn} aria-label="ai assistant" onClick={() => setChatOpen(true)}>ai</button>
           <button className="kit-press" style={hdrBtn} aria-label="settings" onClick={() => setSettingsOpen(true)}>settings</button>
           <span style={{ font: '10px var(--font-mono)', color: 'var(--color-text-muted)' }}>esc = up one level</span>
           {dirty && <span style={{ color: 'var(--color-warning)', font: '10px var(--font-mono)' }}>● unsaved</span>}
@@ -179,6 +182,7 @@ export function WorldShell() {
       </div>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <ConnectionsView open={connectionsOpen} onClose={() => setConnectionsOpen(false)} />
+      <AssistantView open={chatOpen} onClose={() => setChatOpen(false)} openSettings={() => setSettingsOpen(true)} />
       <FirewallRulesModal
         open={firewallRulesServerId !== null}
         serverId={firewallRulesServerId}
