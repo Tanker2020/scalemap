@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { managedDbRuntimeFor, SERVERLESS_BURST_MULTIPLIER } from './managedDbRuntime'
+import { aggregateManagedDbLoad, managedDbRuntimeFor, SERVERLESS_BURST_MULTIPLIER } from './managedDbRuntime'
 import type { ManagedService } from './world/types'
 
 // A managed SQL DB on the smallest class: writeRps 500 / readRps 2500 (dbInstanceClasses.ts).
@@ -120,5 +120,62 @@ describe('managedDbRuntimeFor — opt-out', () => {
     expect(rt.refusalFraction).toBe(0)
     expect(rt.connections).toBe(0)
     expect(rt.timeoutErrorFraction).toBe(0)
+  })
+})
+
+// ─── aggregateManagedDbLoad — write-fraction resolution (audit ISSUE-001) ─────
+// The AGGREGATE path splits totalRps into offeredWrite/offeredRead before measuring each against
+// writeCeiling/readCeiling. Reading the raw dependency field here measures a 100%-write mix
+// against readCeiling — often 5x larger — so a DB that should be visibly refusing at its
+// single-writer ceiling reads as comfortably under capacity.
+describe('aggregateManagedDbLoad — write fraction resolution', () => {
+  // Minimal fixture: one caller instance with one downstream row into the managed DB. Only the
+  // fields aggregateManagedDbLoad actually reads are populated.
+  function loadFixture(depWriteFraction: number | undefined) {
+    const prevFlows = {
+      'i-api': {
+        instanceId: 'i-api',
+        downstream: [{ dependencyId: 'd-db', toManagedServiceId: 'ms-db', rps: 1000, blocked: false }],
+      },
+    }
+    const doc = {
+      blueprints: { 'bp-api': { dependencies: [{ id: 'd-db', writeFraction: depWriteFraction }] } },
+    } as unknown as Parameters<typeof aggregateManagedDbLoad>[1]
+    const compiled = {
+      instances: { 'i-api': { blueprintId: 'bp-api' } },
+    } as unknown as Parameters<typeof aggregateManagedDbLoad>[2]
+    return { prevFlows, doc, compiled }
+  }
+
+  it('prefers the packet-derived write fraction over the raw dependency field', () => {
+    const { prevFlows, doc, compiled } = loadFixture(0)
+    const load = aggregateManagedDbLoad(prevFlows, doc, compiled, { 'd-db': { writeFraction: 1 } })
+    expect(load['ms-db'].writeFraction).toBe(1)
+    expect(load['ms-db'].totalRps).toBe(1000)
+  })
+
+  it('falls back to the dependency field when the mix derives nothing', () => {
+    const { prevFlows, doc, compiled } = loadFixture(0.4)
+    const load = aggregateManagedDbLoad(prevFlows, doc, compiled, { 'd-db': {} })
+    expect(load['ms-db'].writeFraction).toBeCloseTo(0.4)
+  })
+
+  it('omitting depBytesById entirely reproduces the pre-fix behaviour', () => {
+    const { prevFlows, doc, compiled } = loadFixture(0.4)
+    expect(aggregateManagedDbLoad(prevFlows, doc, compiled)['ms-db'].writeFraction).toBeCloseTo(0.4)
+  })
+
+  // The consequence the split actually drives: writes measure against writeCeiling (500 on
+  // sql.small), reads against readCeiling (2500). 1000 rps of pure writes is 2x over its ceiling
+  // and must refuse; the same 1000 rps read as pure reads sits comfortably under.
+  it('the resolved split is what decides whether the single-writer ceiling binds', () => {
+    const { prevFlows, doc, compiled } = loadFixture(0)
+    const derived = aggregateManagedDbLoad(prevFlows, doc, compiled, { 'd-db': { writeFraction: 1 } })['ms-db']
+    const stale = aggregateManagedDbLoad(prevFlows, doc, compiled)['ms-db']
+
+    const asWrites = managedDbRuntimeFor(sqlDb(), derived.totalRps, derived.writeFraction)!
+    const asReads = managedDbRuntimeFor(sqlDb(), stale.totalRps, stale.writeFraction)!
+    expect(asWrites.refusalFraction).toBeGreaterThan(0)   // 1000 writes vs a 500 ceiling
+    expect(asReads.refusalFraction).toBe(0)               // 1000 reads vs a 2500 ceiling
   })
 })

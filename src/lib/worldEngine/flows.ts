@@ -554,7 +554,12 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
       // an even split across ALL compiled targets (blocked ones included — the caller can't see
       // the misconfig); for a DB target it partitions into writes→primary / reads→replicas.
       const targetBp = dep.target.kind === 'blueprint' ? doc.blueprints[dep.target.blueprintId] : undefined
-      const shares = splitDependencyShares(admitted, candidates, roleOf, targetBp, dep.writeFraction ?? 0, healthWeightOf)
+      // A bound db packet mix DERIVES the write fraction from its query types and is the single
+      // source of truth when present — identical fallback chain to the managed-service branch
+      // below, so primary/replica ROUTING and managed-DB capacity can never disagree about the
+      // split, and neither can disagree with what EdgeInspector displays (audit ISSUE-001).
+      const depWriteFraction = input.depBytesById?.[dep.id]?.writeFraction ?? dep.writeFraction ?? 0
+      const shares = splitDependencyShares(admitted, candidates, roleOf, targetBp, depWriteFraction, healthWeightOf)
 
       for (let ci = 0; ci < candidates.length; ci++) {
         const path = candidates[ci]

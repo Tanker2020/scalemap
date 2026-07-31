@@ -156,6 +156,14 @@ export function aggregateManagedDbLoad(
   prevFlows: Record<InstanceId, { instanceId: InstanceId; downstream: { dependencyId: string; toManagedServiceId?: string; rps: number; blocked: boolean }[] }>,
   doc: WorldDoc,
   compiled: CompiledWorld,
+  // Resolved per-dependency wire sizes from the engine's start()-time index (audit ISSUE-001).
+  // A bound db packet mix derives the write fraction from its query types and supersedes the
+  // edge's hand-authored slider — which EdgeInspector hides once a mix is bound, so reading the
+  // raw field here would measure saturation against a split the user cannot see. Structurally
+  // typed rather than importing WireSize, to keep this module free of packetResolve: the ONE
+  // resolution point is buildDepWireBytes in the engine, and this reads its output.
+  // Optional: absent ⇒ the raw dependency field, so existing direct callers are unchanged.
+  depBytesById?: Record<string, { writeFraction?: number }>,
 ): Record<ManagedServiceId, { totalRps: number; writeFraction: number }> {
   const acc: Record<ManagedServiceId, { totalRps: number; writeRps: number }> = {}
   for (const flow of Object.values(prevFlows)) {
@@ -166,7 +174,10 @@ export function aggregateManagedDbLoad(
       if (!msId || row.rps <= 0) continue
       // Blocked rows never reached the service — they were refused at the caller.
       if (row.blocked) continue
-      const w = Math.min(1, Math.max(0, bp?.dependencies.find(d => d.id === row.dependencyId)?.writeFraction ?? 0))
+      const w = Math.min(1, Math.max(0,
+        depBytesById?.[row.dependencyId]?.writeFraction
+        ?? bp?.dependencies.find(d => d.id === row.dependencyId)?.writeFraction
+        ?? 0))
       const a = acc[msId] ?? { totalRps: 0, writeRps: 0 }
       a.totalRps += row.rps
       a.writeRps += row.rps * w
@@ -186,8 +197,10 @@ export function managedDbRuntime(
   prevFlows: Parameters<typeof aggregateManagedDbLoad>[0],
   doc: WorldDoc,
   compiled: CompiledWorld,
+  // Forwarded to aggregateManagedDbLoad — see its parameter doc (audit ISSUE-001).
+  depBytesById?: Parameters<typeof aggregateManagedDbLoad>[3],
 ): ManagedDbRuntime {
-  const load = aggregateManagedDbLoad(prevFlows, doc, compiled)
+  const load = aggregateManagedDbLoad(prevFlows, doc, compiled, depBytesById)
   const out: ManagedDbRuntime = {}
   for (const ms of Object.values(doc.managedServices)) {
     const l = load[ms.id] ?? { totalRps: 0, writeFraction: 0 }

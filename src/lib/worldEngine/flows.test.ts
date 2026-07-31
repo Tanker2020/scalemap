@@ -9,6 +9,7 @@ import {
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
 import { managedDbRuntime } from '../managedDbRuntime'
+import { resolveWireSize } from '../packetResolve'
 import type { WorldDoc, BlueprintDependency } from '../world/types'
 import type { HealthState } from './types'
 
@@ -369,6 +370,71 @@ describe('solveFlows — DB read/write routing', () => {
     // so read it defensively — the point is the primary saw no load.
     expect(flows[instanceId(primaryPl.id, 0)]?.offeredRps ?? 0).toBeCloseTo(0)
     expect(flows[instanceId(replicaPl.id, 0)].offeredRps).toBeCloseTo(500)
+  })
+
+  // ── audit ISSUE-001 ────────────────────────────────────────────────────────
+  // A bound db packet mix DERIVES writeFraction from its query types, and EdgeInspector hides the
+  // hand-authored slider once a mix is bound — so the raw BlueprintDependency.writeFraction stays
+  // at its default while the user is shown the derived value. Routing must follow the derived one,
+  // or a 100%-write mix routes entirely to the replicas and the SQL single-writer ceiling — the
+  // whole point of the primary/replica split — silently never binds.
+  it('routes on the packet-derived write fraction, not the stale hand-authored field', () => {
+    // dep field says 0 (pure reads); the bound mix derives 1 (pure writes). Derived must win.
+    const { doc, api, primaryIid, replicaIids } = apiToSqlCluster(0, 1)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 1000 }, {
+      depBytesById: { 'd-db': { reqBytes: 0, respBytes: 0, sizeKb: 0, sigma: 0, amplification: 1, writeFraction: 1 } },
+    }))
+    expect(flows[primaryIid].offeredRps).toBeCloseTo(1000)
+    expect(flows[replicaIids[0]]?.offeredRps ?? 0).toBeCloseTo(0)
+  })
+
+  it('falls back to the dependency field when the mix derives no write fraction', () => {
+    // writeFraction absent on the WireSize entry means "no db packet in the mix" — NOT "0% writes".
+    // The edge's own 0.2 must survive, exactly as it did before depBytesById existed.
+    const { doc, api, primaryIid, replicaIids } = apiToSqlCluster(0.2, 1)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 1000 }, {
+      depBytesById: { 'd-db': { reqBytes: 0, respBytes: 0, sizeKb: 0, sigma: 0, amplification: 1 } },
+    }))
+    expect(flows[primaryIid].offeredRps).toBeCloseTo(200)
+    expect(flows[replicaIids[0]].offeredRps).toBeCloseTo(800)
+  })
+
+  // DIVERGENCE GUARD (audit ISSUE-001), following the idiom in index.test.ts's connection-RAM
+  // guard: pin the value the USER IS SHOWN to the value the ENGINE ROUTES ON, through the one
+  // shared resolver both call — resolveWireSize. EdgeInspector displays
+  // `wire.writeFraction ?? dep.writeFraction ?? 0` (ConnectionsView.tsx:369-370) and the engine's
+  // buildDepWireBytes (index.ts:189) folds the identical chain into depBytesById. Correcting the
+  // routing number without this guard does not close the issue: the two can silently re-diverge.
+  it('DIVERGENCE GUARD: the displayed write fraction is the one routing actually splits on', () => {
+    const { doc, api, primaryIid, replicaIids } = apiToSqlCluster(0, 1)
+
+    // A non-degenerate 70/30 write/read query mix — not 0 or 1, so an accidental fallback to the
+    // dependency field (0) or to a hardcoded 1 would both be caught.
+    doc.packets = {
+      mode: 'custom',
+      nextId: 3,
+      templates: {
+        1: { id: 1, name: 'insert-order', protocol: 'db', sizeKb: 1, queryType: 'write', isWAL: false, resultSizeKb: 1 },
+        2: { id: 2, name: 'select-order', protocol: 'db', sizeKb: 1, queryType: 'read', isWAL: false, resultSizeKb: 4 },
+      },
+    }
+    const depDb = api.bp.dependencies[0]
+    depDb.packetMix = [{ packetId: 1, weight: 70 }, { packetId: 2, weight: 30 }]
+
+    // The UI's chain, verbatim (ConnectionsView.tsx:369-370).
+    const wire = resolveWireSize(doc.packets, depDb.packetMix, depDb.reqKb, depDb.respKb)
+    const displayed = wire.writeFraction ?? depDb.writeFraction ?? 0
+    expect(displayed).toBeCloseTo(0.7)
+
+    // The engine's chain, verbatim (index.ts:189) — same resolver, same fallback.
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 1000 }, {
+      depBytesById: { [depDb.id]: { ...wire, writeFraction: wire.writeFraction ?? depDb.writeFraction ?? 0 } },
+    }))
+
+    const toPrimary = flows[primaryIid].offeredRps
+    const toReplica = flows[replicaIids[0]].offeredRps
+    const routedWriteFraction = toPrimary / (toPrimary + toReplica)
+    expect(routedWriteFraction).toBeCloseTo(displayed, 10)
   })
 })
 

@@ -826,7 +826,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // AGGREGATE load, which the solver's per-dependency loop cannot see — so it is computed once
     // here and both the solver and the metrics window read the same entries. One-step lag, exactly
     // like admittedScale. Skipped outright when the world has no managed DB (audit ISSUE-079).
-    const managedDbRt = s.hasManagedDbs ? managedDbRuntime(s.prevFlows, doc, compiled) : {}
+    // s.depBytesById carries the packet-derived write fraction (audit ISSUE-001) so the AGGREGATE
+    // read/write split measured against writeCeiling/readCeiling matches the one the solver routes
+    // primaries/replicas on, and the one EdgeInspector displays.
+    const managedDbRt = s.hasManagedDbs ? managedDbRuntime(s.prevFlows, doc, compiled, s.depBytesById) : {}
     const { flows, totals } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       extraLatencyMsByServer,
