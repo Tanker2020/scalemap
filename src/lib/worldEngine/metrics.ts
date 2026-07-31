@@ -40,7 +40,12 @@ interface InstanceWindow {
   steps: number
   admittedSum: number
   errorSum: number
-  latencies: number[]   // per-step sampled service latencies (window-local, sorted at batch)
+  latencies: number[]         // per-step COMPOSED (totalLatencyMs) samples (window-local, sorted at batch)
+  // Sum of per-step SELF-only serviceLatencyMs samples (audit ISSUE-003) — a plain windowed mean,
+  // EMA'd at buildBatch, mirroring rps/errorRate rather than the multi-second percentile reservoir
+  // `latencies` gets: serviceP50Ms is a regression-floor readout (what p50Ms meant before this
+  // issue), not a new tail statistic.
+  selfLatencySum: number
 }
 
 interface ServerWindow { inBytes: number; outBytes: number }
@@ -126,13 +131,17 @@ export function accumulateStep(
   for (const f of Object.values(flows)) {
     let w = state.window.get(f.instanceId)
     if (!w) {
-      w = { steps: 0, admittedSum: 0, errorSum: 0, latencies: [] }
+      w = { steps: 0, admittedSum: 0, errorSum: 0, latencies: [], selfLatencySum: 0 }
       state.window.set(f.instanceId, w)
     }
     w.steps++
     w.admittedSum += f.admittedRps
     w.errorSum += f.errorRps + f.refusedRps
-    w.latencies.push(f.serviceLatencyMs)
+    // Composed end-to-end latency feeds the published p50/p99/activeConnections (audit ISSUE-003)
+    // — self-only serviceLatencyMs is tracked separately below as serviceP50Ms. Fallback to
+    // serviceLatencyMs covers hand-built InstanceFlow test fixtures that predate this field.
+    w.latencies.push(f.totalLatencyMs ?? f.serviceLatencyMs)
+    w.selfLatencySum += f.serviceLatencyMs
     for (const row of f.downstream) {
       if (!row.toManagedServiceId) continue
       // A blocked managed row is a refusal — EXCEPT a Phase 5.4 timeout row, which reached the
@@ -253,7 +262,7 @@ export function buildBatch(
   // ── Instances ──
   for (const inst of Object.values(compiled.instances)) {
     const bp = doc.blueprints[inst.blueprintId]
-    const w = state.window.get(inst.id) ?? { steps: 1, admittedSum: 0, errorSum: 0, latencies: [0] }
+    const w = state.window.get(inst.id) ?? { steps: 1, admittedSum: 0, errorSum: 0, latencies: [0], selfLatencySum: 0 }
     const windowRps = w.admittedSum / Math.max(1, w.steps)
     // Error rate = fraction of offered traffic (admitted + errored/refused) that failed —
     // always in [0,1]; a fully-down instance (admitted 0, errors>0) reports 1.0.
@@ -275,6 +284,10 @@ export function buildBatch(
     // to ~30% of its size, hiding exactly the transients a tail metric exists to show. The
     // multi-second reservoir already steadies it; p50 keeps the EMA for stable display.
     const p99Ms = percentile(sorted, 0.99)
+    // Self-only p50 (audit ISSUE-003): pre-composition semantics — own CPU/queue/NIC time, no
+    // downstream hops folded in. A plain EMA'd window mean, not the multi-second tail reservoir
+    // p50Ms/p99Ms use above, since this is a regression-floor readout, not a new tail statistic.
+    const serviceP50Ms = ema(state, `i:${inst.id}:selfp50`, w.selfLatencySum / Math.max(1, w.steps))
     // Little's law, parameterized by the instance's connection profile (see connProfiles above).
     // keep-alive ⇒ exactly the historical `rps * (p50Ms / 1000)`.
     const activeConnections = activeConnectionsOf(rps, p50Ms, connProfiles?.[inst.id] ?? KEEP_ALIVE_PROFILE)
@@ -298,6 +311,7 @@ export function buildBatch(
       errorRate,
       p50Ms,
       p99Ms,
+      serviceP50Ms,
       activeConnections,
       cpuCoresUsed: rps * (effectiveCpuMsByInstance?.[inst.id] ?? workload.cpuMsPerRequest) / 1000,
       ramMb: memLimitMb != null ? Math.min(rawRamMb, memLimitMb) : rawRamMb,

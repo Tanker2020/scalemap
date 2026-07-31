@@ -19,6 +19,9 @@ import type { HealthState } from './types'
 import type { Rng } from './rng'
 import { sampleLatencyMs } from './latency'
 import { pathKey } from './breakers'
+import { baseHopLatencyMs } from './networkRuntime'
+import { REGION_GEO } from '../world/regionGeo'
+import { managedBaseLatencyMs } from '../managedCapacity'
 import { getDbInstanceClass } from '../dbInstanceClasses'
 // Type-only: managedDbRuntime.ts imports managedDbCeilings from here, so a VALUE import would be a
 // runtime cycle. `import type` erases at compile time and keeps the dependency one-way.
@@ -285,7 +288,17 @@ export interface InstanceFlow {
   admittedRps: number
   errorRps: number
   refusedRps: number
-  serviceLatencyMs: number                          // sampled, multiplied
+  serviceLatencyMs: number                          // sampled, multiplied — SELF time only
+  // Composed end-to-end latency (audit ISSUE-003): serviceLatencyMs + the rps-weighted mean, over
+  // this instance's non-blocked downstream rows, of (network hop + that row's own totalLatencyMs).
+  // This is what a caller/client actually waits on — serviceLatencyMs alone previously made a
+  // 3-hop chain's entry instance report the SAME latency as a leaf with no dependencies at all,
+  // so activeConnections() (Little's law) never grew when a downstream dependency slowed down.
+  // Filled in a post-BFS composition pass; equals serviceLatencyMs for a leaf instance. Optional
+  // (additive): solveFlows always populates it, but a hand-built test fixture that constructs an
+  // InstanceFlow directly (metrics.test.ts, replay.test.ts) may omit it — every reader falls back
+  // to serviceLatencyMs, the exact pre-ISSUE-003 value, so those fixtures stay meaningful unchanged.
+  totalLatencyMs?: number
   downstream: DownstreamFlow[]
 }
 
@@ -382,6 +395,7 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
         errorRps: 0,
         refusedRps: 0,
         serviceLatencyMs: sampleLatencyMs(p50, p50 * SERVICE_P99_OVER_P50, rng) * multiplier + extraMs,
+        totalLatencyMs: 0,   // placeholder; overwritten by the composition pass before return
         downstream: [],
       }
       flows[id] = f
@@ -641,6 +655,70 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
         queue.push({ instanceId: toId, offered: share, depth: item.depth + 1, parent: item })
       }
     }
+  }
+
+  // ── Composed end-to-end latency (audit ISSUE-003) ──
+  // A post-pass, not inline during BFS: flows are created in first-touch order, which is not
+  // necessarily topological — an instance reached via a short path early may also be reached via a
+  // longer path later, so its downstream rows (and therefore its own composed time) aren't settled
+  // until the whole BFS is done. Memoized DFS over the (mostly-DAG) downstream graph; a genuine
+  // cycle in the topology (A depends on B depends on A) is NOT fully prevented by the BFS's
+  // chainHas guard above — that guard only stops re-queueing, the row back into the cycle is still
+  // recorded — so `computing` breaks an in-progress cycle by treating the back-edge as the callee's
+  // self time only, rather than recursing forever.
+  const totalLatencyMemo = new Map<InstanceId, number>()
+  const computing = new Set<InstanceId>()
+
+  const managedServiceLatencyMs = (managedServiceId: string): number => {
+    const rt = input.managedDbRuntime?.[managedServiceId]
+    if (rt) return rt.p50Ms
+    const ms = doc.managedServices[managedServiceId]
+    return managedBaseLatencyMs(ms?.nodeType ?? '')
+  }
+
+  const computeTotalLatencyMs = (id: InstanceId): number => {
+    const cached = totalLatencyMemo.get(id)
+    if (cached !== undefined) return cached
+    const f = flows[id]
+    if (!f) return 0
+    if (computing.has(id)) return f.serviceLatencyMs   // cycle back-edge: stop at self time
+    computing.add(id)
+
+    const inst = compiled.instances[id]
+    const fromCatalogId = inst ? (doc.regions[inst.regionId]?.catalogId ?? null) : null
+
+    let weightedSum = 0
+    let rpsTotal = 0
+    for (const row of f.downstream) {
+      if (row.blocked || row.rps <= 0) continue
+      let downstreamMs: number
+      let toCatalogId: string | null = null
+      if (row.toInstanceId != null) {
+        downstreamMs = computeTotalLatencyMs(row.toInstanceId)
+        const toInst = compiled.instances[row.toInstanceId]
+        toCatalogId = toInst ? (doc.regions[toInst.regionId]?.catalogId ?? null) : null
+      } else if (row.toManagedServiceId != null) {
+        downstreamMs = managedServiceLatencyMs(row.toManagedServiceId)
+      } else {
+        downstreamMs = 0
+      }
+      // Deterministic (un-jittered) hop estimate — see baseHopLatencyMs's header. This pass runs
+      // over every downstream row every step; drawing from the seeded rng here would shift the
+      // stream for the remainder of the step, invalidating unrelated exact-value assertions
+      // (byte totals, particle picks, VPS steal, ...) that have nothing to do with latency.
+      const networkMs = baseHopLatencyMs(row.hopClass, fromCatalogId, toCatalogId, null, REGION_GEO)
+      weightedSum += row.rps * (networkMs + downstreamMs)
+      rpsTotal += row.rps
+    }
+
+    const composed = f.serviceLatencyMs + (rpsTotal > EPSILON_RPS ? weightedSum / rpsTotal : 0)
+    computing.delete(id)
+    totalLatencyMemo.set(id, composed)
+    return composed
+  }
+
+  for (const id of Object.keys(flows)) {
+    flows[id].totalLatencyMs = computeTotalLatencyMs(id)
   }
 
   return { flows, totals }

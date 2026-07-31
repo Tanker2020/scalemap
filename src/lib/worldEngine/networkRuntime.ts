@@ -16,6 +16,41 @@ const CROSS_REGION_FALLBACK_MS = 80 // catalog id unknown — AMER<->EMEA-magnit
 const jitter = (base: number, rng: Rng): number =>
   Math.max(0, base * (1 + rng.range(-HOP_JITTER_FRACTION, HOP_JITTER_FRACTION)))
 
+// The un-jittered expected value for a hop (audit ISSUE-003): factored out of hopLatencyMs so a
+// caller that needs a deterministic latency ESTIMATE — the flow solver's per-step composed-latency
+// pass, which touches every downstream row every tick — never has to draw from the seeded rng to
+// get one. Drawing there would shift the rng stream for the rest of the step (particle picks, VPS
+// steal, breaker jitter, ...), invalidating every other exact-value test in the suite for a number
+// that only needs to be a reasonable estimate, not a sampled realization. hopLatencyMs itself is
+// unchanged — same jitter, same rng draws, same callers (the tracer).
+export function baseHopLatencyMs(
+  hopClass: HopClass | 'internet',
+  fromRegionCatalogId: string | null,
+  toRegionCatalogId: string | null,
+  popLatLon: [number, number] | null,
+  regionGeo: Record<string, { lat: number; lon: number }>,
+): number {
+  switch (hopClass) {
+    case 'localhost':
+      return LOCALHOST_MS
+    case 'same-az':
+      return SAME_AZ_MS
+    case 'cross-az':
+      return CROSS_AZ_MS
+    case 'cross-region': {
+      if (!fromRegionCatalogId || !toRegionCatalogId) return CROSS_REGION_FALLBACK_MS
+      const base = interRegionLatencyMs(fromRegionCatalogId, toRegionCatalogId)
+      return base > 0 ? base : CROSS_REGION_FALLBACK_MS
+    }
+    case 'internet': {
+      const geo = toRegionCatalogId ? regionGeo[toRegionCatalogId] : undefined
+      if (!popLatLon || !geo) return INTERNET_FALLBACK_MS
+      const km = greatCircleKm(popLatLon[0], popLatLon[1], geo.lat, geo.lon)
+      return km / INTERNET_KM_PER_MS
+    }
+  }
+}
+
 // Cross-region intentionally uses the PURE interRegionLatencyMs + rng jitter rather than
 // regionConfig's sampleInterRegionLatencyMs (which calls Math.random — forbidden inside
 // worldEngine). Identical distribution, deterministic under seed. SKELETON CONCERNS #1.
@@ -27,25 +62,7 @@ export function hopLatencyMs(
   regionGeo: Record<string, { lat: number; lon: number }>,
   rng: Rng,
 ): number {
-  switch (hopClass) {
-    case 'localhost':
-      return jitter(LOCALHOST_MS, rng)
-    case 'same-az':
-      return jitter(SAME_AZ_MS, rng)
-    case 'cross-az':
-      return jitter(CROSS_AZ_MS, rng)
-    case 'cross-region': {
-      if (!fromRegionCatalogId || !toRegionCatalogId) return jitter(CROSS_REGION_FALLBACK_MS, rng)
-      const base = interRegionLatencyMs(fromRegionCatalogId, toRegionCatalogId)
-      return jitter(base > 0 ? base : CROSS_REGION_FALLBACK_MS, rng)
-    }
-    case 'internet': {
-      const geo = toRegionCatalogId ? regionGeo[toRegionCatalogId] : undefined
-      if (!popLatLon || !geo) return jitter(INTERNET_FALLBACK_MS, rng)
-      const km = greatCircleKm(popLatLon[0], popLatLon[1], geo.lat, geo.lon)
-      return jitter(km / INTERNET_KM_PER_MS, rng)
-    }
-  }
+  return jitter(baseHopLatencyMs(hopClass, fromRegionCatalogId, toRegionCatalogId, popLatLon, regionGeo), rng)
 }
 
 // ─── NIC caps ─────────────────────────────────────────────────────────────────

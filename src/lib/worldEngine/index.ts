@@ -729,7 +729,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         const pf = s.prevFlows[i.id]
         const bp = doc.blueprints[i.blueprintId]
         const admitted = pf?.admittedRps ?? 0
-        const latency = pf?.serviceLatencyMs ?? effectiveCpuMs(i.id, bp)
+        // Composed end-to-end latency (audit ISSUE-003), not self-only serviceLatencyMs: this is
+        // the OTHER of the two Little's-law call sites (metrics.ts's published activeConnections
+        // is the other), so a caller blocked on a slow dependency must hold MORE connections here
+        // too, or the RAM the scheduler enforces/OOM-kills on would silently diverge from what
+        // metrics.ts publishes and the user sees.
+        const latency = pf?.totalLatencyMs ?? pf?.serviceLatencyMs ?? effectiveCpuMs(i.id, bp)
         const runtime = doc.placements[i.placementId]?.runtime
         return {
           instanceId: i.id,

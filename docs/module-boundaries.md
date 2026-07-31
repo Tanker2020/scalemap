@@ -4404,3 +4404,86 @@ Every bug-catching assertion in this wave was verified to FAIL with its fix reve
 - `packetResolve.test.ts` / `nodeConfig.test.ts` — absent `sizeKb` never yields NaN (including
   blended with a sized packet); all four protocols round-trip through the exhaustive constructor
   with their kind-specific fields intact.
+
+## Multi-Protocol Connection Audit — Wave 2: composed end-to-end latency (`audit-spec.md`, 2026-07-31)
+
+**Lands alone, per the spec** — this is the wave that deliberately changes engine-computed
+numbers, not a divergence/type fix. `InstanceFlow.serviceLatencyMs` (`flows.ts`) was SELF time
+only — an instance's own CPU/queue/NIC cost, sampled once per instance in BFS creation order. Two
+things about this were wrong: (1) the published `p50Ms`/`p99Ms`/`activeConnections` never grew
+when a downstream dependency slowed down, so the canonical "slow dependency → connection pileup →
+OOM" cascade was structurally unreachable; (2) `replay.ts`'s tracer already composed hop-by-hop
+latency correctly for its own sampled path (`totalMs`), so the Trace panel and the metrics p50 chip
+for the same instance could show two different "latency" numbers with no explanation.
+
+### ISSUE-003 — `InstanceFlow.totalLatencyMs` (`flows.ts`, `metrics.ts`, `index.ts`)
+
+`solveFlows` now runs a memoized post-BFS composition pass (after every flow's `downstream` array
+is settled — flows are created in first-touch, not topological, order, so an instance's own
+downstream rows aren't final until the whole BFS finishes) filling a new `InstanceFlow.
+totalLatencyMs`: `serviceLatencyMs + rps-weighted mean over non-blocked downstream rows of
+(hop time + that row's totalLatencyMs)`. A managed target's contribution is
+`managedDbRuntime[id]?.p50Ms ?? managedBaseLatencyMs(nodeType)` — the same fallback chain
+`replay.ts` already uses. `totalLatencyMs` is optional on `InstanceFlow` (not part of the frozen
+`worldEngine/types.ts` contract) so hand-built flow fixtures in `metrics.test.ts`/`replay.test.ts`
+that predate this field compile unchanged; every consumer falls back to `serviceLatencyMs`.
+
+⚠ **Deliberate departure from the spec's literal instruction to reuse `hopLatencyMs`.** That
+function draws from the engine's seeded rng (`jitter`). The composition pass touches every
+downstream row every step (not once per trace sample like the tracer) — drawing rng there would
+shift the stream for the REST of the step (particle picks, VPS steal, breaker jitter, every
+subsequent `sampleLatencyMs` call), invalidating hundreds of unrelated exact-value assertions for a
+number that only needs to be a reasonable composition estimate, not a sampled realization.
+`networkRuntime.ts` now exports `baseHopLatencyMs` — the identical per-hop-class value
+`hopLatencyMs` already computed internally before applying `jitter()`, factored out as a pure,
+rng-free function. `hopLatencyMs` itself is unchanged (same jitter, same rng draws, same only
+caller — the tracer). This is why the full suite needed **zero** golden-value re-baselining despite
+Global Constraint 4 anticipating some: no existing test exercises a multi-hop chain while also
+asserting the composed-latency-sensitive fields (`p50Ms`/`p99Ms`/`activeConnections`/`ramMb`) for a
+non-leaf instance, and the rng stream is untouched everywhere else.
+
+A genuine topology cycle (A depends on B depends on A) is NOT fully prevented by the BFS's
+`chainHas` guard — that guard only stops re-*queueing*; the row back into the cycle is still
+recorded in `downstream`. The composition pass's `computing` set breaks an in-progress cycle by
+treating the back-edge as the callee's self time only, rather than recursing forever.
+
+**The two-call-site invariant, extended.** Both Little's-law sites now read composed latency
+consistently: `index.ts`'s host-scheduler `InstanceLoad` (`const latency = pf?.totalLatencyMs ??
+pf?.serviceLatencyMs ?? effectiveCpuMs(...)`, one-step-lagged like `admittedScale`) and
+`metrics.ts`'s published `activeConnections` (fed by `p50Ms`, itself now sourced from a percentile
+reservoir of `totalLatencyMs` samples instead of `serviceLatencyMs`). A caller blocked on a slow
+dependency now holds more connections — and more RAM — on BOTH sides, or the RAM the scheduler
+enforces/OOM-kills on would silently diverge from what `metrics.ts` publishes.
+
+**New field, additive-optional on the frozen contract:** `InstanceMetrics.serviceP50Ms` (`types.ts`,
+logged in `.superpowers/sdd/contract-drift.md`) preserves the PRE-ISSUE-003 self-only semantics —
+`p50Ms`/`p99Ms` deliberately mean something different (composed) after this change, so anything
+that wants "how long did this instance's own work take" reads `serviceP50Ms` instead. `metrics.ts`'s
+`InstanceWindow` gained a parallel `selfLatencySum` accumulator, EMA'd the same way `rps`/
+`errorRate` are (a plain windowed mean — `serviceP50Ms` is a regression-floor readout, not a new
+tail statistic, so it does not need the multi-second percentile reservoir `p50Ms`/`p99Ms` get).
+
+`replay.ts`'s tracer is untouched — its hop-by-hop `totalMs` is a genuinely different statistic
+(one rng-sampled realization of a single path) from the composition pass's rps-weighted mean over
+every path, and the spec explicitly keeps them independent as a cross-check rather than unifying
+them.
+
+### Tests
+
+- `flows.test.ts` — a leaf instance's `totalLatencyMs` exactly equals `serviceLatencyMs`; a 3-hop
+  chain composes recursively (hand-verified against `baseHopLatencyMs`'s exact constants, `toBe`/
+  `toBeCloseTo`); multi-dependency fan-out weights by each row's rps share; a genuine A→B→A cycle
+  terminates with a finite value; a blocked row contributes nothing.
+- `metrics.test.ts` — `p50Ms` sources from `totalLatencyMs`, `serviceP50Ms` from
+  `serviceLatencyMs`, from one fixture where the two deliberately disagree; a fixture that omits
+  `totalLatencyMs` entirely still publishes the exact pre-existing `p50Ms` value (regression floor).
+- `index.test.ts` — an engine-level `web → api → db` fixture (each service on its OWN server, so
+  db's cost can't spill onto api's CPU scheduling) where only `db`'s `cpuMsPerRequest` differs
+  between two runs: api's composed `p50Ms` grows, its `serviceP50Ms` does not, and its
+  `activeConnections` more than doubles — proving Little's law actually reacts to a slow
+  dependency. A **DIVERGENCE GUARD** in the same style as Wave 1's, confirming scheduler-enforced
+  and published RAM stay within the same bounded ratio once a downstream dependency is slow.
+- Every bug-catching assertion above was verified to FAIL with the composition pass reverted (via
+  `git stash`, not amending); the full pre-existing suite (1631 tests) passed unchanged both before
+  and after — this wave's blast radius is exactly the fields the spec intended to change, nothing
+  else.

@@ -130,6 +130,39 @@ describe('metrics pyramid', () => {
     expect(spiked.instances[f.i1].p50Ms).toBeLessThan(200)            // p50 still smoothed
   })
 
+  // Audit ISSUE-003: p50Ms/p99Ms now source from COMPOSED latency (totalLatencyMs — self + folded
+  // downstream time), while serviceP50Ms preserves the pre-ISSUE-003 self-only semantics. A flow
+  // fixture with the two fields deliberately different pins that p50Ms tracks totalLatencyMs, not
+  // serviceLatencyMs.
+  it('publishes p50Ms from composed totalLatencyMs and serviceP50Ms from self-only serviceLatencyMs', () => {
+    const f = fixture()
+    const state = createMetricsState()
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state,
+        { [f.i1]: flow(f.i1, 100, { serviceLatencyMs: 10, totalLatencyMs: 250 }) },
+        { [f.s1.id]: host() }, {}, {}, healthy, s * 100)
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    expect(batch.instances[f.i1].p50Ms).toBeCloseTo(250, 1)
+    expect(batch.instances[f.i1].serviceP50Ms).toBeCloseTo(10, 1)
+  })
+
+  // Regression floor: a fixture that omits totalLatencyMs entirely (every fixture above, and any
+  // pre-ISSUE-003 caller of buildBatch) must publish byte-identical p50Ms to before this issue —
+  // the fallback to serviceLatencyMs is exact, not approximate.
+  it('falls back to serviceLatencyMs for p50Ms when a flow fixture omits totalLatencyMs', () => {
+    const f = fixture()
+    const state = createMetricsState()
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state,
+        { [f.i1]: flow(f.i1, 100, { serviceLatencyMs: 42 }) },
+        { [f.s1.id]: host() }, {}, {}, healthy, s * 100)
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    expect(batch.instances[f.i1].p50Ms).toBeCloseTo(42, 1)
+    expect(batch.instances[f.i1].serviceP50Ms).toBeCloseTo(42, 1)
+  })
+
   it('computes healthScore = 100 × (1 − errorRate) × healthFactor', () => {
     const f = fixture()
     const state = createMetricsState()

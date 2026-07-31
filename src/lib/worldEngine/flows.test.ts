@@ -291,6 +291,79 @@ describe('solveFlows — byte totals and latency', () => {
   })
 })
 
+// ─── Composed end-to-end latency (audit ISSUE-003, Wave 2) ──────────────────
+// serviceLatencyMs is SELF time only (own CPU/queue/NIC). totalLatencyMs additionally folds in
+// every non-blocked downstream row's (network hop + that row's own totalLatencyMs), rps-weighted
+// — what a caller/client actually waits on. Before this fix, a caller reported the same latency
+// as a leaf with no dependencies at all.
+describe('solveFlows — composed end-to-end latency (audit ISSUE-003)', () => {
+  it('a leaf instance (no dependencies) has totalLatencyMs exactly equal to serviceLatencyMs', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(flows[api.iid].totalLatencyMs).toBe(flows[api.iid].serviceLatencyMs)
+  })
+
+  it('composes a 3-hop chain recursively: total = self + hop + downstream.total', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const svc = addService(doc, 'svc', server.id, 1)
+    const db = addService(doc, 'db', server.id, 2)
+    api.bp.dependencies = [dep('d-svc', svc.bp.id)]
+    svc.bp.dependencies = [dep('d-db', db.bp.id)]
+
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    // localhost's expected hop time is a fixed 0.1ms constant (the composition pass is rng-free —
+    // see baseHopLatencyMs — so this is exact, not a sampled/jittered value).
+    const dbTotal = flows[db.iid].totalLatencyMs!
+    const svcTotal = flows[svc.iid].totalLatencyMs!
+    expect(dbTotal).toBe(flows[db.iid].serviceLatencyMs)
+    expect(svcTotal).toBeCloseTo(flows[svc.iid].serviceLatencyMs + 0.1 + dbTotal, 9)
+    expect(flows[api.iid].totalLatencyMs).toBeCloseTo(flows[api.iid].serviceLatencyMs + 0.1 + svcTotal, 9)
+    // Strictly exceeds self time once there's a real downstream chain — the bug this issue fixes.
+    expect(flows[api.iid].totalLatencyMs!).toBeGreaterThan(flows[api.iid].serviceLatencyMs)
+  })
+
+  it("weights fan-out across multiple dependencies by each row's rps share", () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const cache = addService(doc, 'cache', server.id, 1)
+    const db = addService(doc, 'db', server.id, 2)
+    api.bp.dependencies = [dep('d-cache', cache.bp.id), dep('d-db', db.bp.id)]
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    // Call-per-request: both deps fan out the FULL 100 rps, so they weigh 50/50 in the mean.
+    const cacheTotal = flows[cache.iid].totalLatencyMs!
+    const dbTotal = flows[db.iid].totalLatencyMs!
+    const expected = flows[api.iid].serviceLatencyMs +
+      (100 * (0.1 + cacheTotal) + 100 * (0.1 + dbTotal)) / 200
+    expect(flows[api.iid].totalLatencyMs).toBeCloseTo(expected, 9)
+  })
+
+  it('a genuine dependency cycle (A -> B -> A) terminates with a finite composed latency', () => {
+    const { doc, server } = oneServerWorld()
+    const a = addService(doc, 'a', server.id, 0)
+    const b = addService(doc, 'b', server.id, 1)
+    a.bp.dependencies = [dep('d-b', b.bp.id)]
+    b.bp.dependencies = [dep('d-a', a.bp.id)]
+    const { flows } = solveFlows(baseInput(doc, { [a.iid]: 100 }))
+    expect(Number.isFinite(flows[a.iid].totalLatencyMs)).toBe(true)
+    expect(Number.isFinite(flows[b.iid].totalLatencyMs)).toBe(true)
+    expect(flows[a.iid].totalLatencyMs).toBeGreaterThan(flows[a.iid].serviceLatencyMs)
+  })
+
+  it("a blocked downstream row contributes nothing to the caller's composed latency", () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const db2srv = createServer(doc.servers[server.id].azId, getPreset('dedicated-8')!)
+    db2srv.firewall = [{ id: 'deny-all', action: 'deny', port: 'any', protocol: 'any', source: 'any' }]
+    doc.servers[db2srv.id] = db2srv
+    const db = addService(doc, 'db', db2srv.id, 1)
+    api.bp.dependencies = [dep('d-db', db.bp.id)]
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(flows[api.iid].totalLatencyMs).toBe(flows[api.iid].serviceLatencyMs)
+  })
+})
+
 // ─── DB read/write routing (node-model Phase 3) ──────────────────────────────
 // A DB cluster is one blueprint with a primary placement and replica placements. Writes route to
 // the primary, reads to the replicas — driven by BlueprintDependency.writeFraction. These tests

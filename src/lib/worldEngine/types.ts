@@ -27,8 +27,16 @@ export interface InstanceMetrics {
   instanceId: InstanceId
   rps: number                    // admitted requests/sec
   errorRate: number              // 0..1
-  p50Ms: number
-  p99Ms: number
+  p50Ms: number                  // COMPOSED end-to-end (self + downstream), audit ISSUE-003
+  p99Ms: number                  // COMPOSED end-to-end, same basis as p50Ms
+  // Additive-optional (contract-drift, audit ISSUE-003), same convention as ManagedServiceMetrics'
+  // p50Ms/saturation below: self-only latency (own CPU/queue/NIC time, no downstream hops) —
+  // pre-ISSUE-003 semantics, what p50Ms meant before composition. p50Ms/p99Ms above now fold in
+  // downstream dependency time, since a caller's Little's-law activeConnections/RAM must grow when
+  // a dependency slows down, not just when its own compute does. buildBatch always populates it;
+  // a hand-built test fixture or a batch built before this issue landed may omit it — read as
+  // `m.serviceP50Ms ?? m.p50Ms`.
+  serviceP50Ms?: number
   activeConnections: number
   cpuCoresUsed: number           // e.g. 1.2 = 1.2 cores of demand
   ramMb: number                  // base + per-connection

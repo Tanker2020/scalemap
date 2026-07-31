@@ -1522,3 +1522,104 @@ describe('connection semantics', () => {
     a.engine.stop(); b.engine.stop()
   })
 })
+
+// ─── Composed end-to-end latency (audit ISSUE-003, Wave 2) ───────────────────
+// Before this fix, InstanceFlow.serviceLatencyMs (and therefore the published p50Ms/p99Ms and
+// Little's-law activeConnections) was the CALLER's own CPU/queue/NIC time only — a caller never
+// inherited a slow dependency's latency, so the "slow dependency -> connection pileup -> OOM"
+// cascade was structurally unreachable. web -> api -> db, each on its OWN server (so db's cost
+// can't spill onto api/web's own CPU scheduling) isolates the effect to composition alone.
+describe('composed end-to-end latency (audit ISSUE-003)', () => {
+  function chainWorld(dbCpuMs: number) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const sWeb = createServer(az.id, getPreset('dedicated-8')!)
+    const sApi = createServer(az.id, getPreset('dedicated-8')!)
+    const sDb = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[sWeb.id] = sWeb; doc.servers[sApi.id] = sApi; doc.servers[sDb.id] = sDb
+
+    const web = publicBlueprint('web', 0)
+    const api = createBlueprint('api', 1)
+    const db = createBlueprint('db', 2)
+    db.workload = { ...db.workload, cpuMsPerRequest: dbCpuMs }
+    web.dependencies = [{ id: 'd-api', target: { kind: 'blueprint', blueprintId: api.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+    api.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 8080, protocol: 'db', packetTemplateId: null }]
+    Object.assign(doc.blueprints, { [web.id]: web, [api.id]: api, [db.id]: db })
+
+    const plWeb = createPlacement(web.id, sWeb.id); doc.placements[plWeb.id] = plWeb
+    const plApi = createPlacement(api.id, sApi.id); doc.placements[plApi.id] = plApi
+    const plDb = createPlacement(db.id, sDb.id); doc.placements[plDb.id] = plDb
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 100
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+
+    return {
+      doc, compiled: compileWorld(doc),
+      apiInst: instanceId(plApi.id, 0),
+    }
+  }
+
+  it("folds a slow downstream DB's latency into the caller's published p50Ms, not its self-only serviceP50Ms", () => {
+    const fast = chainWorld(1)
+    const simFast = drive(fast.doc, fast.compiled)
+    simFast.stepFor(10)
+    const apiFast = simFast.latest().instances[fast.apiInst]
+    simFast.engine.stop()
+
+    const slow = chainWorld(200)
+    const simSlow = drive(slow.doc, slow.compiled)
+    simSlow.stepFor(10)
+    const apiSlow = simSlow.latest().instances[slow.apiInst]
+    simSlow.engine.stop()
+
+    // api's OWN cpuMsPerRequest is identical in both worlds — only the db behind it changed.
+    // Composed p50Ms must move; serviceP50Ms (self-only, pre-ISSUE-003 semantics) must not.
+    expect(apiSlow.p50Ms).toBeGreaterThan(apiFast.p50Ms + 50)
+    expect(apiSlow.serviceP50Ms ?? 0).toBeLessThan(20)
+    expect(apiFast.serviceP50Ms ?? 0).toBeLessThan(20)
+  })
+
+  it("grows the caller's activeConnections when a downstream dependency slows down (Little's law feedback)", () => {
+    const fast = chainWorld(1)
+    const simFast = drive(fast.doc, fast.compiled)
+    simFast.stepFor(10)
+    const apiFast = simFast.latest().instances[fast.apiInst]
+    simFast.engine.stop()
+
+    const slow = chainWorld(200)
+    const simSlow = drive(slow.doc, slow.compiled)
+    simSlow.stepFor(10)
+    const apiSlow = simSlow.latest().instances[slow.apiInst]
+    simSlow.engine.stop()
+
+    // Before ISSUE-003, activeConnections was driven by serviceLatencyMs (self-only), so this
+    // ratio would sit near 1 regardless of how slow the db got.
+    expect(apiSlow.activeConnections).toBeGreaterThan(apiFast.activeConnections * 2)
+  })
+
+  // DIVERGENCE GUARD (audit ISSUE-003): the host scheduler's InstanceLoad.activeConnections (RAM/
+  // OOM enforcement) and metrics.ts's published InstanceMetrics.activeConnections (what the user
+  // sees) are the two-call-site invariant's two sites. Both must react to a slow downstream —
+  // if only one read totalLatencyMs, the RAM the scheduler enforces would silently diverge from
+  // what is displayed, exactly the failure class this whole wave exists to close.
+  it('DIVERGENCE GUARD: scheduler-enforced and published RAM both grow from a slow downstream dependency', () => {
+    const slow = chainWorld(200)
+    const sim = drive(slow.doc, slow.compiled)
+    sim.stepFor(10)
+    const b = sim.latest()
+    const apiServerId = Object.values(slow.doc.placements).find(p => p.blueprintId === Object.keys(slow.doc.blueprints).find(id => slow.doc.blueprints[id].name === 'api'))?.serverId
+    expect(apiServerId).toBeTruthy()
+    const schedulerRam = b.servers[apiServerId!].ramUsedMb
+    const metricsRam = b.instances[slow.apiInst].ramMb
+    expect(schedulerRam).toBeGreaterThan(0)
+    expect(metricsRam).toBeGreaterThan(0)
+    expect(schedulerRam / metricsRam).toBeGreaterThan(0.5)
+    expect(schedulerRam / metricsRam).toBeLessThan(2)
+    sim.engine.stop()
+  })
+})
