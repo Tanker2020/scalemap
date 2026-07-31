@@ -145,16 +145,32 @@ function radicalInverse2(k: number): number {
   return bits * 2.3283064365386963e-10   // / 2^32
 }
 
-export function pickPacketByIndex(mix: PacketMixEntry[] | undefined, k: number): number | null {
+// Precomputed pick table (audit ISSUE-013): a mix's filtered entries + total weight, resolved ONCE
+// per dependency at start() rather than re-filtered/re-summed on every particle on every frame.
+// `mix` is read from the frozen `doc` and cannot change while the engine runs (topology is
+// edit-locked), so every post-start() call recomputing this was pure waste — up to ~24,000
+// filter+reduce allocations/sec at the render cap. `null` mirrors pickPacketByIndex's old
+// "no valid entries" return of `null`.
+export interface PickTable {
+  entries: PacketMixEntry[]
+  total: number
+}
+
+export function buildPickTable(mix: PacketMixEntry[] | undefined): PickTable | null {
   const entries = (mix ?? []).filter(e => Number.isFinite(e.weight) && e.weight > 0)
   if (entries.length === 0) return null
   const total = entries.reduce((sum, e) => sum + e.weight, 0)
+  return { entries, total }
+}
+
+export function pickPacketByIndex(table: PickTable | null, k: number): number | null {
+  if (table === null) return null
   const slot = ((k % PATTERN_SLOTS) + PATTERN_SLOTS) % PATTERN_SLOTS
-  const x = radicalInverse2(slot) * total
+  const x = radicalInverse2(slot) * table.total
   let cum = 0
-  for (const e of entries) {
+  for (const e of table.entries) {
     cum += e.weight
     if (x < cum) return e.packetId
   }
-  return entries[entries.length - 1].packetId
+  return table.entries[table.entries.length - 1].packetId
 }

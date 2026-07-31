@@ -30,7 +30,7 @@
 //   • managedDbRefusedRps()/managedRefusedRps() (flows.ts) stay exported for non-DB services and
 //     for the no-runtime fallback, but a DB with a live runtime entry no longer reaches them.
 // The one-step lag mirrors the existing hostScheduler → flows `admittedScale` pattern.
-import type { InstanceId, ManagedServiceId, ManagedService, WorldDoc, CompiledWorld } from './world/types'
+import type { InstanceId, ManagedServiceId, ManagedService, WorldDoc, CompiledWorld, BlueprintDependency } from './world/types'
 import { managedDbEngine } from './world/types'
 import { getDbInstanceClass } from './dbInstanceClasses'
 import { managedDbCeilings } from './worldEngine/flows'
@@ -164,6 +164,12 @@ export function aggregateManagedDbLoad(
   // resolution point is buildDepWireBytes in the engine, and this reads its output.
   // Optional: absent ⇒ the raw dependency field, so existing direct callers are unchanged.
   depBytesById?: Record<string, { writeFraction?: number }>,
+  // dependencyId → BlueprintDependency, the engine's start()-time index (audit ISSUE-014 — the
+  // fifth recurrence of the unindexed-lookup class already fixed as ISSUE-032/073/075/076).
+  // Replaces the `bp?.dependencies.find(...)` fallback below, which ran once per downstream row
+  // per STEP (10 Hz) re-scanning a blueprint's full dependency list. Optional: absent ⇒ falls
+  // back to the linear scan, so existing direct callers/tests are unchanged.
+  depById?: Record<string, BlueprintDependency>,
 ): Record<ManagedServiceId, { totalRps: number; writeFraction: number }> {
   const acc: Record<ManagedServiceId, { totalRps: number; writeRps: number }> = {}
   for (const flow of Object.values(prevFlows)) {
@@ -176,6 +182,7 @@ export function aggregateManagedDbLoad(
       if (row.blocked) continue
       const w = Math.min(1, Math.max(0,
         depBytesById?.[row.dependencyId]?.writeFraction
+        ?? depById?.[row.dependencyId]?.writeFraction
         ?? bp?.dependencies.find(d => d.id === row.dependencyId)?.writeFraction
         ?? 0))
       const a = acc[msId] ?? { totalRps: 0, writeRps: 0 }
@@ -199,8 +206,10 @@ export function managedDbRuntime(
   compiled: CompiledWorld,
   // Forwarded to aggregateManagedDbLoad — see its parameter doc (audit ISSUE-001).
   depBytesById?: Parameters<typeof aggregateManagedDbLoad>[3],
+  // Forwarded to aggregateManagedDbLoad — see its parameter doc (audit ISSUE-014).
+  depById?: Parameters<typeof aggregateManagedDbLoad>[4],
 ): ManagedDbRuntime {
-  const load = aggregateManagedDbLoad(prevFlows, doc, compiled, depBytesById)
+  const load = aggregateManagedDbLoad(prevFlows, doc, compiled, depBytesById, depById)
   const out: ManagedDbRuntime = {}
   for (const ms of Object.values(doc.managedServices)) {
     const l = load[ms.id] ?? { totalRps: 0, writeFraction: 0 }

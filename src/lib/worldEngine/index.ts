@@ -10,11 +10,11 @@ import type {
 import { MAX_GLOBE_ARCS } from './types'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
-  ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole,
+  ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole, BlueprintDependency,
 } from '../world/types'
 import { managedDbEngine } from '../world/types'
 import { routeMatchesPattern, listRoutes } from '../nodeConfig'
-import { pickPacketByIndex, resolveWireSize, routeIngressBytes, type WireSize } from '../packetResolve'
+import { pickPacketByIndex, resolveWireSize, routeIngressBytes, buildPickTable, type WireSize, type PickTable } from '../packetResolve'
 import {
   activeConnections, profileFor, resolveConnectionProfile, KEEP_ALIVE_PROFILE,
   type ConnectionProfile,
@@ -192,6 +192,31 @@ function buildDepWireBytes(doc: WorldDoc): Record<string, WireSize> {
   return out
 }
 
+// dependencyId → its BlueprintDependency (audit ISSUE-014 — the fifth recurrence of the
+// unindexed-lookup class already fixed as ISSUE-032/073/075/076) and dependencyId → its
+// precomputed packet pick table (audit ISSUE-013). Both replace a per-row `bp?.dependencies.find
+// (d => d.id === row.dependencyId)` linear scan that ran once per downstream row per RENDER FRAME
+// (60 Hz, in buildAzParticles/buildServerParticles) — dep.id → BlueprintDependency never changes
+// once `doc` is frozen at start(), so the scan was loop-invariant work. Flat Records keyed by
+// dep.id alone, exactly like depBytesById/depConnById above: dependency ids are already assumed
+// globally unique by those two maps (in production today, not just this audit), so no composite
+// key is needed here either.
+interface DepIndexes {
+  depById: Record<string, BlueprintDependency>
+  depPickTableById: Record<string, PickTable | null>
+}
+function buildDepIndexes(doc: WorldDoc): DepIndexes {
+  const depById: Record<string, BlueprintDependency> = {}
+  const depPickTableById: Record<string, PickTable | null> = {}
+  for (const bp of Object.values(doc.blueprints)) {
+    for (const dep of bp.dependencies) {
+      depById[dep.id] = dep
+      depPickTableById[dep.id] = buildPickTable(dep.packetMix)
+    }
+  }
+  return { depById, depPickTableById }
+}
+
 // The implicit null "default" route (a population with no request mix). Cost keeps the symmetric
 // 2 KB convention; NIC keeps its asymmetric split — both matching pre-packet-sizing behavior.
 // sizeKb mirrors the same 2 KB convention (costReq's fallback, in KB). sigma 0 — no NIC-burst
@@ -272,6 +297,11 @@ interface EngineState {
   // hop. Built once at start() from the frozen doc; a plain object (not a Map) so it can be
   // handed to solveFlows' `depBytesById` field without a per-step conversion.
   depBytesById: Record<string, WireSize>
+  // dependencyId → BlueprintDependency (audit ISSUE-014) and dependencyId → precomputed packet
+  // pick table (audit ISSUE-013) — both built once at start(), read by the particle builders
+  // instead of a per-row/per-frame `.find()` scan or filter+reduce.
+  depById: Record<string, BlueprintDependency>
+  depPickTableById: Record<string, PickTable | null>
 
   // Static topology indexes built once at start() (audit ISSUE-032): the per-step health
   // propagation loops read these instead of re-filtering doc.servers/doc.azs per AZ/region
@@ -834,7 +864,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // s.depBytesById carries the packet-derived write fraction (audit ISSUE-001) so the AGGREGATE
     // read/write split measured against writeCeiling/readCeiling matches the one the solver routes
     // primaries/replicas on, and the one EdgeInspector displays.
-    const managedDbRt = s.hasManagedDbs ? managedDbRuntime(s.prevFlows, doc, compiled, s.depBytesById) : {}
+    const managedDbRt = s.hasManagedDbs ? managedDbRuntime(s.prevFlows, doc, compiled, s.depBytesById, s.depById) : {}
     const { flows, totals } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       extraLatencyMsByServer,
@@ -1255,6 +1285,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     let pid = 0
     const drain = s.failover.drainUntil.has(azId) ? drainFactor(s.failover, azId, s.clock.simMs) : 1
     for (const f of Object.values(s.prevFlows)) {
+      if (particles.length >= MAX_AZ_PARTICLES) break   // audit ISSUE-015: stop once the cap is hit
       const from = s.compiled.instances[f.instanceId]
       if (!from || from.azId !== azId) continue
       const bp = s.doc.blueprints[from.blueprintId]
@@ -1267,12 +1298,16 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         }
       }
       for (const row of f.downstream) {
+        if (particles.length >= MAX_AZ_PARTICLES) break   // audit ISSUE-015
         const toId = row.toInstanceId ? s.compiled.instances[row.toInstanceId]?.serverId : row.toManagedServiceId
         if (!toId) continue
-        const dep = bp?.dependencies.find(d => d.id === row.dependencyId)
+        // audit ISSUE-014: s.depById is a start()-time index, not a per-row `.find()` scan.
+        const dep = s.depById[row.dependencyId]
         const n = Math.min(MAX_AZ_PARTICLES, Math.max(row.blocked ? 1 : 0, Math.round(row.rps / PARTICLE_RATIO)))
+        // audit ISSUE-013: precomputed pick table, not a per-particle filter+reduce over the mix.
+        const pickTable = s.depPickTableById[row.dependencyId] ?? null
         for (let k = 0; k < n && particles.length < MAX_AZ_PARTICLES; k++) {
-          const packetId = pickPacketByIndex(dep?.packetMix, k)
+          const packetId = pickPacketByIndex(pickTable, k)
           particles.push({ id: pid++, fromId: from.serverId, toId, progress: frac(phase + k * 0.191), protocol: dep?.protocol ?? 'http', blocked: row.blocked, colorHint: packetColor(packetId) ?? bp?.color ?? null, packetId })
         }
       }
@@ -1297,6 +1332,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     let pid = 0
     const nicId = `nic:${serverId}`
     for (const f of Object.values(s.prevFlows)) {
+      if (particles.length >= MAX_SERVER_PARTICLES) break   // audit ISSUE-015
       const from = s.compiled.instances[f.instanceId]
       if (!from || from.serverId !== serverId) continue
       const fromBp = s.doc.blueprints[from.blueprintId]
@@ -1309,15 +1345,19 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         }
       }
       for (const row of f.downstream) {
+        if (particles.length >= MAX_SERVER_PARTICLES) break   // audit ISSUE-015
         const target = row.toInstanceId ? s.compiled.instances[row.toInstanceId] : undefined
         const resident = !!target && target.serverId === serverId
         const toId = resident ? target!.id : nicId          // off-server/managed -> nic
-        const dep = fromBp?.dependencies.find(d => d.id === row.dependencyId)
+        // audit ISSUE-014: s.depById is a start()-time index, not a per-row `.find()` scan.
+        const dep = s.depById[row.dependencyId]
         // intra: receiving service's hue; instance->nic outbound: the sending service's hue
         const colorHint = resident ? (s.doc.blueprints[target!.blueprintId]?.color ?? null) : (fromBp?.color ?? null)
         const n = Math.min(MAX_SERVER_PARTICLES, Math.max(row.blocked ? 1 : 0, Math.round(row.rps / PARTICLE_RATIO)))
+        // audit ISSUE-013: precomputed pick table, not a per-particle filter+reduce over the mix.
+        const pickTable = s.depPickTableById[row.dependencyId] ?? null
         for (let k = 0; k < n && particles.length < MAX_SERVER_PARTICLES; k++) {
-          const packetId = pickPacketByIndex(dep?.packetMix, k)
+          const packetId = pickPacketByIndex(pickTable, k)
           particles.push({ id: pid++, fromId: from.id, toId, progress: frac(phase + k * 0.191), protocol: dep?.protocol ?? 'http', blocked: row.blocked, colorHint: packetColor(packetId) ?? colorHint, packetId })
         }
       }
@@ -1348,6 +1388,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       if (state?.rafId != null && typeof cancelAnimationFrame === 'function') {
         cancelAnimationFrame(state.rafId)
       }
+      const depIndexes = buildDepIndexes(doc)
       state = {
         running: true, seed, rng: createRng(seed), clock: createClock(DEFAULT_STEP_MS), stepMs: DEFAULT_STEP_MS,
         timeScale: 1, doc, compiled, callbacks, entryBlueprintIds: new Set(entryBlueprints(doc)),
@@ -1356,6 +1397,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         routeConnById: buildRouteConnProfiles(doc),
         depBytesById: buildDepWireBytes(doc),
         depConnById: buildDepConnProfiles(doc),
+        depById: depIndexes.depById,
+        depPickTableById: depIndexes.depPickTableById,
         serversByAz: groupBy(Object.values(doc.servers), sv => sv.azId),
         azsByRegion: groupBy(Object.values(doc.azs), az => az.regionId),
         instancesByServer: groupInstancesByServer(compiled),

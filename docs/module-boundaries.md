@@ -4487,3 +4487,77 @@ them.
   `git stash`, not amending); the full pre-existing suite (1631 tests) passed unchanged both before
   and after — this wave's blast radius is exactly the fields the spec intended to change, nothing
   else.
+
+## Multi-Protocol Connection Audit — Wave 3, part 1: render hot path (`audit-spec.md`, 2026-07-31)
+
+ISSUE-013/014/015, landed together since all three touch the same two functions
+(`buildAzParticles`/`buildServerParticles`, `index.ts`). Every fix here is loop-invariant work
+hoisted to `start()` or an early exit — none change WHICH particles are emitted or their order, so
+every fix is byte-identical-output by construction, verified by the pre-existing "respects
+MAX_SERVER_PARTICLES cap" / "is deterministic for a fixed seed" tests in `serverParticles.test.ts`,
+which needed no changes to keep passing.
+
+**Prerequisite: `bench/renderPerf.bench.test.ts` (new).** `bench/enginePerf.bench.test.ts` only
+measures `runStep` (the ~10 Hz sim loop) — nothing gated the 60 Hz render loop before this file.
+Same isolation/median-of-100 idiom as the engine bench (own file, excluded from `npx vitest run`,
+run via `npm run bench`); budget is this file's own (1ms/frame at the 400-particle AZ cap, 2x
+CI-fail-only line), since there's no render-loop analog to `DEGRADE_THRESHOLD_MS`. Measured on this
+machine at a FAN=30/3-packet-mix fixture: **~0.074ms/frame before → ~0.053ms/frame after** — real,
+but modest at this scale (the audit's ~24,000 allocs/sec figure is aggregate GC pressure over
+sustained runtime, not fully visible in a 100-frame median). This number is what ISSUE-017 gates.
+
+### ISSUE-013 — precomputed packet pick tables (`packetResolve.ts`, `index.ts`)
+
+`pickPacketByIndex` used to `.filter()` + `.reduce()` a dependency's bound packet mix on EVERY
+call — once per particle per frame, up to `MAX_AZ_PARTICLES=400`/`MAX_SERVER_PARTICLES=50` times.
+`mix` comes from the frozen `doc` (topology is edit-locked while running), so every call after the
+first for a given dependency was re-deriving an answer that never changes for the run's duration.
+
+Split into `buildPickTable(mix)` (the old filter+reduce, run ONCE) returning a new `PickTable`
+type, and a rewritten `pickPacketByIndex(table, k)` that just walks the precomputed `entries`/
+`total`. `index.ts` builds `depPickTableById: Record<string, PickTable | null>` once at `start()`
+(alongside the existing `depBytesById`/`depConnById` maps) and the particle builders look it up by
+`dependencyId` instead of passing `dep?.packetMix` straight through. Bit-identical output verified
+against a hand-inlined replica of the pre-refactor `pickPacketByIndex` body
+(`packetResolve.test.ts`'s new `buildPickTable` describe block).
+
+### ISSUE-014 — `depById` start()-time index (`index.ts`, `managedDbRuntime.ts`)
+
+The fifth recurrence of the unindexed-lookup class already fixed as ISSUE-032/073/075/076: both
+particle builders did `bp?.dependencies.find(d => d.id === row.dependencyId)` once per downstream
+row per FRAME (60 Hz), and `managedDbRuntime.ts`'s `aggregateManagedDbLoad` did the same once per
+row per STEP (10 Hz). `dep.id → BlueprintDependency` never changes once `doc` is frozen, so this
+was loop-invariant work identical in shape to the maps already built at `start()`.
+
+New `buildDepIndexes(doc)` builds `depById`/`depPickTableById` together in one pass (same
+enumeration `buildDepWireBytes`/`buildDepConnProfiles` already use — flat `Record` keyed by
+`dep.id` alone, since those two maps already assume dependency ids are globally unique and that
+assumption is already load-bearing in production). `aggregateManagedDbLoad`/`managedDbRuntime`
+gained an optional `depById` parameter, checked BETWEEN `depBytesById` (which already resolves the
+write fraction for virtually every dependency in practice) and the old linear-scan fallback — so
+existing callers/tests that omit it are unaffected, and the scan only ever runs when both maps
+are deliberately omitted.
+
+### ISSUE-015 — particle cap early-exit (`index.ts`)
+
+`buildAzParticles`/`buildServerParticles` only checked the cap in the INNERMOST loop
+(`particles.length < MAX_AZ_PARTICLES`); once the cap was hit early in iteration order, every
+subsequent flow and downstream row still ran its lookups/lookups before discovering there was
+nothing left to add. Added the same `if (particles.length >= CAP) break` at the top of both the
+outer `for (const f of ...)` loop and the per-flow `for (const row of f.downstream)` loop, in both
+functions — stops iterating the moment no more particles will be emitted, without touching which
+particles are chosen (iteration order is unchanged, so the first CAP particles in the existing
+order are exactly what's kept — this is why the fix needed no new "which particles" test).
+
+### Tests
+
+- `packetResolve.test.ts` — `buildPickTable` produces bit-identical picks to a hand-inlined replica
+  of the pre-refactor body, across a range of indices including negative ones; the four pre-existing
+  `pickPacketByIndex` describe blocks updated to build a table first (same assertions, same values).
+- `managedDbRuntime.test.ts` — `depById` resolves the write fraction when `depBytesById` has no
+  entry; `depBytesById` still wins when both disagree; omitting both falls back to the linear scan
+  (regression floor).
+- `serverParticles.test.ts`'s pre-existing cap/determinism tests continue to pass unchanged — the
+  strongest possible evidence these three fixes altered no observable behavior.
+- `bench/renderPerf.bench.test.ts` (new) — the Wave 3 prerequisite; passes at both the 1ms budget
+  and the measured before/after numbers above.

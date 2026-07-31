@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { aggregateManagedDbLoad, managedDbRuntimeFor, SERVERLESS_BURST_MULTIPLIER } from './managedDbRuntime'
-import type { ManagedService } from './world/types'
+import type { ManagedService, BlueprintDependency } from './world/types'
 
 // A managed SQL DB on the smallest class: writeRps 500 / readRps 2500 (dbInstanceClasses.ts).
 function sqlDb(over: Partial<ManagedService> = {}): ManagedService {
@@ -163,6 +163,32 @@ describe('aggregateManagedDbLoad — write fraction resolution', () => {
   it('omitting depBytesById entirely reproduces the pre-fix behaviour', () => {
     const { prevFlows, doc, compiled } = loadFixture(0.4)
     expect(aggregateManagedDbLoad(prevFlows, doc, compiled)['ms-db'].writeFraction).toBeCloseTo(0.4)
+  })
+
+  // Audit ISSUE-014: depById is a start()-time index (dependencyId -> BlueprintDependency),
+  // replacing the `bp?.dependencies.find(...)` linear scan that ran once per downstream row per
+  // step. It sits between depBytesById and the linear-scan fallback in the resolution chain.
+  it('reads the write fraction from depById when depBytesById has no entry for this dependency', () => {
+    const { prevFlows, doc, compiled } = loadFixture(0)   // raw dependency field says 0% writes
+    const depById: Record<string, BlueprintDependency> = {
+      'd-db': { id: 'd-db', writeFraction: 1 } as BlueprintDependency,
+    }
+    const load = aggregateManagedDbLoad(prevFlows, doc, compiled, undefined, depById)
+    expect(load['ms-db'].writeFraction).toBe(1)
+  })
+
+  it('depBytesById still wins over depById when both are supplied and disagree', () => {
+    const { prevFlows, doc, compiled } = loadFixture(0)
+    const depById: Record<string, BlueprintDependency> = {
+      'd-db': { id: 'd-db', writeFraction: 0.2 } as BlueprintDependency,
+    }
+    const load = aggregateManagedDbLoad(prevFlows, doc, compiled, { 'd-db': { writeFraction: 1 } }, depById)
+    expect(load['ms-db'].writeFraction).toBe(1)
+  })
+
+  it('omitting both depBytesById and depById falls back to the linear-scan dependency lookup', () => {
+    const { prevFlows, doc, compiled } = loadFixture(0.4)
+    expect(aggregateManagedDbLoad(prevFlows, doc, compiled, undefined, undefined)['ms-db'].writeFraction).toBeCloseTo(0.4)
   })
 
   // The consequence the split actually drives: writes measure against writeCeiling (500 on

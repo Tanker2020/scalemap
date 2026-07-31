@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { addPacket, addRoute, emptyPacketRegistry } from './nodeConfig'
 import type { PacketFields, PacketRegistry } from './nodeConfig'
 import {
-  resolveWireSize, routeIngressBytes, pickPacketByIndex,
+  resolveWireSize, routeIngressBytes, pickPacketByIndex, buildPickTable,
   DEFAULT_PACKET_BYTES_EACH_WAY, WAL_WRITE_AMPLIFICATION,
 } from './packetResolve'
 
@@ -176,27 +176,27 @@ describe('resolveWireSize — an absent sizeKb never produces NaN', () => {
 
 describe('pickPacketByIndex — deterministic, rng-free particle tinting', () => {
   it('returns null for an empty or all-zero-weight mix', () => {
-    expect(pickPacketByIndex(undefined, 0)).toBeNull()
-    expect(pickPacketByIndex([], 3)).toBeNull()
-    expect(pickPacketByIndex([{ packetId: 7, weight: 0 }], 3)).toBeNull()
+    expect(pickPacketByIndex(buildPickTable(undefined), 0)).toBeNull()
+    expect(pickPacketByIndex(buildPickTable([]), 3)).toBeNull()
+    expect(pickPacketByIndex(buildPickTable([{ packetId: 7, weight: 0 }]), 3)).toBeNull()
   })
 
   it('is a pure function of the index — same k, same packet, every call', () => {
-    const mix = [{ packetId: 1, weight: 1 }, { packetId: 2, weight: 3 }]
+    const table = buildPickTable([{ packetId: 1, weight: 1 }, { packetId: 2, weight: 3 }])
     for (const k of [0, 1, 5, 63, 64, 1000]) {
-      expect(pickPacketByIndex(mix, k)).toBe(pickPacketByIndex(mix, k))
+      expect(pickPacketByIndex(table, k)).toBe(pickPacketByIndex(table, k))
     }
   })
 
   it('distributes indices in proportion to the weights', () => {
-    const mix = [{ packetId: 1, weight: 1 }, { packetId: 2, weight: 3 }]
-    const picks = Array.from({ length: 64 }, (_, k) => pickPacketByIndex(mix, k))
+    const table = buildPickTable([{ packetId: 1, weight: 1 }, { packetId: 2, weight: 3 }])
+    const picks = Array.from({ length: 64 }, (_, k) => pickPacketByIndex(table, k))
     expect(picks.filter(p => p === 1).length).toBe(16)
     expect(picks.filter(p => p === 2).length).toBe(48)
   })
 
   it('handles negative indices without falling off the pattern', () => {
-    expect(pickPacketByIndex([{ packetId: 4, weight: 1 }], -3)).toBe(4)
+    expect(pickPacketByIndex(buildPickTable([{ packetId: 4, weight: 1 }]), -3)).toBe(4)
   })
 })
 
@@ -204,8 +204,44 @@ describe('pickPacketByIndex — interleaving (why the radical inverse)', () => {
   it('samples the minority packet within the FIRST FEW indices, not after the majority block', () => {
     // 3:1 — a linear k/N mapping would put the minority packet at index 48 of 64, so a hop
     // rendering 4 particles would render four identical ones and the mix would look 100:0.
-    const mix = [{ packetId: 1, weight: 3 }, { packetId: 2, weight: 1 }]
-    const firstFour = [0, 1, 2, 3].map(k => pickPacketByIndex(mix, k))
+    const table = buildPickTable([{ packetId: 1, weight: 3 }, { packetId: 2, weight: 1 }])
+    const firstFour = [0, 1, 2, 3].map(k => pickPacketByIndex(table, k))
     expect(new Set(firstFour).size).toBe(2)
+  })
+})
+
+describe('buildPickTable — precomputed pick table (audit ISSUE-013)', () => {
+  // Hand-inlined replica of the OLD pickPacketByIndex body (filter + reduce + radical-inverse pick
+  // done inline, every call) — the regression floor: precomputing the table into `buildPickTable`
+  // once must not change a single output versus redoing that work per call.
+  function radicalInverse2(k: number): number {
+    let bits = k >>> 0
+    bits = ((bits << 16) | (bits >>> 16)) >>> 0
+    bits = (((bits & 0x55555555) << 1) | ((bits & 0xaaaaaaaa) >>> 1)) >>> 0
+    bits = (((bits & 0x33333333) << 2) | ((bits & 0xcccccccc) >>> 2)) >>> 0
+    bits = (((bits & 0x0f0f0f0f) << 4) | ((bits & 0xf0f0f0f0) >>> 4)) >>> 0
+    bits = (((bits & 0x00ff00ff) << 8) | ((bits & 0xff00ff00) >>> 8)) >>> 0
+    return bits * 2.3283064365386963e-10
+  }
+  function oldPickPacketByIndex(mix: { packetId: number; weight: number }[] | undefined, k: number): number | null {
+    const entries = (mix ?? []).filter(e => Number.isFinite(e.weight) && e.weight > 0)
+    if (entries.length === 0) return null
+    const total = entries.reduce((sum, e) => sum + e.weight, 0)
+    const slot = ((k % 64) + 64) % 64
+    const x = radicalInverse2(slot) * total
+    let cum = 0
+    for (const e of entries) {
+      cum += e.weight
+      if (x < cum) return e.packetId
+    }
+    return entries[entries.length - 1].packetId
+  }
+
+  it('produces bit-identical picks to the pre-precompute filter/reduce-per-call implementation', () => {
+    const mix = [{ packetId: 1, weight: 3 }, { packetId: 2, weight: 1 }, { packetId: 3, weight: 0 }]
+    const table = buildPickTable(mix)
+    for (const k of [0, 1, 2, 3, 5, 17, 63, 64, 1000, -3]) {
+      expect(pickPacketByIndex(table, k)).toBe(oldPickPacketByIndex(mix, k))
+    }
   })
 })
