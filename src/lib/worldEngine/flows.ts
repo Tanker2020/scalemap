@@ -316,6 +316,14 @@ export interface InstanceFlow {
   admittedRps: number
   errorRps: number
   refusedRps: number
+  // The share of refusedRps caused by a STRUCTURAL problem — a firewall/network-policy block or a
+  // manually-downed managed service — as opposed to a capacity one (breaker-open, managed
+  // throttle/timeout, event drop/DLQ). Shedding entry demand can't fix a firewall rule, so audit
+  // ISSUE-008's Mechanism B (index.ts) subtracts this out of refusedRps before deciding whether a
+  // region is genuinely OVERLOADED vs merely misconfigured. Optional (additive): a hand-built
+  // InstanceFlow (metrics.test.ts, replay.test.ts) omits it, and every reader treats absent as 0
+  // (all of refusedRps counts as capacity, the exact pre-ISSUE-008 behavior).
+  structuralRefusedRps?: number
   serviceLatencyMs: number                          // sampled, multiplied — SELF time only
   // Composed end-to-end latency (audit ISSUE-003): serviceLatencyMs + the rps-weighted mean, over
   // this instance's non-blocked downstream rows, of (network hop + that row's own totalLatencyMs).
@@ -440,6 +448,7 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
         admittedRps: 0,
         errorRps: 0,
         refusedRps: 0,
+        structuralRefusedRps: 0,
         serviceLatencyMs: sampleLatencyMs(p50, p50 * SERVICE_P99_OVER_P50, rng) * multiplier + extraMs,
         totalLatencyMs: 0,   // placeholder; overwritten by the composition pass before return
         downstream: [],
@@ -662,8 +671,11 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
           : { toManagedServiceId: path.to.managedServiceId }
 
         if (path.verdict === 'blocked') {
-          // Refused ON THE CALLER; the blocked row is what events/particles render.
+          // Refused ON THE CALLER; the blocked row is what events/particles render. A network
+          // policy block is STRUCTURAL (audit ISSUE-008) — shedding entry demand can't fix a
+          // firewall rule, so this doesn't count toward Mechanism B's overload signal.
           flow.refusedRps += share
+          flow.structuralRefusedRps = (flow.structuralRefusedRps ?? 0) + share
           addDownstream(flow, dep.id, target, share, path.hopClass, true)
           continue   // refused attempts carry no payload and reach nothing
         }
@@ -673,7 +685,10 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
           // volume — a real dependency failure the caller sees as refused (like a blocked path),
           // no admitted remainder, no bytes. Checked before capacity, since down beats throttled.
           if (managedDown(path.to.managedServiceId)) {
+            // A manual outage, not a load problem (audit ISSUE-008) — structural, same as a
+            // firewall block above.
             flow.refusedRps += share
+            flow.structuralRefusedRps = (flow.structuralRefusedRps ?? 0) + share
             addDownstream(flow, dep.id, target, share, path.hopClass, true)
             continue
           }

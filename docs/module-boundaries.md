@@ -4981,3 +4981,97 @@ itself, populated only for an instance with an authored `maxConnections`.
   ratio once a pool saturates (the guard that caught the real bug above, mid-implementation).
 - Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite
   (1699→1708 tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 7: demand backpressure (`audit-spec.md`, 2026-07-31)
+
+### ISSUE-008 — measuring Mechanism A, then building Mechanism B (`index.ts`, `flows.ts`)
+
+Every prior wave fixed a way the engine UNDER-reacted to overload (latency composition, NIC
+ceilings, connection pools, ...). ISSUE-008 asks the opposite question: once an instance genuinely
+IS overloaded, does demand ever get throttled at the edge, or does the world just keep hammering a
+dying instance forever? `demand.ts`'s `populationDemandRps` takes `(pop, simMs, rng)` and nothing
+else — no system-state input at all, confirmed by a dedicated unit test — so the ENTRY point of
+demand is structurally incapable of reacting to what's happening downstream. The only existing
+feedback loop is `hostScheduler.ts`'s per-container `memLimitMb` OOM-kill.
+
+**Mechanism A, measured first, per the spec's own instruction ("must be measured before Mechanism
+B is attempted, since B may prove unnecessary")**: a fixture chains a fast, RAM-thin `web` entry
+instance to a deliberately slow `backend` (2000ms p50, vs. web's own 1ms) — audit ISSUE-003's
+latency composition inflates web's own composed latency, which inflates web's held connections
+(Little's law), which inflates web's own RAM at `ramPerConnMb=5` until `memLimitMb` kills it. A
+30-second run shows `oomCount > 1` (a genuine REPEATING cycle, not a one-time death) AND the
+instance recovering to `healthy` between kills. Verdict: Mechanism A DOES eventually bound
+throughput, but via a **repeating OOM-kill oscillation**, never a graceful reduction — exactly the
+disqualifying shape the spec names. Mechanism B is therefore built.
+
+**Mechanism B** — explicit, hysteresis-gated admission control at the region's front door, applied
+to a population's offered demand immediately before `distributeViaLb` (`index.ts`, right before
+`// ── 1. demand ──`, so the shed fraction affects THIS step's own distribution, not a lagged one).
+Per region, aggregated ONLY over ENTRY (public-port) instances — an internal tier's own healthy
+error rate would otherwise dilute the signal from a struggling entry tier; this mechanism answers
+"is the region's front door overloaded", not "is anything anywhere unhappy". Engage at a sustained
+(20 consecutive 100ms steps = 2s) region-aggregate error rate ≥ 50%; recover at a sustained ≤ 10%
+— both hysteresis-gated so a single noisy step can't flap the shed fraction on and off, mirroring
+the breaker's own volume-floor/streak conventions.
+
+Three bugs surfaced during implementation, none anticipated up front — all caught by tests, not
+inspection:
+
+1. **The 100%-shed feedback loop.** Setting `shedFraction = 1` at engage time cuts a region's
+   admitted demand to exactly zero, which makes the very error signal recovery depends on go dark
+   (`offered <= 0` reads as `errorRate = 0`, i.e. "healthy"), so the "still shedding, track current
+   severity" branch immediately zeroed the shed fraction right back out — a one-step
+   self-defeating loop, never a real 20-step recovery. Fixed by capping shed at
+   `MAX_SHED_FRACTION = 0.9`: a trickle of real traffic always reaches the origin, so `errorRate`
+   keeps measuring the ACTUAL backend condition instead of measuring nothing.
+2. **Structural refusals counted as overload.** `f.refusedRps` (the existing `InstanceFlow` field)
+   conflates a capacity-driven refusal (breaker-open, managed throttle/timeout, event drop/DLQ)
+   with a STRUCTURAL one (a firewall-blocked path, or a manually-downed managed service) — neither
+   of which shedding entry demand can fix. A fixture with a permanently firewall-blocked dependency
+   spuriously tripped the shed gate on a world that was merely misconfigured, not saturated. Fixed
+   by adding `InstanceFlow.structuralRefusedRps?: number` (additive, `flows.ts`), incremented ONLY
+   at the two structural sites (`path.verdict === 'blocked'`, `managedDown`); Mechanism B now reads
+   `f.errorRps + (f.refusedRps - (f.structuralRefusedRps ?? 0))`. A row-based reconstruction was
+   tried FIRST and was wrong: `flows.ts`'s breaker-open short-circuit (`breakerOpen(pathKey(...))`)
+   refuses the ENTIRE dependency's call volume with **no downstream row at all** — exactly the
+   capacity signal Mechanism B most needs — so scanning `f.downstream` for blocked rows silently
+   discarded the dominant real-world trigger (a breaker tripping from backend saturation) while
+   still passing the fixture that motivated the change. Tracking the distinction at the SOURCE
+   (where each refusal is decided) rather than reconstructing it after the fact is what actually
+   works.
+3. **A zero-offered step read as recovery.** Even after the 0.9 cap, Mechanism A's OWN OOM-kill
+   cycle can independently zero a region's offered demand for a step (the entry instance is
+   transiently down), which again reads as `errorRate = 0` and, via the same "still shedding"
+   branch, instantly disengaged shedding — the same self-defeating loop as bug 1, just triggered by
+   an unrelated mechanism instead of by shedding itself. Fixed by skipping the ENTIRE
+   engage/recover/shed update for a region when its aggregate offered demand is `<= 0` that step: no
+   traffic means no signal, not "healthy".
+
+`MAX_SHED_FRACTION`, the structural/capacity split, and the zero-offered skip together are what
+make the region-level hysteresis loop actually hold for a full 20-step streak in practice — each
+one individually looked like a plausible one-line fix and each one individually still let the loop
+collapse to a single step under the fixture's real dynamics.
+
+Two PRE-EXISTING tests changed behavior as a genuine, expected side effect of Mechanism B now
+existing (re-baselined, not silently loosened, following the ISSUE-003/ISSUE-009 precedent):
+`index.test.ts`'s fat-internal-packet NIC test measured a real further reduction (~9x → ~4.4x
+against the flat baseline) once Mechanism B started shedding the fat scenario's sustained
+api→store breaker-open capacity errors; `serverParticles.test.ts`'s packet-pick-purity test hit a
+below-cap particle count once its permanently-blocked dependency plus a real internal breaker trip
+combined to cross the 20-step streak within its default 3-second render window (fixed by rendering
+at 1s instead of 3s — the test is about pick purity, not backpressure, so it has no reason to run
+long enough to engage Mechanism B at all). `bench/renderPerf.bench.test.ts`'s 400-particle-cap
+fixture (20,000 rps against a single 8-vCPU host, a deliberate saturation for the render budget,
+not a backpressure scenario) needed its 30-step warm-up trimmed to 15 for the same reason.
+
+### Tests
+
+- `index.test.ts` — Mechanism A measured (`oomCount > 1`, recovers to `healthy` between kills);
+  `populationDemandRps` takes no system-state input (open-loop confirmation); Mechanism B sheds a
+  SUSTAINED run (≥5 consecutive seconds, not a single lucky/unlucky sample — Mechanism A's own
+  OOM-kill cycle can independently produce a one-off low-rps second) of demand measurably below the
+  raw generated rate; Mechanism B is a no-op for a healthy, non-saturated world (averaged over a
+  20-sample window, since a single-step snapshot at low peakRps is Poisson-noisy enough to flake on
+  its own).
+- Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite (1708→1712
+  tests) and both benches green throughout.

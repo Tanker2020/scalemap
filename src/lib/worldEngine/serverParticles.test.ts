@@ -195,8 +195,13 @@ describe('particle packet binding', () => {
     for (const bp of Object.values(f.doc.blueprints)) {
       bp.dependencies = bp.dependencies.map(d => ({ ...d, packetMix: [{ packetId: 1, weight: 3 }, { packetId: 2, weight: 1 }] }))
     }
-    const a = serverFrame(f.doc, f.s1.id)
-    const b = serverFrame(f.doc, f.s1.id)
+    // 1s (10 steps) instead of the default 3s: kept under Mechanism B's 20-step sustained-overload
+    // streak (audit ISSUE-008) — this fixture's blocked/heavy dependency mix can otherwise trip the
+    // demand-shedding gate and reduce admitted rps enough to shrink the particle count below what
+    // the weighted round-robin needs to show both bound packet ids, which is irrelevant noise for
+    // a test about pick purity, not backpressure.
+    const a = serverFrame(f.doc, f.s1.id, 1)
+    const b = serverFrame(f.doc, f.s1.id, 1)
     expect(b.particles.map(p => p.packetId)).toEqual(a.particles.map(p => p.packetId))
     // and both packets actually appear — the weighted round-robin is not degenerate
     const ids = new Set(a.particles.map(p => p.packetId).filter(x => x != null))

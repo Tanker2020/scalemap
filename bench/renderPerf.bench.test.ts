@@ -85,8 +85,12 @@ describe('render perf budget (audit ISSUE-013/015)', () => {
     const engine = createWorldEngine()
     engine.start(doc, compiled, { onMetrics: () => {}, onEvent: () => {}, onHealthChange: () => {} })
 
-    // Warm the sim to steady flows so buildAzParticles has real (capped) demand to iterate.
-    for (let i = 0; i < 30; i++) engine.__test_step(1)
+    // Warm the sim to steady flows so buildAzParticles has real (capped) demand to iterate. Kept
+    // under Mechanism B's 20-step sustained-overload streak (audit ISSUE-008) — this fixture's
+    // 20,000 rps against a single 8-vCPU host is a genuine, deliberate saturation for the particle
+    // cap, not a backpressure scenario, and a longer warm-up would trip the demand-shedding gate
+    // and reduce admitted rps below what's needed to render the full 400-particle cap.
+    for (let i = 0; i < 15; i++) engine.__test_step(1)
 
     let lastCount = 0
     const detach = engine.attachRenderer({ level: 'az', azId }, payload => {

@@ -337,6 +337,17 @@ interface EngineState {
   // Persistent per-topic backlog (audit ISSUE-002), keyed by dependency id — carried across ticks
   // and mutated in place by broker.ts's `topicRuntime`, same ownership pattern as `queueDepth`.
   topicBacklog: Map<string, number>
+  // Demand backpressure — Mechanism B (audit ISSUE-008). Mechanism A (RAM pressure from composed
+  // latency tripping the existing OOM path) was MEASURED to close the loop only via a repeating
+  // OOM-kill/recover cycle, not graceful admission control — the disqualifying shape the audit
+  // itself names. This is deliberate, explicit admission control at the EDGE: a per-region shed
+  // fraction, hysteresis-gated (engage/recover need SUSTAINED over/under-threshold error rates,
+  // not a single noisy step) so it doesn't flap on-off, applied to a population's OFFERED demand
+  // before it ever reaches distributeViaLb. One-step-lagged off the previous step's regional error
+  // rate, the same shape as admittedScale/managedDbRuntime.
+  regionShedFraction: Map<RegionId, number>
+  regionOverloadStreak: Map<RegionId, number>
+  regionRecoverStreak: Map<RegionId, number>
   roleResolver: ((id: InstanceId) => PlacementRole) | null
   roleResolverKey: string
   // Permitted instance→instance downstream adjacency (audit ISSUE-014), built once at start():
@@ -552,6 +563,81 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       }
     }
 
+    // ── Demand backpressure — Mechanism B (audit ISSUE-008) ──
+    // Per-region error rate from the PREVIOUS step's flows (one-step lag, same shape as
+    // admittedScale/managedDbRuntime) — a region's aggregate offered/error split across every
+    // resident instance. Hysteresis-gated: engaging/recovering both need SUSTAINED over/under
+    // threshold, so a single noisy step can't flap the shed fraction on and off.
+    const REGION_OVERLOAD_ENGAGE_RATE = 0.5
+    const REGION_OVERLOAD_RECOVER_RATE = 0.1
+    const REGION_OVERLOAD_STREAK_STEPS = 20   // 2s of 100ms steps — "sustained", not a blip
+    // Never shed the full 100%: a fully-cut region admits zero real traffic, so the very error
+    // signal recovery depends on goes dark (offered=0 reads as errorRate=0, i.e. "healthy") and
+    // the "still shedding" branch below would immediately zero the shed fraction right back out —
+    // a one-step self-defeating loop, not genuine recovery. Capping shed keeps a real trickle of
+    // traffic reaching the origin so errorRate keeps measuring the ACTUAL backend condition.
+    const MAX_SHED_FRACTION = 0.9
+    {
+      // Restricted to ENTRY instances (public-port blueprints): an internal-tier instance's own
+      // healthy error rate would otherwise DILUTE the signal from a struggling entry tier — this
+      // mechanism exists to answer "is the region's front door overloaded", not "is anything
+      // anywhere in the region unhappy".
+      const offeredByRegion = new Map<RegionId, number>()
+      const errorByRegion = new Map<RegionId, number>()
+      for (const f of Object.values(s.prevFlows)) {
+        const inst = compiled.instances[f.instanceId]
+        if (!inst || !s.entryBlueprintIds.has(inst.blueprintId)) continue
+        const offered = f.offeredRps
+        if (offered <= 0) continue
+        // f.errorRps (queue overflow, breaker-open, client timeout) is always capacity-driven.
+        // f.refusedRps is NOT purely capacity — it also includes a firewall-blocked path or a
+        // manually-downed managed service, which are structural/network-policy problems, not
+        // overload. Shedding entry demand can't fix a firewall rule, so counting that toward "is
+        // this region overloaded" would engage Mechanism B on a world that's merely misconfigured,
+        // not saturated (caught by a permanently-blocked dependency spuriously tripping the shed
+        // gate). f.structuralRefusedRps is exactly that non-capacity share, tracked at the source
+        // in flows.ts; subtracting it leaves only the capacity-driven refusals (breaker-open has
+        // no downstream row at all, so a row-based reconstruction would have missed it).
+        const capacityRefused = f.refusedRps - (f.structuralRefusedRps ?? 0)
+        offeredByRegion.set(inst.regionId, (offeredByRegion.get(inst.regionId) ?? 0) + offered)
+        errorByRegion.set(inst.regionId, (errorByRegion.get(inst.regionId) ?? 0) + f.errorRps + capacityRefused)
+      }
+      for (const region of Object.values(doc.regions)) {
+        const offered = offeredByRegion.get(region.id) ?? 0
+        // Zero offered this step carries NO signal about whether the region has recovered — it
+        // just means nothing was measured (e.g. an entry instance transiently down from an
+        // unrelated OOM-kill cycle, audit ISSUE-008's own Mechanism A). Treating that silence as
+        // "0% errors, therefore healthy" would let one signal-free step instantly zero out an
+        // active shed fraction via the "still shedding" branch below — the same one-step
+        // self-defeating loop MAX_SHED_FRACTION exists to prevent, just via a different trigger.
+        // Skip the whole engage/recover/shed update for the region this step; wait for a step with
+        // real traffic to actually measure something.
+        if (offered <= 0) continue
+        const errorRate = (errorByRegion.get(region.id) ?? 0) / offered
+        if (errorRate >= REGION_OVERLOAD_ENGAGE_RATE) {
+          s.regionOverloadStreak.set(region.id, (s.regionOverloadStreak.get(region.id) ?? 0) + 1)
+          s.regionRecoverStreak.set(region.id, 0)
+        } else if (errorRate <= REGION_OVERLOAD_RECOVER_RATE) {
+          s.regionRecoverStreak.set(region.id, (s.regionRecoverStreak.get(region.id) ?? 0) + 1)
+          s.regionOverloadStreak.set(region.id, 0)
+        } else {
+          // In the dead band between recover and engage thresholds: neither streak advances,
+          // but neither resets either — a brief dip below ENGAGE shouldn't erase real progress
+          // toward engaging, and vice versa for recovery.
+        }
+        const currentlyShedding = (s.regionShedFraction.get(region.id) ?? 0) > 0
+        if (!currentlyShedding && (s.regionOverloadStreak.get(region.id) ?? 0) >= REGION_OVERLOAD_STREAK_STEPS) {
+          s.regionShedFraction.set(region.id, Math.min(MAX_SHED_FRACTION, errorRate))
+        } else if (currentlyShedding && (s.regionRecoverStreak.get(region.id) ?? 0) >= REGION_OVERLOAD_STREAK_STEPS) {
+          s.regionShedFraction.set(region.id, 0)
+        } else if (currentlyShedding) {
+          // Still engaged: track the CURRENT error rate so the shed fraction follows a worsening
+          // or improving overload without needing to fully disengage and re-engage.
+          s.regionShedFraction.set(region.id, Math.min(MAX_SHED_FRACTION, errorRate))
+        }
+      }
+    }
+
     // ── 1. demand ──
     const demandByPop: Record<PopulationId, number> = {}
     for (const pop of Object.values(doc.populations)) {
@@ -632,7 +718,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // scalar totals — one row per (population, region) served; order-based policies emit
       // exactly one row, the weighted split one per share.
       for (const { regionId, fraction } of shares ?? [{ regionId: region, fraction: 1 }]) {
-        const rps = demandByPop[pop.id] * fraction
+        // Demand backpressure (audit ISSUE-008, Mechanism B): shed a fraction of what's OFFERED
+        // to an overloaded region before it ever reaches distributeViaLb — explicit admission
+        // control at the edge, closing the loop demand.ts structurally cannot (it has no system-
+        // state input at all). Absent overload (the common case) this is a no-op multiply by 1.
+        const shed = s.regionShedFraction.get(regionId) ?? 0
+        const rps = demandByPop[pop.id] * fraction * (1 - shed)
         // Rows are pushed even at rps 0 (a Poisson tick can draw zero arrivals) — the routing
         // snapshot is attribution, and drain arcs / inbound lists key off row presence.
         populationRoutes.push({ populationId: pop.id, regionId, rps })
@@ -1488,6 +1579,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         hasEventDeps: Object.values(doc.blueprints).some(bp =>
           bp.dependencies.some(dep => (resolveMixProtocol(doc.packets, dep.packetMix) ?? dep.protocol) === 'event')),
         topicBacklog: new Map(),
+        regionShedFraction: new Map(), regionOverloadStreak: new Map(), regionRecoverStreak: new Map(),
         roleResolver: null, roleResolverKey: '',
         downstreamAdj: buildDownstreamAdj(compiled),
         routing: createRoutingState(), failover: createFailoverState(),

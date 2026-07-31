@@ -11,6 +11,8 @@ import type { HttpTemplate, ConnectionType } from '../nodeConfig'
 import { computeWorldCost } from '../costModelV2'
 import type { WorldDoc } from '../world/types'
 import type { MetricsBatch, EngineEvent, FramePayload } from './types'
+import { populationDemandRps } from './demand'
+import { createRng } from './rng'
 
 // A public-facing entry blueprint: the facade routes client demand only to blueprints that
 // expose a 'public' port (documented entry rule).
@@ -1170,13 +1172,16 @@ describe('packet-driven internal hops', () => {
     // 5 MB calls through uncapped, booking ~4 Gbps on a 100 Mbps NIC (physically impossible; the
     // exact bug this issue fixes). The FIXED ceiling now throttles admission to near the NIC's real
     // line rate before those bytes ever reach the wire, so the fat scenario's nicInMbps is
-    // correctly bounded near the 100 Mbps cap rather than exploding with packet size — the gap
-    // versus the flat scenario (measured ~9x: 1.69 -> 15.33 Mbps) is real but far smaller than the
-    // old, physically-impossible number. Hand-verified: the fat scenario's rps assertion below
-    // shows the callee throttled to well under 1 rps (was ~100 pre-fix), which is what "the NIC is
-    // now the actual bottleneck" looks like.
+    // correctly bounded near the 100 Mbps cap rather than exploding with packet size.
+    // Re-baselined AGAIN (audit ISSUE-008): Mechanism B's demand-shedding now engages on this
+    // scenario's sustained api->store breaker-open capacity errors, further reducing the fat
+    // scenario's admitted (and therefore nicInMbps) below the ~9x gap ISSUE-009 measured — a
+    // genuine, further-reduced gap (~4.4x: 1.69 -> 7.49 Mbps), not a bug, since ISSUE-008 exists
+    // precisely to shed entry demand under this kind of sustained internal saturation. Hand-
+    // verified: the fat scenario's rps assertion below shows the callee throttled to well under
+    // 1 rps (was ~100 pre-fix), which is what "the NIC is now the actual bottleneck" looks like.
     expect(simFat.latest().servers[fat.s2].nicInMbps).toBeGreaterThan(
-      simFlat.latest().servers[flat.s2].nicInMbps * 5)
+      simFlat.latest().servers[flat.s2].nicInMbps * 4)
     // and the saturation is felt as shed throughput on the callee
     expect(simFat.latest().instances[fat.storeInst].rps)
       .toBeLessThan(simFlat.latest().instances[flat.storeInst].rps)
@@ -1967,6 +1972,144 @@ describe('self-hosted connection pool (audit ISSUE-005)', () => {
     // Same EMA-vs-raw skew as the other DIVERGENCE GUARDs — bound the ratio, not exact equality.
     expect(schedulerRam / publishedRam).toBeGreaterThan(0.5)
     expect(schedulerRam / publishedRam).toBeLessThan(2)
+    sim.engine.stop()
+  })
+})
+
+// ─── Demand backpressure (audit ISSUE-008) ───────────────────────────────────
+// Demand generation is fully open-loop (demand.ts's populationDemandRps takes no system-state
+// input at all — confirmed structurally, not just by inspection: this describe block's own first
+// test pins it). The question the issue asks: when a callee saturates, does load offered upstream
+// drop, queue, or grow unbounded? MEASURED (per the spec's own staged methodology — Mechanism A
+// must be measured before Mechanism B is attempted, since B may prove unnecessary):
+describe('demand backpressure (audit ISSUE-008)', () => {
+  function saturatedChainWorld() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const webServer = createServer(az.id, getPreset('dedicated-8')!)
+    webServer.specs = { ...webServer.specs, ramMb: 2048 }   // small enough that RAM growth genuinely OOMs it
+    const backendServer = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[webServer.id] = webServer; doc.servers[backendServer.id] = backendServer
+
+    const web = publicBlueprint('web', 0)
+    web.workload = { cpuMsPerRequest: 1, ramBaseMb: 100, ramPerConnMb: 5, diskIoPerRequest: 0 }
+    const backend = createBlueprint('backend', 1)
+    backend.workload = { cpuMsPerRequest: 2000, ramBaseMb: 100, ramPerConnMb: 0, diskIoPerRequest: 0 }
+    web.dependencies = [{
+      id: 'd-backend', target: { kind: 'blueprint', blueprintId: backend.id },
+      port: 8080, protocol: 'http', packetTemplateId: null,
+    }]
+    doc.blueprints[web.id] = web
+    doc.blueprints[backend.id] = backend
+    const plWeb = createPlacement(web.id, webServer.id); doc.placements[plWeb.id] = plWeb
+    const plBackend = createPlacement(backend.id, backendServer.id); doc.placements[plBackend.id] = plBackend
+
+    // A deliberately extreme mismatch: backend's 2000ms p50 (way past web's own 1ms) inflates
+    // web's COMPOSED latency (audit ISSUE-003), which inflates web's held connections (Little's
+    // law), which inflates web's own RAM at ramPerConnMb=5 — the exact chain Mechanism A relies on.
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 500
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+
+    return { doc, compiled: compileWorld(doc), webInst: instanceId(plWeb.id, 0), regionId: r.id, popId: pop.id }
+  }
+
+  it("demand.ts's populationDemandRps takes no system-state input at all (confirms the open loop)", () => {
+    // Same (pop, simMs, rng) input regardless of what the rest of the world is doing this step —
+    // demand cannot possibly react to saturation because it has nothing to react WITH.
+    const pop = { id: 'p', label: 'x', lat: 0, lon: 0, peakRps: 100, diurnal: 'flat' as const }
+    const rng1 = createRng(1)
+    const rng2 = createRng(1)
+    expect(populationDemandRps(pop, 1000, rng1)).toBe(populationDemandRps(pop, 1000, rng2))
+  })
+
+  it('MEASURED: Mechanism A closes the loop via a repeating OOM-kill cycle, not smooth admission control', () => {
+    // This is the measurement, not a golden-value regression test — the exact rps/RAM numbers
+    // are incidental; what's asserted is the SHAPE Mechanism A actually takes: web gets OOM-killed
+    // (not gracefully throttled), recovers, and gets OOM-killed again, repeatedly, while the
+    // population's own offered demand never moves (per the test above). This is the disqualifying
+    // shape the spec itself names for Mechanism A ("fires at the wrong layer... OOMs the caller
+    // rather than gracefully shedding") — the trigger for building Mechanism B below.
+    const f = saturatedChainWorld()
+    const sim = drive(f.doc, f.compiled)
+    let oomCount = 0
+    let sawHealthy = false
+    for (let sec = 0; sec < 30; sec++) {
+      sim.stepFor(1)
+      const health = sim.latest().instances[f.webInst]?.health
+      if (health === 'healthy') sawHealthy = true
+      oomCount = sim.events.filter(e => e.kind === 'oom_kill' && e.affected.includes(f.webInst)).length
+    }
+    // Mechanism A DOES bound throughput eventually (the world doesn't runaway to infinite RAM) —
+    // but via repeated OOM-kills, not a graceful admittedScale reduction.
+    expect(oomCount).toBeGreaterThan(1)   // more than one kill — a genuine repeating cycle
+    expect(sawHealthy).toBe(true)          // and it DOES recover between kills (not permanently down)
+    sim.engine.stop()
+  })
+
+  // Mechanism A's measured shape above (an oscillating OOM-kill cycle, not graceful throttling) is
+  // exactly the disqualifying case the spec names — so Mechanism B (explicit, hysteresis-gated
+  // admission control at the edge) is built: `index.ts`'s per-region shed fraction, applied to a
+  // population's offered demand before `distributeViaLb`, one-step-lagged off the previous step's
+  // regional error rate. Engaging/recovering both require a SUSTAINED (20-step / 2s) over- or
+  // under-threshold error rate so a single noisy step can't flap it on and off.
+  it('Mechanism B: sustained regional overload sheds demand below the raw generated rate', () => {
+    const f = saturatedChainWorld()
+    const sim = drive(f.doc, f.compiled)
+    // A single low-rps step proves nothing on its own — Mechanism A's OOM-kill cycle (measured
+    // above) ALSO drives rps briefly toward zero while the instance is down/restarting, which
+    // would trivially satisfy a one-step "rps < 400" check without Mechanism B doing anything.
+    // What's unique to Mechanism B is a SUSTAINED run of many consecutive seconds sitting in a
+    // shed band that is degraded but not fully collapsed (MAX_SHED_FRACTION caps shedding below
+    // 100%, audit ISSUE-008) — so require a run of shed-band seconds longer than a single OOM
+    // dip could plausibly produce.
+    let longestShedRun = 0
+    let currentRun = 0
+    for (let sec = 0; sec < 60; sec++) {
+      sim.stepFor(1)
+      const b = sim.latest()
+      const row = b.world.populationRoutes.find(r => r.populationId === f.popId && r.regionId === f.regionId)
+      const inShedBand = row != null && row.rps > 0 && row.rps < 400
+      currentRun = inShedBand ? currentRun + 1 : 0
+      longestShedRun = Math.max(longestShedRun, currentRun)
+    }
+    expect(longestShedRun).toBeGreaterThanOrEqual(5)
+    sim.engine.stop()
+  })
+
+  it('Mechanism B is a no-op for a healthy, non-saturated world (regression floor)', () => {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+    const web = publicBlueprint('web', 0)
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id); doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 50   // comfortably within an 8-vCPU host's capacity at cpuMsPerRequest=1 default
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+    const compiled = compileWorld(doc)
+    const sim = drive(doc, compiled)
+    sim.stepFor(15)   // let the demand generator settle before sampling
+    // A single step's rps is Poisson-noisy (offered swings well above/below a 50 rps peak from
+    // one 100ms step to the next) — averaging across a window is what actually tests "no
+    // SUSTAINED overload ever engages", not a lucky/unlucky single snapshot.
+    let sum = 0
+    const samples = 20
+    for (let i = 0; i < samples; i++) {
+      sim.stepFor(1)
+      const row = sim.latest().world.populationRoutes.find(row => row.populationId === pop.id && row.regionId === r.id)
+      sum += row?.rps ?? 0
+    }
+    expect(sum / samples).toBeGreaterThan(40)
     sim.engine.stop()
   })
 })
