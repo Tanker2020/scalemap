@@ -216,6 +216,87 @@ describe('metrics pyramid', () => {
   })
 })
 
+// ─── Published vs enforced: CPU and RAM (audit ISSUE-011 / ISSUE-012) ────────
+// Both were instances of the divergence class: the host scheduler acts on one number, buildBatch
+// published another, and the two sat on the same server card.
+describe('metrics: published CPU/RAM match what the scheduler enforces', () => {
+  it('cpuCoresUsed uses the effective ms/request, not the raw workload value (ISSUE-011)', () => {
+    const f = fixture()
+    f.doc.blueprints[f.bp.id].workload.cpuMsPerRequest = 1
+    const state = createMetricsState()
+    accumulate1s(state, f, 1000, 0)
+
+    // A short-lived route adds HANDSHAKE_CPU_MS = 2 on top of the authored 1 ms, so the scheduler
+    // budgets 3 cores at 1000 rps while the raw value implies 1 — the 3x the audit describes.
+    const batch = buildBatch(
+      state, f.doc, f.compiled, snapshot(f, 1000), totals, 1000,
+      undefined, undefined, { [f.i1]: 3 },
+    )
+    expect(batch.instances[f.i1].cpuCoresUsed).toBeCloseTo(1000 * 3 / 1000, 5)
+  })
+
+  it('omitting the effective map reproduces the raw-workload value exactly (regression floor)', () => {
+    const f = fixture()
+    f.doc.blueprints[f.bp.id].workload.cpuMsPerRequest = 1
+    const state = createMetricsState()
+    accumulate1s(state, f, 1000, 0)
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 1000), totals, 1000)
+    expect(batch.instances[f.i1].cpuCoresUsed).toBeCloseTo(1000 * 1 / 1000, 5)
+  })
+
+  it('ramMb is clamped by the container memory limit (ISSUE-012)', () => {
+    const f = fixture()
+    const w = f.doc.blueprints[f.bp.id].workload
+    w.ramBaseMb = 100
+    w.ramPerConnMb = 0.8
+    // Put i1 in a container limited to 512 MB. Unclamped this instance computes far above it.
+    const p1 = Object.values(f.doc.placements).find(p => p.serverId === f.s1.id)!
+    p1.runtime = {
+      type: 'container', stackName: 'app', networkNames: [], portMappings: [],
+      cpuLimit: null, memLimitMb: 512,
+    }
+    const state = createMetricsState()
+    accumulate1s(state, f, 100_000, 0)   // heavy load ⇒ many connections ⇒ large raw RAM
+
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100_000), totals, 1000)
+    const raw = 100 + 0.8 * batch.instances[f.i1].activeConnections
+    expect(raw).toBeGreaterThan(512)              // the fixture genuinely exceeds the limit
+    expect(batch.instances[f.i1].ramMb).toBe(512) // and the published value is clamped to it
+  })
+
+  it('a process (non-container) placement is unaffected by the clamp (regression floor)', () => {
+    const f = fixture()
+    const w = f.doc.blueprints[f.bp.id].workload
+    w.ramBaseMb = 100
+    w.ramPerConnMb = 0.8
+    const state = createMetricsState()
+    accumulate1s(state, f, 100_000, 0)
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100_000), totals, 1000)
+    expect(batch.instances[f.i1].ramMb).toBeCloseTo(100 + 0.8 * batch.instances[f.i1].activeConnections, 5)
+  })
+
+  // The visible symptom ISSUE-012 names: ramByInstance is built from instances[].ramMb, so an
+  // unclamped publish let the per-server strata sum exceed the clamped ramUsedMb beside it.
+  it('per-server ram strata never exceed the container limits they are built from', () => {
+    const f = fixture()
+    const w = f.doc.blueprints[f.bp.id].workload
+    w.ramBaseMb = 100
+    w.ramPerConnMb = 0.8
+    for (const p of Object.values(f.doc.placements)) {
+      p.runtime = {
+        type: 'container', stackName: 'app', networkNames: [], portMappings: [],
+        cpuLimit: null, memLimitMb: 512,
+      }
+    }
+    const state = createMetricsState()
+    accumulate1s(state, f, 100_000, 100_000)
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 200_000), totals, 1000)
+    for (const stratum of batch.servers[f.s1.id].ramByInstance) {
+      expect(stratum.ramMb).toBeLessThanOrEqual(512)
+    }
+  })
+})
+
 // node-model Phase 5.1: managed services receive real solver rps (downstream[].toManagedServiceId)
 // that never surfaced anywhere. buildBatch now aggregates it into batch.managedServices.
 describe('metrics: managed-service received traffic', () => {

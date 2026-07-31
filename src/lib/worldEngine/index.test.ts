@@ -1457,6 +1457,61 @@ describe('connection semantics', () => {
     st.engine.stop()
   })
 
+  // The CPU sibling of the guard above (audit ISSUE-011). The host scheduler budgets cores off
+  // effectiveCpuMs — cpuMsPerRequest + cpuMsPerKb x kb + handshakeCpuMs — while cpuCoresUsed was
+  // published off the raw cpuMsPerRequest alone. On a short-lived world that is a flat 3x gap
+  // (1 ms authored + 2 ms handshake), displayed beside a correctly-sourced coreUtilization on the
+  // same card.
+  it('DIVERGENCE GUARD: scheduler-side and metrics-side CPU demand agree', () => {
+    const w = connWorld('short-lived')
+    const st = run(w)
+    const b = st.latest()
+
+    // What the scheduler enforced: coreUtilization is min(1, cpuPressure) per core, and
+    // cpuPressure = demandCores / effectiveVcpu. Unsaturated here (~1.2 of 8 cores), so it
+    // inverts cleanly back to cores of demand.
+    const vcpu = w.doc.servers[w.sv].specs.vcpu
+    const schedulerCores = b.servers[w.sv].coreUtilization[0] * vcpu
+    // connWorld places exactly one instance on exactly one server.
+    const publishedCores = b.instances[w.inst].cpuCoresUsed
+
+    expect(b.servers[w.sv].coreUtilization[0]).toBeLessThan(1)   // genuinely unsaturated
+    expect(publishedCores).toBeGreaterThan(0)
+    // Same EMA-vs-raw skew as the RAM guard, so bound the ratio rather than demanding equality —
+    // but the pre-fix omission of the handshake term was a 3x gap, far outside this band.
+    expect(schedulerCores / publishedCores).toBeGreaterThan(0.5)
+    expect(schedulerCores / publishedCores).toBeLessThan(2)
+    st.engine.stop()
+  })
+
+  // ISSUE-012's guard is an exact BOUND rather than an exact equality. An over-limit container is
+  // OOM-killed and restarts on a 5 s timer, so the two sides are sampled at different points of
+  // that cycle — but neither may ever publish a figure above the limit the scheduler enforces,
+  // which is precisely what a 512 MB container reporting 900 MB was doing.
+  it('DIVERGENCE GUARD: published RAM never exceeds the container limit the scheduler enforces', () => {
+    const LIMIT = 256
+    const w = connWorld('streaming', { holdSeconds: 30, ramPerConnMb: 0.05, ramMb: 32768 })
+    const pl = Object.values(w.doc.placements)[0]
+    pl.runtime = {
+      type: 'container', stackName: 'app', networkNames: [], portMappings: [],
+      cpuLimit: null, memLimitMb: LIMIT,
+    }
+    const st = run({ ...w, compiled: compileWorld(w.doc) })
+
+    let sawOverLimitDemand = false
+    for (const b of st.batches) {
+      const m = b.instances[w.inst]
+      if (!m) continue
+      // What the instance WOULD have published unclamped — the fixture is only meaningful if this
+      // genuinely crosses the limit at some point in the run.
+      if (100 + 0.05 * m.activeConnections > LIMIT) sawOverLimitDemand = true
+      expect(m.ramMb).toBeLessThanOrEqual(LIMIT)
+      expect(b.servers[w.sv].ramUsedMb).toBeLessThanOrEqual(LIMIT)
+    }
+    expect(sawOverLimitDemand).toBe(true)
+    st.engine.stop()
+  })
+
   it('stays deterministic under a fixed seed with streaming bound', () => {
     // ONE world driven twice — two connWorld() calls would mint different entity ids (the
     // factories stamp a counter + timestamp), which says nothing about the engine.

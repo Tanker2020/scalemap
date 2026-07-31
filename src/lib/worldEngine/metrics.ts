@@ -223,6 +223,13 @@ export function buildBatch(
   // OOM-kills on) would silently diverge from the RAM published here and read by the UI and the
   // `ram-oversubscribed` analysis rule.
   connProfiles?: Record<InstanceId, ConnectionProfile>,
+  // Per-instance blended ms/request — cpuMsPerRequest + cpuMsPerKb x kb + handshakeCpuMs — as
+  // built by the engine's effectiveCpuMs (worldEngine/index.ts) and fed to the host scheduler's
+  // InstanceLoad.cpuMsPerRequest. Publishing cpuCoresUsed off the RAW workload value instead
+  // understated a short-lived route's load by its whole handshake term, sitting beside a
+  // correctly-sourced coreUtilization on the same server card (audit ISSUE-011). Optional:
+  // absent ⇒ the raw workload value, so every existing direct-buildBatch caller is unchanged.
+  effectiveCpuMsByInstance?: Record<InstanceId, number>,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
   const servers: Record<ServerId, ServerMetrics> = {}
@@ -275,6 +282,16 @@ export function buildBatch(
     // Starved override (audit ISSUE-014): an instance silenced by a down upstream must not read
     // as healthy-and-idle. Only lifts 'healthy' to 'degraded' — real degraded/down states win.
     const baseHealth = state.lastHealth(inst.id)
+    // Container memory limit, read the SAME way the host scheduler's caller reads it
+    // (worldEngine/index.ts's InstanceLoad.memLimitMb) so the two can never disagree about the
+    // limit for one instance. hostScheduler clamps its own accounting to this before OOM victim
+    // selection; publishing the unclamped value showed a 512 MB-limited container using 900 MB —
+    // an impossible reading, on the exact panel a user opens right after an oom_kill event, and
+    // one that made the per-server sum of ramByInstance exceed the clamped ramUsedMb beside it
+    // (audit ISSUE-012).
+    const runtime = doc.placements[inst.placementId]?.runtime
+    const memLimitMb = runtime && runtime.type === 'container' ? runtime.memLimitMb : null
+    const rawRamMb = workload.ramBaseMb + workload.ramPerConnMb * activeConnections
     instances[inst.id] = {
       instanceId: inst.id,
       rps,
@@ -282,8 +299,8 @@ export function buildBatch(
       p50Ms,
       p99Ms,
       activeConnections,
-      cpuCoresUsed: rps * workload.cpuMsPerRequest / 1000,
-      ramMb: workload.ramBaseMb + workload.ramPerConnMb * activeConnections,
+      cpuCoresUsed: rps * (effectiveCpuMsByInstance?.[inst.id] ?? workload.cpuMsPerRequest) / 1000,
+      ramMb: memLimitMb != null ? Math.min(rawRamMb, memLimitMb) : rawRamMb,
       health: starved?.has(inst.id) && baseHealth === 'healthy' ? 'degraded' : baseHealth,
     }
   }

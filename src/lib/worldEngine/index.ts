@@ -1075,7 +1075,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       }
       // connProfileByInstance is THIS step's blend — the published connection count must be
       // computed from the same profile the host scheduler just enforced RAM against.
-      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance)
+      // effectiveCpuMsByInstance is the SAME map fed to the host scheduler's InstanceLoad above,
+      // so published cpuCoresUsed reflects the CPU the scheduler actually enforced (ISSUE-011).
+      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance)
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
       s.tracer.sample(flows, compiled, doc, simMs, entryId => populationsForEntry(entryId), managedDbRt)
