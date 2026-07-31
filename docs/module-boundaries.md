@@ -5075,3 +5075,50 @@ not a backpressure scenario) needed its 30-step warm-up trimmed to 15 for the sa
   its own).
 - Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite (1708→1712
   tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 7, part 2: warm-up indicator (`audit-spec.md`, 2026-07-31)
+
+### ISSUE-019 — surface engine warm-up state after a stop→edit→start cycle (`simulation.store.ts`, `SimControls.tsx`)
+
+Not an engine defect — CLAUDE.md's topology-mutability model (edit-locked while running,
+`doc`/`compiled` frozen at `start()`) means a stop→edit→start cycle correctly rebuilds every
+slow-converging piece of engine state from cold: VPS burst credits, breakers, queue depth, NICs,
+failover hysteresis, and the metrics EMA/latency reservoir are all genuinely reset in
+`index.ts`'s `start()`, because the topology they were computed against no longer exists. The gap
+was entirely in the UI: nothing distinguished a freshly-started run from a settled one, so a user
+who tweaks one server's spec and restarts reads the first few seconds' different-looking metrics
+as caused by their edit, when it's an artifact of the engine being cold.
+
+Pure UI affordance, no engine change (per the spec). `simulation.store.ts` adds
+`warmupBatchesRemaining: number`, initialized to `WARMUP_SECONDS` on `start()` and decremented by
+one on every published metrics batch (floored at 0) — counted in BATCHES, not wall-clock
+`setTimeout`/`Date.now()`, so it tracks sim time correctly under `timeScale` 2x/4x rather than
+firing early or late relative to what's actually converged. `WARMUP_SECONDS` is derived from
+`failover.ts`'s own `DEFAULT_HYSTERESIS` (`onsetMs + recoveryMs`, currently 8s) rather than a bare
+hardcoded number — the health signal itself needs that long to settle, so nothing else in the
+reset state converges meaningfully faster; if `DEFAULT_HYSTERESIS` ever changes, the warm-up
+window moves with it instead of silently drifting out of sync. `stop()`/`resetSession()` reset the
+counter to 0 (a stopped world has no "warming up" to show); `pause()`/`resume()` leave it alone,
+since paused state is explicitly PRESERVED, not reset.
+
+`selectWarmingUp` (mirroring the existing `selectLive` convention) is `running &&
+warmupBatchesRemaining > 0`. `SimControls.tsx` renders a `warmupChip` beside the existing
+`degradedChip`, pulsing (respecting `useReducedMotion()`, matching the existing live-run status
+dot's convention) via `var(--color-*)` tokens only. Purely advisory: it gates nothing in
+metrics/analysis, only its own visibility.
+
+### Tests
+
+- `simulation.store.test.ts` — `start()` sets `warmupBatchesRemaining` to `WARMUP_SECONDS` and it
+  counts down one per published batch; never goes negative once every batch is counted past it;
+  `stop()`/`resetSession()` clear it back to 0.
+- `SimControls.test.tsx` — the warm-up chip shows while the counter is positive and disappears once
+  it reaches 0; does not show while stopped even with a stale nonzero counter (a stopped world has
+  nothing running to warm up).
+- Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite
+  (1712→1717 tests), both benches, and `npm run build` (typecheck) green throughout.
+
+This closes out every issue in `audit-spec.md`'s 7 waves (19/19: 5 Critical, 9 Major, 5 Minor) —
+ISSUE-004's full engine wiring of `resolvedFrameRps` and ISSUE-006's `statusCode` 4xx/5xx semantics
+remain explicitly deferred follow-ups (primitives implemented and tested; wiring/semantics scoped
+down and documented at the time, not silently dropped).

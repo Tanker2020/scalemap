@@ -65,4 +65,19 @@ describe('SimControls', () => {
     render(<SimControls />)
     expect(screen.getByText('degraded tick')).toBeInTheDocument()
   })
+
+  it('shows the warm-up chip while warmupBatchesRemaining is positive, then hides it (audit ISSUE-019)', () => {
+    useSimulationStore.setState({ running: true, warmupBatchesRemaining: 5 })
+    const { rerender } = render(<SimControls />)
+    expect(screen.getByText('warming up (5s)')).toBeInTheDocument()
+    useSimulationStore.setState({ warmupBatchesRemaining: 0 })
+    rerender(<SimControls />)
+    expect(screen.queryByText(/warming up/)).toBeNull()
+  })
+
+  it('does not show the warm-up chip while stopped, even with a stale nonzero count', () => {
+    useSimulationStore.setState({ running: false, warmupBatchesRemaining: 5 })
+    render(<SimControls />)
+    expect(screen.queryByText(/warming up/)).toBeNull()
+  })
 })
