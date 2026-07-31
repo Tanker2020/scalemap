@@ -4612,3 +4612,29 @@ stream→network` and branched dark(`.accent`)/light(`.foreground.light`) off `u
   protocol color in either theme.
 - Every new assertion verified to FAIL with its fix reverted (`git stash`), full suite (1645→1652
   tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 3, part 3: ISSUE-017 decision (`audit-spec.md`, 2026-07-31)
+
+**Particle-object pooling: closed as not-needed.** ISSUE-017's mandate was explicit: re-benchmark
+after 013+015 land, and only implement pooling — which changes an ownership guarantee (the
+renderer would receive a borrowed, reused array instead of one it can freely retain) — if the
+budget isn't already met. `bench/renderPerf.bench.test.ts` measured ~0.053ms/frame after 013+014+
+015 at the 400-particle AZ cap, against a 1ms budget (2ms CI-fail line) — ~19x headroom. Pooling's
+added complexity (auditing every `attachRenderer` consumer for retained references, the correctness
+risk of a consumer treating a borrowed array as owned) isn't justified by a number this far under
+budget. Not implemented.
+
+**The one piece of ISSUE-017 that WAS implemented unconditionally** (per its own execution steps —
+independent of the pooling decision): `buildPayload` allocated a fresh throwaway `[]` for every
+non-matching scope's `particles`/`arcs` field every frame (a globe renderer's empty `particles`, an
+az/server renderer's empty `arcs`). Replaced with two shared, `Object.freeze`d module-level
+constants (`EMPTY_PARTICLES`/`EMPTY_ARCS`) — safe with no ownership caveat (an empty array carries
+no state to alias-corrupt), and frozen so a consumer mutating it in place fails loudly instead of
+corrupting every other renderer sharing the same instance. Verified with a two-scope test (`arcs`
+is the identical instance across an az- and a server-scope renderer) and a frozen-object test.
+
+### Tests
+
+- `index.test.ts` — two renderer scopes' empty `arcs`/`particles` fields are `toBe` the same
+  instance; `Object.isFrozen` on the shared instance is `true`. Both verified to FAIL with the fix
+  reverted.

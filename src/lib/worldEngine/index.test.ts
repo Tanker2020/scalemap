@@ -10,7 +10,7 @@ import { addRoute, routeIdOf, updateRoute } from '../nodeConfig'
 import type { HttpTemplate, ConnectionType } from '../nodeConfig'
 import { computeWorldCost } from '../costModelV2'
 import type { WorldDoc } from '../world/types'
-import type { MetricsBatch, EngineEvent } from './types'
+import type { MetricsBatch, EngineEvent, FramePayload } from './types'
 
 // A public-facing entry blueprint: the facade routes client demand only to blueprints that
 // expose a 'public' port (documented entry rule).
@@ -1621,5 +1621,43 @@ describe('composed end-to-end latency (audit ISSUE-003)', () => {
     expect(schedulerRam / metricsRam).toBeGreaterThan(0.5)
     expect(schedulerRam / metricsRam).toBeLessThan(2)
     sim.engine.stop()
+  })
+})
+
+// ─── Empty particles/arcs sharing (audit ISSUE-017) ──────────────────────────
+// buildPayload allocated a fresh throwaway `[]` for every non-matching scope's particles/arcs
+// field every frame; an empty array is semantically fungible, so one shared frozen instance now
+// serves every such case (an az/server renderer's empty `arcs`, a globe renderer's empty
+// `particles`). Verified two ways: same instance across two different scopes, and immutability.
+describe('empty particles/arcs sharing (audit ISSUE-017)', () => {
+  it('two different renderer scopes receive the SAME empty arcs/particles instance', () => {
+    const f = e2eFixture()
+    const sim = drive(f.doc, f.compiled)
+    const azFrames: FramePayload[] = []
+    const serverFrames: FramePayload[] = []
+    const azId = Object.keys(f.doc.azs)[0]
+    const serverId = Object.keys(f.doc.servers)[0]
+    sim.engine.attachRenderer({ level: 'az', azId }, p => azFrames.push(p))
+    sim.engine.attachRenderer({ level: 'server', serverId }, p => serverFrames.push(p))
+    sim.stepFor(3)
+    sim.engine.__test_render(1000)
+    sim.engine.stop()
+    expect(azFrames.length).toBeGreaterThan(0)
+    expect(serverFrames.length).toBeGreaterThan(0)
+    // Both scopes' `arcs` field is the same shared empty instance.
+    expect(azFrames[azFrames.length - 1].arcs).toBe(serverFrames[serverFrames.length - 1].arcs)
+  })
+
+  it('the shared empty instance is frozen — a consumer cannot mutate it in place', () => {
+    const f = e2eFixture()
+    const sim = drive(f.doc, f.compiled)
+    let frame: FramePayload | null = null
+    const azId = Object.keys(f.doc.azs)[0]
+    sim.engine.attachRenderer({ level: 'az', azId }, p => { frame = p })
+    sim.stepFor(3)
+    sim.engine.__test_render(1000)
+    sim.engine.stop()
+    expect(frame).not.toBeNull()
+    expect(Object.isFrozen(frame!.arcs)).toBe(true)
   })
 })

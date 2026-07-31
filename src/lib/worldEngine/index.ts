@@ -66,6 +66,15 @@ const DEGRADE_WINDOW_STEPS = 30              // 3s of 100ms steps
 const DEGRADED_STEP_MS = 200
 const RENDER_PROGRESS_PER_MS = 1 / 1200      // particle sweeps a pair in ~1.2s wall-time
 
+// Audit ISSUE-017: buildPayload allocated a fresh throwaway `[]` for every non-matching scope's
+// particles/arcs field (e.g. an empty `arcs: []` for every az/server-scope renderer, an empty
+// `particles: []` for every globe-scope one) — semantically fungible, since an empty array carries
+// no state to alias-corrupt, so one shared instance serves every such case. Frozen defensively: a
+// consumer mutating a shared empty array in place would be a far worse bug than the allocation it
+// replaces.
+const EMPTY_PARTICLES: VisualParticle[] = Object.freeze([] as VisualParticle[]) as VisualParticle[]
+const EMPTY_ARCS: VisualArc[] = Object.freeze([] as VisualArc[]) as VisualArc[]
+
 const SEVERITY: Record<HealthState, number> = { healthy: 0, degraded: 1, down: 2 }
 
 // Group compiled instances by server once (O(instances)) instead of re-filtering the full
@@ -1168,11 +1177,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
   function buildPayload(scope: RenderScope, wallMs: number): FramePayload {
     const s = state!
     const simMs = s.clock.simMs
-    if (scope.level === 'globe') return { simMs, particles: [], arcs: buildArcs() }
-    if (scope.level === 'az') return { simMs, particles: buildAzParticles(scope.azId, wallMs), arcs: [] }
-    if (scope.level === 'server') return { simMs, particles: buildServerParticles(scope.serverId, wallMs), arcs: [] }
+    if (scope.level === 'globe') return { simMs, particles: EMPTY_PARTICLES, arcs: buildArcs() }
+    if (scope.level === 'az') return { simMs, particles: buildAzParticles(scope.azId, wallMs), arcs: EMPTY_ARCS }
+    if (scope.level === 'server') return { simMs, particles: buildServerParticles(scope.serverId, wallMs), arcs: EMPTY_ARCS }
     // region rich particle surface arrives in Phase 4; ships empty-but-valid until then.
-    return { simMs, particles: [], arcs: [] }
+    return { simMs, particles: EMPTY_PARTICLES, arcs: EMPTY_ARCS }
   }
 
   // Phase 5 (D4): client arcs first, byte-identical to Phase-2's original buildArcs, then
