@@ -7,6 +7,9 @@ import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
 import { useReducedMotion } from 'framer-motion'
+import '../ui/kit' // side-effect import: guarantees kit.tsx's --kit-cat-* CSS vars are injected
+                    // (also transitively true via the AttachmentBar import below, but explicit
+                    // here since surfaceStyle now reads these vars directly too)
 import { useChatStore, type WindowRect } from '../../store/chat.store'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
@@ -212,7 +215,18 @@ export function AssistantView({ open, onClose, openSettings }: {
 
   const surfaceStyle: CSSProperties = {
     position: 'fixed', left: rect.x, top: rect.y, width: rect.width, height: rect.height,
-    background: 'var(--color-surface)', border: '1px solid var(--color-node-border)', borderRadius: 8,
+    // A subtle diagonal wash of the same four category colors AttachmentBar's chips use
+    // (--kit-cat-compute/storage/messaging/network, injected by kit.tsx — see the side-effect
+    // import above), layered over the flat base surface color at low opacity so it reads as
+    // ambient tint rather than a loud gradient. The plain `var(--color-surface)` as the final
+    // comma-separated layer is valid CSS shorthand for a background-color fallback/base.
+    background: `linear-gradient(135deg,
+      color-mix(in srgb, var(--kit-cat-compute) 10%, transparent) 0%,
+      color-mix(in srgb, var(--kit-cat-storage) 7%, transparent) 35%,
+      color-mix(in srgb, var(--kit-cat-messaging) 7%, transparent) 65%,
+      color-mix(in srgb, var(--kit-cat-network) 10%, transparent) 100%
+    ), var(--color-surface)`,
+    border: '1px solid var(--color-node-border)', borderRadius: 8,
     display: 'flex', flexDirection: 'column',
     font: '11px var(--font-mono)', color: 'var(--color-text-primary)',
     zIndex: 1000, boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
