@@ -208,6 +208,43 @@ const unusedManagedService: AnalysisRule = {
   },
 }
 
+// Audit ISSUE-010: a dependency whose target blueprint resolves to zero instances gets zero
+// compiled paths for it (`compileWorld.ts`'s `instancesByBlueprint.get(targetBpId) ?? []` loop
+// runs zero times) — the solver's `flows.ts:566` comment calls this "dangling dep: compile emitted
+// nothing" and simply `continue`s, silently. This is distinct from a BLOCKED path, which at least
+// produces a `blocked: true` downstream row visible in the UI/analysis — a dangling dependency
+// produces nothing at all, so an author sees a healthy, zero-traffic source instance and no
+// indication anything is wrong. A static/structural property of the compiled world (does this
+// dependency's target blueprint have ANY instance), so it's checked once per unique dependency
+// here, not per compiled path or per source instance of the same blueprint.
+const danglingDependencyNoTargets: AnalysisRule = {
+  id: 'dangling-dependency-no-targets', family: 'structural',
+  run: ({ doc, compiled }) => {
+    const instanceCountByBlueprint = new Map<string, number>()
+    for (const inst of Object.values(compiled.instances)) {
+      instanceCountByBlueprint.set(inst.blueprintId, (instanceCountByBlueprint.get(inst.blueprintId) ?? 0) + 1)
+    }
+    const out: AnalysisFinding[] = []
+    for (const bp of Object.values(doc.blueprints)) {
+      if (!instanceCountByBlueprint.has(bp.id)) continue   // no instances of the SOURCE blueprint — nothing to flag
+      for (const dep of bp.dependencies) {
+        if (dep.target.kind !== 'blueprint') continue   // managed targets: compileWorld already skips a missing service
+        if ((instanceCountByBlueprint.get(dep.target.blueprintId) ?? 0) > 0) continue
+        const targetBp = doc.blueprints[dep.target.blueprintId]
+        out.push({
+          id: `dangling-dependency-no-targets:${dep.id}`, ruleId: 'dangling-dependency-no-targets', family: 'structural', severity: 'warning',
+          title: 'Dependency has no reachable targets',
+          why: `${bp.name}'s dependency on ${targetBp?.name ?? dep.target.blueprintId} resolves to zero instances — every call down this edge silently vanishes (no traffic, no cost, no findings past this point).`,
+          fix: `Place at least one instance of ${targetBp?.name ?? 'the target blueprint'}, or remove this dependency (Placements panel).`,
+          affected: [bp.id, dep.id],
+        })
+      }
+    }
+    return out
+  },
+}
+
 export const structuralRules: AnalysisRule[] = [
   singleAzRegion, noFailoverRegion, replicasColocated, dependencyCycle, deepSyncChain, unusedManagedService,
+  danglingDependencyNoTargets,
 ]

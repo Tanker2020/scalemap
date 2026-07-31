@@ -1704,3 +1704,77 @@ describe('empty particles/arcs sharing (audit ISSUE-017)', () => {
     expect(Object.isFrozen(frame!.arcs)).toBe(true)
   })
 })
+
+// ─── Silently-dropped fan-out, surfaced (audit ISSUE-010) ────────────────────
+describe('depth-cap and cycle-cut events (audit ISSUE-010)', () => {
+  // web(entry) -> api -> ... 9 hops deep, one past MAX_DEPTH (8), all on one server so nothing
+  // else (health/breakers/queue) confounds the depth cap itself.
+  function deepChainWorld() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+    const services = Array.from({ length: 10 }, (_, i) => {
+      const bp = i === 0 ? publicBlueprint('svc-0', 0) : createBlueprint(`svc-${i}`, i % 8)
+      doc.blueprints[bp.id] = bp
+      const pl = createPlacement(bp.id, server.id)
+      doc.placements[pl.id] = pl
+      return { bp, iid: instanceId(pl.id, 0) }
+    })
+    for (let i = 0; i < services.length - 1; i++) {
+      services[i].bp.dependencies = [{
+        id: `d-${i}`, target: { kind: 'blueprint', blueprintId: services[i + 1].bp.id },
+        port: 8080, protocol: 'http', packetTemplateId: null,
+      }]
+    }
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 50
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), depth8Inst: services[8].iid }
+  }
+
+  it('emits chain_depth_exceeded exactly once for a chain deeper than MAX_DEPTH', () => {
+    const f = deepChainWorld()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(10)
+    const matching = sim.events.filter(e => e.kind === 'chain_depth_exceeded' && e.affected.includes(f.depth8Inst))
+    expect(matching.length).toBe(1)   // deduped — not one per step
+    sim.engine.stop()
+  })
+
+  function cycleWorld() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+    const a = publicBlueprint('a', 0)
+    const b = createBlueprint('b', 1)
+    doc.blueprints[a.id] = a; doc.blueprints[b.id] = b
+    const plA = createPlacement(a.id, server.id); doc.placements[plA.id] = plA
+    const plB = createPlacement(b.id, server.id); doc.placements[plB.id] = plB
+    a.dependencies = [{ id: 'd-ab', target: { kind: 'blueprint', blueprintId: b.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+    b.dependencies = [{ id: 'd-ba', target: { kind: 'blueprint', blueprintId: a.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 50
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), aInst: instanceId(plA.id, 0), bInst: instanceId(plB.id, 0) }
+  }
+
+  it('emits chain_cycle_cut exactly once for a genuine A -> B -> A cycle', () => {
+    const f = cycleWorld()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(10)
+    const matching = sim.events.filter(e =>
+      e.kind === 'chain_cycle_cut' && e.affected.includes(f.bInst) && e.affected.includes(f.aInst))
+    expect(matching.length).toBe(1)   // deduped — not one per step
+    sim.engine.stop()
+  })
+})

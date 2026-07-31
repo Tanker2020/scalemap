@@ -50,6 +50,10 @@ export function decodeAffected(
       return { primaryId: affected[0] ?? '', secondaryId: null }
     case 'engine_degraded':
       return { primaryId: '', secondaryId: null }
+    case 'chain_depth_exceeded':
+      return { primaryId: affected[0] ?? '', secondaryId: null }
+    case 'chain_cycle_cut':
+      return { primaryId: affected[0] ?? '', secondaryId: affected[1] || null }
   }
 }
 

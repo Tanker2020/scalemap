@@ -218,6 +218,51 @@ describe('structural: unused-managed-service', () => {
   })
 })
 
+// Audit ISSUE-010: a dependency whose target blueprint has zero instances gets zero compiled
+// paths and produces zero traffic/cost — previously silent (looks like a healthy, idle source).
+describe('structural: dangling-dependency-no-targets', () => {
+  it('fires when the target blueprint has no placements at all', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a'); const sv = s.server(az.id)
+    const api = s.blueprint('api')
+    const target = s.blueprint('target')   // authored, but never placed anywhere
+    api.dependencies = [dep('d1', target.id, 'http')]
+    s.placement(api.id, sv.id)
+    const f = ids(run(s), 'dangling-dependency-no-targets')
+    expect(f).toHaveLength(1)
+    expect(f[0].severity).toBe('warning')
+    expect(f[0].affected).toEqual([api.id, 'd1'])
+  })
+
+  it('does not fire when the dependency resolves to a real instance', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a'); const sv = s.server(az.id)
+    const api = s.blueprint('api')
+    const target = s.blueprint('target')
+    api.dependencies = [dep('d1', target.id, 'http')]
+    s.placement(api.id, sv.id)
+    s.placement(target.id, sv.id)   // now the target has a real instance
+    expect(ids(run(s), 'dangling-dependency-no-targets')).toHaveLength(0)
+  })
+
+  it('does not fire for a managed-service target (compileWorld already gates a missing service)', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a'); const sv = s.server(az.id)
+    const api = s.blueprint('api')
+    api.dependencies = [{ id: 'd1', target: { kind: 'managed', managedServiceId: 'no-such-service' }, port: 6379, protocol: 'db', packetTemplateId: null }]
+    s.placement(api.id, sv.id)
+    expect(ids(run(s), 'dangling-dependency-no-targets')).toHaveLength(0)
+  })
+
+  it('does not fire for a blueprint with no instances of its own', () => {
+    const s = scenario()
+    const api = s.blueprint('api')   // never placed
+    const target = s.blueprint('target')
+    api.dependencies = [dep('d1', target.id, 'http')]
+    expect(ids(run(s), 'dangling-dependency-no-targets')).toHaveLength(0)
+  })
+})
+
 describe('runAnalysis ordering + id stability', () => {
   it('orders by severity then family', () => {
     const s = scenario()

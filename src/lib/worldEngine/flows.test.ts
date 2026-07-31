@@ -1043,3 +1043,51 @@ describe('depBytesById — packet-sized internal hops', () => {
     expect(totals.crossAzBytes).toBe(100 * BYTES_PER_REQUEST_EACH_WAY * 2)
   })
 })
+
+// ─── Silently-dropped fan-out, surfaced (audit ISSUE-010) ────────────────────
+describe('solveFlows — depth cap and cycle cut, surfaced', () => {
+  it('a 10-service chain silently drops the hop past MAX_DEPTH, now reported', () => {
+    const { doc, server } = oneServerWorld()
+    const services = Array.from({ length: 10 }, (_, i) => addService(doc, `svc-${i}`, server.id, i % 8))
+    // Every service depends on the next — a 9-hop chain, one hop past MAX_DEPTH (8).
+    for (let i = 0; i < services.length - 1; i++) {
+      services[i].bp.dependencies = [dep(`d-${i}`, services[i + 1].bp.id)]
+    }
+    const { flows, depthExceededInstanceIds } = solveFlows(baseInput(doc, { [services[0].iid]: 100 }))
+    // The instance AT depth 8 (services[8], the 9th service) is landed but fans out no further —
+    // it's the one reported. services[9] (what it WOULD have called) is never reached at all: the
+    // exact silent-drop this issue fixes.
+    expect(depthExceededInstanceIds.has(services[8].iid)).toBe(true)
+    expect(flows[services[8].iid]).toBeDefined()
+    expect(flows[services[9].iid]).toBeUndefined()
+    expect(depthExceededInstanceIds.size).toBe(1)
+  })
+
+  it('a chain shallower than MAX_DEPTH reports nothing', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const svc = addService(doc, 'svc', server.id, 1)
+    api.bp.dependencies = [dep('d-svc', svc.bp.id)]
+    const { depthExceededInstanceIds } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(depthExceededInstanceIds.size).toBe(0)
+  })
+
+  it('a genuine dependency cycle (A -> B -> A) reports the cut edge exactly once', () => {
+    const { doc, server } = oneServerWorld()
+    const a = addService(doc, 'a', server.id, 0)
+    const b = addService(doc, 'b', server.id, 1)
+    a.bp.dependencies = [dep('d-b', b.bp.id)]
+    b.bp.dependencies = [dep('d-a', a.bp.id)]
+    const { cycleCutEdges } = solveFlows(baseInput(doc, { [a.iid]: 100 }))
+    expect(cycleCutEdges).toEqual([{ fromId: b.iid, toId: a.iid }])
+  })
+
+  it('an acyclic world reports no cut edges', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const db = addService(doc, 'db', server.id, 1)
+    api.bp.dependencies = [dep('d-db', db.bp.id)]
+    const { cycleCutEdges } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(cycleCutEdges).toEqual([])
+  })
+})

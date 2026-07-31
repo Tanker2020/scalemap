@@ -374,6 +374,12 @@ interface EngineState {
   instanceHealth: Map<InstanceId, HealthState>
   oomRestartAt: Map<InstanceId, number>
   refusedRateLimit: Map<string, number>
+  // Audit ISSUE-010: "already reported this run" — a chain that's over-depth or a cycle that's cut
+  // every single step would otherwise spam one event per instance/edge per step; these fire once
+  // per run instead (a state TRANSITION, not a steady-state condition), mirroring how other steady-
+  // state events (e.g. breaker_open) avoid re-firing every step while the condition holds.
+  depthExceededReported: Set<InstanceId>
+  cycleCutReported: Set<string>
 
   idSeq: number
   lastBatchMs: number
@@ -895,7 +901,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // read/write split measured against writeCeiling/readCeiling matches the one the solver routes
     // primaries/replicas on, and the one EdgeInspector displays.
     const managedDbRt = s.hasManagedDbs ? managedDbRuntime(s.prevFlows, doc, compiled, s.depBytesById, s.depById) : {}
-    const { flows, totals } = solveFlows({
+    const { flows, totals, depthExceededInstanceIds, cycleCutEdges } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       extraLatencyMsByServer,
       // Queue model (audit ISSUE-013): fair-share service rates + the persistent queue map
@@ -918,6 +924,23 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       managedDown: (id) => hasOutage(s.failover, 'managed', id),
       managedDbRuntime: managedDbRt,
     })
+
+    // Audit ISSUE-010: surface silently-dropped fan-out. Both conditions previously left no trace
+    // anywhere — an instance past MAX_DEPTH read as a healthy, zero-traffic leaf; a cyclic re-entry
+    // cut by the BFS guard left only a normal-looking downstream row with no marker it was cut.
+    // Deduped to once per run per instance/edge (a state TRANSITION, not a steady-state condition)
+    // so a persistently-overloaded/cyclic topology doesn't spam one event per step.
+    for (const id of depthExceededInstanceIds) {
+      if (s.depthExceededReported.has(id)) continue
+      s.depthExceededReported.add(id)
+      emit('chain_depth_exceeded', 'warning', `${id}'s dependency chain exceeded MAX_DEPTH and stopped fanning out further`, [id], simMs)
+    }
+    for (const { fromId, toId } of cycleCutEdges) {
+      const key = `${fromId}->${toId}`
+      if (s.cycleCutReported.has(key)) continue
+      s.cycleCutReported.add(key)
+      emit('chain_cycle_cut', 'warning', `dependency cycle cut: ${fromId} -> ${toId} is already on this request chain`, [fromId, toId], simMs)
+    }
 
     // ── 7. NIC byte accounting (audit ISSUE-002: split request/response, persistent buffer) ──
     // Ingress = request payloads in, egress = response payloads out — no longer symmetric.
@@ -1447,6 +1470,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         lastRoutingSnapshot: { populationRoutes: [] }, popRegion: new Map(), pendingFailover: new Map(),
         popPrevRegion: new Map(),
         checkFailedPrev: new Map(), probePrev: new Map(), instanceHealth: new Map(), oomRestartAt: new Map(), refusedRateLimit: new Map(),
+        depthExceededReported: new Set(), cycleCutReported: new Set(),
         idSeq: 0, lastBatchMs: -1000, stepCosts: [], degraded: false, rafId: null, lastFrameMs: null,
         renderers: new Map(), rendererSeq: 0,
       }

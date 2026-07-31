@@ -159,6 +159,12 @@ export type EngineEventKind =
   | 'primary_failback'           // recovered authored primary reclaimed the role (audit ISSUE-007)
   | 'outage_triggered' | 'outage_cleared'   // manual switches
   | 'engine_degraded'            // perf watch halved the step rate (spec decision 9); info severity
+  // Audit ISSUE-010: silent fan-out truncation, surfaced. Both were previously invisible — an
+  // instance past MAX_DEPTH reports zero traffic/cost/findings for whatever it would have called,
+  // reading as "healthy" rather than "unmodeled"; a cyclic dependency's row into the target IS
+  // recorded (unchanged) but nothing marked that the re-entry was cut instead of followed.
+  | 'chain_depth_exceeded'       // dependency chain hit MAX_DEPTH and stopped fanning out further
+  | 'chain_cycle_cut'            // BFS cycle guard stopped re-queueing into an ancestor instance
 
 export interface EngineEvent {
   id: string

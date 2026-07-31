@@ -356,7 +356,23 @@ function pathIndexFor(compiled: CompiledWorld): Map<InstanceId, Map<string, Comp
   return index
 }
 
-export function solveFlows(input: FlowInput): { flows: Record<InstanceId, InstanceFlow>; totals: FlowTotals } {
+export interface SolveFlowsResult {
+  flows: Record<InstanceId, InstanceFlow>
+  totals: FlowTotals
+  // Audit ISSUE-010: instances whose dependency chain hit MAX_DEPTH this step and stopped fanning
+  // out further — previously silent (the instance itself gets metrics; whatever it WOULD have
+  // called at hop 9+ never appears anywhere, no refusedRps, no downstream row, nothing). The
+  // engine turns this into a deduped `chain_depth_exceeded` event; kept as a plain Set here (not
+  // an emitted event) so solveFlows stays a pure function of its input.
+  depthExceededInstanceIds: Set<InstanceId>
+  // Edges where the BFS cycle guard (chainHas) stopped re-queueing because the target is already
+  // an ancestor on this request chain. The row into the cyclic target IS recorded in `downstream`
+  // (unchanged) — this is additionally the raw fact that a cut happened, for the engine to turn
+  // into a deduped `chain_cycle_cut` event.
+  cycleCutEdges: { fromId: InstanceId; toId: InstanceId }[]
+}
+
+export function solveFlows(input: FlowInput): SolveFlowsResult {
   const {
     compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
     breakerOpen, healthOf, rng,
@@ -377,6 +393,8 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
 
   const flows: Record<InstanceId, InstanceFlow> = {}
   const totals: FlowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} }
+  const depthExceededInstanceIds = new Set<InstanceId>()
+  const cycleCutEdges: { fromId: InstanceId; toId: InstanceId }[] = []
 
   // First-touch flow record; serviceLatencyMs is sampled exactly once per instance, in
   // BFS creation order (deterministic under a seeded rng).
@@ -550,7 +568,10 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     }
 
     if (admitted <= EPSILON_RPS) continue      // a down instance zeroes its whole subtree
-    if (item.depth >= MAX_DEPTH) continue      // landed, but fans out no further
+    if (item.depth >= MAX_DEPTH) {              // landed, but fans out no further (audit ISSUE-010)
+      depthExceededInstanceIds.add(item.instanceId)
+      continue
+    }
 
     const bp = doc.blueprints[inst.blueprintId]
     if (!bp) continue
@@ -651,7 +672,10 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
         bucketBytes(path.hopClass, share, dep.id)
 
         const toId = path.to.instanceId
-        if (chainHas(item, toId)) continue          // cycle guard: row recorded, no re-entry
+        if (chainHas(item, toId)) {                 // cycle guard: row recorded, no re-entry
+          cycleCutEdges.push({ fromId: item.instanceId, toId })   // audit ISSUE-010
+          continue
+        }
         queue.push({ instanceId: toId, offered: share, depth: item.depth + 1, parent: item })
       }
     }
@@ -721,5 +745,5 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     flows[id].totalLatencyMs = computeTotalLatencyMs(id)
   }
 
-  return { flows, totals }
+  return { flows, totals, depthExceededInstanceIds, cycleCutEdges }
 }

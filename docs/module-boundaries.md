@@ -4678,3 +4678,52 @@ verified as physically correct, not merely different.
   pre-fix shed-throughput behavior (regression floor, matching the pre-existing NIC-backpressure
   describe block's own assertion shape). Verified to FAIL with the fix reverted (measured 81 rps
   admitted pre-fix vs the <10 rps bound).
+
+### ISSUE-010 — silently-dropped fan-out, surfaced (`flows.ts`, `index.ts`, `types.ts`, `analysis/rules/structural.ts`)
+
+Three BFS truncation points in `solveFlows` left no trace anywhere: an instance past `MAX_DEPTH`
+(8 hops) reads as a healthy, zero-traffic leaf for whatever it would have called next; a dangling
+dependency (target blueprint resolves to zero compiled paths) silently `continue`s with no row,
+no event, no finding; a genuine topology cycle's cut edge looks like a normal downstream row with
+no marker that re-entry was blocked instead of followed. For a tool whose whole purpose is
+surfacing architecture problems, "no findings past this depth" reading as "verified fine" is worse
+than not modeling it at all.
+
+`solveFlows`'s return type gained `depthExceededInstanceIds: Set<InstanceId>` and `cycleCutEdges:
+{ fromId, toId }[]` (additive to `SolveFlowsResult`, NOT the frozen `worldEngine/types.ts`
+contract — this is `flows.ts`'s own internal return shape) — collected inline at the two existing
+`continue` sites rather than adding a new pass, so `solveFlows` stays a pure function of its input.
+`index.ts` turns these into two new `EngineEventKind`s (`chain_depth_exceeded`/`chain_cycle_cut`,
+additive to the frozen contract, logged in `.superpowers/sdd/contract-drift.md`), deduped to ONCE
+PER RUN per instance/edge via two new `Set`s in `EngineState` (`depthExceededReported`/
+`cycleCutReported`) — a state TRANSITION, not a steady-state condition, mirroring how other
+steady-state events (`breaker_open`) avoid re-firing every step while the condition holds.
+
+The dangling-dependency case is different in kind — it's a STATIC/structural property of the
+compiled world (does this dependency's target blueprint have any instance at all), not a per-step
+runtime event, so it doesn't need a simulation run to detect. New analysis rule
+`dangling-dependency-no-targets` (`analysis/rules/structural.ts`, registered in `ANALYSIS_RULES`
+per the standing "one registry" rule) fires once per unique dependency whose target blueprint has
+zero compiled instances — checked once per blueprint's dependency list, not per compiled path or
+per source instance of the same blueprint (which would multiply the same finding by however many
+instances the source has).
+
+`eventCausality.ts`'s `decodeAffected` needed the two new `EngineEventKind` cases added to stay
+exhaustive (a `tsc` compile error, not a runtime bug) — both map `affected[0]`/`affected[1]` to
+`primaryId`/`secondaryId` the same way the other instance-pair event kinds do.
+
+### Tests
+
+- `flows.test.ts` — a 10-service chain (one hop past `MAX_DEPTH`) reports the depth-8 instance in
+  `depthExceededInstanceIds` and confirms the 10th service's flow is genuinely never reached (not
+  just "no event" — the actual silent drop); a shallower chain reports nothing. A genuine A→B→A
+  cycle's `cycleCutEdges` contains exactly the cut edge (deterministic, `toEqual` exact); an acyclic
+  world reports none.
+- `structural.test.ts` — `dangling-dependency-no-targets` fires for a dependency whose target has
+  zero placements; stays silent once the target has a real instance, for a managed-service target
+  (compileWorld already gates a missing service), and for a source blueprint with no instances of
+  its own.
+- `index.test.ts` — an engine-level 9-hop-deep world emits `chain_depth_exceeded` exactly ONCE
+  across 10 steps (not one per step); an engine-level A↔B cycle world emits `chain_cycle_cut`
+  exactly once. Every new assertion verified to FAIL with the fix reverted; full suite
+  (1656→1666 tests) and both benches green throughout.
