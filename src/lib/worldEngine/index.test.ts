@@ -1916,3 +1916,57 @@ describe('client-side timeouts (audit ISSUE-006)', () => {
     sim.engine.stop()
   })
 })
+
+// ─── Self-hosted connection pool (audit ISSUE-005) ───────────────────────────
+describe('self-hosted connection pool (audit ISSUE-005)', () => {
+  function poolWorld(opts: { maxConnections?: number; checkoutTimeoutMs?: number; peakRps?: number }) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+    const web = publicBlueprint('web', 0)
+    web.workload = {
+      cpuMsPerRequest: 1, ramBaseMb: 100, ramPerConnMb: 0.5, diskIoPerRequest: 0,
+      maxConnections: opts.maxConnections, checkoutTimeoutMs: opts.checkoutTimeoutMs,
+    }
+    doc.blueprints[web.id] = web
+    const added = addRoute(doc.packets, {
+      name: 'api', method: 'GET', path: '/api', connectionType: 'streaming', holdSeconds: 30,
+    })
+    doc.packets = added.registry
+    const pl = createPlacement(web.id, server.id); doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = opts.peakRps ?? 400
+    pop.requestMix = [{ routeId: routeIdOf(added.route), weight: 1 }]
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), inst: instanceId(pl.id, 0), sv: server.id }
+  }
+
+  it('an unauthored pool (no maxConnections) is bit-identical to before this issue', () => {
+    const f = poolWorld({})
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(20)
+    expect(sim.latest().instances[f.inst].checkoutWaitMs).toBeUndefined()
+    sim.engine.stop()
+  })
+
+  it("DIVERGENCE GUARD: scheduler-enforced RAM and published RAM agree once a pool saturates", () => {
+    // 400 rps x 30s streaming hold ~= 12,000 active connections against a tiny 100-connection cap.
+    const f = poolWorld({ maxConnections: 100, checkoutTimeoutMs: 5 })
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(20)
+    const b = sim.latest()
+    expect(b.instances[f.inst].checkoutWaitMs).toBeGreaterThan(0)
+    const schedulerRam = b.servers[f.sv].ramUsedMb
+    const publishedRam = b.instances[f.inst].ramMb
+    expect(schedulerRam).toBeGreaterThan(0)
+    expect(publishedRam).toBeGreaterThan(0)
+    // Same EMA-vs-raw skew as the other DIVERGENCE GUARDs — bound the ratio, not exact equality.
+    expect(schedulerRam / publishedRam).toBeGreaterThan(0.5)
+    expect(schedulerRam / publishedRam).toBeLessThan(2)
+    sim.engine.stop()
+  })
+})

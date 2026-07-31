@@ -314,7 +314,17 @@ export function buildBatch(
     // (audit ISSUE-012).
     const runtime = doc.placements[inst.placementId]?.runtime
     const memLimitMb = runtime && runtime.type === 'container' ? runtime.memLimitMb : null
-    const rawRamMb = workload.ramBaseMb + workload.ramPerConnMb * activeConnections
+    // Pool-checkout wait (audit ISSUE-005), read from the SAME per-instance result the host
+    // scheduler already computed and enforced — never re-derived, so the two can never disagree
+    // about which instances are pool-saturated. Absent for an instance with no authored
+    // maxConnections. The RAM below must shed the SAME checkoutTimeoutErrorFraction the scheduler
+    // already applied to its own accounting (hostScheduler.ts's stepHost) — a connection that
+    // timed out waiting for the pool never actually landed, so it must not inflate published RAM
+    // any more than it inflates the RAM the scheduler enforces/OOM-kills on.
+    const checkout = state.lastHost[inst.serverId]?.checkoutByInstance?.[inst.id]
+    const checkoutWaitMs = checkout?.checkoutWaitMs
+    const effectiveConnections = checkout ? activeConnections * (1 - checkout.checkoutTimeoutErrorFraction) : activeConnections
+    const rawRamMb = workload.ramBaseMb + workload.ramPerConnMb * effectiveConnections
     instances[inst.id] = {
       instanceId: inst.id,
       rps,
@@ -326,6 +336,7 @@ export function buildBatch(
       cpuCoresUsed: rps * (effectiveCpuMsByInstance?.[inst.id] ?? workload.cpuMsPerRequest) / 1000,
       ramMb: memLimitMb != null ? Math.min(rawRamMb, memLimitMb) : rawRamMb,
       health: starved?.has(inst.id) && baseHealth === 'healthy' ? 'degraded' : baseHealth,
+      ...(checkoutWaitMs != null ? { checkoutWaitMs } : {}),
     }
   }
 

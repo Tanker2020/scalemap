@@ -19,6 +19,38 @@ export interface InstanceLoad {
   // one step (audit ISSUE-013). Lets the water-fill grant a draining instance capacity beyond
   // its instantaneous demand. Optional: absent ⇒ 0.
   backlogRps?: number
+  // Self-hosted connection pool (audit ISSUE-005). Optional: absent ⇒ unbounded (no pool
+  // modeling at all, the pre-issue behavior — poolCheckoutFor returns null).
+  maxConnections?: number
+  checkoutTimeoutMs?: number
+}
+
+// The failure model for ONE instance's connection pool at ρ = activeConnections/maxConnections
+// (audit ISSUE-005) — an M/M/c/K-shaped queue at the connection layer, ahead of compute. Below
+// saturation (ρ <= 1) checkout is immediate — the exact pre-issue behavior, since this is the
+// regression floor for an authored-but-unsaturated pool. Past it, checkout wait grows with the
+// SAME queueing shape managedDbRuntime.ts already uses for DB service latency (`base /
+// (1 - saturation)`, clamped so a badly-oversubscribed pool stays finite rather than exploding),
+// reused here for the CHECKOUT step specifically rather than re-derived. Returns null when no
+// maxConnections is authored — "not capacity-modelled", the same convention
+// managedDbRuntimeFor uses for an unclassed DB.
+const BASE_CHECKOUT_MS = 5
+const MAX_SATURATION_FOR_CHECKOUT_LATENCY = 0.98
+export function poolCheckoutFor(
+  activeConnections: number,
+  maxConnections: number | undefined,
+  checkoutTimeoutMs: number | undefined,
+): { checkoutWaitMs: number; checkoutTimeoutErrorFraction: number } | null {
+  if (maxConnections == null || !(maxConnections > 0)) return null
+  const rho = activeConnections / maxConnections
+  if (rho <= 1) return { checkoutWaitMs: 0, checkoutTimeoutErrorFraction: 0 }
+  const overshoot = Math.min(rho - 1, MAX_SATURATION_FOR_CHECKOUT_LATENCY)
+  const checkoutWaitMs = BASE_CHECKOUT_MS / (1 - overshoot)
+  const checkoutTimeoutErrorFraction =
+    checkoutTimeoutMs != null && checkoutTimeoutMs > 0 && checkoutWaitMs > checkoutTimeoutMs
+      ? Math.min(1, (checkoutWaitMs - checkoutTimeoutMs) / checkoutTimeoutMs)
+      : 0
+  return { checkoutWaitMs, checkoutTimeoutErrorFraction }
 }
 
 export interface HostStepResult {
@@ -33,6 +65,10 @@ export interface HostStepResult {
   serviceRateByInstance: Record<InstanceId, number>
   ramUsedMb: number
   oomVictim: InstanceId | null
+  // Per-instance pool-checkout result (audit ISSUE-005) — only present for instances with an
+  // authored maxConnections. Additive-optional: absent entirely on a hand-built HostStepResult
+  // (existing test fixtures), and an absent per-instance key ⇒ no pool modeling for that instance.
+  checkoutByInstance?: Record<InstanceId, { checkoutWaitMs: number; checkoutTimeoutErrorFraction: number }>
 }
 
 // Weighted water-fill of `totalCores` across instances, capped per instance at its wanted cores
@@ -124,8 +160,18 @@ export function stepHost(server: Server, loads: InstanceLoad[], effectiveVcpu: n
   let ramUsedMb = 0
   let oomVictim: InstanceId | null = null
   const ramRows: { instanceId: InstanceId; overBase: number }[] = []
+  const checkoutByInstance: HostStepResult['checkoutByInstance'] = {}
   for (const l of loads) {
-    let instanceRam = l.ramBaseMb + l.ramPerConnMb * l.activeConnections
+    // Pool checkout (audit ISSUE-005): a checkout that times out never actually occupies a
+    // connection — the caller gave up waiting — so it must not also inflate RAM as if it held
+    // one. Applied BEFORE the container memLimitMb clamp below, which is a separate, independent
+    // cap on whatever connections genuinely landed.
+    const checkout = poolCheckoutFor(l.activeConnections, l.maxConnections, l.checkoutTimeoutMs)
+    if (checkout) checkoutByInstance[l.instanceId] = checkout
+    const effectiveConnections = checkout
+      ? l.activeConnections * (1 - checkout.checkoutTimeoutErrorFraction)
+      : l.activeConnections
+    let instanceRam = l.ramBaseMb + l.ramPerConnMb * effectiveConnections
     if (l.memLimitMb !== null && instanceRam > l.memLimitMb) {
       instanceRam = l.memLimitMb
       if (oomVictim === null) oomVictim = l.instanceId
@@ -141,5 +187,8 @@ export function stepHost(server: Server, loads: InstanceLoad[], effectiveVcpu: n
     oomVictim = rng.pick(tied).instanceId
   }
 
-  return { cpuPressure, coreUtilization, latencyMultiplier, admittedScale, serviceRateByInstance, ramUsedMb, oomVictim }
+  return {
+    cpuPressure, coreUtilization, latencyMultiplier, admittedScale, serviceRateByInstance,
+    ramUsedMb, oomVictim, checkoutByInstance,
+  }
 }

@@ -4925,3 +4925,59 @@ reasonable stopping point. Natural follow-up.
   never opens it.
 - Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite
   (1685→1699 tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 6, part 3: self-hosted connection pool (`audit-spec.md`, 2026-07-31)
+
+⚠ **Deliberate scope decision** — this issue was explicitly parked in CLAUDE.md's Known Issues /
+Roadmap ("a `WorkloadProfile.maxConnections` mirroring `managedDbRuntimeFor`'s
+`connectionRefusedRps` is the natural follow-up"). Removed from the parked list in the same change.
+
+### ISSUE-005 — `hostScheduler.ts`'s `poolCheckoutFor`, `world/types.ts`, `metrics.ts`
+
+A cloud-managed DB gets the full failure model (`managedDbRuntime.ts`): rps ceiling, queueing
+latency, AND a connection ceiling with `connectionRefusedRps`. A self-hosted DB blueprint (or any
+workload) got none of that — its `WorkloadProfile` carried `ramPerConnMb` (so RAM at least grows
+with connections) but no `maxConnections`, so the ONLY way it could ever fail under connection
+pressure was exhausting host RAM and getting OOM-killed — a materially LATER, less common failure
+than real pool exhaustion (a real Postgres install with the common `max_connections: 100` default
+would already be queueing/refusing checkouts at a fraction of the connection count needed to
+exhaust RAM).
+
+`WorkloadProfile` gains `maxConnections?`/`checkoutTimeoutMs?` (additive; absent ⇒ unbounded, the
+exact pre-issue behavior). New `hostScheduler.ts`'s `poolCheckoutFor(activeConnections,
+maxConnections, checkoutTimeoutMs)` models the checkout step as a bounded queue ahead of compute:
+below saturation (ρ = activeConnections/maxConnections ≤ 1) checkout is immediate; past it, wait
+grows with the SAME `base / (1 - saturation)` queueing shape `managedDbRuntimeFor` already uses for
+DB service latency (clamped so a badly-oversubscribed pool stays finite), and past
+`checkoutTimeoutMs` a growing fraction of waiters time out (`checkoutTimeoutErrorFraction`, same
+linear-overshoot shape as `managedDbRuntimeFor`'s own timeout fraction). Returns `null` when no
+`maxConnections` is authored — "not capacity-modelled", the same convention
+`managedDbRuntimeFor` uses for an unclassed DB.
+
+**The two-call-site invariant, extended.** A connection that times out waiting for a checkout
+never actually occupied one — the caller gave up — so it must not inflate RAM as if it held one,
+on EITHER of the two Little's-law sites: `hostScheduler.ts`'s own RAM/OOM accounting now sheds
+`activeConnections × (1 - checkoutTimeoutErrorFraction)` before computing `ramBaseMb +
+ramPerConnMb × effectiveConnections`, and `metrics.ts`'s published `ramMb` reads the IDENTICAL
+`checkoutByInstance` result (via the same `HostStepResult.checkoutByInstance`, additive-optional)
+to shed the same fraction — never re-derived. This divergence was caught DURING implementation,
+not anticipated up front: the first version only wired the shedding into `hostScheduler.ts`, and
+the new DIVERGENCE GUARD test failed immediately (published RAM ~60x the scheduler-enforced value)
+until `metrics.ts` was taught to read the same `checkoutTimeoutErrorFraction`.
+
+New `InstanceMetrics.checkoutWaitMs?: number` (additive, contract-drift logged) surfaces the wait
+itself, populated only for an instance with an authored `maxConnections`.
+
+### Tests
+
+- `hostScheduler.test.ts` — `poolCheckoutFor` returns `null` with no `maxConnections`; no wait while
+  unsaturated; wait grows past saturation with zero error fraction when no timeout is authored; a
+  tight timeout against a saturated pool produces a positive error fraction; wait stays finite even
+  at extreme saturation (clamped overshoot). `stepHost` is bit-identical for an instance with no
+  `maxConnections`; a saturated pool with a tight timeout measurably sheds RAM below the naive
+  (unshed) figure.
+- `index.test.ts` — an unauthored pool publishes no `checkoutWaitMs` at all (regression floor); a
+  **DIVERGENCE GUARD** confirming scheduler-enforced and published RAM stay within the same bounded
+  ratio once a pool saturates (the guard that caught the real bug above, mid-implementation).
+- Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite
+  (1699→1708 tests) and both benches green throughout.

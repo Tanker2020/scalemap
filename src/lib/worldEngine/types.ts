@@ -41,6 +41,12 @@ export interface InstanceMetrics {
   cpuCoresUsed: number           // e.g. 1.2 = 1.2 cores of demand
   ramMb: number                  // base + per-connection
   health: HealthState
+  // Additive-optional (contract-drift, audit ISSUE-005): mean connection-pool checkout wait, ms —
+  // populated only for an instance with an authored `WorkloadProfile.maxConnections`; read the
+  // same result the host scheduler's RAM/OOM accounting already enforces (hostScheduler.ts's
+  // `poolCheckoutFor`), never re-derived, so the two can never disagree about which instances are
+  // pool-saturated.
+  checkoutWaitMs?: number
 }
 
 export interface ServerMetrics {

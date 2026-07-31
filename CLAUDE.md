@@ -325,10 +325,18 @@ scheduler's `InstanceLoad.activeConnections` (which drives RAM growth and OOM vi
 `ram-oversubscribed` analysis rule). **Both MUST call `connectionModel`'s `activeConnections()`.**
 If only one is ever made aware of a change, the RAM the scheduler enforces silently diverges from
 the RAM the user is shown. `index.test.ts`'s `DIVERGENCE GUARD` test exists solely to catch that.
-There is deliberately NO connection ceiling/refusal path — RAM is the constraint, so
-`hostScheduler`'s existing OOM path and `capacity.ts`'s `ram-oversubscribed` fire with zero new
-code. Caveat: a saved world that already picked `short-lived`/`streaming` WILL change behavior on
+Caveat: a saved world that already picked `short-lived`/`streaming` WILL change behavior on
 load — that is the point of the phase, but it is a real change to existing documents.
+
+A self-hosted workload's connection pool now HAS a ceiling and a refusal path (2026-07-31, audit
+ISSUE-005): `WorkloadProfile.maxConnections`/`checkoutTimeoutMs` (absent ⇒ unbounded, the pre-issue
+behavior) feed `hostScheduler.ts`'s `poolCheckoutFor`, mirroring `managedDbRuntimeFor`'s
+`connectionRefusedRps` shape for a managed DB. The SAME two-call-site discipline applies to its
+output: a checkout that times out never actually occupied a connection, so both RAM call sites
+above must shed that fraction identically (`checkoutTimeoutErrorFraction`) — `hostScheduler.ts`'s
+own RAM accounting and `metrics.ts`'s published `ramMb` both read it from the SAME per-step
+`checkoutByInstance` result, never re-derived. A new `InstanceMetrics.checkoutWaitMs` (additive-
+optional) surfaces the wait itself.
 
 **Global blueprint library:** `panels/BlueprintsPanel.tsx` + `BlueprintModal.tsx` (world-scope
 `blueprints` tab) give `ServiceBlueprint` — always a global, reusable definition — the catalog
@@ -502,10 +510,6 @@ progress — do not assume any of it exists:
   a stale turn's late resolve be discarded on close/retry — but this is not true request
   cancellation: `llm_chat` itself is un-abortable once dispatched, with a fixed 60s Rust-side
   timeout)
-- Connection POOL modeling (pool size, checkout wait, pool-exhaustion queueing) and a connection
-  CEILING / refusal path — connection semantics are live, but RAM is deliberately the only
-  constraint (see the two-call-site invariant above); a `WorkloadProfile.maxConnections` mirroring
-  `managedDbRuntimeFor`'s `connectionRefusedRps` is the natural follow-up
 - Wire-protocol sub-enum (HTTP/2 multiplexing, gRPC streams, WebSocket) beneath `ConnectionType`
 
 

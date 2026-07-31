@@ -816,6 +816,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           // a draining instance capacity beyond its instantaneous demand.
           cpuShares: bp?.workload.cpuShares ?? 1,
           backlogRps: (s.queueDepth.get(i.id) ?? 0) / stepSec,
+          // Self-hosted connection pool (audit ISSUE-005) — absent ⇒ unbounded, the pre-issue
+          // behavior (poolCheckoutFor returns null and RAM/OOM accounting is untouched).
+          maxConnections: bp?.workload.maxConnections,
+          checkoutTimeoutMs: bp?.workload.checkoutTimeoutMs,
         }
       })
       const effectiveVcpu = server.specs.vcpu * (s.vpsFactor.get(server.id) ?? 1)
