@@ -17,7 +17,8 @@ import { managedCapacityRps } from '../managedCapacity'
 import { MANAGED_RESPONSE_KB } from '../cloudRegistry'
 import type { HealthState } from './types'
 import type { Rng } from './rng'
-import { sampleLatencyMs } from './latency'
+import { sampleLatencyMs, timeoutErrorFraction } from './latency'
+import type { HttpTemplate, PacketMixEntry, PacketRegistry } from '../nodeConfig'
 import { pathKey } from './breakers'
 import { baseHopLatencyMs } from './networkRuntime'
 import { REGION_GEO } from '../world/regionGeo'
@@ -206,6 +207,21 @@ export function managedRefusedRps(share: number, writeFraction: number, ms: Mana
   const cap = managedCapacityRps(ms)
   if (cap == null || !Number.isFinite(cap)) return 0
   return Math.max(0, share - cap)
+}
+
+// A dependency's client-side timeout (audit ISSUE-006), resolved from the bound mix's first http
+// packet that authors one — mirrors how other per-edge fields (write fraction, protocol) resolve
+// from "the packet in the mix that speaks for this axis" rather than requiring every entry to
+// agree. Returns undefined when no bound packet authors a timeout (the pre-issue behavior: no
+// client-side timeout at all).
+function resolveClientTimeoutMs(reg: PacketRegistry, mix: PacketMixEntry[] | undefined): number | undefined {
+  for (const entry of mix ?? []) {
+    const tpl = reg.templates[entry.packetId]
+    if (tpl?.protocol === 'http' && (tpl as HttpTemplate).clientTimeoutMs != null) {
+      return (tpl as HttpTemplate).clientTimeoutMs
+    }
+  }
+  return undefined
 }
 
 export interface FlowInput {
@@ -741,15 +757,40 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
           continue   // decoupled: never re-enters the BFS queue for this hop
         }
 
-        addDownstream(flow, dep.id, target, share, path.hopClass, false)
-        bucketBytes(path.hopClass, share, dep.id)
-
         const toId = path.to.instanceId
+
+        // Audit ISSUE-006: a client-side timeout, resolved from the bound mix's http packet. No
+        // timeout authored anywhere meant a breaker could open ONLY from capacity overflow, never
+        // from a dependency simply being too slow — the canonical slow-dependency trip was
+        // structurally unreachable. Computed off the TARGET's own self-time (getFlow forces its
+        // first-touch sample if not already taken, exactly as if this were the first row to reach
+        // it) — the analytic P(latency > timeout) under the SAME log-normal distribution the hop
+        // samples from, so no new rng draw. Feeds the caller's errorRps exactly like a capacity
+        // error, and is additionally recorded as a `timeout`-tagged blocked row so the metrics
+        // pyramid can tell "too slow" apart from "too much load" the same way it already does for
+        // managed-DB query timeouts.
+        let admittedShare = share
+        const clientTimeoutMs = resolveClientTimeoutMs(doc.packets, dep.packetMix)
+        if (clientTimeoutMs != null && clientTimeoutMs > 0) {
+          const targetSelfMs = getFlow(toId).serviceLatencyMs
+          const fraction = timeoutErrorFraction(targetSelfMs, targetSelfMs * SERVICE_P99_OVER_P50, clientTimeoutMs)
+          if (fraction > EPSILON_RPS) {
+            const timedOut = share * fraction
+            flow.errorRps += timedOut
+            addDownstream(flow, dep.id, target, timedOut, path.hopClass, true, 'timeout')
+            admittedShare = share - timedOut
+          }
+        }
+        if (admittedShare <= EPSILON_RPS) continue
+
+        addDownstream(flow, dep.id, target, admittedShare, path.hopClass, false)
+        bucketBytes(path.hopClass, admittedShare, dep.id)
+
         if (chainHas(item, toId)) {                 // cycle guard: row recorded, no re-entry
           cycleCutEdges.push({ fromId: item.instanceId, toId })   // audit ISSUE-010
           continue
         }
-        queue.push({ instanceId: toId, offered: share, depth: item.depth + 1, parent: item })
+        queue.push({ instanceId: toId, offered: admittedShare, depth: item.depth + 1, parent: item })
       }
     }
   }

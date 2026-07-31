@@ -66,6 +66,12 @@ export interface HttpTemplate extends BasePacketTemplate {
   // "Advanced" route binding: when present and non-empty, this mix supersedes the route's own
   // inline sizeKb/responseSizeKb (see packetResolve's four-tier fallback).
   packetMix?: PacketMixEntry[]
+  // Client-side timeout, in ms (audit ISSUE-006) — mirrors ManagedService.queryTimeoutMs's own
+  // "absent ⇒ no timeout" convention. Without this a breaker could only ever open from capacity
+  // overflow, never from a dependency simply being too slow; worldEngine/latency.ts's
+  // timeoutErrorFraction is the analytic P(latency > this) under the hop's own sampled
+  // distribution. Optional: absent ⇒ 0 (no timeout), so an existing .scalemap is unchanged.
+  clientTimeoutMs?: number
 }
 
 export interface EventTemplate extends BasePacketTemplate {

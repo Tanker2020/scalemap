@@ -1857,3 +1857,62 @@ describe('async event delivery (audit ISSUE-002)', () => {
     sim.engine.stop()
   })
 })
+
+// ─── Client-side timeouts (audit ISSUE-006) ──────────────────────────────────
+// The canonical distributed-systems failure this issue makes reachable: a dependency degrades to
+// slow-but-not-overloaded, and the caller's breaker trips from TIMEOUTS, not from 5xx or capacity
+// refusal — structurally impossible before this issue (no client timeout existed at all).
+describe('client-side timeouts (audit ISSUE-006)', () => {
+  function timeoutWorld(clientTimeoutMs: number, dbCpuMs: number) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+
+    const added = addPacket(doc.packets, { name: 'call', protocol: 'http', method: 'GET', statusCode: 200, clientTimeoutMs })
+    doc.packets = added.registry
+
+    const api = publicBlueprint('api', 0)
+    const db = createBlueprint('db', 1)
+    db.workload = { ...db.workload, cpuMsPerRequest: dbCpuMs }
+    api.dependencies = [{
+      id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id },
+      port: 8080, protocol: 'http', packetTemplateId: null,
+      packetMix: [{ packetId: added.packet.id, weight: 1 }],
+    }]
+    doc.blueprints[api.id] = api
+    doc.blueprints[db.id] = db
+    const plApi = createPlacement(api.id, server.id); doc.placements[plApi.id] = plApi
+    const plDb = createPlacement(db.id, server.id); doc.placements[plDb.id] = plDb
+
+    // Deliberately modest demand: db's capacity (8 vCPU) is nowhere near saturated at this rps
+    // even with a high per-request cost, so any breaker trip must come from the TIMEOUT, not
+    // capacity overflow.
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 20
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+
+    return { doc, compiled: compileWorld(doc), apiInst: instanceId(plApi.id, 0) }
+  }
+
+  it("opens the caller's breaker from a tight timeout against a slow-but-unsaturated dependency", () => {
+    // db's cpuMsPerRequest ~200ms p50; a 5ms client timeout bites on essentially every call.
+    const f = timeoutWorld(5, 200)
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(15)   // past the breaker's window/volume floor
+    expect(sim.events.some(e => e.kind === 'breaker_open' && e.affected[0] === f.apiInst)).toBe(true)
+    sim.engine.stop()
+  })
+
+  it('does not open the breaker when the timeout is loose relative to the same dependency', () => {
+    const f = timeoutWorld(100000, 5)   // effectively no timeout, and db is fast anyway
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(15)
+    expect(sim.events.some(e => e.kind === 'breaker_open' && e.affected[0] === f.apiInst)).toBe(false)
+    sim.engine.stop()
+  })
+})

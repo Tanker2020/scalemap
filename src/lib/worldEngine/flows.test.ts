@@ -10,6 +10,7 @@ import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
 import { managedDbRuntime } from '../managedDbRuntime'
 import { resolveWireSize } from '../packetResolve'
+import { addPacket } from '../nodeConfig'
 import type { WorldDoc, BlueprintDependency } from '../world/types'
 import type { HealthState } from './types'
 
@@ -1089,5 +1090,56 @@ describe('solveFlows — depth cap and cycle cut, surfaced', () => {
     api.bp.dependencies = [dep('d-db', db.bp.id)]
     const { cycleCutEdges } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
     expect(cycleCutEdges).toEqual([])
+  })
+})
+
+// ─── Client-side timeouts (audit ISSUE-006) ──────────────────────────────────
+describe('solveFlows — client-side timeouts', () => {
+  // Binds an http packet carrying clientTimeoutMs to the dependency; db's cpuMsPerRequest is the
+  // p50 its self-time samples from (SERVICE_P99_OVER_P50 = 10 internally).
+  function timeoutWorld(clientTimeoutMs: number | undefined, dbCpuMs: number) {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const db = addService(doc, 'db', server.id, 1)
+    db.bp.workload = { ...db.bp.workload, cpuMsPerRequest: dbCpuMs }
+    let packetMix: { packetId: number; weight: number }[] | undefined
+    if (clientTimeoutMs != null) {
+      const added = addPacket(doc.packets, { name: 'call', protocol: 'http', method: 'GET', statusCode: 200, clientTimeoutMs })
+      doc.packets = added.registry
+      packetMix = [{ packetId: added.packet.id, weight: 1 }]
+    }
+    api.bp.dependencies = [{ ...dep('d-db', db.bp.id), packetMix }]
+    return { doc, api, db }
+  }
+
+  it('a tight timeout below the target p50 errors a share of the caller and reduces what continues', () => {
+    const { doc, api, db } = timeoutWorld(5, 100)   // db's p50 ~100ms, timeout 5ms — should bite hard
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(flows[api.iid].errorRps).toBeGreaterThan(0)
+    // whatever got through is strictly less than the full 100 offered (some timed out)
+    const admittedRow = flows[api.iid].downstream.find(r => !r.blocked)
+    expect((admittedRow?.rps ?? 0) + flows[api.iid].errorRps).toBeCloseTo(100, 6)
+    expect(flows[db.iid].offeredRps).toBeLessThan(100)
+  })
+
+  it('a loose timeout well above the target p50 errors almost nothing', () => {
+    const { doc, api } = timeoutWorld(100000, 5)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(flows[api.iid].errorRps).toBeCloseTo(0, 1)
+  })
+
+  it('regression floor: an absent clientTimeoutMs reproduces the exact pre-issue output', () => {
+    const { doc, api } = timeoutWorld(undefined, 100)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(flows[api.iid].errorRps).toBe(0)
+    expect(flows[api.iid].downstream).toHaveLength(1)
+    expect(flows[api.iid].downstream[0].rps).toBe(100)
+  })
+
+  it('a timed-out row is tagged blocked with failure "timeout", distinct from an admitted row', () => {
+    const { doc, api } = timeoutWorld(5, 100)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    const timedOutRow = flows[api.iid].downstream.find(r => r.blocked)
+    expect(timedOutRow?.failure).toBe('timeout')
   })
 })

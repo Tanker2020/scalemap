@@ -4865,3 +4865,63 @@ this into the entry/internal folds is the natural, well-scoped follow-up.
   snappy < none); a non-stream protocol is completely unaffected.
 - Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite
   (1677→1685 tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 6, part 2: client-side timeouts (`audit-spec.md`, 2026-07-31)
+
+### ISSUE-006 — `latency.ts`, `nodeConfig.ts`, `flows.ts`
+
+The only authored timeout anywhere in the engine was `ManagedService.queryTimeoutMs`, scoped to
+managed DBs. A regular service→service `http` dependency had NO client-side timeout concept at
+all — no matter how slow a downstream instance got, the caller kept counting the call as admitted
+unless it hit an unrelated capacity wall. The canonical distributed-systems failure ("dependency
+got slow, caller's requests timed out, breaker tripped from timeouts, not 5xx or capacity") was
+structurally unreachable.
+
+`latency.ts` factors `sampleLatencyMs`'s mu/sigma derivation into a shared `muSigma` helper and
+adds `timeoutErrorFraction(p50, p99, timeoutMs)` — the ANALYTIC `P(latency > timeout)` under that
+same log-normal (via a small Abramowitz-Stegun erf/normalCdf approximation), not a Monte Carlo
+estimate: no rng draw, so it can't perturb the seeded stream, and it shares its distribution
+parameters with what's actually sampled by construction.
+
+`HttpTemplate` gains `clientTimeoutMs?: number` (mirrors `ManagedService.queryTimeoutMs`'s "absent
+⇒ no timeout" convention). `flows.ts`'s dependency loop resolves it from the bound mix's first http
+packet that authors one (new `resolveClientTimeoutMs`, mirroring how other per-edge scalars resolve
+from "the packet that speaks for this axis") and, for a non-blocked instance-target row, computes
+`timeoutErrorFraction` off the TARGET's own self-time (`getFlow(toId).serviceLatencyMs` — forces
+its first-touch sample if not already taken, exactly as if this were the first row to reach it).
+The timed-out share is added to the caller's `errorRps` and recorded as a `timeout`-tagged blocked
+row (reusing the SAME `DownstreamFlow.failure` value the managed-DB query-timeout path already
+uses — both mean "too slow"); the reduced admitted share is what continues downstream, so bytes/
+CPU aren't double-booked for calls that never completed.
+
+**No breaker-side code changes were needed** — `breakers.ts`'s `recordWeighted`/`errorThreshold`
+machinery already reads whatever `errorRps`/total ratio a dependency reports, so a timeout-sourced
+error and a capacity-sourced error are indistinguishable to it by design. Once `flows.ts` feeds a
+latency-caused error into the SAME `flow.errorRps` a capacity error already used, the breaker is
+latency-sensitive for free.
+
+**Scoped down, documented explicitly**: the spec's companion ask — wiring `statusCode`'s
+documented 4xx (error-but-completes)/5xx (drop) semantics, currently hardcoded to `200` with zero
+readers — was NOT done in this pass. It's a materially smaller, independent defect (decorative
+schema, not a structural fidelity gap) than the timeout mechanism, and this issue was already at a
+reasonable stopping point. Natural follow-up.
+
+### Tests
+
+- `latency.test.ts` — `timeoutErrorFraction` is ~0 well above p99, >0.5 below p50, exactly 0.5 at
+  p50 (the log-normal's median), monotonically rises as the timeout tightens, is exactly 0 for a
+  non-positive/absent timeout, handles the degenerate zero-spread case without NaN, stays in [0,1]
+  across a wide input range, and consumes zero rng draws (verified by confirming `sampleLatencyMs`
+  produces the SAME value whether or not `timeoutErrorFraction` was called first on a
+  fresh-same-seed rng).
+- `flows.test.ts` — a tight timeout against a slow target both errors the caller's `flow.errorRps`
+  AND reduces what continues downstream; a loose timeout errors ~nothing; an absent
+  `clientTimeoutMs` reproduces the exact pre-issue output (regression floor); a timed-out row is
+  tagged `blocked: true, failure: 'timeout'`.
+- `index.test.ts` — the test that was structurally impossible before this issue: an engine-level
+  world where a dependency's `clientTimeoutMs` sits below its target's simulated latency, with the
+  target's own capacity nowhere near saturated (low rps, ample vCPU), opens the CALLER's breaker
+  with ZERO capacity overflow anywhere in the chain; a loose timeout on the same shape of world
+  never opens it.
+- Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite
+  (1685→1699 tests) and both benches green throughout.
