@@ -1,3 +1,13 @@
+HISTORICAL DOCUMENT — DOES NOT DESCRIBE THE CURRENT CODEBASE.
+This critique audits the legacy React-Flow canvas app (particleEngine.ts and siblings),
+deleted wholesale in the Phase 2 rebuild (2026-07-08). None of the files or symbols it
+references exist today — note that it describes a "60fps physics loop" and a "15Hz React
+render cycle", whereas the current engine is a 100ms fixed-step solver (~10Hz) with a
+separate ~60Hz particle rebuild. Retained for design-rationale history only.
+For the current engine, see docs/agent-onboarding.md and audit-spec.md.
+
+---
+
 This is an excellent, sophisticated simulation engine. The use of a log-normal distribution for latency, the quadratic M/M/1 queuing approximation for CPU saturation, and the decoupling of the 60fps physics loop from the 15Hz React render cycle are textbook patterns for high-performance visual state engines. 
 
 However, as we push this from "visually plausible" to "engineering-grade realism," we start hitting the boundaries of scalar approximations. From an SRE and Distributed Systems perspective, here is a critique of the current mathematical models, along with architectural blueprints for embedding deeper realism into the module-level rAF loop.
