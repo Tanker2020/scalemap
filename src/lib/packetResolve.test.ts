@@ -29,6 +29,9 @@ const dbPacket = (name: string, over: Partial<{ sizeKb: number; resultSizeKb: nu
     queryType: over.queryType ?? 'read', isWAL: over.isWAL ?? false,
   }) as PacketFields
 
+const streamPacket = (name: string, sizeKb: number, responseSizeKb: number, compressionType: 'none' | 'gzip' | 'snappy' = 'none'): PacketFields =>
+  ({ name, protocol: 'stream', streamId: name, compressionType, sizeKb, responseSizeKb }) as PacketFields
+
 describe('resolveWireSize — the four-tier fallback', () => {
   it('tier 4: nothing authored anywhere ⇒ the historical 2 KB each way, sigma 0', () => {
     const w = resolveWireSize(emptyPacketRegistry(), undefined)
@@ -114,6 +117,33 @@ describe('resolveWireSize — db semantics', () => {
     expect(resolveWireSize(reg, [{ packetId: id.plain, weight: 1 }]).amplification).toBe(1)
     // half-and-half ⇒ the mean of 2 and 1
     expect(resolveWireSize(reg, [{ packetId: id.wal, weight: 1 }, { packetId: id.plain, weight: 1 }]).amplification).toBeCloseTo(1.5)
+  })
+})
+
+// Audit ISSUE-004: a stream's authored compressionType never adjusted its wire size before this —
+// an uncompressed and a snappy-compressed stream booked identical NIC bytes and cost.
+describe('resolveWireSize — stream compression', () => {
+  it('gzip and snappy shrink the resolved bytes; none is the identity', () => {
+    const { reg, id } = seed(
+      streamPacket('none', 100, 50, 'none'),
+      streamPacket('gzip', 100, 50, 'gzip'),
+      streamPacket('snappy', 100, 50, 'snappy'),
+    )
+    const none = resolveWireSize(reg, [{ packetId: id.none, weight: 1 }])
+    const gzip = resolveWireSize(reg, [{ packetId: id.gzip, weight: 1 }])
+    const snappy = resolveWireSize(reg, [{ packetId: id.snappy, weight: 1 }])
+    expect(none.reqBytes).toBe(100 * KB)
+    expect(gzip.reqBytes).toBeCloseTo(100 * KB * 0.3, 6)
+    expect(snappy.reqBytes).toBeCloseTo(100 * KB * 0.5, 6)
+    expect(gzip.respBytes).toBeCloseTo(50 * KB * 0.3, 6)
+    // gzip compresses harder than snappy, which compresses harder than none.
+    expect(gzip.reqBytes).toBeLessThan(snappy.reqBytes)
+    expect(snappy.reqBytes).toBeLessThan(none.reqBytes)
+  })
+
+  it('does not affect a non-stream protocol at all', () => {
+    const { reg, id } = seed(httpPacket('call', 100, 50))
+    expect(resolveWireSize(reg, [{ packetId: id.call, weight: 1 }])).toMatchObject({ reqBytes: 100 * KB, respBytes: 50 * KB })
   })
 })
 

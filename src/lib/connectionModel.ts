@@ -39,18 +39,33 @@ export interface ConnectionProfile {
   fixedHoldSec: number     // weighted fixed hold (streaming), in seconds
   extraHoldSec: number     // weighted handshake + linger tail (short-lived), in seconds
   handshakeCpuMs: number   // weighted per-request CPU adder
+  // Audit ISSUE-004: for a stream, `rps` means "new connections/sec" (what activeConnections()
+  // above needs) — this is the SEPARATE "frames pushed per second, per open connection" factor,
+  // decoupled from connection rate. `frameRps = rps × frameMultiplier` is what a caller feeds into
+  // NIC/byte/cpuMsPerKb accounting instead of raw `rps`; `activeConnections()` itself never reads
+  // this field, so the connection-count formula is untouched. 1 for keep-alive/short-lived (rps
+  // already means "requests", i.e. 1 frame per unit) and for an unauthored stream — the exact
+  // pre-issue 1:1 rps:frame reading, so an existing `.scalemap`'s stream packets are unchanged.
+  frameMultiplier: number
 }
 
 // The identity: hold == latency, nothing extra, no CPU. Frozen so no caller can mutate the shared
 // constant out from under the regression floor.
 export const KEEP_ALIVE_PROFILE: ConnectionProfile = Object.freeze({
-  latencyShare: 1, fixedHoldSec: 0, extraHoldSec: 0, handshakeCpuMs: 0,
+  latencyShare: 1, fixedHoldSec: 0, extraHoldSec: 0, handshakeCpuMs: 0, frameMultiplier: 1,
 })
 
 // `holdSeconds` lives on the two kinds that can be persistent. Non-positive/non-finite ⇒ absent.
 function authoredHoldSec(tpl: PacketTemplate): number | undefined {
   if (tpl.protocol !== 'http' && tpl.protocol !== 'stream') return undefined
   return (tpl as HttpTemplate | StreamTemplate).holdSeconds
+}
+
+// `framesPerSecond` lives only on StreamTemplate (audit ISSUE-004). Non-positive/non-finite ⇒
+// absent ⇒ the 1:1 rps:frame default.
+function authoredFramesPerSecond(tpl: PacketTemplate): number | undefined {
+  if (tpl.protocol !== 'stream') return undefined
+  return tpl.framesPerSecond
 }
 
 /**
@@ -70,8 +85,11 @@ export function connectionClassOf(tpl: PacketTemplate | undefined): ConnectionCl
   return 'keep-alive'
 }
 
-/** The profile for one pure class. `holdSeconds` is read only by `streaming`. */
-export function profileFor(cls: ConnectionClass, holdSeconds?: number): ConnectionProfile {
+/**
+ * The profile for one pure class. `holdSeconds` is read only by `streaming`; `framesPerSecond`
+ * (audit ISSUE-004) likewise — absent/non-positive ⇒ frameMultiplier 1, the pre-issue identity.
+ */
+export function profileFor(cls: ConnectionClass, holdSeconds?: number, framesPerSecond?: number): ConnectionProfile {
   switch (cls) {
     case 'short-lived':
       return {
@@ -79,12 +97,16 @@ export function profileFor(cls: ConnectionClass, holdSeconds?: number): Connecti
         fixedHoldSec: 0,
         extraHoldSec: (HANDSHAKE_MS + LINGER_MS) / 1000,
         handshakeCpuMs: HANDSHAKE_CPU_MS,
+        frameMultiplier: 1,
       }
     case 'streaming': {
       const hold = holdSeconds != null && Number.isFinite(holdSeconds) && holdSeconds > 0
         ? holdSeconds
         : DEFAULT_HOLD_SEC
-      return { latencyShare: 0, fixedHoldSec: hold, extraHoldSec: 0, handshakeCpuMs: 0 }
+      const frameMultiplier = framesPerSecond != null && Number.isFinite(framesPerSecond) && framesPerSecond > 0
+        ? framesPerSecond
+        : 1
+      return { latencyShare: 0, fixedHoldSec: hold, extraHoldSec: 0, handshakeCpuMs: 0, frameMultiplier }
     }
     case 'keep-alive':
     default:
@@ -117,15 +139,28 @@ export function resolveConnectionProfile(
   let fixedHoldSec = 0
   let extraHoldSec = 0
   let handshakeCpuMs = 0
+  let frameMultiplier = 0
   for (const { entry, tpl } of resolved) {
     const w = entry.weight / totalWeight
-    const p = profileFor(connectionClassOf(tpl), authoredHoldSec(tpl))
+    const p = profileFor(connectionClassOf(tpl), authoredHoldSec(tpl), authoredFramesPerSecond(tpl))
     latencyShare += w * p.latencyShare
     fixedHoldSec += w * p.fixedHoldSec
     extraHoldSec += w * p.extraHoldSec
     handshakeCpuMs += w * p.handshakeCpuMs
+    frameMultiplier += w * p.frameMultiplier
   }
-  return { latencyShare, fixedHoldSec, extraHoldSec, handshakeCpuMs }
+  return { latencyShare, fixedHoldSec, extraHoldSec, handshakeCpuMs, frameMultiplier }
+}
+
+/**
+ * The rps a caller should feed into NIC/byte/cpuMsPerKb accounting instead of raw connection rps
+ * (audit ISSUE-004) — `rps × frameMultiplier`. For every class except an authored streaming
+ * profile this is the identity (`frameMultiplier` is 1), so an existing world's byte/CPU
+ * accounting is unchanged; `activeConnections()` above is deliberately untouched by this — it
+ * keeps meaning "connection rate", never "frame rate".
+ */
+export function resolvedFrameRps(rps: number, p: ConnectionProfile): number {
+  return rps * p.frameMultiplier
 }
 
 /**

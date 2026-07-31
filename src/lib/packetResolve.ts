@@ -17,7 +17,7 @@
 // Pure and dependency-free (registry types only) so it is node-testable and safe to call from the
 // engine's hot path and from render-time particle code alike.
 
-import type { DbTemplate, HttpTemplate, PacketMixEntry, PacketProtocol, PacketRegistry, PacketTemplate } from './nodeConfig'
+import type { DbTemplate, HttpTemplate, PacketMixEntry, PacketProtocol, PacketRegistry, PacketTemplate, StreamTemplate } from './nodeConfig'
 
 // The engine's long-standing BYTES_PER_REQUEST_EACH_WAY convention. Moved here from nodeConfig.ts
 // with routeIngressBytes when the packet library landed.
@@ -49,6 +49,15 @@ export function routeIngressBytes(route: HttpTemplate | undefined): { reqBytes: 
 }
 
 const isDb = (t: PacketTemplate): t is DbTemplate => t.protocol === 'db'
+const isStream = (t: PacketTemplate): t is StreamTemplate => t.protocol === 'stream'
+
+// Audit ISSUE-004: a stream's authored compressionType never adjusted its wire size — an
+// uncompressed and a `snappy`-compressed stream booked identical NIC bytes and cost. Put the ratio
+// HERE, in the one mix→wire-bytes resolution point, so cost/NIC/cpuMsPerKb all inherit it for free
+// with zero new call sites. Representative, not a real codec benchmark.
+const COMPRESSION_RATIO: Record<StreamTemplate['compressionType'], number> = {
+  none: 1, gzip: 0.3, snappy: 0.5,
+}
 
 // A db packet answers with `resultSizeKb`; every other kind uses `responseSizeKb`. Absent ⇒ null,
 // so the caller can fall through to the next tier for the response leg alone.
@@ -95,9 +104,10 @@ export function resolveWireSize(
   let amplification = 0
   for (const { entry, tpl } of resolved) {
     const w = entry.weight / totalWeight
-    reqBytes += w * (tpl.sizeKb != null ? tpl.sizeKb * 1024 : defReqBytes)
+    const compression = isStream(tpl) ? COMPRESSION_RATIO[tpl.compressionType] : 1
+    reqBytes += w * compression * (tpl.sizeKb != null ? tpl.sizeKb * 1024 : defReqBytes)
     const respKb = packetRespKb(tpl)
-    respBytes += w * (respKb != null ? respKb * 1024 : defRespBytes)
+    respBytes += w * compression * (respKb != null ? respKb * 1024 : defRespBytes)
     sigma += w * (tpl.sizeVariance ?? 0)
     if (isDb(tpl)) {
       dbWeight += w

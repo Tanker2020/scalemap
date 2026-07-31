@@ -89,6 +89,11 @@ export interface StreamTemplate extends BasePacketTemplate {
   // A stream is a persistent connection by definition (connectionModel's protocol-wins rule), so
   // this is how long it is held open, in seconds. Absent ⇒ DEFAULT_HOLD_SEC.
   holdSeconds?: number
+  // How many frames this ONE connection pushes per second (audit ISSUE-004) — decoupled from
+  // `rps`, which now means "new connections per second" for a stream. Absent/⇒ 1, i.e. today's
+  // 1:1 rps:frame reading, so an existing `.scalemap`'s stream packets are unchanged. See
+  // connectionModel.ts's `ConnectionProfile.frameMultiplier`.
+  framesPerSecond?: number
 }
 
 export interface DbTemplate extends BasePacketTemplate {

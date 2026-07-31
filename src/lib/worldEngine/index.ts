@@ -243,28 +243,31 @@ const DEFAULT_ROUTE_WIRE_BYTES: RouteWireBytes = {
 // cpuKb (slice 2) is the same fold over request sizeKb instead of bytes, feeding the packet-driven
 // CPU blend below. varW (slice 3) is the same fold over the route's sigma, feeding the NIC-burst
 // multiplier at NIC booking (step 7) below.
-// connLatW/connFixedW/connExtraW/connHsW are the same fold once more, over the four ConnectionProfile
-// fields — giving each entry instance the demand-weighted connection behavior of the route mix that
-// actually landed on it, rather than one route arbitrarily speaking for all of them.
+// connLatW/connFixedW/connExtraW/connHsW/connFrameW are the same fold once more, over the five
+// ConnectionProfile fields — giving each entry instance the demand-weighted connection behavior of
+// the route mix that actually landed on it, rather than one route arbitrarily speaking for all of
+// them. connFrameW (audit ISSUE-004) carries frameMultiplier the same way.
 interface EntryByteAccum {
   costReq: number; costResp: number; nicReq: number; nicResp: number; cpuKb: number; varW: number
-  connLatW: number; connFixedW: number; connExtraW: number; connHsW: number
+  connLatW: number; connFixedW: number; connExtraW: number; connHsW: number; connFrameW: number
 }
 
 // A demand-weighted running sum of ConnectionProfiles, used identically by the entry and internal
 // folds below. Kept as one helper so the two tiers can never drift apart in how they blend.
-interface ProfileAccum { lat: number; fixed: number; extra: number; hs: number }
+interface ProfileAccum { lat: number; fixed: number; extra: number; hs: number; frame: number }
 const addProfile = (acc: ProfileAccum, p: ConnectionProfile, weight: number): void => {
   acc.lat += weight * p.latencyShare
   acc.fixed += weight * p.fixedHoldSec
   acc.extra += weight * p.extraHoldSec
   acc.hs += weight * p.handshakeCpuMs
+  acc.frame += weight * p.frameMultiplier
 }
 const meanProfile = (acc: ProfileAccum, totalWeight: number): ConnectionProfile => ({
   latencyShare: acc.lat / totalWeight,
   fixedHoldSec: acc.fixed / totalWeight,
   extraHoldSec: acc.extra / totalWeight,
   handshakeCpuMs: acc.hs / totalWeight,
+  frameMultiplier: acc.frame / totalWeight,
 })
 
 // The L7 listener-rule match: the first rule (authored order) whose pattern matches the route's
@@ -495,7 +498,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           if (!acc) {
             acc = {
               costReq: 0, costResp: 0, nicReq: 0, nicResp: 0, cpuKb: 0, varW: 0,
-              connLatW: 0, connFixedW: 0, connExtraW: 0, connHsW: 0,
+              connLatW: 0, connFixedW: 0, connExtraW: 0, connHsW: 0, connFrameW: 0,
             }
             weightAccum[iid] = acc
           }
@@ -507,6 +510,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           acc.connFixedW += r * cp.fixedHoldSec
           acc.connExtraW += r * cp.extraHoldSec
           acc.connHsW += r * cp.handshakeCpuMs
+          acc.connFrameW += r * cp.frameMultiplier
         }
       }
     }
@@ -662,7 +666,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       entryPacketKbByInstance[iid] = acc.cpuKb / d
       entrySizeVarianceByInstance[iid] = acc.varW / d
       entryConnProfileByInstance[iid] = meanProfile(
-        { lat: acc.connLatW, fixed: acc.connFixedW, extra: acc.connExtraW, hs: acc.connHsW }, d)
+        { lat: acc.connLatW, fixed: acc.connFixedW, extra: acc.connExtraW, hs: acc.connHsW, frame: acc.connFrameW }, d)
     }
 
     // Demand-weighted-average INTERNAL inbound request KB per instance (packet library). The
@@ -697,7 +701,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           const wire = s.depBytesById[row.dependencyId]
           if (!wire) continue
           const kb = wire.reqBytes / 1024
-          const a = acc[toId] ?? (acc[toId] = { kb: 0, respBytes: 0, rps: 0, lat: 0, fixed: 0, extra: 0, hs: 0 })
+          const a = acc[toId] ?? (acc[toId] = { kb: 0, respBytes: 0, rps: 0, lat: 0, fixed: 0, extra: 0, hs: 0, frame: 0 })
           a.kb += row.rps * kb
           a.respBytes += row.rps * wire.respBytes
           a.rps += row.rps
@@ -727,7 +731,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // dilutes nothing.
       const total = entryRps + internalRps
       if (total <= 0) continue
-      const blend: ProfileAccum = { lat: 0, fixed: 0, extra: 0, hs: 0 }
+      const blend: ProfileAccum = { lat: 0, fixed: 0, extra: 0, hs: 0, frame: 0 }
       if (e) addProfile(blend, e, entryRps)
       if (n) addProfile(blend, n, internalRps)
       connProfileByInstance[iid] = meanProfile(blend, total)

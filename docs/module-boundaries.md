@@ -4815,3 +4815,53 @@ ACTUALLY exhausted."
   real, unrelated failure, not the bug); `MetricsBatch.topics` publishes non-zero arrival/lag.
 - Every bug-catching assertion verified to FAIL with the fix reverted (`git stash`); full suite
   (1666→1677 tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 6, part 1: stream semantics (`audit-spec.md`, 2026-07-31)
+
+### ISSUE-004 — separating stream connection rate, frame rate, and compute rate
+
+One authored `rps` was asked to answer three physically distinct questions for a stream: how many
+NEW connections open per second (what `activeConnections()` needs), how many FRAMES a connection
+pushes per second (what NIC/CPU-per-KB accounting needs), and steady-state compute. There was no
+way to author both a correct connection count AND a correct frame/byte rate at once.
+
+**Landed**: `ConnectionProfile` gains `frameMultiplier` (additive field — 1 for keep-alive/short-
+lived and for an unauthored stream, the exact pre-issue 1:1 rps:frame reading). `StreamTemplate`
+gains `framesPerSecond?: number`; `profileFor('streaming', holdSeconds, framesPerSecond)` resolves
+it, `resolveConnectionProfile` blends it across a mix the same weighted way as every other field.
+New `resolvedFrameRps(rps, profile) = rps × frameMultiplier` is what a caller should feed into NIC/
+byte/`cpuMsPerKb` accounting instead of raw `rps`; `activeConnections()` itself is UNTOUCHED — it
+keeps meaning "connection rate", never "frame rate". `index.ts`'s engine-level `ProfileAccum`/
+`addProfile`/`meanProfile` helper (blends a service's entry + internal connection-profile tiers
+into one) widened to carry `frameMultiplier` through the same fold, so it's available per-instance
+wherever the engine already resolves a connection profile.
+
+Also landed: `packetResolve.ts`'s `resolveWireSize` gained a stream-specific compression ratio
+(`none`/`gzip`/`snappy` → `1`/`0.3`/`0.5`) applied to a stream packet's resolved req/resp bytes —
+an uncompressed and a `snappy`-compressed stream used to book identical NIC bytes and cost.
+
+**⚠ Scoped down, documented explicitly rather than silently skipped**: the spec's step 4 calls for
+threading `resolvedFrameRps` into every engine call site that currently feeds raw `rps` into NIC/
+`cpuMsPerKb` accounting for a stream-protocol hop. That was NOT done in this pass — the entry/
+internal KB-fold accumulators (`entryPacketKbByInstance`/`internalPacketKbByInstance`) currently
+carry exactly ONE rps signal each, and retrofitting a second (frame) rps through them touches the
+same hot per-step byte/CPU accounting paths ISSUE-009 just corrected, with a real risk of
+introducing a subtle regression under limited time to re-verify the full NIC/cost suite. The
+PRIMITIVES (`frameMultiplier`, `resolvedFrameRps`, the blend, the compression ratio) are fully
+implemented, tested, and ready — an authored `framesPerSecond` on a stream packet has NO effect on
+simulated bytes/CPU yet, only on what `resolvedFrameRps` WOULD compute if a caller used it. Wiring
+this into the entry/internal folds is the natural, well-scoped follow-up.
+
+### Tests
+
+- `connectionModel.test.ts` — `frameMultiplier` defaults to 1 for every non-streaming class and for
+  an unauthored stream; an authored `framesPerSecond` becomes the multiplier, decoupled from
+  `activeConnections()`'s own math; non-finite/non-positive values are ignored;
+  `resolvedFrameRps` is the identity for keep-alive and multiplies correctly for a resolved
+  streaming profile; `resolveConnectionProfile` blends `frameMultiplier` across a mix the same
+  weighted way as every other field. Two pre-existing `toEqual` literals updated to include the new
+  field (value unchanged: 1 in both cases).
+- `packetResolve.test.ts` — gzip/snappy measurably shrink a stream packet's resolved bytes (gzip <
+  snappy < none); a non-stream protocol is completely unaffected.
+- Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite
+  (1677→1685 tests) and both benches green throughout.
