@@ -6,7 +6,7 @@ import {
 } from '../world/factories'
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
-import { addRoute, routeIdOf, updateRoute } from '../nodeConfig'
+import { addRoute, routeIdOf, updateRoute, addPacket } from '../nodeConfig'
 import type { HttpTemplate, ConnectionType } from '../nodeConfig'
 import { computeWorldCost } from '../costModelV2'
 import type { WorldDoc } from '../world/types'
@@ -1775,6 +1775,85 @@ describe('depth-cap and cycle-cut events (audit ISSUE-010)', () => {
     const matching = sim.events.filter(e =>
       e.kind === 'chain_cycle_cut' && e.affected.includes(f.bInst) && e.affected.includes(f.aInst))
     expect(matching.length).toBe(1)   // deduped — not one per step
+    sim.engine.stop()
+  })
+})
+
+// ─── Async event delivery — the broker (audit ISSUE-002) ─────────────────────
+// The thesis this issue fixes: `event` was a synchronous blocking RPC wearing a different label —
+// a struggling CONSUMER opened the PRODUCER's breaker, the opposite of what a broker decouples.
+describe('async event delivery (audit ISSUE-002)', () => {
+  // producer(entry) -> event dependency -> consumer, where consumer ALSO depends on a
+  // firewall-blocked target so the consumer's OWN subtree fails heavily (it "struggles").
+  function eventWorld() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+
+    const deadServer = createServer(az.id, getPreset('dedicated-8')!)
+    deadServer.firewall = [{ id: 'deny-all', action: 'deny', port: 'any', protocol: 'any', source: 'any' }]
+    doc.servers[deadServer.id] = deadServer
+
+    const added = addPacket(doc.packets, {
+      name: 'order-created', protocol: 'event', topic: 'orders', eventType: 'created', deliveryMode: 'at-least-once',
+    })
+    doc.packets = added.registry
+
+    const producer = publicBlueprint('producer', 0)
+    const consumer = createBlueprint('consumer', 1)
+    const dead = createBlueprint('dead-dep', 2)
+    producer.dependencies = [{
+      id: 'd-topic', target: { kind: 'blueprint', blueprintId: consumer.id },
+      port: 8080, protocol: 'event', packetTemplateId: null,
+      packetMix: [{ packetId: added.packet.id, weight: 1 }],
+    }]
+    consumer.dependencies = [{
+      id: 'd-dead', target: { kind: 'blueprint', blueprintId: dead.id },
+      port: 8080, protocol: 'http', packetTemplateId: null,
+    }]
+    doc.blueprints[producer.id] = producer
+    doc.blueprints[consumer.id] = consumer
+    doc.blueprints[dead.id] = dead
+    const plP = createPlacement(producer.id, server.id); doc.placements[plP.id] = plP
+    const plC = createPlacement(consumer.id, server.id); doc.placements[plC.id] = plC
+    const plD = createPlacement(dead.id, deadServer.id); doc.placements[plD.id] = plD
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 100
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+
+    return { doc, compiled: compileWorld(doc), producerInst: instanceId(plP.id, 0), consumerInst: instanceId(plC.id, 0) }
+  }
+
+  it("never opens the producer's breaker from the consumer's own downstream failures", () => {
+    const f = eventWorld()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(20)   // comfortably past the breaker's window/volume floor
+    // The consumer really is struggling — its own dependency is 100% firewall-blocked.
+    const consumerRps = sim.latest().instances[f.consumerInst]?.rps ?? 0
+    expect(consumerRps).toBeGreaterThan(0)   // the topic really did deliver to it
+    // The CONSUMER's own breaker (for its 100%-blocked d-dead dependency) legitimately opens —
+    // that's real, unrelated failure, not the bug. The PRODUCER's breaker for d-topic — the one
+    // that would open under the old synchronous model, since the consumer really is struggling —
+    // must never open. breaker_open events carry [callerId, targetId] in `affected`.
+    const producerBreakerOpened = sim.events.some(e =>
+      e.kind === 'breaker_open' && e.affected[0] === f.producerInst)
+    expect(producerBreakerOpened).toBe(false)
+    sim.engine.stop()
+  })
+
+  it('publishes topic lag/backlog metrics on MetricsBatch.topics', () => {
+    const f = eventWorld()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(5)
+    const topic = sim.latest().topics?.['d-topic']
+    expect(topic).toBeDefined()
+    expect(topic!.totalArrivalRps).toBeGreaterThan(0)
     sim.engine.stop()
   })
 })

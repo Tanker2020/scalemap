@@ -17,7 +17,7 @@
 // Pure and dependency-free (registry types only) so it is node-testable and safe to call from the
 // engine's hot path and from render-time particle code alike.
 
-import type { DbTemplate, HttpTemplate, PacketMixEntry, PacketRegistry, PacketTemplate } from './nodeConfig'
+import type { DbTemplate, HttpTemplate, PacketMixEntry, PacketProtocol, PacketRegistry, PacketTemplate } from './nodeConfig'
 
 // The engine's long-standing BYTES_PER_REQUEST_EACH_WAY convention. Moved here from nodeConfig.ts
 // with routeIngressBytes when the packet library landed.
@@ -118,6 +118,30 @@ export function resolveWireSize(
     ...(dbWeight > 0 ? { writeFraction: writeWeight } : {}),
     amplification,
   }
+}
+
+// The mix's majority-weight protocol (audit ISSUE-007/002) — the ONE place "what protocol does
+// this dependency actually speak" gets resolved, shared by the compile-time protocol-mismatch
+// finding (`compileWorld.ts`) and the engine's event/broker gating (`flows.ts`), so the two can
+// never disagree about which protocol a bound mix implies. Ties broken by first-encountered order,
+// matching resolveWireSize/resolveConnectionProfile's own weighted-fold iteration order. Entries
+// referencing a deleted packet, or a non-finite/non-positive weight, are ignored — same defensive
+// filter every other packet-mix reader applies. Returns null for an empty/all-dangling/
+// all-zero-weight mix (nothing to resolve).
+export function resolveMixProtocol(reg: PacketRegistry, mix: PacketMixEntry[] | undefined): PacketProtocol | null {
+  const weightByProtocol: Partial<Record<PacketProtocol, number>> = {}
+  for (const entry of mix ?? []) {
+    if (!Number.isFinite(entry.weight) || entry.weight <= 0) continue
+    const tpl = reg.templates[entry.packetId]
+    if (!tpl) continue
+    weightByProtocol[tpl.protocol] = (weightByProtocol[tpl.protocol] ?? 0) + entry.weight
+  }
+  let best: PacketProtocol | null = null
+  let bestWeight = -Infinity
+  for (const [protocol, weight] of Object.entries(weightByProtocol)) {
+    if (weight! > bestWeight) { best = protocol as PacketProtocol; bestWeight = weight! }
+  }
+  return best
 }
 
 // Deterministic, rng-FREE weighted pick for particle tinting.

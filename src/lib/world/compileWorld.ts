@@ -2,10 +2,11 @@
 // everything that renders or simulates. No store access, no side effects, no randomness.
 import type {
   WorldDoc, CompiledWorld, ServiceInstance, InstanceId, CompiledPath, CompileFinding,
-  HopClass, BlueprintDependency,
+  HopClass,
 } from './types'
 import { evaluateInstancePath } from './network'
 import { computeRouting, volumeFindings } from './routing'
+import { resolveMixProtocol } from '../packetResolve'
 
 export function instanceId(placementId: string, index: number): InstanceId {
   return `${placementId}#${index}`
@@ -129,7 +130,7 @@ function protocolMismatchFindings(doc: WorldDoc): CompileFinding[] {
   for (const bp of Object.values(doc.blueprints)) {
     for (const dep of bp.dependencies) {
       if (!dep.packetMix || dep.packetMix.length === 0) continue
-      const majority = majorityMixProtocol(doc, dep.packetMix)
+      const majority = resolveMixProtocol(doc.packets, dep.packetMix)
       if (majority == null || majority === dep.protocol) continue
       findings.push({
         id: `finding-protocol-mismatch-${dep.id}`,
@@ -141,30 +142,6 @@ function protocolMismatchFindings(doc: WorldDoc): CompileFinding[] {
     }
   }
   return findings
-}
-
-// The mix's majority-weight protocol (ties broken by first-encountered order, matching
-// resolveWireSize/resolveConnectionProfile's own weighted-fold iteration order). Entries
-// referencing a deleted packet, or a non-finite/non-positive weight, are ignored — same
-// defensive filter every other packet-mix reader in the codebase applies. Returns null for an
-// empty/all-dangling/all-zero-weight mix (nothing to compare dep.protocol against).
-function majorityMixProtocol(
-  doc: WorldDoc,
-  mix: NonNullable<BlueprintDependency['packetMix']>,
-): 'http' | 'db' | 'event' | 'stream' | null {
-  const weightByProtocol: Partial<Record<'http' | 'db' | 'event' | 'stream', number>> = {}
-  for (const entry of mix) {
-    if (!Number.isFinite(entry.weight) || entry.weight <= 0) continue
-    const tpl = doc.packets.templates[entry.packetId]
-    if (!tpl) continue
-    weightByProtocol[tpl.protocol] = (weightByProtocol[tpl.protocol] ?? 0) + entry.weight
-  }
-  let best: 'http' | 'db' | 'event' | 'stream' | null = null
-  let bestWeight = -Infinity
-  for (const [protocol, weight] of Object.entries(weightByProtocol)) {
-    if (weight! > bestWeight) { best = protocol as 'http' | 'db' | 'event' | 'stream'; bestWeight = weight! }
-  }
-  return best
 }
 
 function managedHopClass(doc: WorldDoc, fromAzId: string, fromRegionId: string, msId: string): HopClass {

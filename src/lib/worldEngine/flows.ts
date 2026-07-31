@@ -27,6 +27,8 @@ import { getDbInstanceClass } from '../dbInstanceClasses'
 // runtime cycle. `import type` erases at compile time and keeps the dependency one-way.
 import type { ManagedDbRuntime } from '../managedDbRuntime'
 import type { WireSize } from '../packetResolve'
+import { resolveMixProtocol } from '../packetResolve'
+import type { TopicRuntime } from './broker'
 
 // 2KB per request in EACH direction (request out + response back, so every hop books
 // 2 x 2048 bytes per request). A deliberately simple Phase-2 constant — packet templates
@@ -265,6 +267,14 @@ export interface FlowInput {
   // share here. Optional: absent ⇒ the pre-5.4 per-caller ceiling path, so existing callers and
   // tests are unchanged. Same one-step-lag shape as admittedScale.
   managedDbRuntime?: ManagedDbRuntime
+  // Aggregate event-broker state from the PREVIOUS step (audit ISSUE-002), keyed by dependency id
+  // ("topic"). Backlog/lag/drop/DLQ are all functions of TOTAL arrival vs TOTAL consumer capacity,
+  // which this per-dependency loop structurally cannot see — computed once (broker.ts) and applied
+  // to each producer's share here, same one-step-lag shape as managedDbRuntime. Optional: absent
+  // ⇒ an event-protocol dependency falls back to the pre-issue synchronous behavior (same as every
+  // other protocol) — direct `solveFlows` callers/tests that don't wire this through are
+  // unaffected; the real engine (index.ts) always supplies it.
+  topicRuntime?: TopicRuntime
   rng: Rng
 }
 
@@ -275,11 +285,13 @@ export interface DownstreamFlow {
   rps: number
   hopClass: HopClass
   blocked: boolean
-  // Why a blocked managed row failed (node-model Phase 5.4), so the metrics pyramid can split a
-  // throughput/connection THROTTLE from a query TIMEOUT — they look identical as rps but mean
-  // opposite things to the user (too much load vs too slow). Absent on every non-managed row and
-  // on admitted rows, which keeps existing row-equality assertions unchanged.
-  failure?: 'throttled' | 'timeout'
+  // Why a blocked row failed. Managed rows (node-model Phase 5.4) split a throughput/connection
+  // THROTTLE from a query TIMEOUT — they look identical as rps but mean opposite things to the
+  // user (too much load vs too slow). 'dropped'/'dlq' (audit ISSUE-002) are the event-broker
+  // analogues: a topic's retention-cap overflow (at-most-once loses these) vs a message that
+  // exhausted its redelivery budget. Absent on every non-managed/non-event row and on admitted
+  // rows, which keeps existing row-equality assertions unchanged.
+  failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq'
 }
 
 export interface InstanceFlow {
@@ -434,7 +446,7 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
     rps: number,
     hopClass: HopClass,
     blocked: boolean,
-    failure?: 'throttled' | 'timeout',
+    failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq',
   ): void => {
     const key = `${dependencyId}|${target.toInstanceId ?? ''}|${target.toManagedServiceId ?? ''}|${blocked}|${failure ?? ''}`
     let rows = rowIndex.get(f.instanceId)
@@ -501,6 +513,34 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
     for (const [instanceId, q] of queueDepth!) {
       if (q <= 0 || seeded.has(instanceId)) continue
       queue.push({ instanceId, offered: 0, depth: 0, parent: null })
+    }
+  }
+
+  // Audit ISSUE-002: the event broker's resolved drainRps is what the topic's consumer
+  // instance(s) actually pull off the backlog and process THIS step — seeded as an INDEPENDENT
+  // BFS root (own depth 0, no parent), decoupled from the producer in both timing (one-step lag,
+  // same as admittedScale) and chain (never shares the producer's depth/cycle guard). Without
+  // this the consumer would never appear in metrics or fan out its own dependencies for
+  // event-only traffic at all, even though the topic is actively draining — CPU, RAM, and its own
+  // downstream calls all still apply normally once seeded, exactly like any other demand.
+  if (input.topicRuntime) {
+    for (const [depId, rt] of Object.entries(input.topicRuntime)) {
+      if (rt.drainRps <= EPSILON_RPS) continue
+      let targetBpId: string | undefined
+      findTarget: for (const bp of Object.values(doc.blueprints)) {
+        for (const dep of bp.dependencies) {
+          if (dep.id === depId && dep.target.kind === 'blueprint') { targetBpId = dep.target.blueprintId; break findTarget }
+        }
+      }
+      if (!targetBpId) continue
+      const consumers = Object.values(compiled.instances).filter(i => i.blueprintId === targetBpId)
+      if (consumers.length === 0) continue
+      const share = rt.drainRps / consumers.length
+      for (const c of consumers) {
+        if (seeded.has(c.id)) continue   // already an entry instance this step — don't double-seed
+        queue.push({ instanceId: c.id, offered: share, depth: 0, parent: null })
+        seeded.add(c.id)
+      }
     }
   }
 
@@ -666,6 +706,39 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
             addDownstream(flow, dep.id, target, timedOut, path.hopClass, true, 'timeout')
           }
           continue   // managed targets are terminal — no capacity subtree to propagate into
+        }
+
+        // Audit ISSUE-002: an event-protocol dependency is asynchronous — the producer's call
+        // lands in a topic backlog, NOT a synchronous call into the consumer's own capacity
+        // subtree. This is the fix for the core bug this issue exists to close: without it, a
+        // struggling CONSUMER's downstream errors open the PRODUCER's breaker (pushed onto `queue`
+        // below reaches the consumer's OWN dependency fan-out this same step), the opposite of
+        // what a broker is for. `input.topicRuntime` absent ⇒ the pre-issue synchronous fallback
+        // (existing direct `solveFlows` callers/tests are unaffected); the real engine always
+        // supplies it, so every event dependency is live-async there.
+        const eventProtocol = (resolveMixProtocol(doc.packets, dep.packetMix) ?? dep.protocol) === 'event'
+        if (eventProtocol && input.topicRuntime) {
+          const rt = input.topicRuntime[dep.id]
+          const dropFraction = rt && rt.totalArrivalRps > EPSILON_RPS ? rt.dropRps / rt.totalArrivalRps : 0
+          const dlqFraction = rt && rt.totalArrivalRps > EPSILON_RPS ? rt.dlqRps / rt.totalArrivalRps : 0
+          const dropped = share * dropFraction
+          const dlqd = share * dlqFraction
+          const accepted = Math.max(0, share - dropped - dlqd)
+          if (accepted > EPSILON_RPS) {
+            // Accepted into the topic — the producer's call succeeded; bytes still transit the
+            // wire (publishing the event), but the consumer is NOT pushed onto this step's queue.
+            addDownstream(flow, dep.id, target, accepted, path.hopClass, false)
+            bucketBytes(path.hopClass, accepted, dep.id)
+          }
+          if (dropped > EPSILON_RPS) {
+            flow.refusedRps += dropped
+            addDownstream(flow, dep.id, target, dropped, path.hopClass, true, 'dropped')
+          }
+          if (dlqd > EPSILON_RPS) {
+            flow.refusedRps += dlqd
+            addDownstream(flow, dep.id, target, dlqd, path.hopClass, true, 'dlq')
+          }
+          continue   // decoupled: never re-enters the BFS queue for this hop
         }
 
         addDownstream(flow, dep.id, target, share, path.hopClass, false)

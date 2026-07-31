@@ -4727,3 +4727,91 @@ exhaustive (a `tsc` compile error, not a runtime bug) — both map `affected[0]`
   across 10 steps (not one per step); an engine-level A↔B cycle world emits `chain_cycle_cut`
   exactly once. Every new assertion verified to FAIL with the fix reverted; full suite
   (1656→1666 tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 5: async event delivery, the broker (`audit-spec.md`, 2026-07-31)
+
+⚠ **Deliberate scope decision, per audit-spec.md's Global Constraint 4 exception (the same one
+Wave 2's ISSUE-003 used):** unlike every other issue in this audit, this ONE changes DEFAULT
+behavior for every EXISTING `event` packet, not just newly-authored ones — `event` is now
+simulated as asynchronous by default. `event` is removed from CLAUDE.md's parked list in the same
+change (the "Packet system" Key Architecture Decision paragraph).
+
+### ISSUE-002 — `src/lib/worldEngine/broker.ts` (new), `flows.ts`, `index.ts`, `metrics.ts`, `analysis/rules/capacity.ts`
+
+Before this issue, `event` was a synchronous blocking RPC wearing a different label:
+`connectionClassOf` collapsed it to keep-alive, `packetResolve` turned it into plain
+request/response bytes, and — critically — the flow solver pushed the consumer onto the SAME
+BFS step as the producer, so a struggling CONSUMER's downstream errors opened the PRODUCER's
+breaker (`index.ts`'s step-8 breaker-record loop reads `targetErrorFraction(row.toInstanceId)` for
+any non-blocked row with a target instance — event rows included). That is the exact opposite of
+what a message broker exists to do.
+
+**New `broker.ts`**, modelled directly on `managedDbRuntime.ts`'s three-function shape
+(`aggregateTopicLoad` → `topicRuntimeFor` → `topicRuntime`), pure/no engine imports. A "topic" in
+this schema is identified by its dependency id (there is no separate Topic entity). Aggregate,
+like managedDbRuntime: backlog/lag/drop/DLQ are properties of TOTAL arrival vs TOTAL consumer
+capacity, computed once from the PREVIOUS step's flows (one-step lag, same shape as
+`admittedScale`/`managedDbRuntime`), with `flows.ts` applying the result to each producer's own
+share. `consumerCapacityRps` REUSES the flow solver's own `serviceRateByInstance` (already resolved
+for the queue model) rather than re-deriving a second notion of consumer capacity. Worked in
+message COUNTS internally (arrival/capacity × stepSec, backlog persisted as a count) — clearer
+arithmetic than converting rates back and forth.
+
+**`flows.ts`'s dependency loop**: an event-protocol dependency (resolved via the new shared
+`resolveMixProtocol`, below) NEVER pushes its target onto this step's BFS queue — the producer's
+share is instead split by the topic's resolved `dropFraction`/`dlqFraction` into an accepted row
+(bytes still book — publishing succeeded), a `dropped` row, and a `dlq` row (both new
+`DownstreamFlow.failure` values, additive to the existing `'throttled' | 'timeout'` union).
+**Separately**, the topic's resolved `drainRps` seeds the CONSUMER instance(s) as an independent
+BFS root (own depth 0, no parent) — without this the consumer would never appear in metrics or fan
+out its own dependencies for event-only traffic, even though the topic is actively draining; this
+was caught by an engine-level test asserting the consumer's published `rps > 0`, which failed
+before this seeding was added.
+
+**The breaker fix (the actual bug).** `index.ts`'s step-8 loop now looks up the row's dependency
+(`s.depById`, ISSUE-014's index) and forces `fraction = 0` for a non-blocked event-protocol row,
+never consulting `targetErrorFraction` — only the topic's OWN drop/DLQ overflow (already recorded
+as separate `blocked: true` rows) can open an event dependency's breaker. This was caught by an
+engine-level test that failed on the FIRST attempt at this issue: a fixture with a genuinely
+struggling consumer (its own dependency 100% firewall-blocked) opened the producer's breaker even
+after the flows.ts decoupling landed, because the generic breaker loop doesn't know about
+protocols — the decoupling alone was not sufficient; the breaker-recording site itself had to be
+taught to ignore the consumer's health for this protocol.
+
+**`resolveMixProtocol`** (`packetResolve.ts`, new export): extracted from ISSUE-007's
+`compileWorld.ts`-local `majorityMixProtocol` into a shared resolver — "what protocol does this
+dependency actually speak" is now the ONE place both the compile-time protocol-mismatch finding
+and the engine's broker-gating logic read from, so they can never disagree.
+
+**Metrics**: `MetricsBatch.topics?: Record<string, TopicMetrics>` (additive, contract-drift
+logged) — `state.lastTopicRuntime` follows the exact `lastHost`/`lastVps` side-channel pattern
+(published as-is, not window-averaged, since it's already a one-step-lagged aggregate). New
+analysis rule `consumer-lag-behind-producer` (`capacity.ts`) fires when a topic's `lagSec` exceeds
+a 5 s threshold.
+
+**Authoring**: `EventTemplate` gains `retentionCapCount?`/`maxRedeliveries?` (additive, absent ⇒
+unbounded retention / one redelivery before DLQ); `packetDraft.ts` and `PacketModal.tsx` gained the
+matching form fields, and the modal's stale "asynchronous delivery semantics are a later phase"
+copy is gone (still true for `stream`, which stays parked — see Wave 6).
+
+**Simplifications, documented in `broker.ts`'s own comments**: redelivery is modelled as "every
+failure gets one more attempt fed back into the backlog" rather than true per-message
+attempt-counting (this is an aggregate rps model, not a per-message one) — `maxRedeliveries === 0`
+sends failures straight to the DLQ; any positive value keeps retrying indefinitely under sustained
+consumer errors, the reasonable aggregate analogue of "the DLQ only catches messages that are
+ACTUALLY exhausted."
+
+### Tests
+
+- `broker.test.ts` (new) — `aggregateTopicLoad` sums arrival/capacity/error-fraction correctly and
+  ignores non-event dependencies entirely; `topicRuntime` drains fully under spare capacity, grows
+  and PERSISTS a backlog across calls when arrival exceeds capacity, sheds overflow past
+  `retentionCapCount` as `dropRps`, and routes failures to `dlqRps` (maxRedeliveries=0) or
+  `redeliverRps` (the default).
+- `index.test.ts` — the core thesis test: a producer -> event -> consumer world where the consumer
+  is genuinely struggling (its own dependency 100% firewall-blocked) still shows real consumer
+  throughput AND never opens the producer's breaker (filtered specifically on the producer's own
+  `pathKey`, since the consumer's OWN breaker for its dead dependency legitimately opens — that's
+  real, unrelated failure, not the bug); `MetricsBatch.topics` publishes non-zero arrival/lag.
+- Every bug-catching assertion verified to FAIL with the fix reverted (`git stash`); full suite
+  (1666→1677 tests) and both benches green throughout.

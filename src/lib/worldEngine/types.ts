@@ -130,6 +130,20 @@ export interface ManagedServiceMetrics {
                         // refusedRps (throughput/connection throttling)
 }
 
+// Live event-broker state for one topic (audit ISSUE-002) — a topic is identified by its
+// dependency id (this schema has no separate "Topic" entity). Surfaces the async decoupling
+// worldEngine/broker.ts models: how far behind the consumer is (lagSec), how deep the backlog is,
+// and the two failure modes (dropRps — retention-cap overflow, DLQ-rate — exhausted redeliveries).
+export interface TopicMetrics {
+  totalArrivalRps: number
+  backlogCount: number
+  drainRps: number
+  lagSec: number
+  dropRps: number
+  redeliverRps: number
+  dlqRps: number
+}
+
 export interface MetricsBatch {
   simMs: number
   instances: Record<InstanceId, InstanceMetrics>
@@ -140,6 +154,10 @@ export interface MetricsBatch {
   // Additive-optional (frozen-contract rule): buildBatch always populates it, but older/test-built
   // batches may omit it — read as `batch.managedServices?.[id]`. See contract-drift.md §PHASE 5.1.
   managedServices?: Record<ManagedServiceId, ManagedServiceMetrics>
+  // Additive-optional (frozen-contract rule), keyed by dependency id. buildBatch always populates
+  // it when the world has event dependencies; older/test-built batches may omit it — read as
+  // `batch.topics?.[dependencyId]`. See contract-drift.md §ISSUE-002.
+  topics?: Record<string, TopicMetrics>
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────

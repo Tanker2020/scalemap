@@ -73,6 +73,13 @@ export interface EventTemplate extends BasePacketTemplate {
   topic: string
   eventType: string
   deliveryMode: 'at-most-once' | 'at-least-once' | 'exactly-once'
+  // Broker backlog model (audit ISSUE-002, worldEngine/broker.ts). Optional — absent ⇒ effectively
+  // unbounded retention / a single redelivery attempt before DLQ, so an existing .scalemap with no
+  // authored values still gets the async decoupling this issue introduces (that decoupling is
+  // itself an acknowledged behavior change for `event` dependencies, not byte-identical-by-default
+  // like every other issue in this audit — see broker.ts's header).
+  retentionCapCount?: number   // max backlog depth before the oldest arrivals are dropped (at-most-once loses these)
+  maxRedeliveries?: number     // redelivery attempts before a failed message goes to the DLQ; absent ⇒ 1
 }
 
 export interface StreamTemplate extends BasePacketTemplate {

@@ -3,7 +3,7 @@
 // populated — no field is ever left undefined.
 import type {
   MetricsBatch, InstanceMetrics, ServerMetrics, AzMetrics, RegionMetrics, WorldMetrics,
-  ManagedServiceMetrics, HealthState,
+  ManagedServiceMetrics, HealthState, TopicMetrics,
 } from './types'
 import type { InstanceFlow } from './flows'
 // Aliased on import: the local `activeConnections` binding below is the computed VALUE per
@@ -13,6 +13,7 @@ import { managedDbCeilings } from './flows'
 import { managedCapacityRps, managedLatencyMs, MANAGED_P99_OVER_P50 } from '../managedCapacity'
 import { managedDbEngine } from '../world/types'
 import type { ManagedDbRuntime } from '../managedDbRuntime'
+import type { TopicRuntime } from './broker'
 import type { HostStepResult } from './hostScheduler'
 import type { NicState } from './networkRuntime'
 import type {
@@ -84,6 +85,10 @@ export interface MetricsState {
   lastHost: Record<ServerId, HostStepResult>
   lastVps: Record<ServerId, VpsPublish>
   lastHealth: (id: string) => HealthState
+  // Audit ISSUE-002: the latest step's event-broker runtime, same side-channel pattern as
+  // lastHost/lastVps above — published as-is (unsmoothed), not window-averaged, since it's already
+  // a one-step-lagged aggregate, not a per-step sample needing a mean.
+  lastTopicRuntime: TopicRuntime
 }
 
 export function createMetricsState(): MetricsState {
@@ -98,6 +103,7 @@ export function createMetricsState(): MetricsState {
     lastHost: {},
     lastVps: {},
     lastHealth: () => 'healthy',
+    lastTopicRuntime: {},
   }
 }
 
@@ -115,7 +121,11 @@ export function accumulateStep(
   // This step's undeliverable rps per AZ (cross-zone-off forfeiture etc.). Optional: absent ⇒
   // droppedRps stays 0.
   droppedByAz?: Record<AzId, number>,
+  // This step's event-broker runtime (audit ISSUE-002). Optional: absent ⇒ `topics` stays empty,
+  // so existing callers/tests are unchanged.
+  topicRt?: TopicRuntime,
 ): void {
+  state.lastTopicRuntime = topicRt ?? {}
   // Per-step drop RATES accumulate into the window; droppedSteps is the divisor for the mean.
   state.droppedSteps++
   if (droppedByAz) {
@@ -473,6 +483,15 @@ export function buildBatch(
     internetEgressBytesPerSec: ema(state, 'w:inet', totals.internetBytes),
   }
 
+  // ── Topics (audit ISSUE-002) ──
+  const topics: Record<string, TopicMetrics> = {}
+  for (const [depId, rt] of Object.entries(state.lastTopicRuntime)) {
+    topics[depId] = {
+      totalArrivalRps: rt.totalArrivalRps, backlogCount: rt.backlogCount, drainRps: rt.drainRps,
+      lagSec: rt.lagSec, dropRps: rt.dropRps, redeliverRps: rt.redeliverRps, dlqRps: rt.dlqRps,
+    }
+  }
+
   // Reset windows for the next second.
   state.window.clear()
   state.serverWindow.clear()
@@ -480,5 +499,5 @@ export function buildBatch(
   state.droppedWindow.clear()
   state.droppedSteps = 0
 
-  return { simMs, instances, servers, azs, regions, world, managedServices }
+  return { simMs, instances, servers, azs, regions, world, managedServices, topics }
 }

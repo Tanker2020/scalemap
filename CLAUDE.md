@@ -302,9 +302,10 @@ row on BOTH endpoints, and inbound internal KB feeds `cpuMsPerKb` (one-step lagg
 `prevFlows`). db packets additionally derive an edge's `writeFraction` from their `queryType` and
 apply WAL write amplification. Every new field is optional, so a pre-existing `.scalemap` loads
 and simulates byte-identically. Internal service-to-service per-route routing is still parked
-(ingress-only L7), as are async `event` / persistent `stream` DELIVERY semantics — those kinds are
-authored, sized, and (for `stream`) connection-modelled today, but not yet simulated as
-asynchronous.
+(ingress-only L7), as is persistent `stream` DELIVERY semantics (authored and connection-modelled
+today, but not yet simulated as its own framing/heartbeat protocol — see the multi-protocol audit's
+Wave 6). `event` delivery, by contrast, IS now simulated as asynchronous (2026-07-31, audit
+ISSUE-002) — see `src/lib/worldEngine/broker.ts` below.
 
 **Connection semantics — the other half of a packet (2026-07-29):** `ConnectionType`
 (`keep-alive`/`short-lived`/`streaming`) was authored-and-inert schema from Phase 2 until this

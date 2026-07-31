@@ -14,7 +14,7 @@ import type {
 } from '../world/types'
 import { managedDbEngine } from '../world/types'
 import { routeMatchesPattern, listRoutes } from '../nodeConfig'
-import { pickPacketByIndex, resolveWireSize, routeIngressBytes, buildPickTable, type WireSize, type PickTable } from '../packetResolve'
+import { pickPacketByIndex, resolveWireSize, routeIngressBytes, buildPickTable, resolveMixProtocol, type WireSize, type PickTable } from '../packetResolve'
 import {
   activeConnections, profileFor, resolveConnectionProfile, KEEP_ALIVE_PROFILE,
   type ConnectionProfile,
@@ -37,6 +37,7 @@ import {
 } from './breakers'
 import { solveFlows, type InstanceFlow } from './flows'
 import { managedDbRuntime } from '../managedDbRuntime'
+import { topicRuntime } from './broker'
 import {
   createFailoverState, setOutage as failoverSetOutage, computeHealth, probeInstant, promoteReplicas,
   drainFactor, beginDrain, clearDrain, DEFAULT_HYSTERESIS, effectiveRoleResolver, hasOutage,
@@ -328,6 +329,11 @@ interface EngineState {
   // WITH managed DBs the scan is inherent — its input (prevFlows) is new every tick, so there
   // is no delta to update incrementally from.
   hasManagedDbs: boolean
+  // Audit ISSUE-002: same skip-when-absent pattern as hasManagedDbs, for the event-broker scan.
+  hasEventDeps: boolean
+  // Persistent per-topic backlog (audit ISSUE-002), keyed by dependency id — carried across ticks
+  // and mutated in place by broker.ts's `topicRuntime`, same ownership pattern as `queueDepth`.
+  topicBacklog: Map<string, number>
   roleResolver: ((id: InstanceId) => PlacementRole) | null
   roleResolverKey: string
   // Permitted instance→instance downstream adjacency (audit ISSUE-014), built once at start():
@@ -901,6 +907,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // read/write split measured against writeCeiling/readCeiling matches the one the solver routes
     // primaries/replicas on, and the one EdgeInspector displays.
     const managedDbRt = s.hasManagedDbs ? managedDbRuntime(s.prevFlows, doc, compiled, s.depBytesById, s.depById) : {}
+    // Event-broker runtime (audit ISSUE-002), same one-step-lag shape as managedDbRt above: THIS
+    // step's serviceRateByInstance (already resolved for the queue model, just above) is reused as
+    // the topic's consumer capacity — a consumer's simulated capacity can never disagree between
+    // its own queue and the topic it drains. Skipped outright when the world has no event
+    // dependency (audit ISSUE-079's hasManagedDbs pattern).
+    const topicRt = s.hasEventDeps ? topicRuntime(s.prevFlows, compiled, doc, serviceRateByInstance, s.topicBacklog, stepSec) : {}
     const { flows, totals, depthExceededInstanceIds, cycleCutEdges } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       extraLatencyMsByServer,
@@ -923,6 +935,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // health recompute, so healthByScope would go stale on restore.
       managedDown: (id) => hasOutage(s.failover, 'managed', id),
       managedDbRuntime: managedDbRt,
+      topicRuntime: topicRt,
     })
 
     // Audit ISSUE-010: surface silently-dropped fan-out. Both conditions previously left no trace
@@ -1012,7 +1025,15 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         const key = pathKey(f.instanceId, row.dependencyId)
         const b = getBreaker(s.breakers, key)
         const from = b.state
-        const fraction = row.blocked ? 1 : row.toInstanceId ? targetErrorFraction(row.toInstanceId) : 0
+        // Audit ISSUE-002: an event-protocol dependency is asynchronous — the CONSUMER's own
+        // downstream health must never feed the PRODUCER's breaker (that's the exact bug this
+        // issue fixes: a struggling consumer used to open the producer's breaker, the opposite of
+        // what decoupling is for). An accepted (non-blocked) event row is therefore always a
+        // success here; only the topic's OWN drop/DLQ overflow — already recorded as separate
+        // `blocked: true` rows above — can open this breaker.
+        const dep = s.depById[row.dependencyId]
+        const isEventDep = dep && (resolveMixProtocol(doc.packets, dep.packetMix) ?? dep.protocol) === 'event'
+        const fraction = row.blocked ? 1 : (isEventDep || !row.toInstanceId) ? 0 : targetErrorFraction(row.toInstanceId)
         // Audit ISSUE-015: record REQUEST COUNTS (rps × stepSec), not rates — the breaker's
         // time-bucketed window weighs a 10 000-rps dependency 10 000× a 1-rps one, and its
         // volume floor (minTotalToOpen) gets real request units.
@@ -1117,7 +1138,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     }
 
     // ── 10. metrics accumulate ──
-    accumulateStep(s.metrics, flows, hostResults, vpsPublish, nicByServer, healthOfAny, simMs, managedDbRt, droppedByAz)
+    accumulateStep(s.metrics, flows, hostResults, vpsPublish, nicByServer, healthOfAny, simMs, managedDbRt, droppedByAz, topicRt)
     // NIC settlement (audit ISSUE-002) — AFTER accumulate (which reads the per-step byte
     // counters settleNic resets). The result gates next step's admits/latency, one-step lag.
     for (const server of Object.values(doc.servers)) {
@@ -1456,6 +1477,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         azsByRegion: groupBy(Object.values(doc.azs), az => az.regionId),
         instancesByServer: groupInstancesByServer(compiled),
         hasManagedDbs: Object.values(doc.managedServices).some(ms => !!managedDbEngine(ms.nodeType)),
+        hasEventDeps: Object.values(doc.blueprints).some(bp =>
+          bp.dependencies.some(dep => (resolveMixProtocol(doc.packets, dep.packetMix) ?? dep.protocol) === 'event')),
+        topicBacklog: new Map(),
         roleResolver: null, roleResolverKey: '',
         downstreamAdj: buildDownstreamAdj(compiled),
         routing: createRoutingState(), failover: createFailoverState(),

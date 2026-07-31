@@ -305,7 +305,29 @@ export function PacketModal({ open, editingId, onClose }: PacketModalProps): Rea
                   <option value="exactly-once">exactly-once</option>
                 </select>
               </div>
-              <Explainer>sizing is live now; asynchronous delivery semantics are a later phase</Explainer>
+              <div style={{ display: 'flex', gap: 6, ...rowGap }}>
+                <div style={{ flex: 1 }}>
+                  <label htmlFor="pk-retention" style={rowLabel}>retention cap (msgs)</label>
+                  <input
+                    id="pk-retention" aria-label="retention cap" type="number" min={0} style={field}
+                    placeholder="unbounded"
+                    value={draft.retentionCapCount ?? ''} onChange={e => set({ retentionCapCount: e.target.value })}
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label htmlFor="pk-max-redeliveries" style={rowLabel}>max redeliveries</label>
+                  <input
+                    id="pk-max-redeliveries" aria-label="max redeliveries" type="number" min={0} style={field}
+                    placeholder="1"
+                    value={draft.maxRedeliveries ?? ''} onChange={e => set({ maxRedeliveries: e.target.value })}
+                  />
+                </div>
+              </div>
+              <Explainer>
+                delivered asynchronously via a bounded backlog: a consumer draining slower than
+                arrivals builds lag; past the retention cap the oldest messages drop; past max
+                redeliveries a failed message goes to the DLQ
+              </Explainer>
             </>
           )}
 
