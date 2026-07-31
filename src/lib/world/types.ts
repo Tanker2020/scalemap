@@ -440,7 +440,11 @@ export interface CompiledRouting {
 export interface CompileFinding {
   id: string
   severity: 'error' | 'warning'
-  kind: 'blocked-path' | 'stateful-without-volume' | 'missing-volume'
+  // 'protocol-mismatch' (audit ISSUE-007): a dependency's authored `protocol` field disagrees with
+  // the majority-weight protocol of its bound packet mix — the render tint (`dep.protocol`, the
+  // ONLY place this field has semantics) and the actual simulated behavior (bytes, connection
+  // hold, WAL amplification — all derived from the mix) can silently show two different stories.
+  kind: 'blocked-path' | 'stateful-without-volume' | 'missing-volume' | 'protocol-mismatch'
   message: string
   affected: string[]   // entity ids (instance/server/blueprint/placement ids)
 }

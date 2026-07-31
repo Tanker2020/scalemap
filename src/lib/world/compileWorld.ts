@@ -2,7 +2,7 @@
 // everything that renders or simulates. No store access, no side effects, no randomness.
 import type {
   WorldDoc, CompiledWorld, ServiceInstance, InstanceId, CompiledPath, CompileFinding,
-  HopClass,
+  HopClass, BlueprintDependency,
 } from './types'
 import { evaluateInstancePath } from './network'
 import { computeRouting, volumeFindings } from './routing'
@@ -108,9 +108,63 @@ export function compileWorld(doc: WorldDoc): CompiledWorld {
   return {
     instances,
     paths,
-    findings: [...findings, ...volumeFindings(doc)],
+    findings: [...findings, ...volumeFindings(doc), ...protocolMismatchFindings(doc)],
     routing: computeRouting(doc, instances),
   }
+}
+
+// Audit ISSUE-007: `BlueprintDependency.protocol` drives ONLY the particle render tint
+// (`index.ts`'s `buildAzParticles`/`buildServerParticles`); every simulated consequence — wire
+// bytes, connection hold duration, WAL write amplification — comes from the bound packet mix's
+// OWN resolved protocol instead. Nothing reconciles the two, so an author can set
+// `dep.protocol = 'event'` on a dependency whose mix is entirely `http` packets and the board
+// renders violet "event" particles for what the engine is actually costing/holding as a
+// keep-alive HTTP call. This is a static, structural property of the authored world (a dependency
+// + its bound mix), so it is computed ONCE per unique dependency here — not per compiled path/
+// instance, which would multiply the same finding by however many instances the source blueprint
+// has. Advisory only: never auto-corrects `dep.protocol`, matching how every other compile finding
+// surfaces without silently overriding an explicit author choice.
+function protocolMismatchFindings(doc: WorldDoc): CompileFinding[] {
+  const findings: CompileFinding[] = []
+  for (const bp of Object.values(doc.blueprints)) {
+    for (const dep of bp.dependencies) {
+      if (!dep.packetMix || dep.packetMix.length === 0) continue
+      const majority = majorityMixProtocol(doc, dep.packetMix)
+      if (majority == null || majority === dep.protocol) continue
+      findings.push({
+        id: `finding-protocol-mismatch-${dep.id}`,
+        severity: 'warning',
+        kind: 'protocol-mismatch',
+        message: `${bp.name}'s dependency "${dep.id}" is authored as ${dep.protocol}, but its bound packet mix is mostly ${majority} — particles render as ${dep.protocol} while the engine simulates ${majority}`,
+        affected: [bp.id, dep.id],
+      })
+    }
+  }
+  return findings
+}
+
+// The mix's majority-weight protocol (ties broken by first-encountered order, matching
+// resolveWireSize/resolveConnectionProfile's own weighted-fold iteration order). Entries
+// referencing a deleted packet, or a non-finite/non-positive weight, are ignored — same
+// defensive filter every other packet-mix reader in the codebase applies. Returns null for an
+// empty/all-dangling/all-zero-weight mix (nothing to compare dep.protocol against).
+function majorityMixProtocol(
+  doc: WorldDoc,
+  mix: NonNullable<BlueprintDependency['packetMix']>,
+): 'http' | 'db' | 'event' | 'stream' | null {
+  const weightByProtocol: Partial<Record<'http' | 'db' | 'event' | 'stream', number>> = {}
+  for (const entry of mix) {
+    if (!Number.isFinite(entry.weight) || entry.weight <= 0) continue
+    const tpl = doc.packets.templates[entry.packetId]
+    if (!tpl) continue
+    weightByProtocol[tpl.protocol] = (weightByProtocol[tpl.protocol] ?? 0) + entry.weight
+  }
+  let best: 'http' | 'db' | 'event' | 'stream' | null = null
+  let bestWeight = -Infinity
+  for (const [protocol, weight] of Object.entries(weightByProtocol)) {
+    if (weight! > bestWeight) { best = protocol as 'http' | 'db' | 'event' | 'stream'; bestWeight = weight! }
+  }
+  return best
 }
 
 function managedHopClass(doc: WorldDoc, fromAzId: string, fromRegionId: string, msId: string): HopClass {

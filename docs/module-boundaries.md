@@ -4561,3 +4561,54 @@ order are exactly what's kept — this is why the fix needed no new "which parti
   strongest possible evidence these three fixes altered no observable behavior.
 - `bench/renderPerf.bench.test.ts` (new) — the Wave 3 prerequisite; passes at both the 1ms budget
   and the measured before/after numbers above.
+
+## Multi-Protocol Connection Audit — Wave 3, part 2 (`audit-spec.md`, 2026-07-31)
+
+### ISSUE-007 — protocol-mismatch compile finding (`world/types.ts`, `world/compileWorld.ts`)
+
+`BlueprintDependency.protocol` drives ONLY the particle render tint (`index.ts`'s particle
+builders); every simulated consequence — wire bytes, connection hold, WAL amplification — comes
+from the bound packet mix's own resolved protocol via `packetResolve`/`connectionModel`. Nothing
+reconciled the two, so an author could set `dep.protocol = 'event'` on a dependency whose mix is
+entirely `http` packets and the board would render violet "event" particles for what the engine
+actually costs/holds as a keep-alive HTTP call.
+
+Added a new `CompileFinding` kind, `'protocol-mismatch'` (additive to the union), and a
+`protocolMismatchFindings(doc)` pass in `compileWorld.ts` — computed ONCE per unique dependency
+(iterating `doc.blueprints` directly, not per compiled path/instance, which would multiply the
+same finding by however many instances the source blueprint has). `majorityMixProtocol` resolves
+the mix's majority-weight protocol (same defensive dangling-packet/non-positive-weight filter every
+other mix reader applies) and compares it against `dep.protocol`; a mismatch is surfaced as a
+`warning`-severity finding, never auto-corrected — an explicit author choice on `dep.protocol`
+is left alone, matching how every other compile finding works. `AnalysisTab.tsx`/`WorldPanel.tsx`
+render findings generically off `{severity, message, affected}` with no per-kind switch, so the new
+kind needed no UI changes.
+
+### ISSUE-016 — `PacketLayer.tsx` path-length cache + theme-aware protocol color
+
+Two independent defects in the same file. (1) `pathCache` memoized the `SVGPathElement` per
+`fromId→toId` pair but NOT its `getTotalLength()` — an SVG geometry computation, not a cheap
+property read — so every particle on every frame re-computed the same length for an already-cached,
+geometrically-immutable path. Now caches `{ path, len }` together, computing `len` once at
+cache-population time; the existing D10e try/catch (native WebView SVG throwing) still wraps both
+the creation+length computation and the per-particle `getPointAtLength`, so a throw still falls
+back to the straight-line lerp exactly as before. (2) `PROTOCOL_COLOR` hardcoded four dark-tuned
+hexes directly in TSX — a `<canvas>` 2D context needs a resolved literal (`var(--color-*)` can't be
+read from `ctx.fillStyle`), so the fix is a new `protocolColor(protocol, themeMode)` sourced from
+`theme.ts`'s `CATEGORY_COLORS` (the codebase's existing idiom for this exact situation, matching
+`azFloorStyles.ts`/`ServerFaceplate.tsx`), mapped `http→compute, db→storage, event→messaging,
+stream→network` and branched dark(`.accent`)/light(`.foreground.light`) off `ui.store`'s
+`themeMode`, added to the draw effect's dependency array so a live theme toggle repaints correctly.
+
+### Tests
+
+- `compileWorld.test.ts` — a mismatched dependency (event-authored, http-bound mix) produces
+  exactly one `protocol-mismatch` finding; a matching dependency and a mix-less dependency produce
+  none (no false positives).
+- `PacketLayer.test.tsx` — `getTotalLength` (stubbed onto the created element's prototype, since
+  jsdom doesn't expose `SVGPathElement` globally in this setup) is called exactly once across two
+  frames of the same `fromId→toId` pair; `fillStyle` matches `CATEGORY_COLORS`' exact accent/
+  foreground values per protocol in dark/light mode; an authored `colorHint` still wins over the
+  protocol color in either theme.
+- Every new assertion verified to FAIL with its fix reverted (`git stash`), full suite (1645→1652
+  tests) and both benches green throughout.
