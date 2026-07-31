@@ -10,11 +10,11 @@ import type {
 import { MAX_GLOBE_ARCS } from './types'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
-  ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole,
+  ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole, BlueprintDependency,
 } from '../world/types'
 import { managedDbEngine } from '../world/types'
 import { routeMatchesPattern, listRoutes } from '../nodeConfig'
-import { pickPacketByIndex, resolveWireSize, routeIngressBytes, type WireSize } from '../packetResolve'
+import { pickPacketByIndex, resolveWireSize, routeIngressBytes, buildPickTable, resolveMixProtocol, type WireSize, type PickTable } from '../packetResolve'
 import {
   activeConnections, profileFor, resolveConnectionProfile, KEEP_ALIVE_PROFILE,
   type ConnectionProfile,
@@ -37,6 +37,7 @@ import {
 } from './breakers'
 import { solveFlows, type InstanceFlow } from './flows'
 import { managedDbRuntime } from '../managedDbRuntime'
+import { topicRuntime } from './broker'
 import {
   createFailoverState, setOutage as failoverSetOutage, computeHealth, probeInstant, promoteReplicas,
   drainFactor, beginDrain, clearDrain, DEFAULT_HYSTERESIS, effectiveRoleResolver, hasOutage,
@@ -65,6 +66,15 @@ const DEGRADE_THRESHOLD_MS = 4               // spec decision 9 / Global Constra
 const DEGRADE_WINDOW_STEPS = 30              // 3s of 100ms steps
 const DEGRADED_STEP_MS = 200
 const RENDER_PROGRESS_PER_MS = 1 / 1200      // particle sweeps a pair in ~1.2s wall-time
+
+// Audit ISSUE-017: buildPayload allocated a fresh throwaway `[]` for every non-matching scope's
+// particles/arcs field (e.g. an empty `arcs: []` for every az/server-scope renderer, an empty
+// `particles: []` for every globe-scope one) — semantically fungible, since an empty array carries
+// no state to alias-corrupt, so one shared instance serves every such case. Frozen defensively: a
+// consumer mutating a shared empty array in place would be a far worse bug than the allocation it
+// replaces.
+const EMPTY_PARTICLES: VisualParticle[] = Object.freeze([] as VisualParticle[]) as VisualParticle[]
+const EMPTY_ARCS: VisualArc[] = Object.freeze([] as VisualArc[]) as VisualArc[]
 
 const SEVERITY: Record<HealthState, number> = { healthy: 0, degraded: 1, down: 2 }
 
@@ -192,6 +202,31 @@ function buildDepWireBytes(doc: WorldDoc): Record<string, WireSize> {
   return out
 }
 
+// dependencyId → its BlueprintDependency (audit ISSUE-014 — the fifth recurrence of the
+// unindexed-lookup class already fixed as ISSUE-032/073/075/076) and dependencyId → its
+// precomputed packet pick table (audit ISSUE-013). Both replace a per-row `bp?.dependencies.find
+// (d => d.id === row.dependencyId)` linear scan that ran once per downstream row per RENDER FRAME
+// (60 Hz, in buildAzParticles/buildServerParticles) — dep.id → BlueprintDependency never changes
+// once `doc` is frozen at start(), so the scan was loop-invariant work. Flat Records keyed by
+// dep.id alone, exactly like depBytesById/depConnById above: dependency ids are already assumed
+// globally unique by those two maps (in production today, not just this audit), so no composite
+// key is needed here either.
+interface DepIndexes {
+  depById: Record<string, BlueprintDependency>
+  depPickTableById: Record<string, PickTable | null>
+}
+function buildDepIndexes(doc: WorldDoc): DepIndexes {
+  const depById: Record<string, BlueprintDependency> = {}
+  const depPickTableById: Record<string, PickTable | null> = {}
+  for (const bp of Object.values(doc.blueprints)) {
+    for (const dep of bp.dependencies) {
+      depById[dep.id] = dep
+      depPickTableById[dep.id] = buildPickTable(dep.packetMix)
+    }
+  }
+  return { depById, depPickTableById }
+}
+
 // The implicit null "default" route (a population with no request mix). Cost keeps the symmetric
 // 2 KB convention; NIC keeps its asymmetric split — both matching pre-packet-sizing behavior.
 // sizeKb mirrors the same 2 KB convention (costReq's fallback, in KB). sigma 0 — no NIC-burst
@@ -208,28 +243,31 @@ const DEFAULT_ROUTE_WIRE_BYTES: RouteWireBytes = {
 // cpuKb (slice 2) is the same fold over request sizeKb instead of bytes, feeding the packet-driven
 // CPU blend below. varW (slice 3) is the same fold over the route's sigma, feeding the NIC-burst
 // multiplier at NIC booking (step 7) below.
-// connLatW/connFixedW/connExtraW/connHsW are the same fold once more, over the four ConnectionProfile
-// fields — giving each entry instance the demand-weighted connection behavior of the route mix that
-// actually landed on it, rather than one route arbitrarily speaking for all of them.
+// connLatW/connFixedW/connExtraW/connHsW/connFrameW are the same fold once more, over the five
+// ConnectionProfile fields — giving each entry instance the demand-weighted connection behavior of
+// the route mix that actually landed on it, rather than one route arbitrarily speaking for all of
+// them. connFrameW (audit ISSUE-004) carries frameMultiplier the same way.
 interface EntryByteAccum {
   costReq: number; costResp: number; nicReq: number; nicResp: number; cpuKb: number; varW: number
-  connLatW: number; connFixedW: number; connExtraW: number; connHsW: number
+  connLatW: number; connFixedW: number; connExtraW: number; connHsW: number; connFrameW: number
 }
 
 // A demand-weighted running sum of ConnectionProfiles, used identically by the entry and internal
 // folds below. Kept as one helper so the two tiers can never drift apart in how they blend.
-interface ProfileAccum { lat: number; fixed: number; extra: number; hs: number }
+interface ProfileAccum { lat: number; fixed: number; extra: number; hs: number; frame: number }
 const addProfile = (acc: ProfileAccum, p: ConnectionProfile, weight: number): void => {
   acc.lat += weight * p.latencyShare
   acc.fixed += weight * p.fixedHoldSec
   acc.extra += weight * p.extraHoldSec
   acc.hs += weight * p.handshakeCpuMs
+  acc.frame += weight * p.frameMultiplier
 }
 const meanProfile = (acc: ProfileAccum, totalWeight: number): ConnectionProfile => ({
   latencyShare: acc.lat / totalWeight,
   fixedHoldSec: acc.fixed / totalWeight,
   extraHoldSec: acc.extra / totalWeight,
   handshakeCpuMs: acc.hs / totalWeight,
+  frameMultiplier: acc.frame / totalWeight,
 })
 
 // The L7 listener-rule match: the first rule (authored order) whose pattern matches the route's
@@ -272,6 +310,11 @@ interface EngineState {
   // hop. Built once at start() from the frozen doc; a plain object (not a Map) so it can be
   // handed to solveFlows' `depBytesById` field without a per-step conversion.
   depBytesById: Record<string, WireSize>
+  // dependencyId → BlueprintDependency (audit ISSUE-014) and dependencyId → precomputed packet
+  // pick table (audit ISSUE-013) — both built once at start(), read by the particle builders
+  // instead of a per-row/per-frame `.find()` scan or filter+reduce.
+  depById: Record<string, BlueprintDependency>
+  depPickTableById: Record<string, PickTable | null>
 
   // Static topology indexes built once at start() (audit ISSUE-032): the per-step health
   // propagation loops read these instead of re-filtering doc.servers/doc.azs per AZ/region
@@ -289,6 +332,22 @@ interface EngineState {
   // WITH managed DBs the scan is inherent — its input (prevFlows) is new every tick, so there
   // is no delta to update incrementally from.
   hasManagedDbs: boolean
+  // Audit ISSUE-002: same skip-when-absent pattern as hasManagedDbs, for the event-broker scan.
+  hasEventDeps: boolean
+  // Persistent per-topic backlog (audit ISSUE-002), keyed by dependency id — carried across ticks
+  // and mutated in place by broker.ts's `topicRuntime`, same ownership pattern as `queueDepth`.
+  topicBacklog: Map<string, number>
+  // Demand backpressure — Mechanism B (audit ISSUE-008). Mechanism A (RAM pressure from composed
+  // latency tripping the existing OOM path) was MEASURED to close the loop only via a repeating
+  // OOM-kill/recover cycle, not graceful admission control — the disqualifying shape the audit
+  // itself names. This is deliberate, explicit admission control at the EDGE: a per-region shed
+  // fraction, hysteresis-gated (engage/recover need SUSTAINED over/under-threshold error rates,
+  // not a single noisy step) so it doesn't flap on-off, applied to a population's OFFERED demand
+  // before it ever reaches distributeViaLb. One-step-lagged off the previous step's regional error
+  // rate, the same shape as admittedScale/managedDbRuntime.
+  regionShedFraction: Map<RegionId, number>
+  regionOverloadStreak: Map<RegionId, number>
+  regionRecoverStreak: Map<RegionId, number>
   roleResolver: ((id: InstanceId) => PlacementRole) | null
   roleResolverKey: string
   // Permitted instance→instance downstream adjacency (audit ISSUE-014), built once at start():
@@ -335,6 +394,12 @@ interface EngineState {
   instanceHealth: Map<InstanceId, HealthState>
   oomRestartAt: Map<InstanceId, number>
   refusedRateLimit: Map<string, number>
+  // Audit ISSUE-010: "already reported this run" — a chain that's over-depth or a cycle that's cut
+  // every single step would otherwise spam one event per instance/edge per step; these fire once
+  // per run instead (a state TRANSITION, not a steady-state condition), mirroring how other steady-
+  // state events (e.g. breaker_open) avoid re-firing every step while the condition holds.
+  depthExceededReported: Set<InstanceId>
+  cycleCutReported: Set<string>
 
   idSeq: number
   lastBatchMs: number
@@ -444,7 +509,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           if (!acc) {
             acc = {
               costReq: 0, costResp: 0, nicReq: 0, nicResp: 0, cpuKb: 0, varW: 0,
-              connLatW: 0, connFixedW: 0, connExtraW: 0, connHsW: 0,
+              connLatW: 0, connFixedW: 0, connExtraW: 0, connHsW: 0, connFrameW: 0,
             }
             weightAccum[iid] = acc
           }
@@ -456,6 +521,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           acc.connFixedW += r * cp.fixedHoldSec
           acc.connExtraW += r * cp.extraHoldSec
           acc.connHsW += r * cp.handshakeCpuMs
+          acc.connFrameW += r * cp.frameMultiplier
         }
       }
     }
@@ -494,6 +560,81 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         s.oomRestartAt.delete(iid)
         s.instanceHealth.set(iid, 'healthy')
         emit('instance_restarted', 'info', `instance ${iid} restarted`, [iid], simMs)
+      }
+    }
+
+    // ── Demand backpressure — Mechanism B (audit ISSUE-008) ──
+    // Per-region error rate from the PREVIOUS step's flows (one-step lag, same shape as
+    // admittedScale/managedDbRuntime) — a region's aggregate offered/error split across every
+    // resident instance. Hysteresis-gated: engaging/recovering both need SUSTAINED over/under
+    // threshold, so a single noisy step can't flap the shed fraction on and off.
+    const REGION_OVERLOAD_ENGAGE_RATE = 0.5
+    const REGION_OVERLOAD_RECOVER_RATE = 0.1
+    const REGION_OVERLOAD_STREAK_STEPS = 20   // 2s of 100ms steps — "sustained", not a blip
+    // Never shed the full 100%: a fully-cut region admits zero real traffic, so the very error
+    // signal recovery depends on goes dark (offered=0 reads as errorRate=0, i.e. "healthy") and
+    // the "still shedding" branch below would immediately zero the shed fraction right back out —
+    // a one-step self-defeating loop, not genuine recovery. Capping shed keeps a real trickle of
+    // traffic reaching the origin so errorRate keeps measuring the ACTUAL backend condition.
+    const MAX_SHED_FRACTION = 0.9
+    {
+      // Restricted to ENTRY instances (public-port blueprints): an internal-tier instance's own
+      // healthy error rate would otherwise DILUTE the signal from a struggling entry tier — this
+      // mechanism exists to answer "is the region's front door overloaded", not "is anything
+      // anywhere in the region unhappy".
+      const offeredByRegion = new Map<RegionId, number>()
+      const errorByRegion = new Map<RegionId, number>()
+      for (const f of Object.values(s.prevFlows)) {
+        const inst = compiled.instances[f.instanceId]
+        if (!inst || !s.entryBlueprintIds.has(inst.blueprintId)) continue
+        const offered = f.offeredRps
+        if (offered <= 0) continue
+        // f.errorRps (queue overflow, breaker-open, client timeout) is always capacity-driven.
+        // f.refusedRps is NOT purely capacity — it also includes a firewall-blocked path or a
+        // manually-downed managed service, which are structural/network-policy problems, not
+        // overload. Shedding entry demand can't fix a firewall rule, so counting that toward "is
+        // this region overloaded" would engage Mechanism B on a world that's merely misconfigured,
+        // not saturated (caught by a permanently-blocked dependency spuriously tripping the shed
+        // gate). f.structuralRefusedRps is exactly that non-capacity share, tracked at the source
+        // in flows.ts; subtracting it leaves only the capacity-driven refusals (breaker-open has
+        // no downstream row at all, so a row-based reconstruction would have missed it).
+        const capacityRefused = f.refusedRps - (f.structuralRefusedRps ?? 0)
+        offeredByRegion.set(inst.regionId, (offeredByRegion.get(inst.regionId) ?? 0) + offered)
+        errorByRegion.set(inst.regionId, (errorByRegion.get(inst.regionId) ?? 0) + f.errorRps + capacityRefused)
+      }
+      for (const region of Object.values(doc.regions)) {
+        const offered = offeredByRegion.get(region.id) ?? 0
+        // Zero offered this step carries NO signal about whether the region has recovered — it
+        // just means nothing was measured (e.g. an entry instance transiently down from an
+        // unrelated OOM-kill cycle, audit ISSUE-008's own Mechanism A). Treating that silence as
+        // "0% errors, therefore healthy" would let one signal-free step instantly zero out an
+        // active shed fraction via the "still shedding" branch below — the same one-step
+        // self-defeating loop MAX_SHED_FRACTION exists to prevent, just via a different trigger.
+        // Skip the whole engage/recover/shed update for the region this step; wait for a step with
+        // real traffic to actually measure something.
+        if (offered <= 0) continue
+        const errorRate = (errorByRegion.get(region.id) ?? 0) / offered
+        if (errorRate >= REGION_OVERLOAD_ENGAGE_RATE) {
+          s.regionOverloadStreak.set(region.id, (s.regionOverloadStreak.get(region.id) ?? 0) + 1)
+          s.regionRecoverStreak.set(region.id, 0)
+        } else if (errorRate <= REGION_OVERLOAD_RECOVER_RATE) {
+          s.regionRecoverStreak.set(region.id, (s.regionRecoverStreak.get(region.id) ?? 0) + 1)
+          s.regionOverloadStreak.set(region.id, 0)
+        } else {
+          // In the dead band between recover and engage thresholds: neither streak advances,
+          // but neither resets either — a brief dip below ENGAGE shouldn't erase real progress
+          // toward engaging, and vice versa for recovery.
+        }
+        const currentlyShedding = (s.regionShedFraction.get(region.id) ?? 0) > 0
+        if (!currentlyShedding && (s.regionOverloadStreak.get(region.id) ?? 0) >= REGION_OVERLOAD_STREAK_STEPS) {
+          s.regionShedFraction.set(region.id, Math.min(MAX_SHED_FRACTION, errorRate))
+        } else if (currentlyShedding && (s.regionRecoverStreak.get(region.id) ?? 0) >= REGION_OVERLOAD_STREAK_STEPS) {
+          s.regionShedFraction.set(region.id, 0)
+        } else if (currentlyShedding) {
+          // Still engaged: track the CURRENT error rate so the shed fraction follows a worsening
+          // or improving overload without needing to fully disengage and re-engage.
+          s.regionShedFraction.set(region.id, Math.min(MAX_SHED_FRACTION, errorRate))
+        }
       }
     }
 
@@ -577,7 +718,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // scalar totals — one row per (population, region) served; order-based policies emit
       // exactly one row, the weighted split one per share.
       for (const { regionId, fraction } of shares ?? [{ regionId: region, fraction: 1 }]) {
-        const rps = demandByPop[pop.id] * fraction
+        // Demand backpressure (audit ISSUE-008, Mechanism B): shed a fraction of what's OFFERED
+        // to an overloaded region before it ever reaches distributeViaLb — explicit admission
+        // control at the edge, closing the loop demand.ts structurally cannot (it has no system-
+        // state input at all). Absent overload (the common case) this is a no-op multiply by 1.
+        const shed = s.regionShedFraction.get(regionId) ?? 0
+        const rps = demandByPop[pop.id] * fraction * (1 - shed)
         // Rows are pushed even at rps 0 (a Poisson tick can draw zero arrivals) — the routing
         // snapshot is attribution, and drain arcs / inbound lists key off row presence.
         populationRoutes.push({ populationId: pop.id, regionId, rps })
@@ -611,7 +757,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       entryPacketKbByInstance[iid] = acc.cpuKb / d
       entrySizeVarianceByInstance[iid] = acc.varW / d
       entryConnProfileByInstance[iid] = meanProfile(
-        { lat: acc.connLatW, fixed: acc.connFixedW, extra: acc.connExtraW, hs: acc.connHsW }, d)
+        { lat: acc.connLatW, fixed: acc.connFixedW, extra: acc.connExtraW, hs: acc.connHsW, frame: acc.connFrameW }, d)
     }
 
     // Demand-weighted-average INTERNAL inbound request KB per instance (packet library). The
@@ -629,8 +775,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const internalPacketKbByInstance: Record<InstanceId, number> = {}
     const internalConnProfileByInstance: Record<InstanceId, ConnectionProfile> = {}
     const internalRpsByInstance: Record<InstanceId, number> = {}
+    // Demand-weighted-average INBOUND response bytes per instance (audit ISSUE-009) — the SAME
+    // fold as the request-side kb above, widened to also carry `wire.respBytes` (already in scope
+    // from the same `wire` lookup, so this is one extra accumulator field, not a new resolution
+    // point). Feeds the NIC service-rate ceiling below: the ceiling used to divide by a flat
+    // module constant regardless of what an instance's actual traffic was sized as.
+    const internalRespBytesByInstance: Record<InstanceId, number> = {}
     {
-      const acc: Record<InstanceId, { kb: number; rps: number } & ProfileAccum> = {}
+      const acc: Record<InstanceId, { kb: number; respBytes: number; rps: number } & ProfileAccum> = {}
       for (const pf of Object.values(s.prevFlows)) {
         for (const row of pf.downstream) {
           const toId = row.toInstanceId
@@ -640,8 +792,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           const wire = s.depBytesById[row.dependencyId]
           if (!wire) continue
           const kb = wire.reqBytes / 1024
-          const a = acc[toId] ?? (acc[toId] = { kb: 0, rps: 0, lat: 0, fixed: 0, extra: 0, hs: 0 })
+          const a = acc[toId] ?? (acc[toId] = { kb: 0, respBytes: 0, rps: 0, lat: 0, fixed: 0, extra: 0, hs: 0, frame: 0 })
           a.kb += row.rps * kb
+          a.respBytes += row.rps * wire.respBytes
           a.rps += row.rps
           addProfile(a, s.depConnById[row.dependencyId] ?? KEEP_ALIVE_PROFILE, row.rps)
         }
@@ -649,6 +802,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       for (const iid in acc) {
         if (acc[iid].rps <= 0) continue
         internalPacketKbByInstance[iid] = acc[iid].kb / acc[iid].rps
+        internalRespBytesByInstance[iid] = acc[iid].respBytes / acc[iid].rps
         internalRpsByInstance[iid] = acc[iid].rps
         internalConnProfileByInstance[iid] = meanProfile(acc[iid], acc[iid].rps)
       }
@@ -668,7 +822,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // dilutes nothing.
       const total = entryRps + internalRps
       if (total <= 0) continue
-      const blend: ProfileAccum = { lat: 0, fixed: 0, extra: 0, hs: 0 }
+      const blend: ProfileAccum = { lat: 0, fixed: 0, extra: 0, hs: 0, frame: 0 }
       if (e) addProfile(blend, e, entryRps)
       if (n) addProfile(blend, n, internalRps)
       connProfileByInstance[iid] = meanProfile(blend, total)
@@ -729,7 +883,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         const pf = s.prevFlows[i.id]
         const bp = doc.blueprints[i.blueprintId]
         const admitted = pf?.admittedRps ?? 0
-        const latency = pf?.serviceLatencyMs ?? effectiveCpuMs(i.id, bp)
+        // Composed end-to-end latency (audit ISSUE-003), not self-only serviceLatencyMs: this is
+        // the OTHER of the two Little's-law call sites (metrics.ts's published activeConnections
+        // is the other), so a caller blocked on a slow dependency must hold MORE connections here
+        // too, or the RAM the scheduler enforces/OOM-kills on would silently diverge from what
+        // metrics.ts publishes and the user sees.
+        const latency = pf?.totalLatencyMs ?? pf?.serviceLatencyMs ?? effectiveCpuMs(i.id, bp)
         const runtime = doc.placements[i.placementId]?.runtime
         return {
           instanceId: i.id,
@@ -748,20 +907,37 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           // a draining instance capacity beyond its instantaneous demand.
           cpuShares: bp?.workload.cpuShares ?? 1,
           backlogRps: (s.queueDepth.get(i.id) ?? 0) / stepSec,
+          // Self-hosted connection pool (audit ISSUE-005) — absent ⇒ unbounded, the pre-issue
+          // behavior (poolCheckoutFor returns null and RAM/OOM accounting is untouched).
+          maxConnections: bp?.workload.maxConnections,
+          checkoutTimeoutMs: bp?.workload.checkoutTimeoutMs,
         }
       })
       const effectiveVcpu = server.specs.vcpu * (s.vpsFactor.get(server.id) ?? 1)
       const host = stepHost(server, loads, effectiveVcpu, s.rng)
       hostResults[server.id] = host
       // Fold the NIC's ABSOLUTE line-rate ceiling into each instance's capacity (audit
-      // ISSUE-002 × ISSUE-013): the worst byte direction governs (mirrors evaluateNic), shared
-      // across resident instances by the same cpu-share weights. Without this the queue model
-      // would never feel the NIC — a fraction multiplied onto an ample CPU rate doesn't bite.
-      const nicCeilingRps =
-        ((server.specs.nicMbps * 1e6) / 8) / Math.max(NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES)
+      // ISSUE-002 × ISSUE-013 × ISSUE-009): bandwidth is split across resident instances by the
+      // same cpu-share weights, THEN each instance's own share of bytes/sec converts to a
+      // per-instance rps ceiling using THAT instance's own resolved wire size — not a flat 2 KB
+      // module constant. A large-payload edge (bulk export, big DB result sets) used to model
+      // orders-of-magnitude more NIC throughput than physically possible, because the divisor
+      // never looked at what the instance's actual traffic was sized as, even though the exact
+      // resolved-size signals it needs (`entryNicBytesByInstance`/`internalPacketKbByInstance`/
+      // `internalRespBytesByInstance`, above) are already built this same step for the CPU blend.
+      const nicCeilingBytesPerSec = (server.specs.nicMbps * 1e6) / 8
       const totalShares = loads.reduce((sum, l) => sum + Math.max(0, l.cpuShares ?? 1), 0) || 1
+      const fallbackWireBytes = Math.max(NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES)
       for (const l of loads) {
-        const nicShare = nicCeilingRps * (Math.max(0, l.cpuShares ?? 1) / totalShares)
+        const eb = entryNicBytesByInstance[l.instanceId]
+        const reqBytes = Math.max(eb?.reqBytes ?? 0, (internalPacketKbByInstance[l.instanceId] ?? 0) * 1024)
+        const respBytes = Math.max(eb?.respBytes ?? 0, internalRespBytesByInstance[l.instanceId] ?? 0)
+        // The worst byte direction governs (mirrors evaluateNic) — falls back to the historical
+        // flat constant when this instance has no resolvable traffic yet this step (cold start /
+        // zero rps), which is exactly today's pre-fix behavior for that case.
+        const effectiveWireBytes = Math.max(reqBytes, respBytes) || fallbackWireBytes
+        const instanceBandwidthShare = nicCeilingBytesPerSec * (Math.max(0, l.cpuShares ?? 1) / totalShares)
+        const nicShare = instanceBandwidthShare / effectiveWireBytes
         serviceRateByInstance[l.instanceId] =
           Math.min(host.serviceRateByInstance[l.instanceId] ?? 0, nicShare)
       }
@@ -826,8 +1002,17 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // AGGREGATE load, which the solver's per-dependency loop cannot see — so it is computed once
     // here and both the solver and the metrics window read the same entries. One-step lag, exactly
     // like admittedScale. Skipped outright when the world has no managed DB (audit ISSUE-079).
-    const managedDbRt = s.hasManagedDbs ? managedDbRuntime(s.prevFlows, doc, compiled) : {}
-    const { flows, totals } = solveFlows({
+    // s.depBytesById carries the packet-derived write fraction (audit ISSUE-001) so the AGGREGATE
+    // read/write split measured against writeCeiling/readCeiling matches the one the solver routes
+    // primaries/replicas on, and the one EdgeInspector displays.
+    const managedDbRt = s.hasManagedDbs ? managedDbRuntime(s.prevFlows, doc, compiled, s.depBytesById, s.depById) : {}
+    // Event-broker runtime (audit ISSUE-002), same one-step-lag shape as managedDbRt above: THIS
+    // step's serviceRateByInstance (already resolved for the queue model, just above) is reused as
+    // the topic's consumer capacity — a consumer's simulated capacity can never disagree between
+    // its own queue and the topic it drains. Skipped outright when the world has no event
+    // dependency (audit ISSUE-079's hasManagedDbs pattern).
+    const topicRt = s.hasEventDeps ? topicRuntime(s.prevFlows, compiled, doc, serviceRateByInstance, s.topicBacklog, stepSec) : {}
+    const { flows, totals, depthExceededInstanceIds, cycleCutEdges } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       extraLatencyMsByServer,
       // Queue model (audit ISSUE-013): fair-share service rates + the persistent queue map
@@ -849,7 +1034,25 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // health recompute, so healthByScope would go stale on restore.
       managedDown: (id) => hasOutage(s.failover, 'managed', id),
       managedDbRuntime: managedDbRt,
+      topicRuntime: topicRt,
     })
+
+    // Audit ISSUE-010: surface silently-dropped fan-out. Both conditions previously left no trace
+    // anywhere — an instance past MAX_DEPTH read as a healthy, zero-traffic leaf; a cyclic re-entry
+    // cut by the BFS guard left only a normal-looking downstream row with no marker it was cut.
+    // Deduped to once per run per instance/edge (a state TRANSITION, not a steady-state condition)
+    // so a persistently-overloaded/cyclic topology doesn't spam one event per step.
+    for (const id of depthExceededInstanceIds) {
+      if (s.depthExceededReported.has(id)) continue
+      s.depthExceededReported.add(id)
+      emit('chain_depth_exceeded', 'warning', `${id}'s dependency chain exceeded MAX_DEPTH and stopped fanning out further`, [id], simMs)
+    }
+    for (const { fromId, toId } of cycleCutEdges) {
+      const key = `${fromId}->${toId}`
+      if (s.cycleCutReported.has(key)) continue
+      s.cycleCutReported.add(key)
+      emit('chain_cycle_cut', 'warning', `dependency cycle cut: ${fromId} -> ${toId} is already on this request chain`, [fromId, toId], simMs)
+    }
 
     // ── 7. NIC byte accounting (audit ISSUE-002: split request/response, persistent buffer) ──
     // Ingress = request payloads in, egress = response payloads out — no longer symmetric.
@@ -921,7 +1124,15 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         const key = pathKey(f.instanceId, row.dependencyId)
         const b = getBreaker(s.breakers, key)
         const from = b.state
-        const fraction = row.blocked ? 1 : row.toInstanceId ? targetErrorFraction(row.toInstanceId) : 0
+        // Audit ISSUE-002: an event-protocol dependency is asynchronous — the CONSUMER's own
+        // downstream health must never feed the PRODUCER's breaker (that's the exact bug this
+        // issue fixes: a struggling consumer used to open the producer's breaker, the opposite of
+        // what decoupling is for). An accepted (non-blocked) event row is therefore always a
+        // success here; only the topic's OWN drop/DLQ overflow — already recorded as separate
+        // `blocked: true` rows above — can open this breaker.
+        const dep = s.depById[row.dependencyId]
+        const isEventDep = dep && (resolveMixProtocol(doc.packets, dep.packetMix) ?? dep.protocol) === 'event'
+        const fraction = row.blocked ? 1 : (isEventDep || !row.toInstanceId) ? 0 : targetErrorFraction(row.toInstanceId)
         // Audit ISSUE-015: record REQUEST COUNTS (rps × stepSec), not rates — the breaker's
         // time-bucketed window weighs a 10 000-rps dependency 10 000× a 1-rps one, and its
         // volume floor (minTotalToOpen) gets real request units.
@@ -1026,7 +1237,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     }
 
     // ── 10. metrics accumulate ──
-    accumulateStep(s.metrics, flows, hostResults, vpsPublish, nicByServer, healthOfAny, simMs, managedDbRt, droppedByAz)
+    accumulateStep(s.metrics, flows, hostResults, vpsPublish, nicByServer, healthOfAny, simMs, managedDbRt, droppedByAz, topicRt)
     // NIC settlement (audit ISSUE-002) — AFTER accumulate (which reads the per-step byte
     // counters settleNic resets). The result gates next step's admits/latency, one-step lag.
     for (const server of Object.values(doc.servers)) {
@@ -1072,7 +1283,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       }
       // connProfileByInstance is THIS step's blend — the published connection count must be
       // computed from the same profile the host scheduler just enforced RAM against.
-      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance)
+      // effectiveCpuMsByInstance is the SAME map fed to the host scheduler's InstanceLoad above,
+      // so published cpuCoresUsed reflects the CPU the scheduler actually enforced (ISSUE-011).
+      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance)
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
       s.tracer.sample(flows, compiled, doc, simMs, entryId => populationsForEntry(entryId), managedDbRt)
@@ -1128,11 +1341,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
   function buildPayload(scope: RenderScope, wallMs: number): FramePayload {
     const s = state!
     const simMs = s.clock.simMs
-    if (scope.level === 'globe') return { simMs, particles: [], arcs: buildArcs() }
-    if (scope.level === 'az') return { simMs, particles: buildAzParticles(scope.azId, wallMs), arcs: [] }
-    if (scope.level === 'server') return { simMs, particles: buildServerParticles(scope.serverId, wallMs), arcs: [] }
+    if (scope.level === 'globe') return { simMs, particles: EMPTY_PARTICLES, arcs: buildArcs() }
+    if (scope.level === 'az') return { simMs, particles: buildAzParticles(scope.azId, wallMs), arcs: EMPTY_ARCS }
+    if (scope.level === 'server') return { simMs, particles: buildServerParticles(scope.serverId, wallMs), arcs: EMPTY_ARCS }
     // region rich particle surface arrives in Phase 4; ships empty-but-valid until then.
-    return { simMs, particles: [], arcs: [] }
+    return { simMs, particles: EMPTY_PARTICLES, arcs: EMPTY_ARCS }
   }
 
   // Phase 5 (D4): client arcs first, byte-identical to Phase-2's original buildArcs, then
@@ -1245,6 +1458,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     let pid = 0
     const drain = s.failover.drainUntil.has(azId) ? drainFactor(s.failover, azId, s.clock.simMs) : 1
     for (const f of Object.values(s.prevFlows)) {
+      if (particles.length >= MAX_AZ_PARTICLES) break   // audit ISSUE-015: stop once the cap is hit
       const from = s.compiled.instances[f.instanceId]
       if (!from || from.azId !== azId) continue
       const bp = s.doc.blueprints[from.blueprintId]
@@ -1257,12 +1471,16 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         }
       }
       for (const row of f.downstream) {
+        if (particles.length >= MAX_AZ_PARTICLES) break   // audit ISSUE-015
         const toId = row.toInstanceId ? s.compiled.instances[row.toInstanceId]?.serverId : row.toManagedServiceId
         if (!toId) continue
-        const dep = bp?.dependencies.find(d => d.id === row.dependencyId)
+        // audit ISSUE-014: s.depById is a start()-time index, not a per-row `.find()` scan.
+        const dep = s.depById[row.dependencyId]
         const n = Math.min(MAX_AZ_PARTICLES, Math.max(row.blocked ? 1 : 0, Math.round(row.rps / PARTICLE_RATIO)))
+        // audit ISSUE-013: precomputed pick table, not a per-particle filter+reduce over the mix.
+        const pickTable = s.depPickTableById[row.dependencyId] ?? null
         for (let k = 0; k < n && particles.length < MAX_AZ_PARTICLES; k++) {
-          const packetId = pickPacketByIndex(dep?.packetMix, k)
+          const packetId = pickPacketByIndex(pickTable, k)
           particles.push({ id: pid++, fromId: from.serverId, toId, progress: frac(phase + k * 0.191), protocol: dep?.protocol ?? 'http', blocked: row.blocked, colorHint: packetColor(packetId) ?? bp?.color ?? null, packetId })
         }
       }
@@ -1287,6 +1505,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     let pid = 0
     const nicId = `nic:${serverId}`
     for (const f of Object.values(s.prevFlows)) {
+      if (particles.length >= MAX_SERVER_PARTICLES) break   // audit ISSUE-015
       const from = s.compiled.instances[f.instanceId]
       if (!from || from.serverId !== serverId) continue
       const fromBp = s.doc.blueprints[from.blueprintId]
@@ -1299,15 +1518,19 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         }
       }
       for (const row of f.downstream) {
+        if (particles.length >= MAX_SERVER_PARTICLES) break   // audit ISSUE-015
         const target = row.toInstanceId ? s.compiled.instances[row.toInstanceId] : undefined
         const resident = !!target && target.serverId === serverId
         const toId = resident ? target!.id : nicId          // off-server/managed -> nic
-        const dep = fromBp?.dependencies.find(d => d.id === row.dependencyId)
+        // audit ISSUE-014: s.depById is a start()-time index, not a per-row `.find()` scan.
+        const dep = s.depById[row.dependencyId]
         // intra: receiving service's hue; instance->nic outbound: the sending service's hue
         const colorHint = resident ? (s.doc.blueprints[target!.blueprintId]?.color ?? null) : (fromBp?.color ?? null)
         const n = Math.min(MAX_SERVER_PARTICLES, Math.max(row.blocked ? 1 : 0, Math.round(row.rps / PARTICLE_RATIO)))
+        // audit ISSUE-013: precomputed pick table, not a per-particle filter+reduce over the mix.
+        const pickTable = s.depPickTableById[row.dependencyId] ?? null
         for (let k = 0; k < n && particles.length < MAX_SERVER_PARTICLES; k++) {
-          const packetId = pickPacketByIndex(dep?.packetMix, k)
+          const packetId = pickPacketByIndex(pickTable, k)
           particles.push({ id: pid++, fromId: from.id, toId, progress: frac(phase + k * 0.191), protocol: dep?.protocol ?? 'http', blocked: row.blocked, colorHint: packetColor(packetId) ?? colorHint, packetId })
         }
       }
@@ -1338,6 +1561,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       if (state?.rafId != null && typeof cancelAnimationFrame === 'function') {
         cancelAnimationFrame(state.rafId)
       }
+      const depIndexes = buildDepIndexes(doc)
       state = {
         running: true, seed, rng: createRng(seed), clock: createClock(DEFAULT_STEP_MS), stepMs: DEFAULT_STEP_MS,
         timeScale: 1, doc, compiled, callbacks, entryBlueprintIds: new Set(entryBlueprints(doc)),
@@ -1346,10 +1570,16 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         routeConnById: buildRouteConnProfiles(doc),
         depBytesById: buildDepWireBytes(doc),
         depConnById: buildDepConnProfiles(doc),
+        depById: depIndexes.depById,
+        depPickTableById: depIndexes.depPickTableById,
         serversByAz: groupBy(Object.values(doc.servers), sv => sv.azId),
         azsByRegion: groupBy(Object.values(doc.azs), az => az.regionId),
         instancesByServer: groupInstancesByServer(compiled),
         hasManagedDbs: Object.values(doc.managedServices).some(ms => !!managedDbEngine(ms.nodeType)),
+        hasEventDeps: Object.values(doc.blueprints).some(bp =>
+          bp.dependencies.some(dep => (resolveMixProtocol(doc.packets, dep.packetMix) ?? dep.protocol) === 'event')),
+        topicBacklog: new Map(),
+        regionShedFraction: new Map(), regionOverloadStreak: new Map(), regionRecoverStreak: new Map(),
         roleResolver: null, roleResolverKey: '',
         downstreamAdj: buildDownstreamAdj(compiled),
         routing: createRoutingState(), failover: createFailoverState(),
@@ -1364,6 +1594,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         lastRoutingSnapshot: { populationRoutes: [] }, popRegion: new Map(), pendingFailover: new Map(),
         popPrevRegion: new Map(),
         checkFailedPrev: new Map(), probePrev: new Map(), instanceHealth: new Map(), oomRestartAt: new Map(), refusedRateLimit: new Map(),
+        depthExceededReported: new Set(), cycleCutReported: new Set(),
         idSeq: 0, lastBatchMs: -1000, stepCosts: [], degraded: false, rafId: null, lastFrameMs: null,
         renderers: new Map(), rendererSeq: 0,
       }

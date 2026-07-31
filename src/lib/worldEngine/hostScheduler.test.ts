@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { stepHost } from './hostScheduler'
+import { stepHost, poolCheckoutFor } from './hostScheduler'
 import type { InstanceLoad } from './hostScheduler'
 import { sampleLatencyMs } from './latency'
 import { createRng } from './rng'
@@ -146,5 +146,65 @@ describe('stepHost — serviceRateByInstance (ISSUE-018)', () => {
     // draining wants 100+150=250 rps (2.5 cores), other wants 100 (1 core); both fit in 4.
     expect(result.serviceRateByInstance['draining']).toBeCloseTo(250, 3)
     expect(result.serviceRateByInstance['other']).toBeCloseTo(200, 3)   // floor (2 cores) > demand
+  })
+})
+
+// ─── Self-hosted connection pool (audit ISSUE-005) ───────────────────────────
+describe('poolCheckoutFor', () => {
+  it('returns null when maxConnections is absent (not capacity-modelled, the pre-issue behavior)', () => {
+    expect(poolCheckoutFor(500, undefined, undefined)).toBeNull()
+    expect(poolCheckoutFor(500, 0, undefined)).toBeNull()
+  })
+
+  it('no wait while unsaturated (rho <= 1)', () => {
+    expect(poolCheckoutFor(80, 100, undefined)).toEqual({ checkoutWaitMs: 0, checkoutTimeoutErrorFraction: 0 })
+    expect(poolCheckoutFor(100, 100, undefined)).toEqual({ checkoutWaitMs: 0, checkoutTimeoutErrorFraction: 0 })
+  })
+
+  it('checkout wait grows past saturation, with no timeout authored ⇒ zero error fraction', () => {
+    const r = poolCheckoutFor(200, 100, undefined)
+    expect(r!.checkoutWaitMs).toBeGreaterThan(0)
+    expect(r!.checkoutTimeoutErrorFraction).toBe(0)
+  })
+
+  it('a tight checkoutTimeoutMs against a saturated pool produces a positive error fraction', () => {
+    const r = poolCheckoutFor(500, 100, 1)   // deeply saturated (rho=5), 1ms timeout
+    expect(r!.checkoutWaitMs).toBeGreaterThan(1)
+    expect(r!.checkoutTimeoutErrorFraction).toBeGreaterThan(0)
+    expect(r!.checkoutTimeoutErrorFraction).toBeLessThanOrEqual(1)
+  })
+
+  it('checkout wait stays finite even at extreme saturation (clamped overshoot)', () => {
+    const r = poolCheckoutFor(1_000_000, 100, undefined)
+    expect(Number.isFinite(r!.checkoutWaitMs)).toBe(true)
+  })
+})
+
+describe('stepHost — pool checkout (audit ISSUE-005)', () => {
+  it('an instance with no maxConnections is unaffected: bit-identical RAM to before this issue', () => {
+    const server = testServer(4, 8192)
+    const rng = createRng(5)
+    const result = stepHost(server, [
+      load({ instanceId: 'i1', activeConnections: 1000, ramBaseMb: 100, ramPerConnMb: 0.5 }),
+    ], 4, rng)
+    expect(result.ramUsedMb).toBe(100 + 0.5 * 1000)
+    expect(result.checkoutByInstance?.['i1']).toBeUndefined()
+  })
+
+  it('a saturated pool with a tight timeout sheds the timed-out connections from RAM', () => {
+    const server = testServer(4, 8192)
+    const rng = createRng(5)
+    const result = stepHost(server, [
+      load({
+        instanceId: 'i1', activeConnections: 1000, ramBaseMb: 100, ramPerConnMb: 0.5,
+        maxConnections: 100, checkoutTimeoutMs: 1,
+      }),
+    ], 4, rng)
+    const checkout = result.checkoutByInstance?.['i1']
+    expect(checkout).toBeDefined()
+    expect(checkout!.checkoutTimeoutErrorFraction).toBeGreaterThan(0)
+    // RAM must be LESS than the naive (unshed) 100 + 0.5*1000 = 600 — some connections timed out
+    // and never actually landed, so they must not inflate RAM as if they held one.
+    expect(result.ramUsedMb).toBeLessThan(100 + 0.5 * 1000)
   })
 })

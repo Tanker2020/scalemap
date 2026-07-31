@@ -8,11 +8,25 @@
 import { useEffect, useRef, type ReactElement } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { useSimulationStore } from '../../store/simulation.store'
+import { useUiStore } from '../../store/ui.store'
+import { CATEGORY_COLORS } from '../../../lib/theme'
 import type { BoardLayout } from './boardLayout'
 import type { VisualParticle } from '../../../lib/worldEngine/types'
 
-const PROTOCOL_COLOR: Record<VisualParticle['protocol'], string> = {
-  http: '#4A9EFF', db: '#F5A623', event: '#A78BFA', stream: '#2DD4BF',
+// Audit ISSUE-016: this is a <canvas> 2D context, so `ctx.fillStyle` needs a resolved literal
+// color, not a `var(--color-*)` reference — a canvas can't read CSS custom properties. The
+// codebase's existing idiom for exactly this situation (JS/canvas code needing a resolved,
+// theme-aware color) is CATEGORY_COLORS from theme.ts, branched on ui.store's themeMode — the same
+// pattern azFloorStyles.ts/ServerFaceplate.tsx already use. Four hardcoded dark-tuned hexes here
+// violated the design-system law and rendered the wrong hue in light mode. Mapped by the same
+// category grouping the design system already uses (http -> compute, db -> storage, event ->
+// messaging, stream -> network).
+const PROTOCOL_CATEGORY: Record<VisualParticle['protocol'], keyof typeof CATEGORY_COLORS> = {
+  http: 'compute', db: 'storage', event: 'messaging', stream: 'network',
+}
+function protocolColor(protocol: VisualParticle['protocol'], themeMode: 'dark' | 'light'): string {
+  const cat = CATEGORY_COLORS[PROTOCOL_CATEGORY[protocol]]
+  return themeMode === 'light' ? cat.foreground.light : cat.accent
 }
 
 export interface PacketLayerProps { serverId: string; layout: BoardLayout }
@@ -20,6 +34,7 @@ export interface PacketLayerProps { serverId: string; layout: BoardLayout }
 export function PacketLayer({ serverId, layout }: PacketLayerProps): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const running = useSimulationStore(s => s.running)
+  const themeMode = useUiStore(s => s.themeMode)
   const reduced = useReducedMotion()
   const lastDrawRef = useRef(0)
 
@@ -31,7 +46,12 @@ export function PacketLayer({ serverId, layout }: PacketLayerProps): ReactElemen
     }
     // Recreated on every effect attach (i.e. whenever `layout` changes, since it's a dep below) —
     // a persistent cache across layout changes would keep drawing at stale (pre-reflow) geometry.
-    const pathCache = new Map<string, SVGPathElement>()
+    // Caches BOTH the path element and its total length (audit ISSUE-016): `layout.tracePath`'s
+    // geometry is immutable for the lifetime of this effect (only `layout` itself changing
+    // re-attaches it), so `getTotalLength()` is exactly as loop-invariant as the path element — but
+    // only the element was cached before, so every particle on every frame re-computed the same
+    // length via an SVG geometry call, not a cheap property read.
+    const pathCache = new Map<string, { path: SVGPathElement; len: number }>()
     const svgNS = 'http://www.w3.org/2000/svg'
     // D10e (Phase-3 carry-forward): getPointAtLength (and, defensively, getTotalLength) can throw
     // in some native WebView SVG implementations — never verified against an actual native Tauri
@@ -40,19 +60,24 @@ export function PacketLayer({ serverId, layout }: PacketLayerProps): ReactElemen
     // close enough for a single degraded frame, and cheap (anchorFor is a plain lookup).
     const pointAt = (fromId: string, toId: string, progress: number): { x: number; y: number } | null => {
       const key = `${fromId}→${toId}`
-      let path = pathCache.get(key)
-      if (!path) {
-        const d = layout.tracePath(fromId, toId)
-        if (!d) return null
-        path = document.createElementNS(svgNS, 'path')
-        path.setAttribute('d', d)
-        pathCache.set(key, path)
-      }
       try {
-        const len = path.getTotalLength?.() ?? 0
-        if (!len) return null
-        return path.getPointAtLength(len * progress)
+        let cached = pathCache.get(key)
+        if (!cached) {
+          const d = layout.tracePath(fromId, toId)
+          if (!d) return null
+          const path = document.createElementNS(svgNS, 'path')
+          path.setAttribute('d', d)
+          // getTotalLength is as loop-invariant as the path element itself (same immutable
+          // geometry) — computed once here, at cache-population time, not per particle per frame.
+          const len = path.getTotalLength?.() ?? 0
+          cached = { path, len }
+          pathCache.set(key, cached)
+        }
+        if (!cached.len) return null
+        return cached.path.getPointAtLength(cached.len * progress)
       } catch {
+        // Defensively covers BOTH getTotalLength and getPointAtLength throwing (D10e) — never
+        // verified against an actual native Tauri WebView SVG implementation.
         const a = layout.anchorFor(fromId)
         const b = layout.anchorFor(toId)
         if (!a || !b) return null
@@ -79,11 +104,11 @@ export function PacketLayer({ serverId, layout }: PacketLayerProps): ReactElemen
         const pt = pointAt(p.fromId, p.toId, p.progress)
         if (!pt) continue
         ctx.beginPath(); ctx.arc(pt.x, pt.y, 2.6, 0, Math.PI * 2)
-        ctx.fillStyle = p.colorHint ?? PROTOCOL_COLOR[p.protocol]; ctx.fill()
+        ctx.fillStyle = p.colorHint ?? protocolColor(p.protocol, themeMode); ctx.fill()
       }
     })
     return detach
-  }, [running, serverId, layout, reduced])
+  }, [running, serverId, layout, reduced, themeMode])
 
   return <canvas ref={canvasRef} width={layout.stageW} height={layout.stageH}
     style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }} />

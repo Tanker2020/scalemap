@@ -14,7 +14,7 @@ import type { PacketFields, PacketProtocol, PacketTemplate, ConnectionType, Http
 export const PACKET_PROTOCOLS: { key: PacketProtocol; label: string; hint: string }[] = [
   { key: 'http', label: 'HTTP', hint: 'a request/response call between services' },
   { key: 'db', label: 'DB', hint: 'a query — read/write split drives the primary-vs-replica routing' },
-  { key: 'event', label: 'Event', hint: 'a message published to a topic (async semantics: later phase)' },
+  { key: 'event', label: 'Event', hint: 'a message published to a topic — delivered asynchronously via a bounded backlog' },
   { key: 'stream', label: 'Stream', hint: 'a continuous flow (persistent semantics: later phase)' },
 ]
 
@@ -44,6 +44,10 @@ export interface PacketDraft {
   topic?: string
   eventType?: string
   deliveryMode?: 'at-most-once' | 'at-least-once' | 'exactly-once'
+  // Broker backlog model (audit ISSUE-002). '' ⇒ undefined ⇒ effectively unbounded retention /
+  // a single redelivery attempt before DLQ — same blank-means-fallback idiom as the size fields.
+  retentionCapCount?: string
+  maxRedeliveries?: string
   // stream
   streamId?: string
   compressionType?: 'none' | 'gzip' | 'snappy'
@@ -92,6 +96,7 @@ export function applyProtocolChange(draft: PacketDraft, protocol: PacketProtocol
         ...shared, protocol,
         topic: draft.topic ?? '', eventType: draft.eventType ?? '',
         deliveryMode: draft.deliveryMode ?? 'at-least-once',
+        retentionCapCount: draft.retentionCapCount ?? '', maxRedeliveries: draft.maxRedeliveries ?? '',
       }
     case 'stream':
       return {
@@ -116,7 +121,10 @@ export function draftFromPacket(tpl: PacketTemplate): PacketDraft {
       holdSeconds: asString(tpl.holdSeconds),
     }
     case 'db': return { ...base, queryType: tpl.queryType, isWAL: tpl.isWAL, resultSizeKb: asString(tpl.resultSizeKb) }
-    case 'event': return { ...base, topic: tpl.topic, eventType: tpl.eventType, deliveryMode: tpl.deliveryMode }
+    case 'event': return {
+      ...base, topic: tpl.topic, eventType: tpl.eventType, deliveryMode: tpl.deliveryMode,
+      retentionCapCount: asString(tpl.retentionCapCount), maxRedeliveries: asString(tpl.maxRedeliveries),
+    }
     case 'stream': return {
       ...base, streamId: tpl.streamId, compressionType: tpl.compressionType,
       holdSeconds: asString(tpl.holdSeconds),
@@ -166,6 +174,8 @@ export function draftToTemplate(draft: PacketDraft): PacketFields {
         ...shared, protocol: 'event',
         topic: draft.topic?.trim() ?? '', eventType: draft.eventType?.trim() ?? '',
         deliveryMode: draft.deliveryMode ?? 'at-least-once',
+        ...(parseKb(draft.retentionCapCount) != null ? { retentionCapCount: parseKb(draft.retentionCapCount) } : {}),
+        ...(parseKb(draft.maxRedeliveries) != null ? { maxRedeliveries: parseKb(draft.maxRedeliveries) } : {}),
       }
     case 'stream':
       return {

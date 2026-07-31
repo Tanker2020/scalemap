@@ -17,13 +17,19 @@ import { managedCapacityRps } from '../managedCapacity'
 import { MANAGED_RESPONSE_KB } from '../cloudRegistry'
 import type { HealthState } from './types'
 import type { Rng } from './rng'
-import { sampleLatencyMs } from './latency'
+import { sampleLatencyMs, timeoutErrorFraction } from './latency'
+import type { HttpTemplate, PacketMixEntry, PacketRegistry } from '../nodeConfig'
 import { pathKey } from './breakers'
+import { baseHopLatencyMs } from './networkRuntime'
+import { REGION_GEO } from '../world/regionGeo'
+import { managedBaseLatencyMs } from '../managedCapacity'
 import { getDbInstanceClass } from '../dbInstanceClasses'
 // Type-only: managedDbRuntime.ts imports managedDbCeilings from here, so a VALUE import would be a
 // runtime cycle. `import type` erases at compile time and keeps the dependency one-way.
 import type { ManagedDbRuntime } from '../managedDbRuntime'
 import type { WireSize } from '../packetResolve'
+import { resolveMixProtocol } from '../packetResolve'
+import type { TopicRuntime } from './broker'
 
 // 2KB per request in EACH direction (request out + response back, so every hop books
 // 2 x 2048 bytes per request). A deliberately simple Phase-2 constant — packet templates
@@ -203,6 +209,21 @@ export function managedRefusedRps(share: number, writeFraction: number, ms: Mana
   return Math.max(0, share - cap)
 }
 
+// A dependency's client-side timeout (audit ISSUE-006), resolved from the bound mix's first http
+// packet that authors one — mirrors how other per-edge fields (write fraction, protocol) resolve
+// from "the packet in the mix that speaks for this axis" rather than requiring every entry to
+// agree. Returns undefined when no bound packet authors a timeout (the pre-issue behavior: no
+// client-side timeout at all).
+function resolveClientTimeoutMs(reg: PacketRegistry, mix: PacketMixEntry[] | undefined): number | undefined {
+  for (const entry of mix ?? []) {
+    const tpl = reg.templates[entry.packetId]
+    if (tpl?.protocol === 'http' && (tpl as HttpTemplate).clientTimeoutMs != null) {
+      return (tpl as HttpTemplate).clientTimeoutMs
+    }
+  }
+  return undefined
+}
+
 export interface FlowInput {
   compiled: CompiledWorld
   doc: WorldDoc
@@ -262,6 +283,14 @@ export interface FlowInput {
   // share here. Optional: absent ⇒ the pre-5.4 per-caller ceiling path, so existing callers and
   // tests are unchanged. Same one-step-lag shape as admittedScale.
   managedDbRuntime?: ManagedDbRuntime
+  // Aggregate event-broker state from the PREVIOUS step (audit ISSUE-002), keyed by dependency id
+  // ("topic"). Backlog/lag/drop/DLQ are all functions of TOTAL arrival vs TOTAL consumer capacity,
+  // which this per-dependency loop structurally cannot see — computed once (broker.ts) and applied
+  // to each producer's share here, same one-step-lag shape as managedDbRuntime. Optional: absent
+  // ⇒ an event-protocol dependency falls back to the pre-issue synchronous behavior (same as every
+  // other protocol) — direct `solveFlows` callers/tests that don't wire this through are
+  // unaffected; the real engine (index.ts) always supplies it.
+  topicRuntime?: TopicRuntime
   rng: Rng
 }
 
@@ -272,11 +301,13 @@ export interface DownstreamFlow {
   rps: number
   hopClass: HopClass
   blocked: boolean
-  // Why a blocked managed row failed (node-model Phase 5.4), so the metrics pyramid can split a
-  // throughput/connection THROTTLE from a query TIMEOUT — they look identical as rps but mean
-  // opposite things to the user (too much load vs too slow). Absent on every non-managed row and
-  // on admitted rows, which keeps existing row-equality assertions unchanged.
-  failure?: 'throttled' | 'timeout'
+  // Why a blocked row failed. Managed rows (node-model Phase 5.4) split a throughput/connection
+  // THROTTLE from a query TIMEOUT — they look identical as rps but mean opposite things to the
+  // user (too much load vs too slow). 'dropped'/'dlq' (audit ISSUE-002) are the event-broker
+  // analogues: a topic's retention-cap overflow (at-most-once loses these) vs a message that
+  // exhausted its redelivery budget. Absent on every non-managed/non-event row and on admitted
+  // rows, which keeps existing row-equality assertions unchanged.
+  failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq'
 }
 
 export interface InstanceFlow {
@@ -285,7 +316,25 @@ export interface InstanceFlow {
   admittedRps: number
   errorRps: number
   refusedRps: number
-  serviceLatencyMs: number                          // sampled, multiplied
+  // The share of refusedRps caused by a STRUCTURAL problem — a firewall/network-policy block or a
+  // manually-downed managed service — as opposed to a capacity one (breaker-open, managed
+  // throttle/timeout, event drop/DLQ). Shedding entry demand can't fix a firewall rule, so audit
+  // ISSUE-008's Mechanism B (index.ts) subtracts this out of refusedRps before deciding whether a
+  // region is genuinely OVERLOADED vs merely misconfigured. Optional (additive): a hand-built
+  // InstanceFlow (metrics.test.ts, replay.test.ts) omits it, and every reader treats absent as 0
+  // (all of refusedRps counts as capacity, the exact pre-ISSUE-008 behavior).
+  structuralRefusedRps?: number
+  serviceLatencyMs: number                          // sampled, multiplied — SELF time only
+  // Composed end-to-end latency (audit ISSUE-003): serviceLatencyMs + the rps-weighted mean, over
+  // this instance's non-blocked downstream rows, of (network hop + that row's own totalLatencyMs).
+  // This is what a caller/client actually waits on — serviceLatencyMs alone previously made a
+  // 3-hop chain's entry instance report the SAME latency as a leaf with no dependencies at all,
+  // so activeConnections() (Little's law) never grew when a downstream dependency slowed down.
+  // Filled in a post-BFS composition pass; equals serviceLatencyMs for a leaf instance. Optional
+  // (additive): solveFlows always populates it, but a hand-built test fixture that constructs an
+  // InstanceFlow directly (metrics.test.ts, replay.test.ts) may omit it — every reader falls back
+  // to serviceLatencyMs, the exact pre-ISSUE-003 value, so those fixtures stay meaningful unchanged.
+  totalLatencyMs?: number
   downstream: DownstreamFlow[]
 }
 
@@ -343,7 +392,23 @@ function pathIndexFor(compiled: CompiledWorld): Map<InstanceId, Map<string, Comp
   return index
 }
 
-export function solveFlows(input: FlowInput): { flows: Record<InstanceId, InstanceFlow>; totals: FlowTotals } {
+export interface SolveFlowsResult {
+  flows: Record<InstanceId, InstanceFlow>
+  totals: FlowTotals
+  // Audit ISSUE-010: instances whose dependency chain hit MAX_DEPTH this step and stopped fanning
+  // out further — previously silent (the instance itself gets metrics; whatever it WOULD have
+  // called at hop 9+ never appears anywhere, no refusedRps, no downstream row, nothing). The
+  // engine turns this into a deduped `chain_depth_exceeded` event; kept as a plain Set here (not
+  // an emitted event) so solveFlows stays a pure function of its input.
+  depthExceededInstanceIds: Set<InstanceId>
+  // Edges where the BFS cycle guard (chainHas) stopped re-queueing because the target is already
+  // an ancestor on this request chain. The row into the cyclic target IS recorded in `downstream`
+  // (unchanged) — this is additionally the raw fact that a cut happened, for the engine to turn
+  // into a deduped `chain_cycle_cut` event.
+  cycleCutEdges: { fromId: InstanceId; toId: InstanceId }[]
+}
+
+export function solveFlows(input: FlowInput): SolveFlowsResult {
   const {
     compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
     breakerOpen, healthOf, rng,
@@ -364,6 +429,8 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
 
   const flows: Record<InstanceId, InstanceFlow> = {}
   const totals: FlowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} }
+  const depthExceededInstanceIds = new Set<InstanceId>()
+  const cycleCutEdges: { fromId: InstanceId; toId: InstanceId }[] = []
 
   // First-touch flow record; serviceLatencyMs is sampled exactly once per instance, in
   // BFS creation order (deterministic under a seeded rng).
@@ -381,7 +448,9 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
         admittedRps: 0,
         errorRps: 0,
         refusedRps: 0,
+        structuralRefusedRps: 0,
         serviceLatencyMs: sampleLatencyMs(p50, p50 * SERVICE_P99_OVER_P50, rng) * multiplier + extraMs,
+        totalLatencyMs: 0,   // placeholder; overwritten by the composition pass before return
         downstream: [],
       }
       flows[id] = f
@@ -402,7 +471,7 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     rps: number,
     hopClass: HopClass,
     blocked: boolean,
-    failure?: 'throttled' | 'timeout',
+    failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq',
   ): void => {
     const key = `${dependencyId}|${target.toInstanceId ?? ''}|${target.toManagedServiceId ?? ''}|${blocked}|${failure ?? ''}`
     let rows = rowIndex.get(f.instanceId)
@@ -472,6 +541,34 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     }
   }
 
+  // Audit ISSUE-002: the event broker's resolved drainRps is what the topic's consumer
+  // instance(s) actually pull off the backlog and process THIS step — seeded as an INDEPENDENT
+  // BFS root (own depth 0, no parent), decoupled from the producer in both timing (one-step lag,
+  // same as admittedScale) and chain (never shares the producer's depth/cycle guard). Without
+  // this the consumer would never appear in metrics or fan out its own dependencies for
+  // event-only traffic at all, even though the topic is actively draining — CPU, RAM, and its own
+  // downstream calls all still apply normally once seeded, exactly like any other demand.
+  if (input.topicRuntime) {
+    for (const [depId, rt] of Object.entries(input.topicRuntime)) {
+      if (rt.drainRps <= EPSILON_RPS) continue
+      let targetBpId: string | undefined
+      findTarget: for (const bp of Object.values(doc.blueprints)) {
+        for (const dep of bp.dependencies) {
+          if (dep.id === depId && dep.target.kind === 'blueprint') { targetBpId = dep.target.blueprintId; break findTarget }
+        }
+      }
+      if (!targetBpId) continue
+      const consumers = Object.values(compiled.instances).filter(i => i.blueprintId === targetBpId)
+      if (consumers.length === 0) continue
+      const share = rt.drainRps / consumers.length
+      for (const c of consumers) {
+        if (seeded.has(c.id)) continue   // already an entry instance this step — don't double-seed
+        queue.push({ instanceId: c.id, offered: share, depth: 0, parent: null })
+        seeded.add(c.id)
+      }
+    }
+  }
+
   // BFS via head index (no O(n) shift; perf budget is 4ms/step at 2,000 instances).
   let head = 0
   while (head < queue.length) {
@@ -536,7 +633,10 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
     }
 
     if (admitted <= EPSILON_RPS) continue      // a down instance zeroes its whole subtree
-    if (item.depth >= MAX_DEPTH) continue      // landed, but fans out no further
+    if (item.depth >= MAX_DEPTH) {              // landed, but fans out no further (audit ISSUE-010)
+      depthExceededInstanceIds.add(item.instanceId)
+      continue
+    }
 
     const bp = doc.blueprints[inst.blueprintId]
     if (!bp) continue
@@ -554,7 +654,12 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
       // an even split across ALL compiled targets (blocked ones included — the caller can't see
       // the misconfig); for a DB target it partitions into writes→primary / reads→replicas.
       const targetBp = dep.target.kind === 'blueprint' ? doc.blueprints[dep.target.blueprintId] : undefined
-      const shares = splitDependencyShares(admitted, candidates, roleOf, targetBp, dep.writeFraction ?? 0, healthWeightOf)
+      // A bound db packet mix DERIVES the write fraction from its query types and is the single
+      // source of truth when present — identical fallback chain to the managed-service branch
+      // below, so primary/replica ROUTING and managed-DB capacity can never disagree about the
+      // split, and neither can disagree with what EdgeInspector displays (audit ISSUE-001).
+      const depWriteFraction = input.depBytesById?.[dep.id]?.writeFraction ?? dep.writeFraction ?? 0
+      const shares = splitDependencyShares(admitted, candidates, roleOf, targetBp, depWriteFraction, healthWeightOf)
 
       for (let ci = 0; ci < candidates.length; ci++) {
         const path = candidates[ci]
@@ -566,8 +671,11 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
           : { toManagedServiceId: path.to.managedServiceId }
 
         if (path.verdict === 'blocked') {
-          // Refused ON THE CALLER; the blocked row is what events/particles render.
+          // Refused ON THE CALLER; the blocked row is what events/particles render. A network
+          // policy block is STRUCTURAL (audit ISSUE-008) — shedding entry demand can't fix a
+          // firewall rule, so this doesn't count toward Mechanism B's overload signal.
           flow.refusedRps += share
+          flow.structuralRefusedRps = (flow.structuralRefusedRps ?? 0) + share
           addDownstream(flow, dep.id, target, share, path.hopClass, true)
           continue   // refused attempts carry no payload and reach nothing
         }
@@ -577,7 +685,10 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
           // volume — a real dependency failure the caller sees as refused (like a blocked path),
           // no admitted remainder, no bytes. Checked before capacity, since down beats throttled.
           if (managedDown(path.to.managedServiceId)) {
+            // A manual outage, not a load problem (audit ISSUE-008) — structural, same as a
+            // firewall block above.
             flow.refusedRps += share
+            flow.structuralRefusedRps = (flow.structuralRefusedRps ?? 0) + share
             addDownstream(flow, dep.id, target, share, path.hopClass, true)
             continue
           }
@@ -628,15 +739,140 @@ export function solveFlows(input: FlowInput): { flows: Record<InstanceId, Instan
           continue   // managed targets are terminal — no capacity subtree to propagate into
         }
 
-        addDownstream(flow, dep.id, target, share, path.hopClass, false)
-        bucketBytes(path.hopClass, share, dep.id)
+        // Audit ISSUE-002: an event-protocol dependency is asynchronous — the producer's call
+        // lands in a topic backlog, NOT a synchronous call into the consumer's own capacity
+        // subtree. This is the fix for the core bug this issue exists to close: without it, a
+        // struggling CONSUMER's downstream errors open the PRODUCER's breaker (pushed onto `queue`
+        // below reaches the consumer's OWN dependency fan-out this same step), the opposite of
+        // what a broker is for. `input.topicRuntime` absent ⇒ the pre-issue synchronous fallback
+        // (existing direct `solveFlows` callers/tests are unaffected); the real engine always
+        // supplies it, so every event dependency is live-async there.
+        const eventProtocol = (resolveMixProtocol(doc.packets, dep.packetMix) ?? dep.protocol) === 'event'
+        if (eventProtocol && input.topicRuntime) {
+          const rt = input.topicRuntime[dep.id]
+          const dropFraction = rt && rt.totalArrivalRps > EPSILON_RPS ? rt.dropRps / rt.totalArrivalRps : 0
+          const dlqFraction = rt && rt.totalArrivalRps > EPSILON_RPS ? rt.dlqRps / rt.totalArrivalRps : 0
+          const dropped = share * dropFraction
+          const dlqd = share * dlqFraction
+          const accepted = Math.max(0, share - dropped - dlqd)
+          if (accepted > EPSILON_RPS) {
+            // Accepted into the topic — the producer's call succeeded; bytes still transit the
+            // wire (publishing the event), but the consumer is NOT pushed onto this step's queue.
+            addDownstream(flow, dep.id, target, accepted, path.hopClass, false)
+            bucketBytes(path.hopClass, accepted, dep.id)
+          }
+          if (dropped > EPSILON_RPS) {
+            flow.refusedRps += dropped
+            addDownstream(flow, dep.id, target, dropped, path.hopClass, true, 'dropped')
+          }
+          if (dlqd > EPSILON_RPS) {
+            flow.refusedRps += dlqd
+            addDownstream(flow, dep.id, target, dlqd, path.hopClass, true, 'dlq')
+          }
+          continue   // decoupled: never re-enters the BFS queue for this hop
+        }
 
         const toId = path.to.instanceId
-        if (chainHas(item, toId)) continue          // cycle guard: row recorded, no re-entry
-        queue.push({ instanceId: toId, offered: share, depth: item.depth + 1, parent: item })
+
+        // Audit ISSUE-006: a client-side timeout, resolved from the bound mix's http packet. No
+        // timeout authored anywhere meant a breaker could open ONLY from capacity overflow, never
+        // from a dependency simply being too slow — the canonical slow-dependency trip was
+        // structurally unreachable. Computed off the TARGET's own self-time (getFlow forces its
+        // first-touch sample if not already taken, exactly as if this were the first row to reach
+        // it) — the analytic P(latency > timeout) under the SAME log-normal distribution the hop
+        // samples from, so no new rng draw. Feeds the caller's errorRps exactly like a capacity
+        // error, and is additionally recorded as a `timeout`-tagged blocked row so the metrics
+        // pyramid can tell "too slow" apart from "too much load" the same way it already does for
+        // managed-DB query timeouts.
+        let admittedShare = share
+        const clientTimeoutMs = resolveClientTimeoutMs(doc.packets, dep.packetMix)
+        if (clientTimeoutMs != null && clientTimeoutMs > 0) {
+          const targetSelfMs = getFlow(toId).serviceLatencyMs
+          const fraction = timeoutErrorFraction(targetSelfMs, targetSelfMs * SERVICE_P99_OVER_P50, clientTimeoutMs)
+          if (fraction > EPSILON_RPS) {
+            const timedOut = share * fraction
+            flow.errorRps += timedOut
+            addDownstream(flow, dep.id, target, timedOut, path.hopClass, true, 'timeout')
+            admittedShare = share - timedOut
+          }
+        }
+        if (admittedShare <= EPSILON_RPS) continue
+
+        addDownstream(flow, dep.id, target, admittedShare, path.hopClass, false)
+        bucketBytes(path.hopClass, admittedShare, dep.id)
+
+        if (chainHas(item, toId)) {                 // cycle guard: row recorded, no re-entry
+          cycleCutEdges.push({ fromId: item.instanceId, toId })   // audit ISSUE-010
+          continue
+        }
+        queue.push({ instanceId: toId, offered: admittedShare, depth: item.depth + 1, parent: item })
       }
     }
   }
 
-  return { flows, totals }
+  // ── Composed end-to-end latency (audit ISSUE-003) ──
+  // A post-pass, not inline during BFS: flows are created in first-touch order, which is not
+  // necessarily topological — an instance reached via a short path early may also be reached via a
+  // longer path later, so its downstream rows (and therefore its own composed time) aren't settled
+  // until the whole BFS is done. Memoized DFS over the (mostly-DAG) downstream graph; a genuine
+  // cycle in the topology (A depends on B depends on A) is NOT fully prevented by the BFS's
+  // chainHas guard above — that guard only stops re-queueing, the row back into the cycle is still
+  // recorded — so `computing` breaks an in-progress cycle by treating the back-edge as the callee's
+  // self time only, rather than recursing forever.
+  const totalLatencyMemo = new Map<InstanceId, number>()
+  const computing = new Set<InstanceId>()
+
+  const managedServiceLatencyMs = (managedServiceId: string): number => {
+    const rt = input.managedDbRuntime?.[managedServiceId]
+    if (rt) return rt.p50Ms
+    const ms = doc.managedServices[managedServiceId]
+    return managedBaseLatencyMs(ms?.nodeType ?? '')
+  }
+
+  const computeTotalLatencyMs = (id: InstanceId): number => {
+    const cached = totalLatencyMemo.get(id)
+    if (cached !== undefined) return cached
+    const f = flows[id]
+    if (!f) return 0
+    if (computing.has(id)) return f.serviceLatencyMs   // cycle back-edge: stop at self time
+    computing.add(id)
+
+    const inst = compiled.instances[id]
+    const fromCatalogId = inst ? (doc.regions[inst.regionId]?.catalogId ?? null) : null
+
+    let weightedSum = 0
+    let rpsTotal = 0
+    for (const row of f.downstream) {
+      if (row.blocked || row.rps <= 0) continue
+      let downstreamMs: number
+      let toCatalogId: string | null = null
+      if (row.toInstanceId != null) {
+        downstreamMs = computeTotalLatencyMs(row.toInstanceId)
+        const toInst = compiled.instances[row.toInstanceId]
+        toCatalogId = toInst ? (doc.regions[toInst.regionId]?.catalogId ?? null) : null
+      } else if (row.toManagedServiceId != null) {
+        downstreamMs = managedServiceLatencyMs(row.toManagedServiceId)
+      } else {
+        downstreamMs = 0
+      }
+      // Deterministic (un-jittered) hop estimate — see baseHopLatencyMs's header. This pass runs
+      // over every downstream row every step; drawing from the seeded rng here would shift the
+      // stream for the remainder of the step, invalidating unrelated exact-value assertions
+      // (byte totals, particle picks, VPS steal, ...) that have nothing to do with latency.
+      const networkMs = baseHopLatencyMs(row.hopClass, fromCatalogId, toCatalogId, null, REGION_GEO)
+      weightedSum += row.rps * (networkMs + downstreamMs)
+      rpsTotal += row.rps
+    }
+
+    const composed = f.serviceLatencyMs + (rpsTotal > EPSILON_RPS ? weightedSum / rpsTotal : 0)
+    computing.delete(id)
+    totalLatencyMemo.set(id, composed)
+    return composed
+  }
+
+  for (const id of Object.keys(flows)) {
+    flows[id].totalLatencyMs = computeTotalLatencyMs(id)
+  }
+
+  return { flows, totals, depthExceededInstanceIds, cycleCutEdges }
 }

@@ -217,3 +217,58 @@ describe('simulation.store — End erases run visuals, Pause preserves them', ()
     expect(s.healthOverrides).toEqual({ 'az-1': true })
   })
 })
+
+// Audit ISSUE-019: a fresh start() rebuilds every slow-converging piece of engine state from
+// cold (burst credits, failover hysteresis, metric EMAs) — this is correct-to-reset, per
+// CLAUDE.md's topology-mutability model, but nothing in the UI told a user that the first few
+// seconds of a run look different for reasons unrelated to whatever edit triggered the restart.
+describe('simulation.store — warm-up window (audit ISSUE-019)', () => {
+  let onMetrics: ((b: MetricsBatch) => void) | null = null
+
+  const emptyBatch = (simMs: number): MetricsBatch => ({
+    simMs, instances: {}, servers: {}, azs: {}, regions: {},
+    world: { totalRps: 0, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
+    managedServices: {},
+  })
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    onMetrics = null
+    vi.spyOn(worldEngine, 'start').mockImplementation((_doc, _compiled, cb) => { onMetrics = cb.onMetrics })
+    vi.spyOn(worldEngine, 'stop').mockImplementation(() => {})
+    vi.spyOn(worldEngine, 'setTimeScale').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    useSimulationStore.getState().resetSession()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('start() sets warmupBatchesRemaining to WARMUP_SECONDS, and it counts down one per published batch', async () => {
+    const doc = createWorld()
+    useSimulationStore.getState().start(doc, compileWorld(doc))
+    await vi.advanceTimersByTimeAsync(0)
+    const initial = useSimulationStore.getState().warmupBatchesRemaining
+    expect(initial).toBeGreaterThan(0)
+    onMetrics!(emptyBatch(1000))
+    expect(useSimulationStore.getState().warmupBatchesRemaining).toBe(initial - 1)
+  })
+
+  it('never goes negative once every batch has been counted down', async () => {
+    const doc = createWorld()
+    useSimulationStore.getState().start(doc, compileWorld(doc))
+    await vi.advanceTimersByTimeAsync(0)
+    const initial = useSimulationStore.getState().warmupBatchesRemaining
+    for (let i = 0; i < initial + 5; i++) onMetrics!(emptyBatch(1000 + i * 1000))
+    expect(useSimulationStore.getState().warmupBatchesRemaining).toBe(0)
+  })
+
+  it('stop() and resetSession() clear the warm-up counter', async () => {
+    const doc = createWorld()
+    useSimulationStore.getState().start(doc, compileWorld(doc))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(useSimulationStore.getState().warmupBatchesRemaining).toBeGreaterThan(0)
+    useSimulationStore.getState().stop()
+    expect(useSimulationStore.getState().warmupBatchesRemaining).toBe(0)
+  })
+})

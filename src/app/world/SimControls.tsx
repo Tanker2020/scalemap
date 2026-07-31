@@ -4,7 +4,7 @@
 // (Task 18 adds a `degraded` amber chip, shown when the facade halved its step rate.)
 import type { CSSProperties } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
-import { useSimulationStore } from '../store/simulation.store'
+import { useSimulationStore, selectWarmingUp } from '../store/simulation.store'
 import { useWorldStore } from '../store/world.store'
 import { useCompiledWorld } from './useCompiledWorld'
 
@@ -23,12 +23,18 @@ const degradedChip: CSSProperties = {
   padding: '2px 6px', borderRadius: 3, font: '10px var(--font-mono)',
   color: 'var(--color-warning)', border: '1px solid var(--color-warning)',
 }
+const warmupChip: CSSProperties = {
+  padding: '2px 6px', borderRadius: 3, font: '10px var(--font-mono)',
+  color: 'var(--color-text-secondary)', border: '1px solid var(--color-node-border)',
+}
 
 export function SimControls() {
   const running = useSimulationStore(s => s.running)
   const paused = useSimulationStore(s => s.paused)
   const timeScale = useSimulationStore(s => s.timeScale)
   const degraded = useSimulationStore(s => s.degraded)
+  const warmingUp = useSimulationStore(selectWarmingUp)
+  const warmupBatchesRemaining = useSimulationStore(s => s.warmupBatchesRemaining)
   const start = useSimulationStore(s => s.start)
   const stop = useSimulationStore(s => s.stop)
   const pause = useSimulationStore(s => s.pause)
@@ -84,6 +90,20 @@ export function SimControls() {
         <span style={degradedChip} title="Sustained step-cost overrun — the engine halved its tick rate to keep up (see Events)">
           degraded tick
         </span>
+      )}
+      {warmingUp && (
+        // Audit ISSUE-019: purely advisory — a fresh start() rebuilds burst credits, failover
+        // hysteresis, and metric EMAs from cold, so the first few seconds of a run look different
+        // from a settled one for reasons that have nothing to do with any edit that triggered the
+        // restart. Gates nothing; just tells the user not to read too much into it yet.
+        <motion.span
+          style={warmupChip}
+          title="Engine state (burst credits, health hysteresis, metric smoothing) is still settling after this run's start — metrics may not reflect steady state yet"
+          animate={reduced ? { opacity: 1 } : { opacity: [1, 0.55, 1] }}
+          transition={reduced ? undefined : { duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
+        >
+          warming up ({warmupBatchesRemaining}s)
+        </motion.span>
       )}
     </div>
   )

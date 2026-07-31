@@ -30,7 +30,14 @@ export interface BasePacketTemplate {
   id: number
   name: string
   protocol: PacketProtocol
-  sizeKb: number            // request/packet payload size
+  // Request/packet payload size (KB). Optional because it is genuinely absent at runtime — a
+  // blanked RoutesPanel "req" input, or a route serialized before sizeKb existed, with no
+  // per-route normalization on load. Declaring it non-optional gave every reader a guarantee the
+  // data does not honour: an unguarded `sizeKb * x` yields NaN, and once NaN reaches
+  // serviceRateByInstance every comparison against it silently evaluates false, so an
+  // over-capacity instance stops being flagged. Resolve it through packetResolve's fallback
+  // chain rather than reading it raw (audit ISSUE-018).
+  sizeKb?: number
   // Response payload size (KB). Drives the client-facing internet-egress byte rate (and thus the
   // internet-egress cost line) via routeIngressBytes → the engine's entry tier, and the response
   // leg of every internal hop via packetResolve. Optional: absent (older serialized routes) falls
@@ -59,6 +66,12 @@ export interface HttpTemplate extends BasePacketTemplate {
   // "Advanced" route binding: when present and non-empty, this mix supersedes the route's own
   // inline sizeKb/responseSizeKb (see packetResolve's four-tier fallback).
   packetMix?: PacketMixEntry[]
+  // Client-side timeout, in ms (audit ISSUE-006) — mirrors ManagedService.queryTimeoutMs's own
+  // "absent ⇒ no timeout" convention. Without this a breaker could only ever open from capacity
+  // overflow, never from a dependency simply being too slow; worldEngine/latency.ts's
+  // timeoutErrorFraction is the analytic P(latency > this) under the hop's own sampled
+  // distribution. Optional: absent ⇒ 0 (no timeout), so an existing .scalemap is unchanged.
+  clientTimeoutMs?: number
 }
 
 export interface EventTemplate extends BasePacketTemplate {
@@ -66,6 +79,13 @@ export interface EventTemplate extends BasePacketTemplate {
   topic: string
   eventType: string
   deliveryMode: 'at-most-once' | 'at-least-once' | 'exactly-once'
+  // Broker backlog model (audit ISSUE-002, worldEngine/broker.ts). Optional — absent ⇒ effectively
+  // unbounded retention / a single redelivery attempt before DLQ, so an existing .scalemap with no
+  // authored values still gets the async decoupling this issue introduces (that decoupling is
+  // itself an acknowledged behavior change for `event` dependencies, not byte-identical-by-default
+  // like every other issue in this audit — see broker.ts's header).
+  retentionCapCount?: number   // max backlog depth before the oldest arrivals are dropped (at-most-once loses these)
+  maxRedeliveries?: number     // redelivery attempts before a failed message goes to the DLQ; absent ⇒ 1
 }
 
 export interface StreamTemplate extends BasePacketTemplate {
@@ -75,6 +95,11 @@ export interface StreamTemplate extends BasePacketTemplate {
   // A stream is a persistent connection by definition (connectionModel's protocol-wins rule), so
   // this is how long it is held open, in seconds. Absent ⇒ DEFAULT_HOLD_SEC.
   holdSeconds?: number
+  // How many frames this ONE connection pushes per second (audit ISSUE-004) — decoupled from
+  // `rps`, which now means "new connections per second" for a stream. Absent/⇒ 1, i.e. today's
+  // 1:1 rps:frame reading, so an existing `.scalemap`'s stream packets are unchanged. See
+  // connectionModel.ts's `ConnectionProfile.frameMultiplier`.
+  framesPerSecond?: number
 }
 
 export interface DbTemplate extends BasePacketTemplate {
@@ -176,7 +201,11 @@ export function addRoute(reg: PacketRegistry, fields: RouteFields): { registry: 
 export function updateRoute(reg: PacketRegistry, routeId: RouteId, patch: Partial<RouteFields>): PacketRegistry {
   const existing = reg.templates[Number(routeId)]
   if (!existing || existing.protocol !== 'http') return reg
-  const updated: HttpTemplate = { ...existing, ...patch } as HttpTemplate
+  // `existing.protocol !== 'http'` above already narrowed this to HttpTemplate, and every
+  // RouteFields key is HttpTemplate-legal — so the merge type-checks without an assertion. The
+  // previous `as HttpTemplate` defeated exactly the discriminant checking that catches a patch
+  // carrying another protocol's fields (audit ISSUE-018).
+  const updated: HttpTemplate = { ...existing, ...patch }
   return { ...reg, templates: { ...reg.templates, [existing.id]: updated } }
 }
 
@@ -207,9 +236,28 @@ export function getPacket(reg: PacketRegistry, packetId: number): PacketTemplate
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 export type PacketFields = DistributiveOmit<PacketTemplate, 'id'>
 
+// Rebuild a PacketTemplate from its id-less fields with the discriminant CHECKED. A blanket
+// `{ ...fields, id } as PacketTemplate` compiles even when `fields` carries another protocol's
+// keys — e.g. an EventTemplate's `topic` stranded on an object whose protocol is 'db' — which is
+// precisely the cross-contamination TypeScript's discriminated-union narrowing exists to catch.
+// Branching per protocol makes it verify each kind; the `never` default turns a fifth
+// PacketProtocol into a compile error here instead of a silent fallthrough (audit ISSUE-018).
+function withPacketId(fields: PacketFields, id: number): PacketTemplate {
+  switch (fields.protocol) {
+    case 'http':   return { ...fields, id }
+    case 'event':  return { ...fields, id }
+    case 'stream': return { ...fields, id }
+    case 'db':     return { ...fields, id }
+    default: {
+      const exhaustive: never = fields
+      return exhaustive
+    }
+  }
+}
+
 export function addPacket(reg: PacketRegistry, fields: PacketFields): { registry: PacketRegistry; packet: PacketTemplate } {
   const id = reg.nextId
-  const packet = { ...fields, id } as PacketTemplate
+  const packet = withPacketId(fields, id)
   return {
     registry: { ...reg, templates: { ...reg.templates, [id]: packet }, nextId: id + 1 },
     packet,
@@ -221,7 +269,7 @@ export function addPacket(reg: PacketRegistry, fields: PacketFields): { registry
 // partial that would leave the previous protocol's fields stranded on the object.
 export function updatePacket(reg: PacketRegistry, packetId: number, fields: PacketFields): PacketRegistry {
   if (getPacket(reg, packetId) == null) return reg
-  const updated = { ...fields, id: packetId } as PacketTemplate
+  const updated = withPacketId(fields, packetId)
   return { ...reg, templates: { ...reg.templates, [packetId]: updated } }
 }
 

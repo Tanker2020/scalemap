@@ -130,6 +130,39 @@ describe('metrics pyramid', () => {
     expect(spiked.instances[f.i1].p50Ms).toBeLessThan(200)            // p50 still smoothed
   })
 
+  // Audit ISSUE-003: p50Ms/p99Ms now source from COMPOSED latency (totalLatencyMs — self + folded
+  // downstream time), while serviceP50Ms preserves the pre-ISSUE-003 self-only semantics. A flow
+  // fixture with the two fields deliberately different pins that p50Ms tracks totalLatencyMs, not
+  // serviceLatencyMs.
+  it('publishes p50Ms from composed totalLatencyMs and serviceP50Ms from self-only serviceLatencyMs', () => {
+    const f = fixture()
+    const state = createMetricsState()
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state,
+        { [f.i1]: flow(f.i1, 100, { serviceLatencyMs: 10, totalLatencyMs: 250 }) },
+        { [f.s1.id]: host() }, {}, {}, healthy, s * 100)
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    expect(batch.instances[f.i1].p50Ms).toBeCloseTo(250, 1)
+    expect(batch.instances[f.i1].serviceP50Ms).toBeCloseTo(10, 1)
+  })
+
+  // Regression floor: a fixture that omits totalLatencyMs entirely (every fixture above, and any
+  // pre-ISSUE-003 caller of buildBatch) must publish byte-identical p50Ms to before this issue —
+  // the fallback to serviceLatencyMs is exact, not approximate.
+  it('falls back to serviceLatencyMs for p50Ms when a flow fixture omits totalLatencyMs', () => {
+    const f = fixture()
+    const state = createMetricsState()
+    for (let s = 0; s < 10; s++) {
+      accumulateStep(state,
+        { [f.i1]: flow(f.i1, 100, { serviceLatencyMs: 42 }) },
+        { [f.s1.id]: host() }, {}, {}, healthy, s * 100)
+    }
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100), totals, 1000)
+    expect(batch.instances[f.i1].p50Ms).toBeCloseTo(42, 1)
+    expect(batch.instances[f.i1].serviceP50Ms).toBeCloseTo(42, 1)
+  })
+
   it('computes healthScore = 100 × (1 − errorRate) × healthFactor', () => {
     const f = fixture()
     const state = createMetricsState()
@@ -213,6 +246,87 @@ describe('metrics pyramid', () => {
     expect(strata.length).toBeGreaterThan(0)
     for (let i = 1; i < strata.length; i++) expect(strata[i - 1].ramMb).toBeGreaterThanOrEqual(strata[i].ramMb)
     expect(strata[0]).toMatchObject({ instanceId: f.i1, blueprintId: f.bp.id })
+  })
+})
+
+// ─── Published vs enforced: CPU and RAM (audit ISSUE-011 / ISSUE-012) ────────
+// Both were instances of the divergence class: the host scheduler acts on one number, buildBatch
+// published another, and the two sat on the same server card.
+describe('metrics: published CPU/RAM match what the scheduler enforces', () => {
+  it('cpuCoresUsed uses the effective ms/request, not the raw workload value (ISSUE-011)', () => {
+    const f = fixture()
+    f.doc.blueprints[f.bp.id].workload.cpuMsPerRequest = 1
+    const state = createMetricsState()
+    accumulate1s(state, f, 1000, 0)
+
+    // A short-lived route adds HANDSHAKE_CPU_MS = 2 on top of the authored 1 ms, so the scheduler
+    // budgets 3 cores at 1000 rps while the raw value implies 1 — the 3x the audit describes.
+    const batch = buildBatch(
+      state, f.doc, f.compiled, snapshot(f, 1000), totals, 1000,
+      undefined, undefined, { [f.i1]: 3 },
+    )
+    expect(batch.instances[f.i1].cpuCoresUsed).toBeCloseTo(1000 * 3 / 1000, 5)
+  })
+
+  it('omitting the effective map reproduces the raw-workload value exactly (regression floor)', () => {
+    const f = fixture()
+    f.doc.blueprints[f.bp.id].workload.cpuMsPerRequest = 1
+    const state = createMetricsState()
+    accumulate1s(state, f, 1000, 0)
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 1000), totals, 1000)
+    expect(batch.instances[f.i1].cpuCoresUsed).toBeCloseTo(1000 * 1 / 1000, 5)
+  })
+
+  it('ramMb is clamped by the container memory limit (ISSUE-012)', () => {
+    const f = fixture()
+    const w = f.doc.blueprints[f.bp.id].workload
+    w.ramBaseMb = 100
+    w.ramPerConnMb = 0.8
+    // Put i1 in a container limited to 512 MB. Unclamped this instance computes far above it.
+    const p1 = Object.values(f.doc.placements).find(p => p.serverId === f.s1.id)!
+    p1.runtime = {
+      type: 'container', stackName: 'app', networkNames: [], portMappings: [],
+      cpuLimit: null, memLimitMb: 512,
+    }
+    const state = createMetricsState()
+    accumulate1s(state, f, 100_000, 0)   // heavy load ⇒ many connections ⇒ large raw RAM
+
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100_000), totals, 1000)
+    const raw = 100 + 0.8 * batch.instances[f.i1].activeConnections
+    expect(raw).toBeGreaterThan(512)              // the fixture genuinely exceeds the limit
+    expect(batch.instances[f.i1].ramMb).toBe(512) // and the published value is clamped to it
+  })
+
+  it('a process (non-container) placement is unaffected by the clamp (regression floor)', () => {
+    const f = fixture()
+    const w = f.doc.blueprints[f.bp.id].workload
+    w.ramBaseMb = 100
+    w.ramPerConnMb = 0.8
+    const state = createMetricsState()
+    accumulate1s(state, f, 100_000, 0)
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 100_000), totals, 1000)
+    expect(batch.instances[f.i1].ramMb).toBeCloseTo(100 + 0.8 * batch.instances[f.i1].activeConnections, 5)
+  })
+
+  // The visible symptom ISSUE-012 names: ramByInstance is built from instances[].ramMb, so an
+  // unclamped publish let the per-server strata sum exceed the clamped ramUsedMb beside it.
+  it('per-server ram strata never exceed the container limits they are built from', () => {
+    const f = fixture()
+    const w = f.doc.blueprints[f.bp.id].workload
+    w.ramBaseMb = 100
+    w.ramPerConnMb = 0.8
+    for (const p of Object.values(f.doc.placements)) {
+      p.runtime = {
+        type: 'container', stackName: 'app', networkNames: [], portMappings: [],
+        cpuLimit: null, memLimitMb: 512,
+      }
+    }
+    const state = createMetricsState()
+    accumulate1s(state, f, 100_000, 100_000)
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 200_000), totals, 1000)
+    for (const stratum of batch.servers[f.s1.id].ramByInstance) {
+      expect(stratum.ramMb).toBeLessThanOrEqual(512)
+    }
   })
 })
 

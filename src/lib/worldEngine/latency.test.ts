@@ -4,7 +4,7 @@
 // world's rng stream is completely undisturbed by this feature (the backward-compat invariant).
 import { describe, it, expect } from 'vitest'
 import { createRng } from './rng'
-import { sampleSizeMultiplier } from './latency'
+import { sampleSizeMultiplier, sampleLatencyMs, timeoutErrorFraction } from './latency'
 
 describe('sampleSizeMultiplier (mean-preserving log-normal NIC-burst multiplier)', () => {
   it('sigma = 0 returns exactly 1 and consumes zero rng draws', () => {
@@ -67,5 +67,60 @@ describe('sampleSizeMultiplier (mean-preserving log-normal NIC-burst multiplier)
     for (let i = 0; i < 500; i++) {
       expect(sampleSizeMultiplier(1.4, rng)).toBeGreaterThan(0)
     }
+  })
+})
+
+// ─── timeoutErrorFraction (audit ISSUE-006) ───────────────────────────────────
+// P(latency > timeoutMs) under the SAME log-normal (p50, p99) sampleLatencyMs draws from —
+// analytic, no rng draw, so it can't disturb the seeded stream.
+describe('timeoutErrorFraction', () => {
+  it('is ~0 when the timeout sits well above p99', () => {
+    expect(timeoutErrorFraction(50, 150, 500)).toBeCloseTo(0, 3)
+  })
+
+  it('is large when the timeout sits below p50', () => {
+    expect(timeoutErrorFraction(50, 150, 30)).toBeGreaterThan(0.5)
+  })
+
+  it('is exactly 0.5 when the timeout equals p50 (median of the distribution)', () => {
+    expect(timeoutErrorFraction(50, 150, 50)).toBeCloseTo(0.5, 6)
+  })
+
+  it('rises monotonically as the timeout tightens', () => {
+    const loose = timeoutErrorFraction(50, 150, 200)
+    const mid = timeoutErrorFraction(50, 150, 60)
+    const tight = timeoutErrorFraction(50, 150, 20)
+    expect(loose).toBeLessThan(mid)
+    expect(mid).toBeLessThan(tight)
+  })
+
+  it('a non-positive or absent timeout means no timeout at all (fraction 0)', () => {
+    expect(timeoutErrorFraction(50, 150, 0)).toBe(0)
+    expect(timeoutErrorFraction(50, 150, -10)).toBe(0)
+  })
+
+  it('handles the degenerate zero-spread case (p99 <= p50) without NaN', () => {
+    expect(timeoutErrorFraction(50, 50, 100)).toBe(0)   // timeout above the single point -> never
+    expect(timeoutErrorFraction(50, 50, 10)).toBe(1)    // timeout below it -> always
+  })
+
+  it('never returns NaN or a value outside [0, 1] across a range of inputs', () => {
+    for (const p50 of [1, 10, 100, 1000]) {
+      for (const timeoutMs of [0.1, 1, 50, 500, 10000]) {
+        const f = timeoutErrorFraction(p50, p50 * 10, timeoutMs)
+        expect(Number.isNaN(f)).toBe(false)
+        expect(f).toBeGreaterThanOrEqual(0)
+        expect(f).toBeLessThanOrEqual(1)
+      }
+    }
+  })
+
+  it('consumes no rng draws — sampleLatencyMs is unaffected by calling it alongside', () => {
+    const rng = createRng(5)
+    const before = sampleLatencyMs(50, 150, rng)
+    const rngAgain = createRng(5)
+    timeoutErrorFraction(50, 150, 60)   // no rng argument at all — can't consume a draw
+    const after = sampleLatencyMs(50, 150, rngAgain)
+    expect(after).toBe(before)
   })
 })

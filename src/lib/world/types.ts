@@ -159,6 +159,16 @@ export interface WorkloadProfile {
   // cpuMsPerRequest at the entry tier as cpuMs = cpuMsPerRequest + cpuMsPerKb × sizeKb. Optional +
   // additive: absent ⇒ 0 (flat per-request cost, the pre-slice-2 behavior).
   cpuMsPerKb?: number
+  // Self-hosted connection pool (audit ISSUE-005) — a managed DB already gets a connection
+  // ceiling + refusal path (managedDbRuntime.ts); a self-hosted DB (or any workload) previously
+  // had none, so the ONLY way it could ever fail under connection pressure was host RAM exhaustion
+  // and an OOM-kill — a materially later, less common failure than real pool exhaustion. Optional:
+  // absent ⇒ unbounded (today's exact behavior, the regression floor). See hostScheduler.ts's
+  // `poolCheckoutFor`.
+  maxConnections?: number
+  // Absent ⇒ no timeout — a saturated pool queues checkouts forever rather than erroring them,
+  // mirroring ManagedService.queryTimeoutMs's own "absent ⇒ no timeout" convention.
+  checkoutTimeoutMs?: number
 }
 
 export type DependencyTarget =
@@ -440,7 +450,11 @@ export interface CompiledRouting {
 export interface CompileFinding {
   id: string
   severity: 'error' | 'warning'
-  kind: 'blocked-path' | 'stateful-without-volume' | 'missing-volume'
+  // 'protocol-mismatch' (audit ISSUE-007): a dependency's authored `protocol` field disagrees with
+  // the majority-weight protocol of its bound packet mix — the render tint (`dep.protocol`, the
+  // ONLY place this field has semantics) and the actual simulated behavior (bytes, connection
+  // hold, WAL amplification — all derived from the mix) can silently show two different stories.
+  kind: 'blocked-path' | 'stateful-without-volume' | 'missing-volume' | 'protocol-mismatch'
   message: string
   affected: string[]   // entity ids (instance/server/blueprint/placement ids)
 }

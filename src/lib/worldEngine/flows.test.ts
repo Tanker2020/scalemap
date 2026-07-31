@@ -9,6 +9,8 @@ import {
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
 import { managedDbRuntime } from '../managedDbRuntime'
+import { resolveWireSize } from '../packetResolve'
+import { addPacket } from '../nodeConfig'
 import type { WorldDoc, BlueprintDependency } from '../world/types'
 import type { HealthState } from './types'
 
@@ -290,6 +292,79 @@ describe('solveFlows — byte totals and latency', () => {
   })
 })
 
+// ─── Composed end-to-end latency (audit ISSUE-003, Wave 2) ──────────────────
+// serviceLatencyMs is SELF time only (own CPU/queue/NIC). totalLatencyMs additionally folds in
+// every non-blocked downstream row's (network hop + that row's own totalLatencyMs), rps-weighted
+// — what a caller/client actually waits on. Before this fix, a caller reported the same latency
+// as a leaf with no dependencies at all.
+describe('solveFlows — composed end-to-end latency (audit ISSUE-003)', () => {
+  it('a leaf instance (no dependencies) has totalLatencyMs exactly equal to serviceLatencyMs', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(flows[api.iid].totalLatencyMs).toBe(flows[api.iid].serviceLatencyMs)
+  })
+
+  it('composes a 3-hop chain recursively: total = self + hop + downstream.total', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const svc = addService(doc, 'svc', server.id, 1)
+    const db = addService(doc, 'db', server.id, 2)
+    api.bp.dependencies = [dep('d-svc', svc.bp.id)]
+    svc.bp.dependencies = [dep('d-db', db.bp.id)]
+
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    // localhost's expected hop time is a fixed 0.1ms constant (the composition pass is rng-free —
+    // see baseHopLatencyMs — so this is exact, not a sampled/jittered value).
+    const dbTotal = flows[db.iid].totalLatencyMs!
+    const svcTotal = flows[svc.iid].totalLatencyMs!
+    expect(dbTotal).toBe(flows[db.iid].serviceLatencyMs)
+    expect(svcTotal).toBeCloseTo(flows[svc.iid].serviceLatencyMs + 0.1 + dbTotal, 9)
+    expect(flows[api.iid].totalLatencyMs).toBeCloseTo(flows[api.iid].serviceLatencyMs + 0.1 + svcTotal, 9)
+    // Strictly exceeds self time once there's a real downstream chain — the bug this issue fixes.
+    expect(flows[api.iid].totalLatencyMs!).toBeGreaterThan(flows[api.iid].serviceLatencyMs)
+  })
+
+  it("weights fan-out across multiple dependencies by each row's rps share", () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const cache = addService(doc, 'cache', server.id, 1)
+    const db = addService(doc, 'db', server.id, 2)
+    api.bp.dependencies = [dep('d-cache', cache.bp.id), dep('d-db', db.bp.id)]
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    // Call-per-request: both deps fan out the FULL 100 rps, so they weigh 50/50 in the mean.
+    const cacheTotal = flows[cache.iid].totalLatencyMs!
+    const dbTotal = flows[db.iid].totalLatencyMs!
+    const expected = flows[api.iid].serviceLatencyMs +
+      (100 * (0.1 + cacheTotal) + 100 * (0.1 + dbTotal)) / 200
+    expect(flows[api.iid].totalLatencyMs).toBeCloseTo(expected, 9)
+  })
+
+  it('a genuine dependency cycle (A -> B -> A) terminates with a finite composed latency', () => {
+    const { doc, server } = oneServerWorld()
+    const a = addService(doc, 'a', server.id, 0)
+    const b = addService(doc, 'b', server.id, 1)
+    a.bp.dependencies = [dep('d-b', b.bp.id)]
+    b.bp.dependencies = [dep('d-a', a.bp.id)]
+    const { flows } = solveFlows(baseInput(doc, { [a.iid]: 100 }))
+    expect(Number.isFinite(flows[a.iid].totalLatencyMs)).toBe(true)
+    expect(Number.isFinite(flows[b.iid].totalLatencyMs)).toBe(true)
+    expect(flows[a.iid].totalLatencyMs).toBeGreaterThan(flows[a.iid].serviceLatencyMs)
+  })
+
+  it("a blocked downstream row contributes nothing to the caller's composed latency", () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const db2srv = createServer(doc.servers[server.id].azId, getPreset('dedicated-8')!)
+    db2srv.firewall = [{ id: 'deny-all', action: 'deny', port: 'any', protocol: 'any', source: 'any' }]
+    doc.servers[db2srv.id] = db2srv
+    const db = addService(doc, 'db', db2srv.id, 1)
+    api.bp.dependencies = [dep('d-db', db.bp.id)]
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(flows[api.iid].totalLatencyMs).toBe(flows[api.iid].serviceLatencyMs)
+  })
+})
+
 // ─── DB read/write routing (node-model Phase 3) ──────────────────────────────
 // A DB cluster is one blueprint with a primary placement and replica placements. Writes route to
 // the primary, reads to the replicas — driven by BlueprintDependency.writeFraction. These tests
@@ -369,6 +444,71 @@ describe('solveFlows — DB read/write routing', () => {
     // so read it defensively — the point is the primary saw no load.
     expect(flows[instanceId(primaryPl.id, 0)]?.offeredRps ?? 0).toBeCloseTo(0)
     expect(flows[instanceId(replicaPl.id, 0)].offeredRps).toBeCloseTo(500)
+  })
+
+  // ── audit ISSUE-001 ────────────────────────────────────────────────────────
+  // A bound db packet mix DERIVES writeFraction from its query types, and EdgeInspector hides the
+  // hand-authored slider once a mix is bound — so the raw BlueprintDependency.writeFraction stays
+  // at its default while the user is shown the derived value. Routing must follow the derived one,
+  // or a 100%-write mix routes entirely to the replicas and the SQL single-writer ceiling — the
+  // whole point of the primary/replica split — silently never binds.
+  it('routes on the packet-derived write fraction, not the stale hand-authored field', () => {
+    // dep field says 0 (pure reads); the bound mix derives 1 (pure writes). Derived must win.
+    const { doc, api, primaryIid, replicaIids } = apiToSqlCluster(0, 1)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 1000 }, {
+      depBytesById: { 'd-db': { reqBytes: 0, respBytes: 0, sizeKb: 0, sigma: 0, amplification: 1, writeFraction: 1 } },
+    }))
+    expect(flows[primaryIid].offeredRps).toBeCloseTo(1000)
+    expect(flows[replicaIids[0]]?.offeredRps ?? 0).toBeCloseTo(0)
+  })
+
+  it('falls back to the dependency field when the mix derives no write fraction', () => {
+    // writeFraction absent on the WireSize entry means "no db packet in the mix" — NOT "0% writes".
+    // The edge's own 0.2 must survive, exactly as it did before depBytesById existed.
+    const { doc, api, primaryIid, replicaIids } = apiToSqlCluster(0.2, 1)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 1000 }, {
+      depBytesById: { 'd-db': { reqBytes: 0, respBytes: 0, sizeKb: 0, sigma: 0, amplification: 1 } },
+    }))
+    expect(flows[primaryIid].offeredRps).toBeCloseTo(200)
+    expect(flows[replicaIids[0]].offeredRps).toBeCloseTo(800)
+  })
+
+  // DIVERGENCE GUARD (audit ISSUE-001), following the idiom in index.test.ts's connection-RAM
+  // guard: pin the value the USER IS SHOWN to the value the ENGINE ROUTES ON, through the one
+  // shared resolver both call — resolveWireSize. EdgeInspector displays
+  // `wire.writeFraction ?? dep.writeFraction ?? 0` (ConnectionsView.tsx:369-370) and the engine's
+  // buildDepWireBytes (index.ts:189) folds the identical chain into depBytesById. Correcting the
+  // routing number without this guard does not close the issue: the two can silently re-diverge.
+  it('DIVERGENCE GUARD: the displayed write fraction is the one routing actually splits on', () => {
+    const { doc, api, primaryIid, replicaIids } = apiToSqlCluster(0, 1)
+
+    // A non-degenerate 70/30 write/read query mix — not 0 or 1, so an accidental fallback to the
+    // dependency field (0) or to a hardcoded 1 would both be caught.
+    doc.packets = {
+      mode: 'custom',
+      nextId: 3,
+      templates: {
+        1: { id: 1, name: 'insert-order', protocol: 'db', sizeKb: 1, queryType: 'write', isWAL: false, resultSizeKb: 1 },
+        2: { id: 2, name: 'select-order', protocol: 'db', sizeKb: 1, queryType: 'read', isWAL: false, resultSizeKb: 4 },
+      },
+    }
+    const depDb = api.bp.dependencies[0]
+    depDb.packetMix = [{ packetId: 1, weight: 70 }, { packetId: 2, weight: 30 }]
+
+    // The UI's chain, verbatim (ConnectionsView.tsx:369-370).
+    const wire = resolveWireSize(doc.packets, depDb.packetMix, depDb.reqKb, depDb.respKb)
+    const displayed = wire.writeFraction ?? depDb.writeFraction ?? 0
+    expect(displayed).toBeCloseTo(0.7)
+
+    // The engine's chain, verbatim (index.ts:189) — same resolver, same fallback.
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 1000 }, {
+      depBytesById: { [depDb.id]: { ...wire, writeFraction: wire.writeFraction ?? depDb.writeFraction ?? 0 } },
+    }))
+
+    const toPrimary = flows[primaryIid].offeredRps
+    const toReplica = flows[replicaIids[0]].offeredRps
+    const routedWriteFraction = toPrimary / (toPrimary + toReplica)
+    expect(routedWriteFraction).toBeCloseTo(displayed, 10)
   })
 })
 
@@ -902,5 +1042,104 @@ describe('depBytesById — packet-sized internal hops', () => {
       depBytesById: { 'some-other-dep': { reqBytes: 9e6, respBytes: 9e6, sizeKb: 1, sigma: 0, amplification: 1 } },
     })
     expect(totals.crossAzBytes).toBe(100 * BYTES_PER_REQUEST_EACH_WAY * 2)
+  })
+})
+
+// ─── Silently-dropped fan-out, surfaced (audit ISSUE-010) ────────────────────
+describe('solveFlows — depth cap and cycle cut, surfaced', () => {
+  it('a 10-service chain silently drops the hop past MAX_DEPTH, now reported', () => {
+    const { doc, server } = oneServerWorld()
+    const services = Array.from({ length: 10 }, (_, i) => addService(doc, `svc-${i}`, server.id, i % 8))
+    // Every service depends on the next — a 9-hop chain, one hop past MAX_DEPTH (8).
+    for (let i = 0; i < services.length - 1; i++) {
+      services[i].bp.dependencies = [dep(`d-${i}`, services[i + 1].bp.id)]
+    }
+    const { flows, depthExceededInstanceIds } = solveFlows(baseInput(doc, { [services[0].iid]: 100 }))
+    // The instance AT depth 8 (services[8], the 9th service) is landed but fans out no further —
+    // it's the one reported. services[9] (what it WOULD have called) is never reached at all: the
+    // exact silent-drop this issue fixes.
+    expect(depthExceededInstanceIds.has(services[8].iid)).toBe(true)
+    expect(flows[services[8].iid]).toBeDefined()
+    expect(flows[services[9].iid]).toBeUndefined()
+    expect(depthExceededInstanceIds.size).toBe(1)
+  })
+
+  it('a chain shallower than MAX_DEPTH reports nothing', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const svc = addService(doc, 'svc', server.id, 1)
+    api.bp.dependencies = [dep('d-svc', svc.bp.id)]
+    const { depthExceededInstanceIds } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(depthExceededInstanceIds.size).toBe(0)
+  })
+
+  it('a genuine dependency cycle (A -> B -> A) reports the cut edge exactly once', () => {
+    const { doc, server } = oneServerWorld()
+    const a = addService(doc, 'a', server.id, 0)
+    const b = addService(doc, 'b', server.id, 1)
+    a.bp.dependencies = [dep('d-b', b.bp.id)]
+    b.bp.dependencies = [dep('d-a', a.bp.id)]
+    const { cycleCutEdges } = solveFlows(baseInput(doc, { [a.iid]: 100 }))
+    expect(cycleCutEdges).toEqual([{ fromId: b.iid, toId: a.iid }])
+  })
+
+  it('an acyclic world reports no cut edges', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const db = addService(doc, 'db', server.id, 1)
+    api.bp.dependencies = [dep('d-db', db.bp.id)]
+    const { cycleCutEdges } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(cycleCutEdges).toEqual([])
+  })
+})
+
+// ─── Client-side timeouts (audit ISSUE-006) ──────────────────────────────────
+describe('solveFlows — client-side timeouts', () => {
+  // Binds an http packet carrying clientTimeoutMs to the dependency; db's cpuMsPerRequest is the
+  // p50 its self-time samples from (SERVICE_P99_OVER_P50 = 10 internally).
+  function timeoutWorld(clientTimeoutMs: number | undefined, dbCpuMs: number) {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const db = addService(doc, 'db', server.id, 1)
+    db.bp.workload = { ...db.bp.workload, cpuMsPerRequest: dbCpuMs }
+    let packetMix: { packetId: number; weight: number }[] | undefined
+    if (clientTimeoutMs != null) {
+      const added = addPacket(doc.packets, { name: 'call', protocol: 'http', method: 'GET', statusCode: 200, clientTimeoutMs })
+      doc.packets = added.registry
+      packetMix = [{ packetId: added.packet.id, weight: 1 }]
+    }
+    api.bp.dependencies = [{ ...dep('d-db', db.bp.id), packetMix }]
+    return { doc, api, db }
+  }
+
+  it('a tight timeout below the target p50 errors a share of the caller and reduces what continues', () => {
+    const { doc, api, db } = timeoutWorld(5, 100)   // db's p50 ~100ms, timeout 5ms — should bite hard
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(flows[api.iid].errorRps).toBeGreaterThan(0)
+    // whatever got through is strictly less than the full 100 offered (some timed out)
+    const admittedRow = flows[api.iid].downstream.find(r => !r.blocked)
+    expect((admittedRow?.rps ?? 0) + flows[api.iid].errorRps).toBeCloseTo(100, 6)
+    expect(flows[db.iid].offeredRps).toBeLessThan(100)
+  })
+
+  it('a loose timeout well above the target p50 errors almost nothing', () => {
+    const { doc, api } = timeoutWorld(100000, 5)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(flows[api.iid].errorRps).toBeCloseTo(0, 1)
+  })
+
+  it('regression floor: an absent clientTimeoutMs reproduces the exact pre-issue output', () => {
+    const { doc, api } = timeoutWorld(undefined, 100)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    expect(flows[api.iid].errorRps).toBe(0)
+    expect(flows[api.iid].downstream).toHaveLength(1)
+    expect(flows[api.iid].downstream[0].rps).toBe(100)
+  })
+
+  it('a timed-out row is tagged blocked with failure "timeout", distinct from an admitted row', () => {
+    const { doc, api } = timeoutWorld(5, 100)
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }))
+    const timedOutRow = flows[api.iid].downstream.find(r => r.blocked)
+    expect(timedOutRow?.failure).toBe('timeout')
   })
 })

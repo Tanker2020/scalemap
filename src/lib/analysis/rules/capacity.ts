@@ -148,6 +148,35 @@ const ttlOutlivesDetection: AnalysisRule = {
   },
 }
 
+// Audit ISSUE-002: the event broker's async decoupling means a struggling consumer no longer
+// trips the producer's breaker — but that also means a consumer falling behind is otherwise
+// invisible unless something surfaces it. `lagSec` (worldEngine/broker.ts, published on
+// `MetricsBatch.topics`) is exactly that signal: a consumer draining slower than its topic fills.
+const CONSUMER_LAG_THRESHOLD_SEC = 5
+
+const consumerLagBehindProducer: AnalysisRule = {
+  id: 'consumer-lag-behind-producer', family: 'capacity',
+  run: ({ doc, lastBatch }) => {
+    if (!lastBatch?.topics) return []
+    const out: AnalysisFinding[] = []
+    for (const [depId, topic] of Object.entries(lastBatch.topics)) {
+      if (!Number.isFinite(topic.lagSec) || topic.lagSec <= CONSUMER_LAG_THRESHOLD_SEC) continue
+      const bp = Object.values(doc.blueprints).find(b => b.dependencies.some(d => d.id === depId))
+      const dep = bp?.dependencies.find(d => d.id === depId)
+      const targetBp = dep?.target.kind === 'blueprint' ? doc.blueprints[dep.target.blueprintId] : undefined
+      out.push({
+        id: `consumer-lag-behind-producer:${depId}`, ruleId: 'consumer-lag-behind-producer', family: 'capacity', severity: 'warning',
+        title: 'Consumer falling behind producer',
+        why: `${bp?.name ?? 'A service'}'s event topic${targetBp ? ` to ${targetBp.name}` : ''} is ${topic.lagSec.toFixed(1)}s behind — the backlog (${Math.round(topic.backlogCount)} messages) is growing faster than the consumer drains it (${topic.drainRps.toFixed(1)} rps vs ${topic.totalArrivalRps.toFixed(1)} rps arriving).`,
+        fix: `Scale the consumer, or raise its capacity/reduce its cpuMsPerRequest (Blueprints panel).`,
+        affected: [bp?.id, depId].filter((x): x is string => !!x),
+      })
+    }
+    return out
+  },
+}
+
 export const capacityRules: AnalysisRule[] = [
   ramOversubscribed, burstableSustainedLoad, oceanCrossingPopulation, ttlOutlivesDetection,
+  consumerLagBehindProducer,
 ]

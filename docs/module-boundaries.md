@@ -4305,3 +4305,820 @@ the Settings modal takes effect on the assistant's very next turn without requir
 **Net new dependency count: zero.** `formatResponse.ts`'s markdown-subset parser and
 `citations.ts`'s id lookup are both hand-rolled specifically to avoid pulling in a markdown/HTML
 sanitization library for a surface that never touches `innerHTML`.
+
+---
+
+## Multi-Protocol Connection Audit — Wave 1: divergence and type bugs (`audit-spec.md`, 2026-07-31)
+
+Four small, independent fixes sharing one root cause: **a derived quantity computed twice — once
+for enforcement, once for display — which then drift, so the user is shown a number the simulator
+is not using.** The repo already defended this failure mode exactly once (the `DIVERGENCE GUARD`
+test in `worldEngine/index.test.ts`, pinning the two `activeConnections()` call sites). Wave 1
+closes three more instances of it and adds a guard to each. **A fix that corrects the number
+without adding the guard does not close the issue** — that is the wave's operating rule.
+
+No file in this wave touches `worldEngine/types.ts`'s frozen render contract. Every new parameter
+is optional and defaults to the pre-existing behaviour, so an existing `.scalemap` loads and
+simulates byte-identically and no pre-existing numeric assertion in the suite changed value.
+
+### ISSUE-001 — DB write-fraction (`flows.ts`, `managedDbRuntime.ts`, `worldEngine/index.ts`)
+
+A bound db packet mix DERIVES `writeFraction` from its query types, and `ConnectionsView.tsx`'s
+`EdgeInspector` hides the hand-authored slider once a mix is bound (`:369-370`) — so the raw
+`BlueprintDependency.writeFraction` stays at its default while the user is shown the derived value.
+Two consumers still read the raw field:
+
+- `flows.ts:557`'s `splitDependencyShares` — which admitted rps goes to a SQL primary (writes) vs
+  its replicas (reads). A 100%-write mix routed entirely to the replicas, so **the single-writer
+  ceiling the primary/replica split exists to model silently never bound.**
+- `managedDbRuntime.ts:169`'s `aggregateManagedDbLoad` — splits `totalRps` into
+  `offeredWrite`/`offeredRead` before measuring each against `writeCeiling`/`readCeiling`. A
+  100%-write mix measured against `readCeiling` (5x larger on `sql.small`), so a DB that should
+  have been visibly refusing read as comfortably under capacity.
+
+Both now read the already-resolved value from `buildDepWireBytes` (`index.ts:184-193`), where the
+fallback chain (bound mix → dependency field → 0) already lived. **No third derivation was
+introduced**; `managedDbRuntime.ts` stays free of a `packetResolve` import and takes the resolved
+map as an optional, structurally-typed parameter. Note `flows.ts:601`'s managed-service branch
+already used the correct chain — the file was internally inconsistent 44 lines apart.
+
+⚠ `WireSize.writeFraction === undefined` means **"no db packet in the mix"**, NOT "0% writes" — the
+edge's own field must survive. Both consumers use the three-step `?? ... ?? 0` chain, not `?? 0`.
+
+### ISSUE-011 / ISSUE-012 — published CPU and RAM (`metrics.ts`)
+
+Adjacent lines in the same `InstanceMetrics` literal, both read-side only; no enforcement formula
+changed.
+
+- **`cpuCoresUsed`** was `rps × workload.cpuMsPerRequest` (the RAW authored value) while the host
+  scheduler budgets cores off `effectiveCpuMs` = `cpuMsPerRequest + cpuMsPerKb × kb +
+  handshakeCpuMs` (`index.ts:696-701`, fed to `InstanceLoad.cpuMsPerRequest` at `:736`). On a
+  `short-lived` route that omits a flat 2 ms/req handshake term — a measured **2.37x gap** — and
+  the understated figure sat beside a correctly-sourced `coreUtilization` on the same server card.
+  `buildBatch` now takes the same `effectiveCpuMsByInstance` map the scheduler was given.
+- **`ramMb`** was published unclamped while `hostScheduler.ts:127-133` clamps the identical
+  quantity to the container's `memLimitMb` before OOM accounting. A 512 MB-limited container
+  displayed 900 MB — an impossible reading, on the exact panel a user opens right after an
+  `oom_kill` event — and it let the per-server sum of `ramByInstance` exceed the clamped
+  `ramUsedMb` beside it. `buildBatch` now reads `memLimitMb` **the same way `index.ts:746` does**,
+  so the two cannot disagree about the limit for one instance.
+
+⚠ ISSUE-012's engine-level guard is an exact **bound**, not an exact equality: an over-limit
+container is OOM-killed and restarts on a 5 s timer, so the two sides are sampled at different
+points of that cycle. The exact-equality assertion lives in `metrics.test.ts`, where `buildBatch`
+is called directly and the phase is controlled.
+
+### ISSUE-018 — `sizeKb` optionality and discriminated-union construction (`nodeConfig.ts`)
+
+`BasePacketTemplate.sizeKb` was declared `number` but is genuinely `undefined` at runtime (a
+blanked `RoutesPanel` "req" input, or a route serialized before the field existed, with no
+per-route normalization on load). The type is now `sizeKb?: number`, matching reality. **Auditing
+every reader found all of them already guarded** (`packetResolve.ts:46,98`; `index.ts:129,136`;
+`PacketsPanel`/`RoutesPanel`/`packetDraft`'s `asString`) — so this is a pure soundness change with
+no latent NaN path left open, and `tsc` surfaced zero new errors. Resolve `sizeKb` through
+`packetResolve`'s fallback chain rather than reading it raw.
+
+`addPacket`/`updatePacket` built their result with a blanket `{ ...fields, id } as PacketTemplate`,
+which compiles even when the fields carry another protocol's keys — precisely the cross-
+contamination discriminated-union narrowing exists to catch. Construction now goes through one
+`withPacketId()` helper that branches per protocol with a `never` default, so **a fifth
+`PacketProtocol` becomes a compile error there instead of a silent fallthrough**. `updateRoute`'s
+`as HttpTemplate` is gone too (the `protocol !== 'http'` guard above it already narrows). The
+`(t as HttpTemplate).path` reads in `listPackets`/`getPacket` remain: they are read-only narrowing
+inside a `protocol !== 'http' ||` short-circuit, not construction, and carry no soundness risk.
+
+### Tests
+
+Every bug-catching assertion in this wave was verified to FAIL with its fix reverted (via
+`git stash push <file>`), and every regression-floor assertion passes both before and after.
+
+- `flows.test.ts` — derived value governs primary/replica routing; absent `writeFraction` still
+  falls back to the edge's field; **DIVERGENCE GUARD** pinning the fraction `EdgeInspector`
+  displays to the fraction routing splits on, for a non-degenerate 70/30 mix, through the one
+  shared `resolveWireSize` both call.
+- `managedDbRuntime.test.ts` — first coverage of `aggregateManagedDbLoad`; asserts the resolved
+  split is what decides whether the single-writer ceiling binds.
+- `metrics.test.ts` — effective-value CPU, clamped RAM, `ramByInstance` strata bound, plus two
+  regression floors (omitted map, process placement).
+- `index.test.ts` — CPU and RAM **DIVERGENCE GUARD**s beside the existing connection-RAM one.
+- `packetResolve.test.ts` / `nodeConfig.test.ts` — absent `sizeKb` never yields NaN (including
+  blended with a sized packet); all four protocols round-trip through the exhaustive constructor
+  with their kind-specific fields intact.
+
+## Multi-Protocol Connection Audit — Wave 2: composed end-to-end latency (`audit-spec.md`, 2026-07-31)
+
+**Lands alone, per the spec** — this is the wave that deliberately changes engine-computed
+numbers, not a divergence/type fix. `InstanceFlow.serviceLatencyMs` (`flows.ts`) was SELF time
+only — an instance's own CPU/queue/NIC cost, sampled once per instance in BFS creation order. Two
+things about this were wrong: (1) the published `p50Ms`/`p99Ms`/`activeConnections` never grew
+when a downstream dependency slowed down, so the canonical "slow dependency → connection pileup →
+OOM" cascade was structurally unreachable; (2) `replay.ts`'s tracer already composed hop-by-hop
+latency correctly for its own sampled path (`totalMs`), so the Trace panel and the metrics p50 chip
+for the same instance could show two different "latency" numbers with no explanation.
+
+### ISSUE-003 — `InstanceFlow.totalLatencyMs` (`flows.ts`, `metrics.ts`, `index.ts`)
+
+`solveFlows` now runs a memoized post-BFS composition pass (after every flow's `downstream` array
+is settled — flows are created in first-touch, not topological, order, so an instance's own
+downstream rows aren't final until the whole BFS finishes) filling a new `InstanceFlow.
+totalLatencyMs`: `serviceLatencyMs + rps-weighted mean over non-blocked downstream rows of
+(hop time + that row's totalLatencyMs)`. A managed target's contribution is
+`managedDbRuntime[id]?.p50Ms ?? managedBaseLatencyMs(nodeType)` — the same fallback chain
+`replay.ts` already uses. `totalLatencyMs` is optional on `InstanceFlow` (not part of the frozen
+`worldEngine/types.ts` contract) so hand-built flow fixtures in `metrics.test.ts`/`replay.test.ts`
+that predate this field compile unchanged; every consumer falls back to `serviceLatencyMs`.
+
+⚠ **Deliberate departure from the spec's literal instruction to reuse `hopLatencyMs`.** That
+function draws from the engine's seeded rng (`jitter`). The composition pass touches every
+downstream row every step (not once per trace sample like the tracer) — drawing rng there would
+shift the stream for the REST of the step (particle picks, VPS steal, breaker jitter, every
+subsequent `sampleLatencyMs` call), invalidating hundreds of unrelated exact-value assertions for a
+number that only needs to be a reasonable composition estimate, not a sampled realization.
+`networkRuntime.ts` now exports `baseHopLatencyMs` — the identical per-hop-class value
+`hopLatencyMs` already computed internally before applying `jitter()`, factored out as a pure,
+rng-free function. `hopLatencyMs` itself is unchanged (same jitter, same rng draws, same only
+caller — the tracer). This is why the full suite needed **zero** golden-value re-baselining despite
+Global Constraint 4 anticipating some: no existing test exercises a multi-hop chain while also
+asserting the composed-latency-sensitive fields (`p50Ms`/`p99Ms`/`activeConnections`/`ramMb`) for a
+non-leaf instance, and the rng stream is untouched everywhere else.
+
+A genuine topology cycle (A depends on B depends on A) is NOT fully prevented by the BFS's
+`chainHas` guard — that guard only stops re-*queueing*; the row back into the cycle is still
+recorded in `downstream`. The composition pass's `computing` set breaks an in-progress cycle by
+treating the back-edge as the callee's self time only, rather than recursing forever.
+
+**The two-call-site invariant, extended.** Both Little's-law sites now read composed latency
+consistently: `index.ts`'s host-scheduler `InstanceLoad` (`const latency = pf?.totalLatencyMs ??
+pf?.serviceLatencyMs ?? effectiveCpuMs(...)`, one-step-lagged like `admittedScale`) and
+`metrics.ts`'s published `activeConnections` (fed by `p50Ms`, itself now sourced from a percentile
+reservoir of `totalLatencyMs` samples instead of `serviceLatencyMs`). A caller blocked on a slow
+dependency now holds more connections — and more RAM — on BOTH sides, or the RAM the scheduler
+enforces/OOM-kills on would silently diverge from what `metrics.ts` publishes.
+
+**New field, additive-optional on the frozen contract:** `InstanceMetrics.serviceP50Ms` (`types.ts`,
+logged in `.superpowers/sdd/contract-drift.md`) preserves the PRE-ISSUE-003 self-only semantics —
+`p50Ms`/`p99Ms` deliberately mean something different (composed) after this change, so anything
+that wants "how long did this instance's own work take" reads `serviceP50Ms` instead. `metrics.ts`'s
+`InstanceWindow` gained a parallel `selfLatencySum` accumulator, EMA'd the same way `rps`/
+`errorRate` are (a plain windowed mean — `serviceP50Ms` is a regression-floor readout, not a new
+tail statistic, so it does not need the multi-second percentile reservoir `p50Ms`/`p99Ms` get).
+
+`replay.ts`'s tracer is untouched — its hop-by-hop `totalMs` is a genuinely different statistic
+(one rng-sampled realization of a single path) from the composition pass's rps-weighted mean over
+every path, and the spec explicitly keeps them independent as a cross-check rather than unifying
+them.
+
+### Tests
+
+- `flows.test.ts` — a leaf instance's `totalLatencyMs` exactly equals `serviceLatencyMs`; a 3-hop
+  chain composes recursively (hand-verified against `baseHopLatencyMs`'s exact constants, `toBe`/
+  `toBeCloseTo`); multi-dependency fan-out weights by each row's rps share; a genuine A→B→A cycle
+  terminates with a finite value; a blocked row contributes nothing.
+- `metrics.test.ts` — `p50Ms` sources from `totalLatencyMs`, `serviceP50Ms` from
+  `serviceLatencyMs`, from one fixture where the two deliberately disagree; a fixture that omits
+  `totalLatencyMs` entirely still publishes the exact pre-existing `p50Ms` value (regression floor).
+- `index.test.ts` — an engine-level `web → api → db` fixture (each service on its OWN server, so
+  db's cost can't spill onto api's CPU scheduling) where only `db`'s `cpuMsPerRequest` differs
+  between two runs: api's composed `p50Ms` grows, its `serviceP50Ms` does not, and its
+  `activeConnections` more than doubles — proving Little's law actually reacts to a slow
+  dependency. A **DIVERGENCE GUARD** in the same style as Wave 1's, confirming scheduler-enforced
+  and published RAM stay within the same bounded ratio once a downstream dependency is slow.
+- Every bug-catching assertion above was verified to FAIL with the composition pass reverted (via
+  `git stash`, not amending); the full pre-existing suite (1631 tests) passed unchanged both before
+  and after — this wave's blast radius is exactly the fields the spec intended to change, nothing
+  else.
+
+## Multi-Protocol Connection Audit — Wave 3, part 1: render hot path (`audit-spec.md`, 2026-07-31)
+
+ISSUE-013/014/015, landed together since all three touch the same two functions
+(`buildAzParticles`/`buildServerParticles`, `index.ts`). Every fix here is loop-invariant work
+hoisted to `start()` or an early exit — none change WHICH particles are emitted or their order, so
+every fix is byte-identical-output by construction, verified by the pre-existing "respects
+MAX_SERVER_PARTICLES cap" / "is deterministic for a fixed seed" tests in `serverParticles.test.ts`,
+which needed no changes to keep passing.
+
+**Prerequisite: `bench/renderPerf.bench.test.ts` (new).** `bench/enginePerf.bench.test.ts` only
+measures `runStep` (the ~10 Hz sim loop) — nothing gated the 60 Hz render loop before this file.
+Same isolation/median-of-100 idiom as the engine bench (own file, excluded from `npx vitest run`,
+run via `npm run bench`); budget is this file's own (1ms/frame at the 400-particle AZ cap, 2x
+CI-fail-only line), since there's no render-loop analog to `DEGRADE_THRESHOLD_MS`. Measured on this
+machine at a FAN=30/3-packet-mix fixture: **~0.074ms/frame before → ~0.053ms/frame after** — real,
+but modest at this scale (the audit's ~24,000 allocs/sec figure is aggregate GC pressure over
+sustained runtime, not fully visible in a 100-frame median). This number is what ISSUE-017 gates.
+
+### ISSUE-013 — precomputed packet pick tables (`packetResolve.ts`, `index.ts`)
+
+`pickPacketByIndex` used to `.filter()` + `.reduce()` a dependency's bound packet mix on EVERY
+call — once per particle per frame, up to `MAX_AZ_PARTICLES=400`/`MAX_SERVER_PARTICLES=50` times.
+`mix` comes from the frozen `doc` (topology is edit-locked while running), so every call after the
+first for a given dependency was re-deriving an answer that never changes for the run's duration.
+
+Split into `buildPickTable(mix)` (the old filter+reduce, run ONCE) returning a new `PickTable`
+type, and a rewritten `pickPacketByIndex(table, k)` that just walks the precomputed `entries`/
+`total`. `index.ts` builds `depPickTableById: Record<string, PickTable | null>` once at `start()`
+(alongside the existing `depBytesById`/`depConnById` maps) and the particle builders look it up by
+`dependencyId` instead of passing `dep?.packetMix` straight through. Bit-identical output verified
+against a hand-inlined replica of the pre-refactor `pickPacketByIndex` body
+(`packetResolve.test.ts`'s new `buildPickTable` describe block).
+
+### ISSUE-014 — `depById` start()-time index (`index.ts`, `managedDbRuntime.ts`)
+
+The fifth recurrence of the unindexed-lookup class already fixed as ISSUE-032/073/075/076: both
+particle builders did `bp?.dependencies.find(d => d.id === row.dependencyId)` once per downstream
+row per FRAME (60 Hz), and `managedDbRuntime.ts`'s `aggregateManagedDbLoad` did the same once per
+row per STEP (10 Hz). `dep.id → BlueprintDependency` never changes once `doc` is frozen, so this
+was loop-invariant work identical in shape to the maps already built at `start()`.
+
+New `buildDepIndexes(doc)` builds `depById`/`depPickTableById` together in one pass (same
+enumeration `buildDepWireBytes`/`buildDepConnProfiles` already use — flat `Record` keyed by
+`dep.id` alone, since those two maps already assume dependency ids are globally unique and that
+assumption is already load-bearing in production). `aggregateManagedDbLoad`/`managedDbRuntime`
+gained an optional `depById` parameter, checked BETWEEN `depBytesById` (which already resolves the
+write fraction for virtually every dependency in practice) and the old linear-scan fallback — so
+existing callers/tests that omit it are unaffected, and the scan only ever runs when both maps
+are deliberately omitted.
+
+### ISSUE-015 — particle cap early-exit (`index.ts`)
+
+`buildAzParticles`/`buildServerParticles` only checked the cap in the INNERMOST loop
+(`particles.length < MAX_AZ_PARTICLES`); once the cap was hit early in iteration order, every
+subsequent flow and downstream row still ran its lookups/lookups before discovering there was
+nothing left to add. Added the same `if (particles.length >= CAP) break` at the top of both the
+outer `for (const f of ...)` loop and the per-flow `for (const row of f.downstream)` loop, in both
+functions — stops iterating the moment no more particles will be emitted, without touching which
+particles are chosen (iteration order is unchanged, so the first CAP particles in the existing
+order are exactly what's kept — this is why the fix needed no new "which particles" test).
+
+### Tests
+
+- `packetResolve.test.ts` — `buildPickTable` produces bit-identical picks to a hand-inlined replica
+  of the pre-refactor body, across a range of indices including negative ones; the four pre-existing
+  `pickPacketByIndex` describe blocks updated to build a table first (same assertions, same values).
+- `managedDbRuntime.test.ts` — `depById` resolves the write fraction when `depBytesById` has no
+  entry; `depBytesById` still wins when both disagree; omitting both falls back to the linear scan
+  (regression floor).
+- `serverParticles.test.ts`'s pre-existing cap/determinism tests continue to pass unchanged — the
+  strongest possible evidence these three fixes altered no observable behavior.
+- `bench/renderPerf.bench.test.ts` (new) — the Wave 3 prerequisite; passes at both the 1ms budget
+  and the measured before/after numbers above.
+
+## Multi-Protocol Connection Audit — Wave 3, part 2 (`audit-spec.md`, 2026-07-31)
+
+### ISSUE-007 — protocol-mismatch compile finding (`world/types.ts`, `world/compileWorld.ts`)
+
+`BlueprintDependency.protocol` drives ONLY the particle render tint (`index.ts`'s particle
+builders); every simulated consequence — wire bytes, connection hold, WAL amplification — comes
+from the bound packet mix's own resolved protocol via `packetResolve`/`connectionModel`. Nothing
+reconciled the two, so an author could set `dep.protocol = 'event'` on a dependency whose mix is
+entirely `http` packets and the board would render violet "event" particles for what the engine
+actually costs/holds as a keep-alive HTTP call.
+
+Added a new `CompileFinding` kind, `'protocol-mismatch'` (additive to the union), and a
+`protocolMismatchFindings(doc)` pass in `compileWorld.ts` — computed ONCE per unique dependency
+(iterating `doc.blueprints` directly, not per compiled path/instance, which would multiply the
+same finding by however many instances the source blueprint has). `majorityMixProtocol` resolves
+the mix's majority-weight protocol (same defensive dangling-packet/non-positive-weight filter every
+other mix reader applies) and compares it against `dep.protocol`; a mismatch is surfaced as a
+`warning`-severity finding, never auto-corrected — an explicit author choice on `dep.protocol`
+is left alone, matching how every other compile finding works. `AnalysisTab.tsx`/`WorldPanel.tsx`
+render findings generically off `{severity, message, affected}` with no per-kind switch, so the new
+kind needed no UI changes.
+
+### ISSUE-016 — `PacketLayer.tsx` path-length cache + theme-aware protocol color
+
+Two independent defects in the same file. (1) `pathCache` memoized the `SVGPathElement` per
+`fromId→toId` pair but NOT its `getTotalLength()` — an SVG geometry computation, not a cheap
+property read — so every particle on every frame re-computed the same length for an already-cached,
+geometrically-immutable path. Now caches `{ path, len }` together, computing `len` once at
+cache-population time; the existing D10e try/catch (native WebView SVG throwing) still wraps both
+the creation+length computation and the per-particle `getPointAtLength`, so a throw still falls
+back to the straight-line lerp exactly as before. (2) `PROTOCOL_COLOR` hardcoded four dark-tuned
+hexes directly in TSX — a `<canvas>` 2D context needs a resolved literal (`var(--color-*)` can't be
+read from `ctx.fillStyle`), so the fix is a new `protocolColor(protocol, themeMode)` sourced from
+`theme.ts`'s `CATEGORY_COLORS` (the codebase's existing idiom for this exact situation, matching
+`azFloorStyles.ts`/`ServerFaceplate.tsx`), mapped `http→compute, db→storage, event→messaging,
+stream→network` and branched dark(`.accent`)/light(`.foreground.light`) off `ui.store`'s
+`themeMode`, added to the draw effect's dependency array so a live theme toggle repaints correctly.
+
+### Tests
+
+- `compileWorld.test.ts` — a mismatched dependency (event-authored, http-bound mix) produces
+  exactly one `protocol-mismatch` finding; a matching dependency and a mix-less dependency produce
+  none (no false positives).
+- `PacketLayer.test.tsx` — `getTotalLength` (stubbed onto the created element's prototype, since
+  jsdom doesn't expose `SVGPathElement` globally in this setup) is called exactly once across two
+  frames of the same `fromId→toId` pair; `fillStyle` matches `CATEGORY_COLORS`' exact accent/
+  foreground values per protocol in dark/light mode; an authored `colorHint` still wins over the
+  protocol color in either theme.
+- Every new assertion verified to FAIL with its fix reverted (`git stash`), full suite (1645→1652
+  tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 3, part 3: ISSUE-017 decision (`audit-spec.md`, 2026-07-31)
+
+**Particle-object pooling: closed as not-needed.** ISSUE-017's mandate was explicit: re-benchmark
+after 013+015 land, and only implement pooling — which changes an ownership guarantee (the
+renderer would receive a borrowed, reused array instead of one it can freely retain) — if the
+budget isn't already met. `bench/renderPerf.bench.test.ts` measured ~0.053ms/frame after 013+014+
+015 at the 400-particle AZ cap, against a 1ms budget (2ms CI-fail line) — ~19x headroom. Pooling's
+added complexity (auditing every `attachRenderer` consumer for retained references, the correctness
+risk of a consumer treating a borrowed array as owned) isn't justified by a number this far under
+budget. Not implemented.
+
+**The one piece of ISSUE-017 that WAS implemented unconditionally** (per its own execution steps —
+independent of the pooling decision): `buildPayload` allocated a fresh throwaway `[]` for every
+non-matching scope's `particles`/`arcs` field every frame (a globe renderer's empty `particles`, an
+az/server renderer's empty `arcs`). Replaced with two shared, `Object.freeze`d module-level
+constants (`EMPTY_PARTICLES`/`EMPTY_ARCS`) — safe with no ownership caveat (an empty array carries
+no state to alias-corrupt), and frozen so a consumer mutating it in place fails loudly instead of
+corrupting every other renderer sharing the same instance. Verified with a two-scope test (`arcs`
+is the identical instance across an az- and a server-scope renderer) and a frozen-object test.
+
+### Tests
+
+- `index.test.ts` — two renderer scopes' empty `arcs`/`particles` fields are `toBe` the same
+  instance; `Object.isFrozen` on the shared instance is `true`. Both verified to FAIL with the fix
+  reverted.
+
+## Multi-Protocol Connection Audit — Wave 4: capacity truth (`audit-spec.md`, 2026-07-31)
+
+### ISSUE-009 — NIC service-rate ceiling sized off resolved wire bytes (`index.ts`)
+
+The per-server NIC ceiling (`serviceRateByInstance`, step 4/5) divided the NIC's line-rate bytes/
+sec by the flat module constant `Math.max(NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES)` (2048) REGARDLESS
+of what an instance's traffic was actually sized as — even though NIC byte BOOKING (step 7) was
+already fully packet-aware. A 5 MB edge on a 1 Gbps NIC modeled a ~61,035 rps ceiling instead of the
+true ~24 rps — the NIC never became the bottleneck for large-payload edges (bulk export, big DB
+result sets, `stream` framing), exactly where NIC modeling matters most.
+
+Fixed by splitting the ceiling into two steps — split the server's bandwidth (bytes/sec) across
+resident instances by cpu-share weight FIRST (the physically shared resource), THEN convert each
+instance's own bandwidth share into an rps ceiling using THAT instance's own resolved wire size —
+reusing signals already built this same step for the packet-driven CPU blend: `entryNicBytesByInstance`
+(entry-tier req/resp bytes) and a WIDENED internal-tier fold (`internalPacketKbByInstance`'s sibling,
+new `internalRespBytesByInstance` — one extra accumulator field on the SAME loop that already reads
+`wire.respBytes`, not a new resolution point). The worst byte direction still governs (mirrors
+`evaluateNic`); an instance with no resolvable traffic yet this step falls back to the exact
+pre-fix flat constant — which is also what an UNAUTHORED (default 2 KB) edge algebraically reduces
+to, so every existing world with no authored packet sizes keeps byte-identical NIC-ceiling behavior.
+
+⚠ Unlike Waves 1/3, this is NOT purely additive: any EXISTING world with an authored large payload
+now throttles far more aggressively (correctly). One pre-existing test (`'a fat internal packet
+saturates the CALLEE NIC and sheds throughput'`) asserted a >100x nicInMbps gap between a 2 KB and
+a 5 MB scenario — reachable only because the OLD ceiling let the ENTIRE 100 rps of 5 MB calls
+through uncapped, booking ~4 Gbps on a 100 Mbps NIC (physically impossible — the exact bug this
+issue fixes). Hand-verified the corrected numbers (measured ~9x gap, 1.69→15.33 Mbps) and
+re-baselined that one assertion with a comment explaining why, following the ISSUE-003 re-baseline
+discipline (Global Constraint 4's sanctioned exception): every changed literal individually
+verified as physically correct, not merely different.
+
+### Tests
+
+- `index.test.ts` — a 5 MB edge on a 100 Mbps NIC now admits well under 10 rps (was ~100,
+  effectively uncapped, pre-fix); an unauthored default-2KB edge at a tight NIC keeps the exact
+  pre-fix shed-throughput behavior (regression floor, matching the pre-existing NIC-backpressure
+  describe block's own assertion shape). Verified to FAIL with the fix reverted (measured 81 rps
+  admitted pre-fix vs the <10 rps bound).
+
+### ISSUE-010 — silently-dropped fan-out, surfaced (`flows.ts`, `index.ts`, `types.ts`, `analysis/rules/structural.ts`)
+
+Three BFS truncation points in `solveFlows` left no trace anywhere: an instance past `MAX_DEPTH`
+(8 hops) reads as a healthy, zero-traffic leaf for whatever it would have called next; a dangling
+dependency (target blueprint resolves to zero compiled paths) silently `continue`s with no row,
+no event, no finding; a genuine topology cycle's cut edge looks like a normal downstream row with
+no marker that re-entry was blocked instead of followed. For a tool whose whole purpose is
+surfacing architecture problems, "no findings past this depth" reading as "verified fine" is worse
+than not modeling it at all.
+
+`solveFlows`'s return type gained `depthExceededInstanceIds: Set<InstanceId>` and `cycleCutEdges:
+{ fromId, toId }[]` (additive to `SolveFlowsResult`, NOT the frozen `worldEngine/types.ts`
+contract — this is `flows.ts`'s own internal return shape) — collected inline at the two existing
+`continue` sites rather than adding a new pass, so `solveFlows` stays a pure function of its input.
+`index.ts` turns these into two new `EngineEventKind`s (`chain_depth_exceeded`/`chain_cycle_cut`,
+additive to the frozen contract, logged in `.superpowers/sdd/contract-drift.md`), deduped to ONCE
+PER RUN per instance/edge via two new `Set`s in `EngineState` (`depthExceededReported`/
+`cycleCutReported`) — a state TRANSITION, not a steady-state condition, mirroring how other
+steady-state events (`breaker_open`) avoid re-firing every step while the condition holds.
+
+The dangling-dependency case is different in kind — it's a STATIC/structural property of the
+compiled world (does this dependency's target blueprint have any instance at all), not a per-step
+runtime event, so it doesn't need a simulation run to detect. New analysis rule
+`dangling-dependency-no-targets` (`analysis/rules/structural.ts`, registered in `ANALYSIS_RULES`
+per the standing "one registry" rule) fires once per unique dependency whose target blueprint has
+zero compiled instances — checked once per blueprint's dependency list, not per compiled path or
+per source instance of the same blueprint (which would multiply the same finding by however many
+instances the source has).
+
+`eventCausality.ts`'s `decodeAffected` needed the two new `EngineEventKind` cases added to stay
+exhaustive (a `tsc` compile error, not a runtime bug) — both map `affected[0]`/`affected[1]` to
+`primaryId`/`secondaryId` the same way the other instance-pair event kinds do.
+
+### Tests
+
+- `flows.test.ts` — a 10-service chain (one hop past `MAX_DEPTH`) reports the depth-8 instance in
+  `depthExceededInstanceIds` and confirms the 10th service's flow is genuinely never reached (not
+  just "no event" — the actual silent drop); a shallower chain reports nothing. A genuine A→B→A
+  cycle's `cycleCutEdges` contains exactly the cut edge (deterministic, `toEqual` exact); an acyclic
+  world reports none.
+- `structural.test.ts` — `dangling-dependency-no-targets` fires for a dependency whose target has
+  zero placements; stays silent once the target has a real instance, for a managed-service target
+  (compileWorld already gates a missing service), and for a source blueprint with no instances of
+  its own.
+- `index.test.ts` — an engine-level 9-hop-deep world emits `chain_depth_exceeded` exactly ONCE
+  across 10 steps (not one per step); an engine-level A↔B cycle world emits `chain_cycle_cut`
+  exactly once. Every new assertion verified to FAIL with the fix reverted; full suite
+  (1656→1666 tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 5: async event delivery, the broker (`audit-spec.md`, 2026-07-31)
+
+⚠ **Deliberate scope decision, per audit-spec.md's Global Constraint 4 exception (the same one
+Wave 2's ISSUE-003 used):** unlike every other issue in this audit, this ONE changes DEFAULT
+behavior for every EXISTING `event` packet, not just newly-authored ones — `event` is now
+simulated as asynchronous by default. `event` is removed from CLAUDE.md's parked list in the same
+change (the "Packet system" Key Architecture Decision paragraph).
+
+### ISSUE-002 — `src/lib/worldEngine/broker.ts` (new), `flows.ts`, `index.ts`, `metrics.ts`, `analysis/rules/capacity.ts`
+
+Before this issue, `event` was a synchronous blocking RPC wearing a different label:
+`connectionClassOf` collapsed it to keep-alive, `packetResolve` turned it into plain
+request/response bytes, and — critically — the flow solver pushed the consumer onto the SAME
+BFS step as the producer, so a struggling CONSUMER's downstream errors opened the PRODUCER's
+breaker (`index.ts`'s step-8 breaker-record loop reads `targetErrorFraction(row.toInstanceId)` for
+any non-blocked row with a target instance — event rows included). That is the exact opposite of
+what a message broker exists to do.
+
+**New `broker.ts`**, modelled directly on `managedDbRuntime.ts`'s three-function shape
+(`aggregateTopicLoad` → `topicRuntimeFor` → `topicRuntime`), pure/no engine imports. A "topic" in
+this schema is identified by its dependency id (there is no separate Topic entity). Aggregate,
+like managedDbRuntime: backlog/lag/drop/DLQ are properties of TOTAL arrival vs TOTAL consumer
+capacity, computed once from the PREVIOUS step's flows (one-step lag, same shape as
+`admittedScale`/`managedDbRuntime`), with `flows.ts` applying the result to each producer's own
+share. `consumerCapacityRps` REUSES the flow solver's own `serviceRateByInstance` (already resolved
+for the queue model) rather than re-deriving a second notion of consumer capacity. Worked in
+message COUNTS internally (arrival/capacity × stepSec, backlog persisted as a count) — clearer
+arithmetic than converting rates back and forth.
+
+**`flows.ts`'s dependency loop**: an event-protocol dependency (resolved via the new shared
+`resolveMixProtocol`, below) NEVER pushes its target onto this step's BFS queue — the producer's
+share is instead split by the topic's resolved `dropFraction`/`dlqFraction` into an accepted row
+(bytes still book — publishing succeeded), a `dropped` row, and a `dlq` row (both new
+`DownstreamFlow.failure` values, additive to the existing `'throttled' | 'timeout'` union).
+**Separately**, the topic's resolved `drainRps` seeds the CONSUMER instance(s) as an independent
+BFS root (own depth 0, no parent) — without this the consumer would never appear in metrics or fan
+out its own dependencies for event-only traffic, even though the topic is actively draining; this
+was caught by an engine-level test asserting the consumer's published `rps > 0`, which failed
+before this seeding was added.
+
+**The breaker fix (the actual bug).** `index.ts`'s step-8 loop now looks up the row's dependency
+(`s.depById`, ISSUE-014's index) and forces `fraction = 0` for a non-blocked event-protocol row,
+never consulting `targetErrorFraction` — only the topic's OWN drop/DLQ overflow (already recorded
+as separate `blocked: true` rows) can open an event dependency's breaker. This was caught by an
+engine-level test that failed on the FIRST attempt at this issue: a fixture with a genuinely
+struggling consumer (its own dependency 100% firewall-blocked) opened the producer's breaker even
+after the flows.ts decoupling landed, because the generic breaker loop doesn't know about
+protocols — the decoupling alone was not sufficient; the breaker-recording site itself had to be
+taught to ignore the consumer's health for this protocol.
+
+**`resolveMixProtocol`** (`packetResolve.ts`, new export): extracted from ISSUE-007's
+`compileWorld.ts`-local `majorityMixProtocol` into a shared resolver — "what protocol does this
+dependency actually speak" is now the ONE place both the compile-time protocol-mismatch finding
+and the engine's broker-gating logic read from, so they can never disagree.
+
+**Metrics**: `MetricsBatch.topics?: Record<string, TopicMetrics>` (additive, contract-drift
+logged) — `state.lastTopicRuntime` follows the exact `lastHost`/`lastVps` side-channel pattern
+(published as-is, not window-averaged, since it's already a one-step-lagged aggregate). New
+analysis rule `consumer-lag-behind-producer` (`capacity.ts`) fires when a topic's `lagSec` exceeds
+a 5 s threshold.
+
+**Authoring**: `EventTemplate` gains `retentionCapCount?`/`maxRedeliveries?` (additive, absent ⇒
+unbounded retention / one redelivery before DLQ); `packetDraft.ts` and `PacketModal.tsx` gained the
+matching form fields, and the modal's stale "asynchronous delivery semantics are a later phase"
+copy is gone (still true for `stream`, which stays parked — see Wave 6).
+
+**Simplifications, documented in `broker.ts`'s own comments**: redelivery is modelled as "every
+failure gets one more attempt fed back into the backlog" rather than true per-message
+attempt-counting (this is an aggregate rps model, not a per-message one) — `maxRedeliveries === 0`
+sends failures straight to the DLQ; any positive value keeps retrying indefinitely under sustained
+consumer errors, the reasonable aggregate analogue of "the DLQ only catches messages that are
+ACTUALLY exhausted."
+
+### Tests
+
+- `broker.test.ts` (new) — `aggregateTopicLoad` sums arrival/capacity/error-fraction correctly and
+  ignores non-event dependencies entirely; `topicRuntime` drains fully under spare capacity, grows
+  and PERSISTS a backlog across calls when arrival exceeds capacity, sheds overflow past
+  `retentionCapCount` as `dropRps`, and routes failures to `dlqRps` (maxRedeliveries=0) or
+  `redeliverRps` (the default).
+- `index.test.ts` — the core thesis test: a producer -> event -> consumer world where the consumer
+  is genuinely struggling (its own dependency 100% firewall-blocked) still shows real consumer
+  throughput AND never opens the producer's breaker (filtered specifically on the producer's own
+  `pathKey`, since the consumer's OWN breaker for its dead dependency legitimately opens — that's
+  real, unrelated failure, not the bug); `MetricsBatch.topics` publishes non-zero arrival/lag.
+- Every bug-catching assertion verified to FAIL with the fix reverted (`git stash`); full suite
+  (1666→1677 tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 6, part 1: stream semantics (`audit-spec.md`, 2026-07-31)
+
+### ISSUE-004 — separating stream connection rate, frame rate, and compute rate
+
+One authored `rps` was asked to answer three physically distinct questions for a stream: how many
+NEW connections open per second (what `activeConnections()` needs), how many FRAMES a connection
+pushes per second (what NIC/CPU-per-KB accounting needs), and steady-state compute. There was no
+way to author both a correct connection count AND a correct frame/byte rate at once.
+
+**Landed**: `ConnectionProfile` gains `frameMultiplier` (additive field — 1 for keep-alive/short-
+lived and for an unauthored stream, the exact pre-issue 1:1 rps:frame reading). `StreamTemplate`
+gains `framesPerSecond?: number`; `profileFor('streaming', holdSeconds, framesPerSecond)` resolves
+it, `resolveConnectionProfile` blends it across a mix the same weighted way as every other field.
+New `resolvedFrameRps(rps, profile) = rps × frameMultiplier` is what a caller should feed into NIC/
+byte/`cpuMsPerKb` accounting instead of raw `rps`; `activeConnections()` itself is UNTOUCHED — it
+keeps meaning "connection rate", never "frame rate". `index.ts`'s engine-level `ProfileAccum`/
+`addProfile`/`meanProfile` helper (blends a service's entry + internal connection-profile tiers
+into one) widened to carry `frameMultiplier` through the same fold, so it's available per-instance
+wherever the engine already resolves a connection profile.
+
+Also landed: `packetResolve.ts`'s `resolveWireSize` gained a stream-specific compression ratio
+(`none`/`gzip`/`snappy` → `1`/`0.3`/`0.5`) applied to a stream packet's resolved req/resp bytes —
+an uncompressed and a `snappy`-compressed stream used to book identical NIC bytes and cost.
+
+**⚠ Scoped down, documented explicitly rather than silently skipped**: the spec's step 4 calls for
+threading `resolvedFrameRps` into every engine call site that currently feeds raw `rps` into NIC/
+`cpuMsPerKb` accounting for a stream-protocol hop. That was NOT done in this pass — the entry/
+internal KB-fold accumulators (`entryPacketKbByInstance`/`internalPacketKbByInstance`) currently
+carry exactly ONE rps signal each, and retrofitting a second (frame) rps through them touches the
+same hot per-step byte/CPU accounting paths ISSUE-009 just corrected, with a real risk of
+introducing a subtle regression under limited time to re-verify the full NIC/cost suite. The
+PRIMITIVES (`frameMultiplier`, `resolvedFrameRps`, the blend, the compression ratio) are fully
+implemented, tested, and ready — an authored `framesPerSecond` on a stream packet has NO effect on
+simulated bytes/CPU yet, only on what `resolvedFrameRps` WOULD compute if a caller used it. Wiring
+this into the entry/internal folds is the natural, well-scoped follow-up.
+
+### Tests
+
+- `connectionModel.test.ts` — `frameMultiplier` defaults to 1 for every non-streaming class and for
+  an unauthored stream; an authored `framesPerSecond` becomes the multiplier, decoupled from
+  `activeConnections()`'s own math; non-finite/non-positive values are ignored;
+  `resolvedFrameRps` is the identity for keep-alive and multiplies correctly for a resolved
+  streaming profile; `resolveConnectionProfile` blends `frameMultiplier` across a mix the same
+  weighted way as every other field. Two pre-existing `toEqual` literals updated to include the new
+  field (value unchanged: 1 in both cases).
+- `packetResolve.test.ts` — gzip/snappy measurably shrink a stream packet's resolved bytes (gzip <
+  snappy < none); a non-stream protocol is completely unaffected.
+- Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite
+  (1677→1685 tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 6, part 2: client-side timeouts (`audit-spec.md`, 2026-07-31)
+
+### ISSUE-006 — `latency.ts`, `nodeConfig.ts`, `flows.ts`
+
+The only authored timeout anywhere in the engine was `ManagedService.queryTimeoutMs`, scoped to
+managed DBs. A regular service→service `http` dependency had NO client-side timeout concept at
+all — no matter how slow a downstream instance got, the caller kept counting the call as admitted
+unless it hit an unrelated capacity wall. The canonical distributed-systems failure ("dependency
+got slow, caller's requests timed out, breaker tripped from timeouts, not 5xx or capacity") was
+structurally unreachable.
+
+`latency.ts` factors `sampleLatencyMs`'s mu/sigma derivation into a shared `muSigma` helper and
+adds `timeoutErrorFraction(p50, p99, timeoutMs)` — the ANALYTIC `P(latency > timeout)` under that
+same log-normal (via a small Abramowitz-Stegun erf/normalCdf approximation), not a Monte Carlo
+estimate: no rng draw, so it can't perturb the seeded stream, and it shares its distribution
+parameters with what's actually sampled by construction.
+
+`HttpTemplate` gains `clientTimeoutMs?: number` (mirrors `ManagedService.queryTimeoutMs`'s "absent
+⇒ no timeout" convention). `flows.ts`'s dependency loop resolves it from the bound mix's first http
+packet that authors one (new `resolveClientTimeoutMs`, mirroring how other per-edge scalars resolve
+from "the packet that speaks for this axis") and, for a non-blocked instance-target row, computes
+`timeoutErrorFraction` off the TARGET's own self-time (`getFlow(toId).serviceLatencyMs` — forces
+its first-touch sample if not already taken, exactly as if this were the first row to reach it).
+The timed-out share is added to the caller's `errorRps` and recorded as a `timeout`-tagged blocked
+row (reusing the SAME `DownstreamFlow.failure` value the managed-DB query-timeout path already
+uses — both mean "too slow"); the reduced admitted share is what continues downstream, so bytes/
+CPU aren't double-booked for calls that never completed.
+
+**No breaker-side code changes were needed** — `breakers.ts`'s `recordWeighted`/`errorThreshold`
+machinery already reads whatever `errorRps`/total ratio a dependency reports, so a timeout-sourced
+error and a capacity-sourced error are indistinguishable to it by design. Once `flows.ts` feeds a
+latency-caused error into the SAME `flow.errorRps` a capacity error already used, the breaker is
+latency-sensitive for free.
+
+**Scoped down, documented explicitly**: the spec's companion ask — wiring `statusCode`'s
+documented 4xx (error-but-completes)/5xx (drop) semantics, currently hardcoded to `200` with zero
+readers — was NOT done in this pass. It's a materially smaller, independent defect (decorative
+schema, not a structural fidelity gap) than the timeout mechanism, and this issue was already at a
+reasonable stopping point. Natural follow-up.
+
+### Tests
+
+- `latency.test.ts` — `timeoutErrorFraction` is ~0 well above p99, >0.5 below p50, exactly 0.5 at
+  p50 (the log-normal's median), monotonically rises as the timeout tightens, is exactly 0 for a
+  non-positive/absent timeout, handles the degenerate zero-spread case without NaN, stays in [0,1]
+  across a wide input range, and consumes zero rng draws (verified by confirming `sampleLatencyMs`
+  produces the SAME value whether or not `timeoutErrorFraction` was called first on a
+  fresh-same-seed rng).
+- `flows.test.ts` — a tight timeout against a slow target both errors the caller's `flow.errorRps`
+  AND reduces what continues downstream; a loose timeout errors ~nothing; an absent
+  `clientTimeoutMs` reproduces the exact pre-issue output (regression floor); a timed-out row is
+  tagged `blocked: true, failure: 'timeout'`.
+- `index.test.ts` — the test that was structurally impossible before this issue: an engine-level
+  world where a dependency's `clientTimeoutMs` sits below its target's simulated latency, with the
+  target's own capacity nowhere near saturated (low rps, ample vCPU), opens the CALLER's breaker
+  with ZERO capacity overflow anywhere in the chain; a loose timeout on the same shape of world
+  never opens it.
+- Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite
+  (1685→1699 tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 6, part 3: self-hosted connection pool (`audit-spec.md`, 2026-07-31)
+
+⚠ **Deliberate scope decision** — this issue was explicitly parked in CLAUDE.md's Known Issues /
+Roadmap ("a `WorkloadProfile.maxConnections` mirroring `managedDbRuntimeFor`'s
+`connectionRefusedRps` is the natural follow-up"). Removed from the parked list in the same change.
+
+### ISSUE-005 — `hostScheduler.ts`'s `poolCheckoutFor`, `world/types.ts`, `metrics.ts`
+
+A cloud-managed DB gets the full failure model (`managedDbRuntime.ts`): rps ceiling, queueing
+latency, AND a connection ceiling with `connectionRefusedRps`. A self-hosted DB blueprint (or any
+workload) got none of that — its `WorkloadProfile` carried `ramPerConnMb` (so RAM at least grows
+with connections) but no `maxConnections`, so the ONLY way it could ever fail under connection
+pressure was exhausting host RAM and getting OOM-killed — a materially LATER, less common failure
+than real pool exhaustion (a real Postgres install with the common `max_connections: 100` default
+would already be queueing/refusing checkouts at a fraction of the connection count needed to
+exhaust RAM).
+
+`WorkloadProfile` gains `maxConnections?`/`checkoutTimeoutMs?` (additive; absent ⇒ unbounded, the
+exact pre-issue behavior). New `hostScheduler.ts`'s `poolCheckoutFor(activeConnections,
+maxConnections, checkoutTimeoutMs)` models the checkout step as a bounded queue ahead of compute:
+below saturation (ρ = activeConnections/maxConnections ≤ 1) checkout is immediate; past it, wait
+grows with the SAME `base / (1 - saturation)` queueing shape `managedDbRuntimeFor` already uses for
+DB service latency (clamped so a badly-oversubscribed pool stays finite), and past
+`checkoutTimeoutMs` a growing fraction of waiters time out (`checkoutTimeoutErrorFraction`, same
+linear-overshoot shape as `managedDbRuntimeFor`'s own timeout fraction). Returns `null` when no
+`maxConnections` is authored — "not capacity-modelled", the same convention
+`managedDbRuntimeFor` uses for an unclassed DB.
+
+**The two-call-site invariant, extended.** A connection that times out waiting for a checkout
+never actually occupied one — the caller gave up — so it must not inflate RAM as if it held one,
+on EITHER of the two Little's-law sites: `hostScheduler.ts`'s own RAM/OOM accounting now sheds
+`activeConnections × (1 - checkoutTimeoutErrorFraction)` before computing `ramBaseMb +
+ramPerConnMb × effectiveConnections`, and `metrics.ts`'s published `ramMb` reads the IDENTICAL
+`checkoutByInstance` result (via the same `HostStepResult.checkoutByInstance`, additive-optional)
+to shed the same fraction — never re-derived. This divergence was caught DURING implementation,
+not anticipated up front: the first version only wired the shedding into `hostScheduler.ts`, and
+the new DIVERGENCE GUARD test failed immediately (published RAM ~60x the scheduler-enforced value)
+until `metrics.ts` was taught to read the same `checkoutTimeoutErrorFraction`.
+
+New `InstanceMetrics.checkoutWaitMs?: number` (additive, contract-drift logged) surfaces the wait
+itself, populated only for an instance with an authored `maxConnections`.
+
+### Tests
+
+- `hostScheduler.test.ts` — `poolCheckoutFor` returns `null` with no `maxConnections`; no wait while
+  unsaturated; wait grows past saturation with zero error fraction when no timeout is authored; a
+  tight timeout against a saturated pool produces a positive error fraction; wait stays finite even
+  at extreme saturation (clamped overshoot). `stepHost` is bit-identical for an instance with no
+  `maxConnections`; a saturated pool with a tight timeout measurably sheds RAM below the naive
+  (unshed) figure.
+- `index.test.ts` — an unauthored pool publishes no `checkoutWaitMs` at all (regression floor); a
+  **DIVERGENCE GUARD** confirming scheduler-enforced and published RAM stay within the same bounded
+  ratio once a pool saturates (the guard that caught the real bug above, mid-implementation).
+- Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite
+  (1699→1708 tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 7: demand backpressure (`audit-spec.md`, 2026-07-31)
+
+### ISSUE-008 — measuring Mechanism A, then building Mechanism B (`index.ts`, `flows.ts`)
+
+Every prior wave fixed a way the engine UNDER-reacted to overload (latency composition, NIC
+ceilings, connection pools, ...). ISSUE-008 asks the opposite question: once an instance genuinely
+IS overloaded, does demand ever get throttled at the edge, or does the world just keep hammering a
+dying instance forever? `demand.ts`'s `populationDemandRps` takes `(pop, simMs, rng)` and nothing
+else — no system-state input at all, confirmed by a dedicated unit test — so the ENTRY point of
+demand is structurally incapable of reacting to what's happening downstream. The only existing
+feedback loop is `hostScheduler.ts`'s per-container `memLimitMb` OOM-kill.
+
+**Mechanism A, measured first, per the spec's own instruction ("must be measured before Mechanism
+B is attempted, since B may prove unnecessary")**: a fixture chains a fast, RAM-thin `web` entry
+instance to a deliberately slow `backend` (2000ms p50, vs. web's own 1ms) — audit ISSUE-003's
+latency composition inflates web's own composed latency, which inflates web's held connections
+(Little's law), which inflates web's own RAM at `ramPerConnMb=5` until `memLimitMb` kills it. A
+30-second run shows `oomCount > 1` (a genuine REPEATING cycle, not a one-time death) AND the
+instance recovering to `healthy` between kills. Verdict: Mechanism A DOES eventually bound
+throughput, but via a **repeating OOM-kill oscillation**, never a graceful reduction — exactly the
+disqualifying shape the spec names. Mechanism B is therefore built.
+
+**Mechanism B** — explicit, hysteresis-gated admission control at the region's front door, applied
+to a population's offered demand immediately before `distributeViaLb` (`index.ts`, right before
+`// ── 1. demand ──`, so the shed fraction affects THIS step's own distribution, not a lagged one).
+Per region, aggregated ONLY over ENTRY (public-port) instances — an internal tier's own healthy
+error rate would otherwise dilute the signal from a struggling entry tier; this mechanism answers
+"is the region's front door overloaded", not "is anything anywhere unhappy". Engage at a sustained
+(20 consecutive 100ms steps = 2s) region-aggregate error rate ≥ 50%; recover at a sustained ≤ 10%
+— both hysteresis-gated so a single noisy step can't flap the shed fraction on and off, mirroring
+the breaker's own volume-floor/streak conventions.
+
+Three bugs surfaced during implementation, none anticipated up front — all caught by tests, not
+inspection:
+
+1. **The 100%-shed feedback loop.** Setting `shedFraction = 1` at engage time cuts a region's
+   admitted demand to exactly zero, which makes the very error signal recovery depends on go dark
+   (`offered <= 0` reads as `errorRate = 0`, i.e. "healthy"), so the "still shedding, track current
+   severity" branch immediately zeroed the shed fraction right back out — a one-step
+   self-defeating loop, never a real 20-step recovery. Fixed by capping shed at
+   `MAX_SHED_FRACTION = 0.9`: a trickle of real traffic always reaches the origin, so `errorRate`
+   keeps measuring the ACTUAL backend condition instead of measuring nothing.
+2. **Structural refusals counted as overload.** `f.refusedRps` (the existing `InstanceFlow` field)
+   conflates a capacity-driven refusal (breaker-open, managed throttle/timeout, event drop/DLQ)
+   with a STRUCTURAL one (a firewall-blocked path, or a manually-downed managed service) — neither
+   of which shedding entry demand can fix. A fixture with a permanently firewall-blocked dependency
+   spuriously tripped the shed gate on a world that was merely misconfigured, not saturated. Fixed
+   by adding `InstanceFlow.structuralRefusedRps?: number` (additive, `flows.ts`), incremented ONLY
+   at the two structural sites (`path.verdict === 'blocked'`, `managedDown`); Mechanism B now reads
+   `f.errorRps + (f.refusedRps - (f.structuralRefusedRps ?? 0))`. A row-based reconstruction was
+   tried FIRST and was wrong: `flows.ts`'s breaker-open short-circuit (`breakerOpen(pathKey(...))`)
+   refuses the ENTIRE dependency's call volume with **no downstream row at all** — exactly the
+   capacity signal Mechanism B most needs — so scanning `f.downstream` for blocked rows silently
+   discarded the dominant real-world trigger (a breaker tripping from backend saturation) while
+   still passing the fixture that motivated the change. Tracking the distinction at the SOURCE
+   (where each refusal is decided) rather than reconstructing it after the fact is what actually
+   works.
+3. **A zero-offered step read as recovery.** Even after the 0.9 cap, Mechanism A's OWN OOM-kill
+   cycle can independently zero a region's offered demand for a step (the entry instance is
+   transiently down), which again reads as `errorRate = 0` and, via the same "still shedding"
+   branch, instantly disengaged shedding — the same self-defeating loop as bug 1, just triggered by
+   an unrelated mechanism instead of by shedding itself. Fixed by skipping the ENTIRE
+   engage/recover/shed update for a region when its aggregate offered demand is `<= 0` that step: no
+   traffic means no signal, not "healthy".
+
+`MAX_SHED_FRACTION`, the structural/capacity split, and the zero-offered skip together are what
+make the region-level hysteresis loop actually hold for a full 20-step streak in practice — each
+one individually looked like a plausible one-line fix and each one individually still let the loop
+collapse to a single step under the fixture's real dynamics.
+
+Two PRE-EXISTING tests changed behavior as a genuine, expected side effect of Mechanism B now
+existing (re-baselined, not silently loosened, following the ISSUE-003/ISSUE-009 precedent):
+`index.test.ts`'s fat-internal-packet NIC test measured a real further reduction (~9x → ~4.4x
+against the flat baseline) once Mechanism B started shedding the fat scenario's sustained
+api→store breaker-open capacity errors; `serverParticles.test.ts`'s packet-pick-purity test hit a
+below-cap particle count once its permanently-blocked dependency plus a real internal breaker trip
+combined to cross the 20-step streak within its default 3-second render window (fixed by rendering
+at 1s instead of 3s — the test is about pick purity, not backpressure, so it has no reason to run
+long enough to engage Mechanism B at all). `bench/renderPerf.bench.test.ts`'s 400-particle-cap
+fixture (20,000 rps against a single 8-vCPU host, a deliberate saturation for the render budget,
+not a backpressure scenario) needed its 30-step warm-up trimmed to 15 for the same reason.
+
+### Tests
+
+- `index.test.ts` — Mechanism A measured (`oomCount > 1`, recovers to `healthy` between kills);
+  `populationDemandRps` takes no system-state input (open-loop confirmation); Mechanism B sheds a
+  SUSTAINED run (≥5 consecutive seconds, not a single lucky/unlucky sample — Mechanism A's own
+  OOM-kill cycle can independently produce a one-off low-rps second) of demand measurably below the
+  raw generated rate; Mechanism B is a no-op for a healthy, non-saturated world (averaged over a
+  20-sample window, since a single-step snapshot at low peakRps is Poisson-noisy enough to flake on
+  its own).
+- Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite (1708→1712
+  tests) and both benches green throughout.
+
+## Multi-Protocol Connection Audit — Wave 7, part 2: warm-up indicator (`audit-spec.md`, 2026-07-31)
+
+### ISSUE-019 — surface engine warm-up state after a stop→edit→start cycle (`simulation.store.ts`, `SimControls.tsx`)
+
+Not an engine defect — CLAUDE.md's topology-mutability model (edit-locked while running,
+`doc`/`compiled` frozen at `start()`) means a stop→edit→start cycle correctly rebuilds every
+slow-converging piece of engine state from cold: VPS burst credits, breakers, queue depth, NICs,
+failover hysteresis, and the metrics EMA/latency reservoir are all genuinely reset in
+`index.ts`'s `start()`, because the topology they were computed against no longer exists. The gap
+was entirely in the UI: nothing distinguished a freshly-started run from a settled one, so a user
+who tweaks one server's spec and restarts reads the first few seconds' different-looking metrics
+as caused by their edit, when it's an artifact of the engine being cold.
+
+Pure UI affordance, no engine change (per the spec). `simulation.store.ts` adds
+`warmupBatchesRemaining: number`, initialized to `WARMUP_SECONDS` on `start()` and decremented by
+one on every published metrics batch (floored at 0) — counted in BATCHES, not wall-clock
+`setTimeout`/`Date.now()`, so it tracks sim time correctly under `timeScale` 2x/4x rather than
+firing early or late relative to what's actually converged. `WARMUP_SECONDS` is derived from
+`failover.ts`'s own `DEFAULT_HYSTERESIS` (`onsetMs + recoveryMs`, currently 8s) rather than a bare
+hardcoded number — the health signal itself needs that long to settle, so nothing else in the
+reset state converges meaningfully faster; if `DEFAULT_HYSTERESIS` ever changes, the warm-up
+window moves with it instead of silently drifting out of sync. `stop()`/`resetSession()` reset the
+counter to 0 (a stopped world has no "warming up" to show); `pause()`/`resume()` leave it alone,
+since paused state is explicitly PRESERVED, not reset.
+
+`selectWarmingUp` (mirroring the existing `selectLive` convention) is `running &&
+warmupBatchesRemaining > 0`. `SimControls.tsx` renders a `warmupChip` beside the existing
+`degradedChip`, pulsing (respecting `useReducedMotion()`, matching the existing live-run status
+dot's convention) via `var(--color-*)` tokens only. Purely advisory: it gates nothing in
+metrics/analysis, only its own visibility.
+
+### Tests
+
+- `simulation.store.test.ts` — `start()` sets `warmupBatchesRemaining` to `WARMUP_SECONDS` and it
+  counts down one per published batch; never goes negative once every batch is counted past it;
+  `stop()`/`resetSession()` clear it back to 0.
+- `SimControls.test.tsx` — the warm-up chip shows while the counter is positive and disappears once
+  it reaches 0; does not show while stopped even with a stale nonzero counter (a stopped world has
+  nothing running to warm up).
+- Every new assertion verified to FAIL with the fix reverted (`git stash`); full suite
+  (1712→1717 tests), both benches, and `npm run build` (typecheck) green throughout.
+
+This closes out every issue in `audit-spec.md`'s 7 waves (19/19: 5 Critical, 9 Major, 5 Minor) —
+ISSUE-004's full engine wiring of `resolvedFrameRps` and ISSUE-006's `statusCode` 4xx/5xx semantics
+remain explicitly deferred follow-ups (primitives implemented and tested; wiring/semantics scoped
+down and documented at the time, not silently dropped).

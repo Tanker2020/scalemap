@@ -9,8 +9,19 @@ import type {
   MetricsBatch, EngineEvent, RenderScope, FramePayload, DetachFn, ReplayFrame, TracedRequest,
 } from '../../lib/worldEngine/types'
 import { worldEngine } from '../../lib/worldEngine'
+import { DEFAULT_HYSTERESIS } from '../../lib/worldEngine/failover'
 import { eventLogAppend, eventLogBeginRun } from '../../lib/tauri'
 import { useFileStore } from './file.store'
+
+// Warm-up window (audit ISSUE-019) — advisory UI only, no engine change. A fresh start() rebuilds
+// every slow-converging piece of engine state (VPS burst credits, breakers, failover hysteresis,
+// metrics EMAs/latency reservoir) from cold, so a run's first few seconds look "different" from a
+// settled one for reasons that have nothing to do with whatever topology edit triggered the
+// restart. Anchored to failover.ts's own hysteresis window (onset + recovery) — the health signal
+// itself needs that long to settle, so nothing else converges meaningfully faster. Counted in
+// METRICS BATCHES (each ~1 sim-second), not wall-clock ms, so it tracks sim time correctly under
+// timeScale 2x/4x rather than firing early/late relative to what's actually converged.
+export const WARMUP_SECONDS = Math.ceil((DEFAULT_HYSTERESIS.onsetMs + DEFAULT_HYSTERESIS.recoveryMs) / 1000)
 
 // In-memory events are a PRESENTATION WINDOW only — what the live Events tab renders without
 // mounting an unbounded DOM list. Nothing is lost past it: every event also lands in the
@@ -127,6 +138,10 @@ interface SimulationStoreV2 {
   eventLogRunId: number | null
   /** True total events persisted this run — the Events tab shows this beside the window. */
   eventLogTotal: number
+  // Audit ISSUE-019: batches remaining before the engine's slow-converging state (burst credits,
+  // failover hysteresis, metrics EMAs) has settled since this run's start(). 0 once warmed up;
+  // purely advisory — never gates metrics/analysis, only a UI badge (SimControls.tsx).
+  warmupBatchesRemaining: number
 
   start: (doc: WorldDoc, compiled: CompiledWorld) => void
   stop: () => void
@@ -154,6 +169,10 @@ interface SimulationStoreV2 {
 // CSS/SMIL animations keyed off rps, which would otherwise keep marching over a frozen batch).
 export const selectLive = (s: SimulationStoreV2): boolean => s.running && !s.paused && s.scrubIndex === null
 
+// Audit ISSUE-019: true for the first WARMUP_SECONDS of metrics after a fresh start() — advisory
+// only, gates nothing but the warm-up badge itself.
+export const selectWarmingUp = (s: SimulationStoreV2): boolean => s.running && s.warmupBatchesRemaining > 0
+
 export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
   running: false,
   paused: false,
@@ -166,6 +185,7 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
   degraded: false,
   eventLogRunId: null,
   eventLogTotal: 0,
+  warmupBatchesRemaining: 0,
 
   start: (doc, compiled) => {
     // Re-entry guard (audit ISSUE-048): a second start() while running would overwrite engine
@@ -174,7 +194,7 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
     if (get().running) return
     set({
       running: true, paused: false, latestBatch: null, events: [], degraded: false, scrubIndex: null,
-      scrubBatch: null, eventLogRunId: null, eventLogTotal: 0,
+      scrubBatch: null, eventLogRunId: null, eventLogTotal: 0, warmupBatchesRemaining: WARMUP_SECONDS,
     })
     pendingEvents = []
     spillBroken = false
@@ -193,7 +213,10 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
     if (flushTimer !== null) clearInterval(flushTimer)
     flushTimer = setInterval(flushEventLog, EVENT_FLUSH_MS)
     worldEngine.start(doc, compiled, {
-      onMetrics: (batch) => set({ latestBatch: batch }),
+      onMetrics: (batch) => set(s => ({
+        latestBatch: batch,
+        warmupBatchesRemaining: Math.max(0, s.warmupBatchesRemaining - 1),
+      })),
       onEvent: (event) => {
         if (!spillBroken) pendingEvents.push(event)
         // One setState per synchronous burst, applied on the next microtask (audit ISSUE-053).
@@ -219,7 +242,7 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
     // start()). Same field set resetSession clears — the run is over either way.
     set({
       running: false, paused: false, latestBatch: null, events: [], scrubIndex: null, scrubBatch: null,
-      degraded: false, healthOverrides: {}, eventLogRunId: null, eventLogTotal: 0,
+      degraded: false, healthOverrides: {}, eventLogRunId: null, eventLogTotal: 0, warmupBatchesRemaining: 0,
     })
   },
   // Pause: halt the engine (which PRESERVES state) and keep the whole session — latestBatch,
@@ -245,7 +268,7 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
     eventBuffer = []
     set({
       running: false, paused: false, latestBatch: null, events: [], scrubIndex: null, scrubBatch: null,
-      degraded: false, healthOverrides: {}, eventLogRunId: null, eventLogTotal: 0,
+      degraded: false, healthOverrides: {}, eventLogRunId: null, eventLogTotal: 0, warmupBatchesRemaining: 0,
     })
   },
   setTimeScale: (scale) => {

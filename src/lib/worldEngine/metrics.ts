@@ -3,7 +3,7 @@
 // populated — no field is ever left undefined.
 import type {
   MetricsBatch, InstanceMetrics, ServerMetrics, AzMetrics, RegionMetrics, WorldMetrics,
-  ManagedServiceMetrics, HealthState,
+  ManagedServiceMetrics, HealthState, TopicMetrics,
 } from './types'
 import type { InstanceFlow } from './flows'
 // Aliased on import: the local `activeConnections` binding below is the computed VALUE per
@@ -13,6 +13,7 @@ import { managedDbCeilings } from './flows'
 import { managedCapacityRps, managedLatencyMs, MANAGED_P99_OVER_P50 } from '../managedCapacity'
 import { managedDbEngine } from '../world/types'
 import type { ManagedDbRuntime } from '../managedDbRuntime'
+import type { TopicRuntime } from './broker'
 import type { HostStepResult } from './hostScheduler'
 import type { NicState } from './networkRuntime'
 import type {
@@ -40,7 +41,12 @@ interface InstanceWindow {
   steps: number
   admittedSum: number
   errorSum: number
-  latencies: number[]   // per-step sampled service latencies (window-local, sorted at batch)
+  latencies: number[]         // per-step COMPOSED (totalLatencyMs) samples (window-local, sorted at batch)
+  // Sum of per-step SELF-only serviceLatencyMs samples (audit ISSUE-003) — a plain windowed mean,
+  // EMA'd at buildBatch, mirroring rps/errorRate rather than the multi-second percentile reservoir
+  // `latencies` gets: serviceP50Ms is a regression-floor readout (what p50Ms meant before this
+  // issue), not a new tail statistic.
+  selfLatencySum: number
 }
 
 interface ServerWindow { inBytes: number; outBytes: number }
@@ -79,6 +85,10 @@ export interface MetricsState {
   lastHost: Record<ServerId, HostStepResult>
   lastVps: Record<ServerId, VpsPublish>
   lastHealth: (id: string) => HealthState
+  // Audit ISSUE-002: the latest step's event-broker runtime, same side-channel pattern as
+  // lastHost/lastVps above — published as-is (unsmoothed), not window-averaged, since it's already
+  // a one-step-lagged aggregate, not a per-step sample needing a mean.
+  lastTopicRuntime: TopicRuntime
 }
 
 export function createMetricsState(): MetricsState {
@@ -93,6 +103,7 @@ export function createMetricsState(): MetricsState {
     lastHost: {},
     lastVps: {},
     lastHealth: () => 'healthy',
+    lastTopicRuntime: {},
   }
 }
 
@@ -110,7 +121,11 @@ export function accumulateStep(
   // This step's undeliverable rps per AZ (cross-zone-off forfeiture etc.). Optional: absent ⇒
   // droppedRps stays 0.
   droppedByAz?: Record<AzId, number>,
+  // This step's event-broker runtime (audit ISSUE-002). Optional: absent ⇒ `topics` stays empty,
+  // so existing callers/tests are unchanged.
+  topicRt?: TopicRuntime,
 ): void {
+  state.lastTopicRuntime = topicRt ?? {}
   // Per-step drop RATES accumulate into the window; droppedSteps is the divisor for the mean.
   state.droppedSteps++
   if (droppedByAz) {
@@ -126,13 +141,17 @@ export function accumulateStep(
   for (const f of Object.values(flows)) {
     let w = state.window.get(f.instanceId)
     if (!w) {
-      w = { steps: 0, admittedSum: 0, errorSum: 0, latencies: [] }
+      w = { steps: 0, admittedSum: 0, errorSum: 0, latencies: [], selfLatencySum: 0 }
       state.window.set(f.instanceId, w)
     }
     w.steps++
     w.admittedSum += f.admittedRps
     w.errorSum += f.errorRps + f.refusedRps
-    w.latencies.push(f.serviceLatencyMs)
+    // Composed end-to-end latency feeds the published p50/p99/activeConnections (audit ISSUE-003)
+    // — self-only serviceLatencyMs is tracked separately below as serviceP50Ms. Fallback to
+    // serviceLatencyMs covers hand-built InstanceFlow test fixtures that predate this field.
+    w.latencies.push(f.totalLatencyMs ?? f.serviceLatencyMs)
+    w.selfLatencySum += f.serviceLatencyMs
     for (const row of f.downstream) {
       if (!row.toManagedServiceId) continue
       // A blocked managed row is a refusal — EXCEPT a Phase 5.4 timeout row, which reached the
@@ -223,6 +242,13 @@ export function buildBatch(
   // OOM-kills on) would silently diverge from the RAM published here and read by the UI and the
   // `ram-oversubscribed` analysis rule.
   connProfiles?: Record<InstanceId, ConnectionProfile>,
+  // Per-instance blended ms/request — cpuMsPerRequest + cpuMsPerKb x kb + handshakeCpuMs — as
+  // built by the engine's effectiveCpuMs (worldEngine/index.ts) and fed to the host scheduler's
+  // InstanceLoad.cpuMsPerRequest. Publishing cpuCoresUsed off the RAW workload value instead
+  // understated a short-lived route's load by its whole handshake term, sitting beside a
+  // correctly-sourced coreUtilization on the same server card (audit ISSUE-011). Optional:
+  // absent ⇒ the raw workload value, so every existing direct-buildBatch caller is unchanged.
+  effectiveCpuMsByInstance?: Record<InstanceId, number>,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
   const servers: Record<ServerId, ServerMetrics> = {}
@@ -246,7 +272,7 @@ export function buildBatch(
   // ── Instances ──
   for (const inst of Object.values(compiled.instances)) {
     const bp = doc.blueprints[inst.blueprintId]
-    const w = state.window.get(inst.id) ?? { steps: 1, admittedSum: 0, errorSum: 0, latencies: [0] }
+    const w = state.window.get(inst.id) ?? { steps: 1, admittedSum: 0, errorSum: 0, latencies: [0], selfLatencySum: 0 }
     const windowRps = w.admittedSum / Math.max(1, w.steps)
     // Error rate = fraction of offered traffic (admitted + errored/refused) that failed —
     // always in [0,1]; a fully-down instance (admitted 0, errors>0) reports 1.0.
@@ -268,6 +294,10 @@ export function buildBatch(
     // to ~30% of its size, hiding exactly the transients a tail metric exists to show. The
     // multi-second reservoir already steadies it; p50 keeps the EMA for stable display.
     const p99Ms = percentile(sorted, 0.99)
+    // Self-only p50 (audit ISSUE-003): pre-composition semantics — own CPU/queue/NIC time, no
+    // downstream hops folded in. A plain EMA'd window mean, not the multi-second tail reservoir
+    // p50Ms/p99Ms use above, since this is a regression-floor readout, not a new tail statistic.
+    const serviceP50Ms = ema(state, `i:${inst.id}:selfp50`, w.selfLatencySum / Math.max(1, w.steps))
     // Little's law, parameterized by the instance's connection profile (see connProfiles above).
     // keep-alive ⇒ exactly the historical `rps * (p50Ms / 1000)`.
     const activeConnections = activeConnectionsOf(rps, p50Ms, connProfiles?.[inst.id] ?? KEEP_ALIVE_PROFILE)
@@ -275,16 +305,38 @@ export function buildBatch(
     // Starved override (audit ISSUE-014): an instance silenced by a down upstream must not read
     // as healthy-and-idle. Only lifts 'healthy' to 'degraded' — real degraded/down states win.
     const baseHealth = state.lastHealth(inst.id)
+    // Container memory limit, read the SAME way the host scheduler's caller reads it
+    // (worldEngine/index.ts's InstanceLoad.memLimitMb) so the two can never disagree about the
+    // limit for one instance. hostScheduler clamps its own accounting to this before OOM victim
+    // selection; publishing the unclamped value showed a 512 MB-limited container using 900 MB —
+    // an impossible reading, on the exact panel a user opens right after an oom_kill event, and
+    // one that made the per-server sum of ramByInstance exceed the clamped ramUsedMb beside it
+    // (audit ISSUE-012).
+    const runtime = doc.placements[inst.placementId]?.runtime
+    const memLimitMb = runtime && runtime.type === 'container' ? runtime.memLimitMb : null
+    // Pool-checkout wait (audit ISSUE-005), read from the SAME per-instance result the host
+    // scheduler already computed and enforced — never re-derived, so the two can never disagree
+    // about which instances are pool-saturated. Absent for an instance with no authored
+    // maxConnections. The RAM below must shed the SAME checkoutTimeoutErrorFraction the scheduler
+    // already applied to its own accounting (hostScheduler.ts's stepHost) — a connection that
+    // timed out waiting for the pool never actually landed, so it must not inflate published RAM
+    // any more than it inflates the RAM the scheduler enforces/OOM-kills on.
+    const checkout = state.lastHost[inst.serverId]?.checkoutByInstance?.[inst.id]
+    const checkoutWaitMs = checkout?.checkoutWaitMs
+    const effectiveConnections = checkout ? activeConnections * (1 - checkout.checkoutTimeoutErrorFraction) : activeConnections
+    const rawRamMb = workload.ramBaseMb + workload.ramPerConnMb * effectiveConnections
     instances[inst.id] = {
       instanceId: inst.id,
       rps,
       errorRate,
       p50Ms,
       p99Ms,
+      serviceP50Ms,
       activeConnections,
-      cpuCoresUsed: rps * workload.cpuMsPerRequest / 1000,
-      ramMb: workload.ramBaseMb + workload.ramPerConnMb * activeConnections,
+      cpuCoresUsed: rps * (effectiveCpuMsByInstance?.[inst.id] ?? workload.cpuMsPerRequest) / 1000,
+      ramMb: memLimitMb != null ? Math.min(rawRamMb, memLimitMb) : rawRamMb,
       health: starved?.has(inst.id) && baseHealth === 'healthy' ? 'degraded' : baseHealth,
+      ...(checkoutWaitMs != null ? { checkoutWaitMs } : {}),
     }
   }
 
@@ -442,6 +494,15 @@ export function buildBatch(
     internetEgressBytesPerSec: ema(state, 'w:inet', totals.internetBytes),
   }
 
+  // ── Topics (audit ISSUE-002) ──
+  const topics: Record<string, TopicMetrics> = {}
+  for (const [depId, rt] of Object.entries(state.lastTopicRuntime)) {
+    topics[depId] = {
+      totalArrivalRps: rt.totalArrivalRps, backlogCount: rt.backlogCount, drainRps: rt.drainRps,
+      lagSec: rt.lagSec, dropRps: rt.dropRps, redeliverRps: rt.redeliverRps, dlqRps: rt.dlqRps,
+    }
+  }
+
   // Reset windows for the next second.
   state.window.clear()
   state.serverWindow.clear()
@@ -449,5 +510,5 @@ export function buildBatch(
   state.droppedWindow.clear()
   state.droppedSteps = 0
 
-  return { simMs, instances, servers, azs, regions, world, managedServices }
+  return { simMs, instances, servers, azs, regions, world, managedServices, topics }
 }

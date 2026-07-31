@@ -6,11 +6,13 @@ import {
 } from '../world/factories'
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
-import { addRoute, routeIdOf, updateRoute } from '../nodeConfig'
+import { addRoute, routeIdOf, updateRoute, addPacket } from '../nodeConfig'
 import type { HttpTemplate, ConnectionType } from '../nodeConfig'
 import { computeWorldCost } from '../costModelV2'
 import type { WorldDoc } from '../world/types'
-import type { MetricsBatch, EngineEvent } from './types'
+import type { MetricsBatch, EngineEvent, FramePayload } from './types'
+import { populationDemandRps } from './demand'
+import { createRng } from './rng'
 
 // A public-facing entry blueprint: the facade routes client demand only to blueprints that
 // expose a 'public' port (documented entry rule).
@@ -1165,11 +1167,57 @@ describe('packet-driven internal hops', () => {
 
     // 100 Mbps cap; the flat model books ~2 KB/call, the fat one 5 MB.
     expect(simFlat.latest().servers[flat.s2].nicInMbps).toBeLessThan(50)
+    // Re-baselined (audit ISSUE-009): this assertion pre-dates the NIC-ceiling fix and expected a
+    // >100x gap — which was only reachable because the OLD flat-divisor ceiling let ALL 100 rps of
+    // 5 MB calls through uncapped, booking ~4 Gbps on a 100 Mbps NIC (physically impossible; the
+    // exact bug this issue fixes). The FIXED ceiling now throttles admission to near the NIC's real
+    // line rate before those bytes ever reach the wire, so the fat scenario's nicInMbps is
+    // correctly bounded near the 100 Mbps cap rather than exploding with packet size.
+    // Re-baselined AGAIN (audit ISSUE-008): Mechanism B's demand-shedding now engages on this
+    // scenario's sustained api->store breaker-open capacity errors, further reducing the fat
+    // scenario's admitted (and therefore nicInMbps) below the ~9x gap ISSUE-009 measured — a
+    // genuine, further-reduced gap (~4.4x: 1.69 -> 7.49 Mbps), not a bug, since ISSUE-008 exists
+    // precisely to shed entry demand under this kind of sustained internal saturation. Hand-
+    // verified: the fat scenario's rps assertion below shows the callee throttled to well under
+    // 1 rps (was ~100 pre-fix), which is what "the NIC is now the actual bottleneck" looks like.
     expect(simFat.latest().servers[fat.s2].nicInMbps).toBeGreaterThan(
-      simFlat.latest().servers[flat.s2].nicInMbps * 100)
+      simFlat.latest().servers[flat.s2].nicInMbps * 4)
     // and the saturation is felt as shed throughput on the callee
     expect(simFat.latest().instances[fat.storeInst].rps)
       .toBeLessThan(simFlat.latest().instances[flat.storeInst].rps)
+  })
+
+  // Audit ISSUE-009's own before/after: a 5 MB edge on a 100 Mbps NIC has a true physical ceiling
+  // of (100e6/8) / 5,242,880 ≈ 2.4 rps — nowhere near the ~6,103 rps the old flat-2KB-divisor
+  // ceiling implied (which is why the callee used to admit the FULL ~100 rps offered, unthrottled).
+  it('caps admitted rps near the true NIC ceiling for a large payload, not the flat-divisor one', () => {
+    const fat = crossAzPair({ nicMbps: 100 })
+    bindFatPacket(fat.doc)
+    const sim = drive(fat.doc, compileWorld(fat.doc))
+    sim.stepFor(20)
+    // Pre-fix this was ~100 (offered rps, fully admitted — the bug). Loose upper bound around the
+    // ~2.4 rps true ceiling, allowing for queueing/CPU also playing a role.
+    expect(sim.latest().instances[fat.storeInst].rps).toBeLessThan(10)
+    sim.engine.stop()
+  })
+
+  // Regression floor: an edge with NO authored size (the default 2 KB convention) must reduce the
+  // ceiling formula to EXACTLY the pre-fix flat-divisor value — every existing world with no
+  // authored packet sizes keeps its exact NIC-ceiling behavior.
+  it('an unauthored (default 2 KB) edge keeps the exact pre-fix NIC ceiling behavior', () => {
+    // 1 Mbps: tight enough that the flat 2 KB divisor genuinely binds (matches the NIC
+    // backpressure describe block above, which asserts this same scenario shifts throughput).
+    const base = crossAzPair({ nicMbps: 1000 })
+    const simBase = drive(base.doc, compileWorld(base.doc))
+    simBase.stepFor(6)
+    const capped = crossAzPair({ nicMbps: 1 })
+    const simCapped = drive(capped.doc, compileWorld(capped.doc))
+    simCapped.stepFor(6)
+    // Unauthored default-size traffic still sheds at a tight NIC exactly like before this issue —
+    // same shape of assertion as the pre-existing 'NIC backpressure (audit ISSUE-002)' block.
+    expect(simCapped.latest().instances[capped.storeInst].rps)
+      .toBeLessThan(simBase.latest().instances[base.storeInst].rps * 0.7)
+    simBase.engine.stop(); simCapped.engine.stop()
   })
 
   it('inbound internal KB drives cpuMsPerKb on the RECEIVER (one-step lagged)', () => {
@@ -1457,6 +1505,61 @@ describe('connection semantics', () => {
     st.engine.stop()
   })
 
+  // The CPU sibling of the guard above (audit ISSUE-011). The host scheduler budgets cores off
+  // effectiveCpuMs — cpuMsPerRequest + cpuMsPerKb x kb + handshakeCpuMs — while cpuCoresUsed was
+  // published off the raw cpuMsPerRequest alone. On a short-lived world that is a flat 3x gap
+  // (1 ms authored + 2 ms handshake), displayed beside a correctly-sourced coreUtilization on the
+  // same card.
+  it('DIVERGENCE GUARD: scheduler-side and metrics-side CPU demand agree', () => {
+    const w = connWorld('short-lived')
+    const st = run(w)
+    const b = st.latest()
+
+    // What the scheduler enforced: coreUtilization is min(1, cpuPressure) per core, and
+    // cpuPressure = demandCores / effectiveVcpu. Unsaturated here (~1.2 of 8 cores), so it
+    // inverts cleanly back to cores of demand.
+    const vcpu = w.doc.servers[w.sv].specs.vcpu
+    const schedulerCores = b.servers[w.sv].coreUtilization[0] * vcpu
+    // connWorld places exactly one instance on exactly one server.
+    const publishedCores = b.instances[w.inst].cpuCoresUsed
+
+    expect(b.servers[w.sv].coreUtilization[0]).toBeLessThan(1)   // genuinely unsaturated
+    expect(publishedCores).toBeGreaterThan(0)
+    // Same EMA-vs-raw skew as the RAM guard, so bound the ratio rather than demanding equality —
+    // but the pre-fix omission of the handshake term was a 3x gap, far outside this band.
+    expect(schedulerCores / publishedCores).toBeGreaterThan(0.5)
+    expect(schedulerCores / publishedCores).toBeLessThan(2)
+    st.engine.stop()
+  })
+
+  // ISSUE-012's guard is an exact BOUND rather than an exact equality. An over-limit container is
+  // OOM-killed and restarts on a 5 s timer, so the two sides are sampled at different points of
+  // that cycle — but neither may ever publish a figure above the limit the scheduler enforces,
+  // which is precisely what a 512 MB container reporting 900 MB was doing.
+  it('DIVERGENCE GUARD: published RAM never exceeds the container limit the scheduler enforces', () => {
+    const LIMIT = 256
+    const w = connWorld('streaming', { holdSeconds: 30, ramPerConnMb: 0.05, ramMb: 32768 })
+    const pl = Object.values(w.doc.placements)[0]
+    pl.runtime = {
+      type: 'container', stackName: 'app', networkNames: [], portMappings: [],
+      cpuLimit: null, memLimitMb: LIMIT,
+    }
+    const st = run({ ...w, compiled: compileWorld(w.doc) })
+
+    let sawOverLimitDemand = false
+    for (const b of st.batches) {
+      const m = b.instances[w.inst]
+      if (!m) continue
+      // What the instance WOULD have published unclamped — the fixture is only meaningful if this
+      // genuinely crosses the limit at some point in the run.
+      if (100 + 0.05 * m.activeConnections > LIMIT) sawOverLimitDemand = true
+      expect(m.ramMb).toBeLessThanOrEqual(LIMIT)
+      expect(b.servers[w.sv].ramUsedMb).toBeLessThanOrEqual(LIMIT)
+    }
+    expect(sawOverLimitDemand).toBe(true)
+    st.engine.stop()
+  })
+
   it('stays deterministic under a fixed seed with streaming bound', () => {
     // ONE world driven twice — two connWorld() calls would mint different entity ids (the
     // factories stamp a counter + timestamp), which says nothing about the engine.
@@ -1465,5 +1568,548 @@ describe('connection semantics', () => {
     const b = run(w)
     expect(JSON.stringify(a.engine.getReplayFrames())).toEqual(JSON.stringify(b.engine.getReplayFrames()))
     a.engine.stop(); b.engine.stop()
+  })
+})
+
+// ─── Composed end-to-end latency (audit ISSUE-003, Wave 2) ───────────────────
+// Before this fix, InstanceFlow.serviceLatencyMs (and therefore the published p50Ms/p99Ms and
+// Little's-law activeConnections) was the CALLER's own CPU/queue/NIC time only — a caller never
+// inherited a slow dependency's latency, so the "slow dependency -> connection pileup -> OOM"
+// cascade was structurally unreachable. web -> api -> db, each on its OWN server (so db's cost
+// can't spill onto api/web's own CPU scheduling) isolates the effect to composition alone.
+describe('composed end-to-end latency (audit ISSUE-003)', () => {
+  function chainWorld(dbCpuMs: number) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const sWeb = createServer(az.id, getPreset('dedicated-8')!)
+    const sApi = createServer(az.id, getPreset('dedicated-8')!)
+    const sDb = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[sWeb.id] = sWeb; doc.servers[sApi.id] = sApi; doc.servers[sDb.id] = sDb
+
+    const web = publicBlueprint('web', 0)
+    const api = createBlueprint('api', 1)
+    const db = createBlueprint('db', 2)
+    db.workload = { ...db.workload, cpuMsPerRequest: dbCpuMs }
+    web.dependencies = [{ id: 'd-api', target: { kind: 'blueprint', blueprintId: api.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+    api.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 8080, protocol: 'db', packetTemplateId: null }]
+    Object.assign(doc.blueprints, { [web.id]: web, [api.id]: api, [db.id]: db })
+
+    const plWeb = createPlacement(web.id, sWeb.id); doc.placements[plWeb.id] = plWeb
+    const plApi = createPlacement(api.id, sApi.id); doc.placements[plApi.id] = plApi
+    const plDb = createPlacement(db.id, sDb.id); doc.placements[plDb.id] = plDb
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 100
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+
+    return {
+      doc, compiled: compileWorld(doc),
+      apiInst: instanceId(plApi.id, 0),
+    }
+  }
+
+  it("folds a slow downstream DB's latency into the caller's published p50Ms, not its self-only serviceP50Ms", () => {
+    const fast = chainWorld(1)
+    const simFast = drive(fast.doc, fast.compiled)
+    simFast.stepFor(10)
+    const apiFast = simFast.latest().instances[fast.apiInst]
+    simFast.engine.stop()
+
+    const slow = chainWorld(200)
+    const simSlow = drive(slow.doc, slow.compiled)
+    simSlow.stepFor(10)
+    const apiSlow = simSlow.latest().instances[slow.apiInst]
+    simSlow.engine.stop()
+
+    // api's OWN cpuMsPerRequest is identical in both worlds — only the db behind it changed.
+    // Composed p50Ms must move; serviceP50Ms (self-only, pre-ISSUE-003 semantics) must not.
+    expect(apiSlow.p50Ms).toBeGreaterThan(apiFast.p50Ms + 50)
+    expect(apiSlow.serviceP50Ms ?? 0).toBeLessThan(20)
+    expect(apiFast.serviceP50Ms ?? 0).toBeLessThan(20)
+  })
+
+  it("grows the caller's activeConnections when a downstream dependency slows down (Little's law feedback)", () => {
+    const fast = chainWorld(1)
+    const simFast = drive(fast.doc, fast.compiled)
+    simFast.stepFor(10)
+    const apiFast = simFast.latest().instances[fast.apiInst]
+    simFast.engine.stop()
+
+    const slow = chainWorld(200)
+    const simSlow = drive(slow.doc, slow.compiled)
+    simSlow.stepFor(10)
+    const apiSlow = simSlow.latest().instances[slow.apiInst]
+    simSlow.engine.stop()
+
+    // Before ISSUE-003, activeConnections was driven by serviceLatencyMs (self-only), so this
+    // ratio would sit near 1 regardless of how slow the db got.
+    expect(apiSlow.activeConnections).toBeGreaterThan(apiFast.activeConnections * 2)
+  })
+
+  // DIVERGENCE GUARD (audit ISSUE-003): the host scheduler's InstanceLoad.activeConnections (RAM/
+  // OOM enforcement) and metrics.ts's published InstanceMetrics.activeConnections (what the user
+  // sees) are the two-call-site invariant's two sites. Both must react to a slow downstream —
+  // if only one read totalLatencyMs, the RAM the scheduler enforces would silently diverge from
+  // what is displayed, exactly the failure class this whole wave exists to close.
+  it('DIVERGENCE GUARD: scheduler-enforced and published RAM both grow from a slow downstream dependency', () => {
+    const slow = chainWorld(200)
+    const sim = drive(slow.doc, slow.compiled)
+    sim.stepFor(10)
+    const b = sim.latest()
+    const apiServerId = Object.values(slow.doc.placements).find(p => p.blueprintId === Object.keys(slow.doc.blueprints).find(id => slow.doc.blueprints[id].name === 'api'))?.serverId
+    expect(apiServerId).toBeTruthy()
+    const schedulerRam = b.servers[apiServerId!].ramUsedMb
+    const metricsRam = b.instances[slow.apiInst].ramMb
+    expect(schedulerRam).toBeGreaterThan(0)
+    expect(metricsRam).toBeGreaterThan(0)
+    expect(schedulerRam / metricsRam).toBeGreaterThan(0.5)
+    expect(schedulerRam / metricsRam).toBeLessThan(2)
+    sim.engine.stop()
+  })
+})
+
+// ─── Empty particles/arcs sharing (audit ISSUE-017) ──────────────────────────
+// buildPayload allocated a fresh throwaway `[]` for every non-matching scope's particles/arcs
+// field every frame; an empty array is semantically fungible, so one shared frozen instance now
+// serves every such case (an az/server renderer's empty `arcs`, a globe renderer's empty
+// `particles`). Verified two ways: same instance across two different scopes, and immutability.
+describe('empty particles/arcs sharing (audit ISSUE-017)', () => {
+  it('two different renderer scopes receive the SAME empty arcs/particles instance', () => {
+    const f = e2eFixture()
+    const sim = drive(f.doc, f.compiled)
+    const azFrames: FramePayload[] = []
+    const serverFrames: FramePayload[] = []
+    const azId = Object.keys(f.doc.azs)[0]
+    const serverId = Object.keys(f.doc.servers)[0]
+    sim.engine.attachRenderer({ level: 'az', azId }, p => azFrames.push(p))
+    sim.engine.attachRenderer({ level: 'server', serverId }, p => serverFrames.push(p))
+    sim.stepFor(3)
+    sim.engine.__test_render(1000)
+    sim.engine.stop()
+    expect(azFrames.length).toBeGreaterThan(0)
+    expect(serverFrames.length).toBeGreaterThan(0)
+    // Both scopes' `arcs` field is the same shared empty instance.
+    expect(azFrames[azFrames.length - 1].arcs).toBe(serverFrames[serverFrames.length - 1].arcs)
+  })
+
+  it('the shared empty instance is frozen — a consumer cannot mutate it in place', () => {
+    const f = e2eFixture()
+    const sim = drive(f.doc, f.compiled)
+    let frame: FramePayload | null = null
+    const azId = Object.keys(f.doc.azs)[0]
+    sim.engine.attachRenderer({ level: 'az', azId }, p => { frame = p })
+    sim.stepFor(3)
+    sim.engine.__test_render(1000)
+    sim.engine.stop()
+    expect(frame).not.toBeNull()
+    expect(Object.isFrozen(frame!.arcs)).toBe(true)
+  })
+})
+
+// ─── Silently-dropped fan-out, surfaced (audit ISSUE-010) ────────────────────
+describe('depth-cap and cycle-cut events (audit ISSUE-010)', () => {
+  // web(entry) -> api -> ... 9 hops deep, one past MAX_DEPTH (8), all on one server so nothing
+  // else (health/breakers/queue) confounds the depth cap itself.
+  function deepChainWorld() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+    const services = Array.from({ length: 10 }, (_, i) => {
+      const bp = i === 0 ? publicBlueprint('svc-0', 0) : createBlueprint(`svc-${i}`, i % 8)
+      doc.blueprints[bp.id] = bp
+      const pl = createPlacement(bp.id, server.id)
+      doc.placements[pl.id] = pl
+      return { bp, iid: instanceId(pl.id, 0) }
+    })
+    for (let i = 0; i < services.length - 1; i++) {
+      services[i].bp.dependencies = [{
+        id: `d-${i}`, target: { kind: 'blueprint', blueprintId: services[i + 1].bp.id },
+        port: 8080, protocol: 'http', packetTemplateId: null,
+      }]
+    }
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 50
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), depth8Inst: services[8].iid }
+  }
+
+  it('emits chain_depth_exceeded exactly once for a chain deeper than MAX_DEPTH', () => {
+    const f = deepChainWorld()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(10)
+    const matching = sim.events.filter(e => e.kind === 'chain_depth_exceeded' && e.affected.includes(f.depth8Inst))
+    expect(matching.length).toBe(1)   // deduped — not one per step
+    sim.engine.stop()
+  })
+
+  function cycleWorld() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+    const a = publicBlueprint('a', 0)
+    const b = createBlueprint('b', 1)
+    doc.blueprints[a.id] = a; doc.blueprints[b.id] = b
+    const plA = createPlacement(a.id, server.id); doc.placements[plA.id] = plA
+    const plB = createPlacement(b.id, server.id); doc.placements[plB.id] = plB
+    a.dependencies = [{ id: 'd-ab', target: { kind: 'blueprint', blueprintId: b.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+    b.dependencies = [{ id: 'd-ba', target: { kind: 'blueprint', blueprintId: a.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 50
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), aInst: instanceId(plA.id, 0), bInst: instanceId(plB.id, 0) }
+  }
+
+  it('emits chain_cycle_cut exactly once for a genuine A -> B -> A cycle', () => {
+    const f = cycleWorld()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(10)
+    const matching = sim.events.filter(e =>
+      e.kind === 'chain_cycle_cut' && e.affected.includes(f.bInst) && e.affected.includes(f.aInst))
+    expect(matching.length).toBe(1)   // deduped — not one per step
+    sim.engine.stop()
+  })
+})
+
+// ─── Async event delivery — the broker (audit ISSUE-002) ─────────────────────
+// The thesis this issue fixes: `event` was a synchronous blocking RPC wearing a different label —
+// a struggling CONSUMER opened the PRODUCER's breaker, the opposite of what a broker decouples.
+describe('async event delivery (audit ISSUE-002)', () => {
+  // producer(entry) -> event dependency -> consumer, where consumer ALSO depends on a
+  // firewall-blocked target so the consumer's OWN subtree fails heavily (it "struggles").
+  function eventWorld() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+
+    const deadServer = createServer(az.id, getPreset('dedicated-8')!)
+    deadServer.firewall = [{ id: 'deny-all', action: 'deny', port: 'any', protocol: 'any', source: 'any' }]
+    doc.servers[deadServer.id] = deadServer
+
+    const added = addPacket(doc.packets, {
+      name: 'order-created', protocol: 'event', topic: 'orders', eventType: 'created', deliveryMode: 'at-least-once',
+    })
+    doc.packets = added.registry
+
+    const producer = publicBlueprint('producer', 0)
+    const consumer = createBlueprint('consumer', 1)
+    const dead = createBlueprint('dead-dep', 2)
+    producer.dependencies = [{
+      id: 'd-topic', target: { kind: 'blueprint', blueprintId: consumer.id },
+      port: 8080, protocol: 'event', packetTemplateId: null,
+      packetMix: [{ packetId: added.packet.id, weight: 1 }],
+    }]
+    consumer.dependencies = [{
+      id: 'd-dead', target: { kind: 'blueprint', blueprintId: dead.id },
+      port: 8080, protocol: 'http', packetTemplateId: null,
+    }]
+    doc.blueprints[producer.id] = producer
+    doc.blueprints[consumer.id] = consumer
+    doc.blueprints[dead.id] = dead
+    const plP = createPlacement(producer.id, server.id); doc.placements[plP.id] = plP
+    const plC = createPlacement(consumer.id, server.id); doc.placements[plC.id] = plC
+    const plD = createPlacement(dead.id, deadServer.id); doc.placements[plD.id] = plD
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 100
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+
+    return { doc, compiled: compileWorld(doc), producerInst: instanceId(plP.id, 0), consumerInst: instanceId(plC.id, 0) }
+  }
+
+  it("never opens the producer's breaker from the consumer's own downstream failures", () => {
+    const f = eventWorld()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(20)   // comfortably past the breaker's window/volume floor
+    // The consumer really is struggling — its own dependency is 100% firewall-blocked.
+    const consumerRps = sim.latest().instances[f.consumerInst]?.rps ?? 0
+    expect(consumerRps).toBeGreaterThan(0)   // the topic really did deliver to it
+    // The CONSUMER's own breaker (for its 100%-blocked d-dead dependency) legitimately opens —
+    // that's real, unrelated failure, not the bug. The PRODUCER's breaker for d-topic — the one
+    // that would open under the old synchronous model, since the consumer really is struggling —
+    // must never open. breaker_open events carry [callerId, targetId] in `affected`.
+    const producerBreakerOpened = sim.events.some(e =>
+      e.kind === 'breaker_open' && e.affected[0] === f.producerInst)
+    expect(producerBreakerOpened).toBe(false)
+    sim.engine.stop()
+  })
+
+  it('publishes topic lag/backlog metrics on MetricsBatch.topics', () => {
+    const f = eventWorld()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(5)
+    const topic = sim.latest().topics?.['d-topic']
+    expect(topic).toBeDefined()
+    expect(topic!.totalArrivalRps).toBeGreaterThan(0)
+    sim.engine.stop()
+  })
+})
+
+// ─── Client-side timeouts (audit ISSUE-006) ──────────────────────────────────
+// The canonical distributed-systems failure this issue makes reachable: a dependency degrades to
+// slow-but-not-overloaded, and the caller's breaker trips from TIMEOUTS, not from 5xx or capacity
+// refusal — structurally impossible before this issue (no client timeout existed at all).
+describe('client-side timeouts (audit ISSUE-006)', () => {
+  function timeoutWorld(clientTimeoutMs: number, dbCpuMs: number) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+
+    const added = addPacket(doc.packets, { name: 'call', protocol: 'http', method: 'GET', statusCode: 200, clientTimeoutMs })
+    doc.packets = added.registry
+
+    const api = publicBlueprint('api', 0)
+    const db = createBlueprint('db', 1)
+    db.workload = { ...db.workload, cpuMsPerRequest: dbCpuMs }
+    api.dependencies = [{
+      id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id },
+      port: 8080, protocol: 'http', packetTemplateId: null,
+      packetMix: [{ packetId: added.packet.id, weight: 1 }],
+    }]
+    doc.blueprints[api.id] = api
+    doc.blueprints[db.id] = db
+    const plApi = createPlacement(api.id, server.id); doc.placements[plApi.id] = plApi
+    const plDb = createPlacement(db.id, server.id); doc.placements[plDb.id] = plDb
+
+    // Deliberately modest demand: db's capacity (8 vCPU) is nowhere near saturated at this rps
+    // even with a high per-request cost, so any breaker trip must come from the TIMEOUT, not
+    // capacity overflow.
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 20
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+
+    return { doc, compiled: compileWorld(doc), apiInst: instanceId(plApi.id, 0) }
+  }
+
+  it("opens the caller's breaker from a tight timeout against a slow-but-unsaturated dependency", () => {
+    // db's cpuMsPerRequest ~200ms p50; a 5ms client timeout bites on essentially every call.
+    const f = timeoutWorld(5, 200)
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(15)   // past the breaker's window/volume floor
+    expect(sim.events.some(e => e.kind === 'breaker_open' && e.affected[0] === f.apiInst)).toBe(true)
+    sim.engine.stop()
+  })
+
+  it('does not open the breaker when the timeout is loose relative to the same dependency', () => {
+    const f = timeoutWorld(100000, 5)   // effectively no timeout, and db is fast anyway
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(15)
+    expect(sim.events.some(e => e.kind === 'breaker_open' && e.affected[0] === f.apiInst)).toBe(false)
+    sim.engine.stop()
+  })
+})
+
+// ─── Self-hosted connection pool (audit ISSUE-005) ───────────────────────────
+describe('self-hosted connection pool (audit ISSUE-005)', () => {
+  function poolWorld(opts: { maxConnections?: number; checkoutTimeoutMs?: number; peakRps?: number }) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+    const web = publicBlueprint('web', 0)
+    web.workload = {
+      cpuMsPerRequest: 1, ramBaseMb: 100, ramPerConnMb: 0.5, diskIoPerRequest: 0,
+      maxConnections: opts.maxConnections, checkoutTimeoutMs: opts.checkoutTimeoutMs,
+    }
+    doc.blueprints[web.id] = web
+    const added = addRoute(doc.packets, {
+      name: 'api', method: 'GET', path: '/api', connectionType: 'streaming', holdSeconds: 30,
+    })
+    doc.packets = added.registry
+    const pl = createPlacement(web.id, server.id); doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = opts.peakRps ?? 400
+    pop.requestMix = [{ routeId: routeIdOf(added.route), weight: 1 }]
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), inst: instanceId(pl.id, 0), sv: server.id }
+  }
+
+  it('an unauthored pool (no maxConnections) is bit-identical to before this issue', () => {
+    const f = poolWorld({})
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(20)
+    expect(sim.latest().instances[f.inst].checkoutWaitMs).toBeUndefined()
+    sim.engine.stop()
+  })
+
+  it("DIVERGENCE GUARD: scheduler-enforced RAM and published RAM agree once a pool saturates", () => {
+    // 400 rps x 30s streaming hold ~= 12,000 active connections against a tiny 100-connection cap.
+    const f = poolWorld({ maxConnections: 100, checkoutTimeoutMs: 5 })
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(20)
+    const b = sim.latest()
+    expect(b.instances[f.inst].checkoutWaitMs).toBeGreaterThan(0)
+    const schedulerRam = b.servers[f.sv].ramUsedMb
+    const publishedRam = b.instances[f.inst].ramMb
+    expect(schedulerRam).toBeGreaterThan(0)
+    expect(publishedRam).toBeGreaterThan(0)
+    // Same EMA-vs-raw skew as the other DIVERGENCE GUARDs — bound the ratio, not exact equality.
+    expect(schedulerRam / publishedRam).toBeGreaterThan(0.5)
+    expect(schedulerRam / publishedRam).toBeLessThan(2)
+    sim.engine.stop()
+  })
+})
+
+// ─── Demand backpressure (audit ISSUE-008) ───────────────────────────────────
+// Demand generation is fully open-loop (demand.ts's populationDemandRps takes no system-state
+// input at all — confirmed structurally, not just by inspection: this describe block's own first
+// test pins it). The question the issue asks: when a callee saturates, does load offered upstream
+// drop, queue, or grow unbounded? MEASURED (per the spec's own staged methodology — Mechanism A
+// must be measured before Mechanism B is attempted, since B may prove unnecessary):
+describe('demand backpressure (audit ISSUE-008)', () => {
+  function saturatedChainWorld() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const webServer = createServer(az.id, getPreset('dedicated-8')!)
+    webServer.specs = { ...webServer.specs, ramMb: 2048 }   // small enough that RAM growth genuinely OOMs it
+    const backendServer = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[webServer.id] = webServer; doc.servers[backendServer.id] = backendServer
+
+    const web = publicBlueprint('web', 0)
+    web.workload = { cpuMsPerRequest: 1, ramBaseMb: 100, ramPerConnMb: 5, diskIoPerRequest: 0 }
+    const backend = createBlueprint('backend', 1)
+    backend.workload = { cpuMsPerRequest: 2000, ramBaseMb: 100, ramPerConnMb: 0, diskIoPerRequest: 0 }
+    web.dependencies = [{
+      id: 'd-backend', target: { kind: 'blueprint', blueprintId: backend.id },
+      port: 8080, protocol: 'http', packetTemplateId: null,
+    }]
+    doc.blueprints[web.id] = web
+    doc.blueprints[backend.id] = backend
+    const plWeb = createPlacement(web.id, webServer.id); doc.placements[plWeb.id] = plWeb
+    const plBackend = createPlacement(backend.id, backendServer.id); doc.placements[plBackend.id] = plBackend
+
+    // A deliberately extreme mismatch: backend's 2000ms p50 (way past web's own 1ms) inflates
+    // web's COMPOSED latency (audit ISSUE-003), which inflates web's held connections (Little's
+    // law), which inflates web's own RAM at ramPerConnMb=5 — the exact chain Mechanism A relies on.
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 500
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+
+    return { doc, compiled: compileWorld(doc), webInst: instanceId(plWeb.id, 0), regionId: r.id, popId: pop.id }
+  }
+
+  it("demand.ts's populationDemandRps takes no system-state input at all (confirms the open loop)", () => {
+    // Same (pop, simMs, rng) input regardless of what the rest of the world is doing this step —
+    // demand cannot possibly react to saturation because it has nothing to react WITH.
+    const pop = { id: 'p', label: 'x', lat: 0, lon: 0, peakRps: 100, diurnal: 'flat' as const }
+    const rng1 = createRng(1)
+    const rng2 = createRng(1)
+    expect(populationDemandRps(pop, 1000, rng1)).toBe(populationDemandRps(pop, 1000, rng2))
+  })
+
+  it('MEASURED: Mechanism A closes the loop via a repeating OOM-kill cycle, not smooth admission control', () => {
+    // This is the measurement, not a golden-value regression test — the exact rps/RAM numbers
+    // are incidental; what's asserted is the SHAPE Mechanism A actually takes: web gets OOM-killed
+    // (not gracefully throttled), recovers, and gets OOM-killed again, repeatedly, while the
+    // population's own offered demand never moves (per the test above). This is the disqualifying
+    // shape the spec itself names for Mechanism A ("fires at the wrong layer... OOMs the caller
+    // rather than gracefully shedding") — the trigger for building Mechanism B below.
+    const f = saturatedChainWorld()
+    const sim = drive(f.doc, f.compiled)
+    let oomCount = 0
+    let sawHealthy = false
+    for (let sec = 0; sec < 30; sec++) {
+      sim.stepFor(1)
+      const health = sim.latest().instances[f.webInst]?.health
+      if (health === 'healthy') sawHealthy = true
+      oomCount = sim.events.filter(e => e.kind === 'oom_kill' && e.affected.includes(f.webInst)).length
+    }
+    // Mechanism A DOES bound throughput eventually (the world doesn't runaway to infinite RAM) —
+    // but via repeated OOM-kills, not a graceful admittedScale reduction.
+    expect(oomCount).toBeGreaterThan(1)   // more than one kill — a genuine repeating cycle
+    expect(sawHealthy).toBe(true)          // and it DOES recover between kills (not permanently down)
+    sim.engine.stop()
+  })
+
+  // Mechanism A's measured shape above (an oscillating OOM-kill cycle, not graceful throttling) is
+  // exactly the disqualifying case the spec names — so Mechanism B (explicit, hysteresis-gated
+  // admission control at the edge) is built: `index.ts`'s per-region shed fraction, applied to a
+  // population's offered demand before `distributeViaLb`, one-step-lagged off the previous step's
+  // regional error rate. Engaging/recovering both require a SUSTAINED (20-step / 2s) over- or
+  // under-threshold error rate so a single noisy step can't flap it on and off.
+  it('Mechanism B: sustained regional overload sheds demand below the raw generated rate', () => {
+    const f = saturatedChainWorld()
+    const sim = drive(f.doc, f.compiled)
+    // A single low-rps step proves nothing on its own — Mechanism A's OOM-kill cycle (measured
+    // above) ALSO drives rps briefly toward zero while the instance is down/restarting, which
+    // would trivially satisfy a one-step "rps < 400" check without Mechanism B doing anything.
+    // What's unique to Mechanism B is a SUSTAINED run of many consecutive seconds sitting in a
+    // shed band that is degraded but not fully collapsed (MAX_SHED_FRACTION caps shedding below
+    // 100%, audit ISSUE-008) — so require a run of shed-band seconds longer than a single OOM
+    // dip could plausibly produce.
+    let longestShedRun = 0
+    let currentRun = 0
+    for (let sec = 0; sec < 60; sec++) {
+      sim.stepFor(1)
+      const b = sim.latest()
+      const row = b.world.populationRoutes.find(r => r.populationId === f.popId && r.regionId === f.regionId)
+      const inShedBand = row != null && row.rps > 0 && row.rps < 400
+      currentRun = inShedBand ? currentRun + 1 : 0
+      longestShedRun = Math.max(longestShedRun, currentRun)
+    }
+    expect(longestShedRun).toBeGreaterThanOrEqual(5)
+    sim.engine.stop()
+  })
+
+  it('Mechanism B is a no-op for a healthy, non-saturated world (regression floor)', () => {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+    const web = publicBlueprint('web', 0)
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id); doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 50   // comfortably within an 8-vCPU host's capacity at cpuMsPerRequest=1 default
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+    const compiled = compileWorld(doc)
+    const sim = drive(doc, compiled)
+    sim.stepFor(15)   // let the demand generator settle before sampling
+    // A single step's rps is Poisson-noisy (offered swings well above/below a 50 rps peak from
+    // one 100ms step to the next) — averaging across a window is what actually tests "no
+    // SUSTAINED overload ever engages", not a lucky/unlucky single snapshot.
+    let sum = 0
+    const samples = 20
+    for (let i = 0; i < samples; i++) {
+      sim.stepFor(1)
+      const row = sim.latest().world.populationRoutes.find(row => row.populationId === pop.id && row.regionId === r.id)
+      sum += row?.rps ?? 0
+    }
+    expect(sum / samples).toBeGreaterThan(40)
+    sim.engine.stop()
   })
 })

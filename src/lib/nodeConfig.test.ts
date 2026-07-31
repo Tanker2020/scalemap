@@ -138,6 +138,54 @@ describe('packet library helpers over the same PacketRegistry', () => {
     expect(updated).not.toHaveProperty('queryType')
   })
 
+  // audit ISSUE-018: addPacket/updatePacket built their result with a blanket
+  // `{ ...fields, id } as PacketTemplate`, which compiles even when the fields carry another
+  // protocol's keys. Construction now branches per protocol with a `never` default. These assert
+  // every kind's discriminant-specific fields survive that branching intact.
+  it('constructs all four protocols with their kind-specific fields intact', () => {
+    let reg = emptyPacketRegistry()
+    const added = [
+      { name: 'h', protocol: 'http' as const, sizeKb: 1, method: 'PUT' as const, statusCode: 201 },
+      { name: 'e', protocol: 'event' as const, sizeKb: 2, topic: 'orders', eventType: 'created', deliveryMode: 'exactly-once' as const },
+      { name: 's', protocol: 'stream' as const, sizeKb: 3, streamId: 'cam-1', compressionType: 'snappy' as const },
+      { name: 'd', protocol: 'db' as const, sizeKb: 4, queryType: 'transaction' as const, isWAL: true, resultSizeKb: 32 },
+    ]
+    const ids: number[] = []
+    for (const f of added) {
+      const r = addPacket(reg, f)
+      reg = r.registry
+      ids.push(r.packet.id)
+    }
+    expect(getPacket(reg, ids[0])).toMatchObject({ protocol: 'http', method: 'PUT', statusCode: 201 })
+    expect(getPacket(reg, ids[1])).toMatchObject({ protocol: 'event', topic: 'orders', deliveryMode: 'exactly-once' })
+    expect(getPacket(reg, ids[2])).toMatchObject({ protocol: 'stream', streamId: 'cam-1', compressionType: 'snappy' })
+    expect(getPacket(reg, ids[3])).toMatchObject({ protocol: 'db', queryType: 'transaction', isWAL: true, resultSizeKb: 32 })
+  })
+
+  it('a packet authored with no sizeKb round-trips with the field genuinely absent', () => {
+    // sizeKb is optional (ISSUE-018), so this fixture needs no cast — and the resolver, not the
+    // stored template, is what supplies the 2 KB fallback.
+    const { registry, packet } = addPacket(emptyPacketRegistry(), {
+      name: 'sizeless', protocol: 'http', method: 'GET', statusCode: 200,
+    })
+    expect(getPacket(registry, packet.id)).not.toHaveProperty('sizeKb')
+    const reg2 = updatePacket(registry, packet.id, {
+      name: 'sizeless', protocol: 'http', method: 'POST', statusCode: 200,
+    })
+    expect(getPacket(reg2, packet.id)).toMatchObject({ method: 'POST' })
+    expect(getPacket(reg2, packet.id)).not.toHaveProperty('sizeKb')
+  })
+
+  it('updateRoute keeps the http discriminant and strands no foreign fields', () => {
+    const { registry, route } = addRoute(emptyPacketRegistry(), { name: 'api', method: 'GET', path: '/api' })
+    const reg2 = updateRoute(registry, routeIdOf(route), { method: 'POST', sizeKb: 7 })
+    const updated = getRoute(reg2, routeIdOf(route))!
+    expect(updated).toMatchObject({ protocol: 'http', method: 'POST', sizeKb: 7, path: '/api' })
+    for (const foreign of ['topic', 'queryType', 'streamId', 'eventType', 'compressionType']) {
+      expect(updated).not.toHaveProperty(foreign)
+    }
+  })
+
   it('removePacket deletes it; duplicatePacket deep-copies under a fresh id', () => {
     const { registry, packet } = addPacket(emptyPacketRegistry(), dbFields({ colorOverride: '#ff0000' }))
     const dup = duplicatePacket(registry, packet.id, 'query (copy)')

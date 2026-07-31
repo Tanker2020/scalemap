@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   KEEP_ALIVE_PROFILE, HANDSHAKE_MS, LINGER_MS, HANDSHAKE_CPU_MS, DEFAULT_HOLD_SEC,
-  connectionClassOf, profileFor, resolveConnectionProfile, activeConnections,
+  connectionClassOf, profileFor, resolveConnectionProfile, activeConnections, resolvedFrameRps,
 } from './connectionModel'
 import type { PacketRegistry, PacketTemplate } from './nodeConfig'
 
@@ -44,7 +44,7 @@ describe('connectionClassOf — protocol wins for the non-http kinds', () => {
 describe('profileFor', () => {
   it('keep-alive is the zero-cost, fully latency-coupled identity', () => {
     expect(profileFor('keep-alive')).toEqual(KEEP_ALIVE_PROFILE)
-    expect(KEEP_ALIVE_PROFILE).toEqual({ latencyShare: 1, fixedHoldSec: 0, extraHoldSec: 0, handshakeCpuMs: 0 })
+    expect(KEEP_ALIVE_PROFILE).toEqual({ latencyShare: 1, fixedHoldSec: 0, extraHoldSec: 0, handshakeCpuMs: 0, frameMultiplier: 1 })
   })
 
   it('short-lived adds the handshake + linger tail and handshake CPU', () => {
@@ -57,7 +57,7 @@ describe('profileFor', () => {
 
   it('streaming decouples from latency and uses the authored hold, defaulting to the constant', () => {
     expect(profileFor('streaming')).toEqual({
-      latencyShare: 0, fixedHoldSec: DEFAULT_HOLD_SEC, extraHoldSec: 0, handshakeCpuMs: 0,
+      latencyShare: 0, fixedHoldSec: DEFAULT_HOLD_SEC, extraHoldSec: 0, handshakeCpuMs: 0, frameMultiplier: 1,
     })
     expect(profileFor('streaming', 60).fixedHoldSec).toBe(60)
   })
@@ -157,5 +157,50 @@ describe('resolveConnectionProfile — weighted blending over a mix', () => {
     const p = resolveConnectionProfile(r, [{ packetId: 1, weight: 2 }, { packetId: 2, weight: 5 }])
     expect(p).toEqual(KEEP_ALIVE_PROFILE)
     expect(activeConnections(100, 40, p)).toBe(100 * 0.04)
+  })
+})
+
+// ─── frameMultiplier / resolvedFrameRps (audit ISSUE-004) ────────────────────
+// A stream's rps means "new connections/sec" for activeConnections(); frameMultiplier is the
+// SEPARATE "frames pushed per second, per connection" factor that resolvedFrameRps feeds to
+// NIC/byte/cpuMsPerKb accounting instead of raw rps.
+describe('frameMultiplier / resolvedFrameRps', () => {
+  it('defaults to 1 for every non-streaming class', () => {
+    expect(profileFor('keep-alive').frameMultiplier).toBe(1)
+    expect(profileFor('short-lived').frameMultiplier).toBe(1)
+  })
+
+  it('defaults to 1 for an unauthored stream (no framesPerSecond)', () => {
+    expect(profileFor('streaming').frameMultiplier).toBe(1)
+  })
+
+  it('an authored framesPerSecond becomes the frameMultiplier, decoupled from activeConnections', () => {
+    const p = profileFor('streaming', 30, 10)
+    expect(p.frameMultiplier).toBe(10)
+    // activeConnections() is UNTOUCHED by frameMultiplier — still rps × fixedHoldSec for a pure
+    // streaming profile (latencyShare 0, extraHoldSec 0).
+    expect(activeConnections(50, 0, p)).toBeCloseTo(50 * 30, 9)
+  })
+
+  it('ignores a non-finite or non-positive framesPerSecond', () => {
+    expect(profileFor('streaming', 30, 0).frameMultiplier).toBe(1)
+    expect(profileFor('streaming', 30, -5).frameMultiplier).toBe(1)
+    expect(profileFor('streaming', 30, NaN).frameMultiplier).toBe(1)
+  })
+
+  it('resolvedFrameRps multiplies rps by frameMultiplier, and is the identity for keep-alive', () => {
+    expect(resolvedFrameRps(100, KEEP_ALIVE_PROFILE)).toBe(100)
+    expect(resolvedFrameRps(100, profileFor('streaming', 30, 10))).toBe(1000)
+  })
+
+  it('resolveConnectionProfile blends frameMultiplier across a mix, weighted like every other field', () => {
+    // framesPerSecond lives only on StreamTemplate (protocol: 'stream') — an http template with
+    // connectionType 'streaming' has no such field, since http's holdSeconds/frames are a
+    // different axis (an SSE-style long-lived request, not a framed stream protocol).
+    const stream = (id: number, framesPerSecond: number): PacketTemplate =>
+      ({ id, name: `s${id}`, protocol: 'stream', streamId: `s${id}`, compressionType: 'none', holdSeconds: 30, framesPerSecond }) as PacketTemplate
+    const r = reg([stream(1, 10), stream(2, 2)])
+    const p = resolveConnectionProfile(r, [{ packetId: 1, weight: 1 }, { packetId: 2, weight: 1 }])
+    expect(p.frameMultiplier).toBeCloseTo(6, 12)   // (10 + 2) / 2
   })
 })

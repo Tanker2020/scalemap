@@ -1,3 +1,9 @@
+> **Historical document — does not describe the current codebase.**
+> This critique audits the legacy React-Flow canvas app (`particleEngine.ts` and siblings),
+> deleted wholesale in the Phase 2 rebuild (2026-07-08). None of the files or symbols it
+> references exist today. Retained for design-rationale history only.
+> For the current engine, see `docs/agent-onboarding.md` and `audit-spec.md`.
+
 # SRE Critique — Scalemap Simulation Engine
 
 **Reviewer role:** Senior Site Reliability Engineer

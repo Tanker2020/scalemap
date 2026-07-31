@@ -6,6 +6,7 @@ import type {
 } from './types'
 import { evaluateInstancePath } from './network'
 import { computeRouting, volumeFindings } from './routing'
+import { resolveMixProtocol } from '../packetResolve'
 
 export function instanceId(placementId: string, index: number): InstanceId {
   return `${placementId}#${index}`
@@ -108,9 +109,39 @@ export function compileWorld(doc: WorldDoc): CompiledWorld {
   return {
     instances,
     paths,
-    findings: [...findings, ...volumeFindings(doc)],
+    findings: [...findings, ...volumeFindings(doc), ...protocolMismatchFindings(doc)],
     routing: computeRouting(doc, instances),
   }
+}
+
+// Audit ISSUE-007: `BlueprintDependency.protocol` drives ONLY the particle render tint
+// (`index.ts`'s `buildAzParticles`/`buildServerParticles`); every simulated consequence — wire
+// bytes, connection hold duration, WAL write amplification — comes from the bound packet mix's
+// OWN resolved protocol instead. Nothing reconciles the two, so an author can set
+// `dep.protocol = 'event'` on a dependency whose mix is entirely `http` packets and the board
+// renders violet "event" particles for what the engine is actually costing/holding as a
+// keep-alive HTTP call. This is a static, structural property of the authored world (a dependency
+// + its bound mix), so it is computed ONCE per unique dependency here — not per compiled path/
+// instance, which would multiply the same finding by however many instances the source blueprint
+// has. Advisory only: never auto-corrects `dep.protocol`, matching how every other compile finding
+// surfaces without silently overriding an explicit author choice.
+function protocolMismatchFindings(doc: WorldDoc): CompileFinding[] {
+  const findings: CompileFinding[] = []
+  for (const bp of Object.values(doc.blueprints)) {
+    for (const dep of bp.dependencies) {
+      if (!dep.packetMix || dep.packetMix.length === 0) continue
+      const majority = resolveMixProtocol(doc.packets, dep.packetMix)
+      if (majority == null || majority === dep.protocol) continue
+      findings.push({
+        id: `finding-protocol-mismatch-${dep.id}`,
+        severity: 'warning',
+        kind: 'protocol-mismatch',
+        message: `${bp.name}'s dependency "${dep.id}" is authored as ${dep.protocol}, but its bound packet mix is mostly ${majority} — particles render as ${dep.protocol} while the engine simulates ${majority}`,
+        affected: [bp.id, dep.id],
+      })
+    }
+  }
+  return findings
 }
 
 function managedHopClass(doc: WorldDoc, fromAzId: string, fromRegionId: string, msId: string): HopClass {

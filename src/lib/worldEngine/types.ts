@@ -27,12 +27,26 @@ export interface InstanceMetrics {
   instanceId: InstanceId
   rps: number                    // admitted requests/sec
   errorRate: number              // 0..1
-  p50Ms: number
-  p99Ms: number
+  p50Ms: number                  // COMPOSED end-to-end (self + downstream), audit ISSUE-003
+  p99Ms: number                  // COMPOSED end-to-end, same basis as p50Ms
+  // Additive-optional (contract-drift, audit ISSUE-003), same convention as ManagedServiceMetrics'
+  // p50Ms/saturation below: self-only latency (own CPU/queue/NIC time, no downstream hops) —
+  // pre-ISSUE-003 semantics, what p50Ms meant before composition. p50Ms/p99Ms above now fold in
+  // downstream dependency time, since a caller's Little's-law activeConnections/RAM must grow when
+  // a dependency slows down, not just when its own compute does. buildBatch always populates it;
+  // a hand-built test fixture or a batch built before this issue landed may omit it — read as
+  // `m.serviceP50Ms ?? m.p50Ms`.
+  serviceP50Ms?: number
   activeConnections: number
   cpuCoresUsed: number           // e.g. 1.2 = 1.2 cores of demand
   ramMb: number                  // base + per-connection
   health: HealthState
+  // Additive-optional (contract-drift, audit ISSUE-005): mean connection-pool checkout wait, ms —
+  // populated only for an instance with an authored `WorkloadProfile.maxConnections`; read the
+  // same result the host scheduler's RAM/OOM accounting already enforces (hostScheduler.ts's
+  // `poolCheckoutFor`), never re-derived, so the two can never disagree about which instances are
+  // pool-saturated.
+  checkoutWaitMs?: number
 }
 
 export interface ServerMetrics {
@@ -122,6 +136,20 @@ export interface ManagedServiceMetrics {
                         // refusedRps (throughput/connection throttling)
 }
 
+// Live event-broker state for one topic (audit ISSUE-002) — a topic is identified by its
+// dependency id (this schema has no separate "Topic" entity). Surfaces the async decoupling
+// worldEngine/broker.ts models: how far behind the consumer is (lagSec), how deep the backlog is,
+// and the two failure modes (dropRps — retention-cap overflow, DLQ-rate — exhausted redeliveries).
+export interface TopicMetrics {
+  totalArrivalRps: number
+  backlogCount: number
+  drainRps: number
+  lagSec: number
+  dropRps: number
+  redeliverRps: number
+  dlqRps: number
+}
+
 export interface MetricsBatch {
   simMs: number
   instances: Record<InstanceId, InstanceMetrics>
@@ -132,6 +160,10 @@ export interface MetricsBatch {
   // Additive-optional (frozen-contract rule): buildBatch always populates it, but older/test-built
   // batches may omit it — read as `batch.managedServices?.[id]`. See contract-drift.md §PHASE 5.1.
   managedServices?: Record<ManagedServiceId, ManagedServiceMetrics>
+  // Additive-optional (frozen-contract rule), keyed by dependency id. buildBatch always populates
+  // it when the world has event dependencies; older/test-built batches may omit it — read as
+  // `batch.topics?.[dependencyId]`. See contract-drift.md §ISSUE-002.
+  topics?: Record<string, TopicMetrics>
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────
@@ -151,6 +183,12 @@ export type EngineEventKind =
   | 'primary_failback'           // recovered authored primary reclaimed the role (audit ISSUE-007)
   | 'outage_triggered' | 'outage_cleared'   // manual switches
   | 'engine_degraded'            // perf watch halved the step rate (spec decision 9); info severity
+  // Audit ISSUE-010: silent fan-out truncation, surfaced. Both were previously invisible — an
+  // instance past MAX_DEPTH reports zero traffic/cost/findings for whatever it would have called,
+  // reading as "healthy" rather than "unmodeled"; a cyclic dependency's row into the target IS
+  // recorded (unchanged) but nothing marked that the re-entry was cut instead of followed.
+  | 'chain_depth_exceeded'       // dependency chain hit MAX_DEPTH and stopped fanning out further
+  | 'chain_cycle_cut'            // BFS cycle guard stopped re-queueing into an ancestor instance
 
 export interface EngineEvent {
   id: string

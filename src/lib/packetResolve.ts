@@ -17,7 +17,7 @@
 // Pure and dependency-free (registry types only) so it is node-testable and safe to call from the
 // engine's hot path and from render-time particle code alike.
 
-import type { DbTemplate, HttpTemplate, PacketMixEntry, PacketRegistry, PacketTemplate } from './nodeConfig'
+import type { DbTemplate, HttpTemplate, PacketMixEntry, PacketProtocol, PacketRegistry, PacketTemplate, StreamTemplate } from './nodeConfig'
 
 // The engine's long-standing BYTES_PER_REQUEST_EACH_WAY convention. Moved here from nodeConfig.ts
 // with routeIngressBytes when the packet library landed.
@@ -49,6 +49,15 @@ export function routeIngressBytes(route: HttpTemplate | undefined): { reqBytes: 
 }
 
 const isDb = (t: PacketTemplate): t is DbTemplate => t.protocol === 'db'
+const isStream = (t: PacketTemplate): t is StreamTemplate => t.protocol === 'stream'
+
+// Audit ISSUE-004: a stream's authored compressionType never adjusted its wire size — an
+// uncompressed and a `snappy`-compressed stream booked identical NIC bytes and cost. Put the ratio
+// HERE, in the one mix→wire-bytes resolution point, so cost/NIC/cpuMsPerKb all inherit it for free
+// with zero new call sites. Representative, not a real codec benchmark.
+const COMPRESSION_RATIO: Record<StreamTemplate['compressionType'], number> = {
+  none: 1, gzip: 0.3, snappy: 0.5,
+}
 
 // A db packet answers with `resultSizeKb`; every other kind uses `responseSizeKb`. Absent ⇒ null,
 // so the caller can fall through to the next tier for the response leg alone.
@@ -95,9 +104,10 @@ export function resolveWireSize(
   let amplification = 0
   for (const { entry, tpl } of resolved) {
     const w = entry.weight / totalWeight
-    reqBytes += w * (tpl.sizeKb != null ? tpl.sizeKb * 1024 : defReqBytes)
+    const compression = isStream(tpl) ? COMPRESSION_RATIO[tpl.compressionType] : 1
+    reqBytes += w * compression * (tpl.sizeKb != null ? tpl.sizeKb * 1024 : defReqBytes)
     const respKb = packetRespKb(tpl)
-    respBytes += w * (respKb != null ? respKb * 1024 : defRespBytes)
+    respBytes += w * compression * (respKb != null ? respKb * 1024 : defRespBytes)
     sigma += w * (tpl.sizeVariance ?? 0)
     if (isDb(tpl)) {
       dbWeight += w
@@ -118,6 +128,30 @@ export function resolveWireSize(
     ...(dbWeight > 0 ? { writeFraction: writeWeight } : {}),
     amplification,
   }
+}
+
+// The mix's majority-weight protocol (audit ISSUE-007/002) — the ONE place "what protocol does
+// this dependency actually speak" gets resolved, shared by the compile-time protocol-mismatch
+// finding (`compileWorld.ts`) and the engine's event/broker gating (`flows.ts`), so the two can
+// never disagree about which protocol a bound mix implies. Ties broken by first-encountered order,
+// matching resolveWireSize/resolveConnectionProfile's own weighted-fold iteration order. Entries
+// referencing a deleted packet, or a non-finite/non-positive weight, are ignored — same defensive
+// filter every other packet-mix reader applies. Returns null for an empty/all-dangling/
+// all-zero-weight mix (nothing to resolve).
+export function resolveMixProtocol(reg: PacketRegistry, mix: PacketMixEntry[] | undefined): PacketProtocol | null {
+  const weightByProtocol: Partial<Record<PacketProtocol, number>> = {}
+  for (const entry of mix ?? []) {
+    if (!Number.isFinite(entry.weight) || entry.weight <= 0) continue
+    const tpl = reg.templates[entry.packetId]
+    if (!tpl) continue
+    weightByProtocol[tpl.protocol] = (weightByProtocol[tpl.protocol] ?? 0) + entry.weight
+  }
+  let best: PacketProtocol | null = null
+  let bestWeight = -Infinity
+  for (const [protocol, weight] of Object.entries(weightByProtocol)) {
+    if (weight! > bestWeight) { best = protocol as PacketProtocol; bestWeight = weight! }
+  }
+  return best
 }
 
 // Deterministic, rng-FREE weighted pick for particle tinting.
@@ -145,16 +179,32 @@ function radicalInverse2(k: number): number {
   return bits * 2.3283064365386963e-10   // / 2^32
 }
 
-export function pickPacketByIndex(mix: PacketMixEntry[] | undefined, k: number): number | null {
+// Precomputed pick table (audit ISSUE-013): a mix's filtered entries + total weight, resolved ONCE
+// per dependency at start() rather than re-filtered/re-summed on every particle on every frame.
+// `mix` is read from the frozen `doc` and cannot change while the engine runs (topology is
+// edit-locked), so every post-start() call recomputing this was pure waste — up to ~24,000
+// filter+reduce allocations/sec at the render cap. `null` mirrors pickPacketByIndex's old
+// "no valid entries" return of `null`.
+export interface PickTable {
+  entries: PacketMixEntry[]
+  total: number
+}
+
+export function buildPickTable(mix: PacketMixEntry[] | undefined): PickTable | null {
   const entries = (mix ?? []).filter(e => Number.isFinite(e.weight) && e.weight > 0)
   if (entries.length === 0) return null
   const total = entries.reduce((sum, e) => sum + e.weight, 0)
+  return { entries, total }
+}
+
+export function pickPacketByIndex(table: PickTable | null, k: number): number | null {
+  if (table === null) return null
   const slot = ((k % PATTERN_SLOTS) + PATTERN_SLOTS) % PATTERN_SLOTS
-  const x = radicalInverse2(slot) * total
+  const x = radicalInverse2(slot) * table.total
   let cum = 0
-  for (const e of entries) {
+  for (const e of table.entries) {
     cum += e.weight
     if (x < cum) return e.packetId
   }
-  return entries[entries.length - 1].packetId
+  return table.entries[table.entries.length - 1].packetId
 }
