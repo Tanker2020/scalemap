@@ -1143,3 +1143,95 @@ describe('solveFlows — client-side timeouts', () => {
     expect(timedOutRow?.failure).toBe('timeout')
   })
 })
+
+// ─── Network-partition impairment memo (FEAT-002, Task 11) ──────────────────
+// Two independent entry instances in the SAME world, each with its OWN single dependency: `api`
+// calls `repl` across regions (the path a partition will target), `svc` calls `db` within the
+// same AZ (the control path that must stay byte-identical whether or not the partition is
+// active). Isolating them onto separate entries — rather than two deps off one entry — means each
+// entry's own refusedRps/structuralRefusedRps/totalLatencyMs reflects exactly one hop, so the
+// "matching path changes, unmatched path doesn't" assertions aren't diluted by an rps-weighted
+// average across both.
+describe('solveFlows — network-partition impairment memo (FEAT-002)', () => {
+  function partitionWorld() {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const region2 = createRegion('eu-west-1')
+    const az1 = createAz(region.id, 'us-east-1a')
+    const azEu = createAz(region2.id, 'eu-west-1a')
+    Object.assign(doc.regions, { [region.id]: region, [region2.id]: region2 })
+    Object.assign(doc.azs, { [az1.id]: az1, [azEu.id]: azEu })
+    const s1 = createServer(az1.id, getPreset('dedicated-8')!)   // api + svc entries
+    const s1b = createServer(az1.id, getPreset('dedicated-8')!)  // db: same-az from svc
+    const s3 = createServer(azEu.id, getPreset('dedicated-8')!)  // repl: cross-region from api
+    Object.assign(doc.servers, { [s1.id]: s1, [s1b.id]: s1b, [s3.id]: s3 })
+
+    const api = addService(doc, 'api', s1.id, 0)
+    const repl = addService(doc, 'repl', s3.id, 1)
+    api.bp.dependencies = [dep('d-repl', repl.bp.id)]
+
+    const svc = addService(doc, 'svc', s1.id, 2)
+    const db = addService(doc, 'db', s1b.id, 3)
+    svc.bp.dependencies = [dep('d-db', db.bp.id)]
+
+    const crossRegionPathId = `${api.iid}->d-repl->${repl.iid}`
+    const sameAzPathId = `${svc.iid}->d-db->${db.iid}`
+    return { doc, api, repl, svc, db, crossRegionPathId, sameAzPathId }
+  }
+
+  it('a symmetric drop partition zeroes cross-region flow via structuralRefusedRps, NOT the overload-shedding signal', () => {
+    const { doc, api, repl, svc, db, crossRegionPathId } = partitionWorld()
+    const impairmentMemo = new Map([[crossRegionPathId, { blocked: true, lossFraction: 0, delayMs: 0 }]])
+
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100, [svc.iid]: 100 }, { impairmentMemo }))
+
+    expect(flows[api.iid].refusedRps).toBe(100)
+    expect(flows[api.iid].structuralRefusedRps).toBe(100)
+    // Mirrors index.ts's Mechanism B formula (audit ISSUE-008): capacityRefused = refusedRps -
+    // structuralRefusedRps. A partition-caused refusal must be entirely structural, so this must
+    // be exactly 0 — a drop partition never feeds the overload-shedding signal.
+    expect(flows[api.iid].refusedRps - (flows[api.iid].structuralRefusedRps ?? 0)).toBe(0)
+    expect(flows[repl.iid]).toBeUndefined()   // nothing transits a fully dropped path
+    const row = flows[api.iid].downstream.find(r => r.dependencyId === 'd-repl')
+    expect(row).toMatchObject({ rps: 100, blocked: true, failure: 'fault' })
+
+    // Control: the unrelated same-az path is completely untouched.
+    expect(flows[svc.iid].refusedRps).toBe(0)
+    expect(flows[svc.iid].structuralRefusedRps).toBe(0)
+    expect(flows[db.iid].offeredRps).toBe(100)
+  })
+
+  it('a loss partition at 0.3 refuses ~30% of attempts on the matching path only; the unmatched path is byte-identical', () => {
+    const { doc, api, svc, db, crossRegionPathId } = partitionWorld()
+    const baseline = solveFlows(baseInput(doc, { [api.iid]: 100, [svc.iid]: 100 }))
+
+    const impairmentMemo = new Map([[crossRegionPathId, { blocked: false, lossFraction: 0.3, delayMs: 0 }]])
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100, [svc.iid]: 100 }, { impairmentMemo }))
+
+    expect(flows[api.iid].refusedRps).toBeCloseTo(30, 9)
+    expect(flows[api.iid].structuralRefusedRps).toBeCloseTo(30, 9)
+    const admittedRow = flows[api.iid].downstream.find(r => !r.blocked)
+    expect(admittedRow?.rps).toBeCloseTo(70, 9)
+    const lossRow = flows[api.iid].downstream.find(r => r.blocked)
+    expect(lossRow).toMatchObject({ rps: 30, failure: 'fault' })
+
+    // Unrelated same-az path: exact digit match against the zero-partition baseline.
+    expect(flows[svc.iid].refusedRps).toBe(baseline.flows[svc.iid].refusedRps)
+    expect(flows[db.iid].offeredRps).toBe(baseline.flows[db.iid].offeredRps)
+    expect(flows[db.iid].admittedRps).toBe(baseline.flows[db.iid].admittedRps)
+  })
+
+  it('a delay partition at 150ms raises composed totalLatencyMs on the matching hop by ~150ms; the same-AZ hop is untouched', () => {
+    const { doc, api, svc, crossRegionPathId } = partitionWorld()
+    const baseline = solveFlows(baseInput(doc, { [api.iid]: 100, [svc.iid]: 100 }, { rng: createRng(7) }))
+
+    const impairmentMemo = new Map([[crossRegionPathId, { blocked: false, lossFraction: 0, delayMs: 150 }]])
+    const delayed = solveFlows(baseInput(doc, { [api.iid]: 100, [svc.iid]: 100 }, { rng: createRng(7), impairmentMemo }))
+
+    const apiDelta = delayed.flows[api.iid].totalLatencyMs! - baseline.flows[api.iid].totalLatencyMs!
+    expect(apiDelta).toBeCloseTo(150, 6)
+
+    const svcDelta = delayed.flows[svc.iid].totalLatencyMs! - baseline.flows[svc.iid].totalLatencyMs!
+    expect(svcDelta).toBe(0)
+  })
+})

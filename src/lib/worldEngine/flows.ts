@@ -299,9 +299,10 @@ export interface FlowInput {
   topicRuntime?: TopicRuntime
   // Per-path (keyed by CompiledPath.id) network-partition impairment (FEAT-002, Task 10), built
   // ONCE per step by the engine (index.ts) from state.faults.partitions and threaded through here.
-  // NOT YET consumed inside this file — a later task (11) wires actual blocking/loss/delay
-  // behavior off this map. Optional: absent ⇒ unchanged behavior, so existing callers/tests are
-  // unaffected.
+  // Consumed in the dependency loop (Task 11): `blocked` short-circuits like a firewall block
+  // (structural refusal), `lossFraction` refuses a share of attempts (also structural), and
+  // `delayMs` adds additively to the hop's composed latency for whatever share actually transits.
+  // Optional: absent ⇒ unchanged behavior, so existing callers/tests are unaffected.
   impairmentMemo?: Map<string, { blocked: boolean; lossFraction: number; delayMs: number }>
   rng: Rng
 }
@@ -320,6 +321,12 @@ export interface DownstreamFlow {
   // exhausted its redelivery budget. Absent on every non-managed/non-event row and on admitted
   // rows, which keeps existing row-equality assertions unchanged.
   failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq' | 'fault'
+  // Additive per-hop delay (ms) from an active network-partition impairment (FEAT-002, Task 11),
+  // consulted from FlowInput.impairmentMemo and folded into the composed-latency pass
+  // (computeTotalLatencyMs). Only ever set on a row carrying traffic that actually transits the
+  // link — refused/blocked rows don't transit, so a delay there is moot. Absent ⇒ 0 extra ms,
+  // so existing rows/tests are unchanged.
+  impairmentDelayMs?: number
 }
 
 export interface InstanceFlow {
@@ -484,6 +491,10 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
     hopClass: HopClass,
     blocked: boolean,
     failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq' | 'fault',
+    // Impairment delay (FEAT-002, Task 11): a static per-path property, so every contribution
+    // aggregating into the same row agrees on it — set once, on first touch, like every other
+    // row field.
+    impairmentDelayMs?: number,
   ): void => {
     const key = `${dependencyId}|${target.toInstanceId ?? ''}|${target.toManagedServiceId ?? ''}|${blocked}|${failure ?? ''}`
     let rows = rowIndex.get(f.instanceId)
@@ -495,7 +506,11 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
     if (row) {
       row.rps += rps
     } else {
-      const created: DownstreamFlow = { dependencyId, ...target, rps, hopClass, blocked, ...(failure ? { failure } : {}) }
+      const created: DownstreamFlow = {
+        dependencyId, ...target, rps, hopClass, blocked,
+        ...(failure ? { failure } : {}),
+        ...(impairmentDelayMs ? { impairmentDelayMs } : {}),
+      }
       rows.set(key, created)
       f.downstream.push(created)
     }
@@ -682,15 +697,34 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
           ? { toInstanceId: path.to.instanceId }
           : { toManagedServiceId: path.to.managedServiceId }
 
-        if (path.verdict === 'blocked') {
+        // FEAT-002 (Task 11): per-path network-partition impairment, resolved ONCE per step by
+        // the engine (index.ts's buildImpairmentMemo) and consulted here. `input.impairmentMemo`
+        // is undefined/empty when no partition is active, so this whole block is a cheap Map
+        // lookup that's near-zero-cost in the common case.
+        const impairment = input.impairmentMemo?.get(path.id)
+
+        if (path.verdict === 'blocked' || impairment?.blocked) {
           // Refused ON THE CALLER; the blocked row is what events/particles render. A network
-          // policy block is STRUCTURAL (audit ISSUE-008) — shedding entry demand can't fix a
-          // firewall rule, so this doesn't count toward Mechanism B's overload signal.
+          // policy block OR a drop-mode partition is STRUCTURAL (audit ISSUE-008) — shedding
+          // entry demand can't fix a firewall rule or a severed link, so neither counts toward
+          // Mechanism B's overload signal.
           flow.refusedRps += share
           flow.structuralRefusedRps = (flow.structuralRefusedRps ?? 0) + share
-          addDownstream(flow, dep.id, target, share, path.hopClass, true)
+          addDownstream(flow, dep.id, target, share, path.hopClass, true, path.verdict === 'blocked' ? undefined : 'fault')
           continue   // refused attempts carry no payload and reach nothing
         }
+
+        // A loss-mode partition refuses a FRACTION of attempts on this path — also structural
+        // (same reasoning as the full-block case above), so it feeds structuralRefusedRps too.
+        // `remainingShare` carries forward through every branch below in place of `share`.
+        const lossShare = (impairment?.lossFraction ?? 0) * share
+        const remainingShare = share - lossShare
+        if (lossShare > EPSILON_RPS) {
+          flow.refusedRps += lossShare
+          flow.structuralRefusedRps = (flow.structuralRefusedRps ?? 0) + lossShare
+          addDownstream(flow, dep.id, target, lossShare, path.hopClass, true, 'fault')
+        }
+        if (remainingShare <= EPSILON_RPS) continue
 
         if (path.to.kind === 'managed') {
           // Manual outage (node-model Phase 5.2): a downed managed service refuses its ENTIRE call
@@ -699,9 +733,9 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
           if (managedDown(path.to.managedServiceId)) {
             // A manual outage, not a load problem (audit ISSUE-008) — structural, same as a
             // firewall block above.
-            flow.refusedRps += share
-            flow.structuralRefusedRps = (flow.structuralRefusedRps ?? 0) + share
-            addDownstream(flow, dep.id, target, share, path.hopClass, true)
+            flow.refusedRps += remainingShare
+            flow.structuralRefusedRps = (flow.structuralRefusedRps ?? 0) + remainingShare
+            addDownstream(flow, dep.id, target, remainingShare, path.hopClass, true)
             continue
           }
           // Managed capacity (node-model Phase 3 for DBs, Phase 5.2 for every other type): the
@@ -716,17 +750,17 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
           // pre-5.4 per-caller ceiling.
           const rt = ms ? input.managedDbRuntime?.[ms.id] : undefined
           const throttled = rt
-            ? share * rt.refusalFraction
+            ? remainingShare * rt.refusalFraction
             // A bound db packet mix DERIVES the write fraction from its query types, and is the
             // single source of truth when present — the edge's hand-authored slider is hidden in
             // that case (ConnectionsView's EdgeInspector), so reading it here would contradict
             // what the user sees.
-            : (ms ? managedRefusedRps(share, input.depBytesById?.[dep.id]?.writeFraction ?? dep.writeFraction ?? 0, ms) : 0)
-          const timedOut = rt ? (share - throttled) * rt.timeoutErrorFraction : 0
+            : (ms ? managedRefusedRps(remainingShare, input.depBytesById?.[dep.id]?.writeFraction ?? dep.writeFraction ?? 0, ms) : 0)
+          const timedOut = rt ? (remainingShare - throttled) * rt.timeoutErrorFraction : 0
           const refused = throttled + timedOut
-          const admittedToMs = share - refused
+          const admittedToMs = remainingShare - refused
           if (admittedToMs > EPSILON_RPS) {
-            addDownstream(flow, dep.id, target, admittedToMs, path.hopClass, false)
+            addDownstream(flow, dep.id, target, admittedToMs, path.hopClass, false, undefined, impairment?.delayMs)
             // Storage/CDN services serve large responses: attribute those served bytes to the
             // service (priced per-service with a storage free allowance) INSTEAD of the world
             // cross-zone bucket, so nothing is double-counted. Every other managed type keeps the
@@ -764,13 +798,13 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
           const rt = input.topicRuntime[dep.id]
           const dropFraction = rt && rt.totalArrivalRps > EPSILON_RPS ? rt.dropRps / rt.totalArrivalRps : 0
           const dlqFraction = rt && rt.totalArrivalRps > EPSILON_RPS ? rt.dlqRps / rt.totalArrivalRps : 0
-          const dropped = share * dropFraction
-          const dlqd = share * dlqFraction
-          const accepted = Math.max(0, share - dropped - dlqd)
+          const dropped = remainingShare * dropFraction
+          const dlqd = remainingShare * dlqFraction
+          const accepted = Math.max(0, remainingShare - dropped - dlqd)
           if (accepted > EPSILON_RPS) {
             // Accepted into the topic — the producer's call succeeded; bytes still transit the
             // wire (publishing the event), but the consumer is NOT pushed onto this step's queue.
-            addDownstream(flow, dep.id, target, accepted, path.hopClass, false)
+            addDownstream(flow, dep.id, target, accepted, path.hopClass, false, undefined, impairment?.delayMs)
             bucketBytes(path.hopClass, accepted, dep.id)
           }
           if (dropped > EPSILON_RPS) {
@@ -796,16 +830,16 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
         // error, and is additionally recorded as a `timeout`-tagged blocked row so the metrics
         // pyramid can tell "too slow" apart from "too much load" the same way it already does for
         // managed-DB query timeouts.
-        let admittedShare = share
+        let admittedShare = remainingShare
         const clientTimeoutMs = resolveClientTimeoutMs(doc.packets, dep.packetMix)
         if (clientTimeoutMs != null && clientTimeoutMs > 0) {
           const targetSelfMs = getFlow(toId).serviceLatencyMs
           const fraction = timeoutErrorFraction(targetSelfMs, targetSelfMs * SERVICE_P99_OVER_P50, clientTimeoutMs)
           if (fraction > EPSILON_RPS) {
-            const timedOut = share * fraction
+            const timedOut = remainingShare * fraction
             flow.errorRps += timedOut
             addDownstream(flow, dep.id, target, timedOut, path.hopClass, true, 'timeout')
-            admittedShare = share - timedOut
+            admittedShare = remainingShare - timedOut
           }
         }
         if (admittedShare <= EPSILON_RPS) continue
@@ -831,7 +865,7 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
         }
         if (admittedShare <= EPSILON_RPS) continue
 
-        addDownstream(flow, dep.id, target, admittedShare, path.hopClass, false)
+        addDownstream(flow, dep.id, target, admittedShare, path.hopClass, false, undefined, impairment?.delayMs)
         bucketBytes(path.hopClass, admittedShare, dep.id)
 
         if (chainHas(item, toId)) {                 // cycle guard: row recorded, no re-entry
@@ -892,7 +926,7 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
       // over every downstream row every step; drawing from the seeded rng here would shift the
       // stream for the remainder of the step, invalidating unrelated exact-value assertions
       // (byte totals, particle picks, VPS steal, ...) that have nothing to do with latency.
-      const networkMs = baseHopLatencyMs(row.hopClass, fromCatalogId, toCatalogId, null, REGION_GEO)
+      const networkMs = baseHopLatencyMs(row.hopClass, fromCatalogId, toCatalogId, null, REGION_GEO) + (row.impairmentDelayMs ?? 0)
       weightedSum += row.rps * (networkMs + downstreamMs)
       rpsTotal += row.rps
     }
