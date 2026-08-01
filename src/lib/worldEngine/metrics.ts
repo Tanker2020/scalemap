@@ -249,6 +249,12 @@ export function buildBatch(
   // correctly-sourced coreUtilization on the same server card (audit ISSUE-011). Optional:
   // absent ⇒ the raw workload value, so every existing direct-buildBatch caller is unchanged.
   effectiveCpuMsByInstance?: Record<InstanceId, number>,
+  // FEAT-001: per-instance memory-leak accumulator, the SAME map worldEngine/index.ts's
+  // InstanceLoad.ramBaseMb already folds in on the enforcement side (s.faults.leakAccumMb) — read
+  // here, never re-derived, so the RAM the host scheduler enforces/OOM-kills on can never diverge
+  // from the RAM published here and shown in the UI. Optional: absent ⇒ 0 for every instance, so
+  // every existing direct-buildBatch caller/test is unchanged by omission.
+  leakAccumMb?: Map<InstanceId, number>,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
   const servers: Record<ServerId, ServerMetrics> = {}
@@ -324,7 +330,9 @@ export function buildBatch(
     const checkout = state.lastHost[inst.serverId]?.checkoutByInstance?.[inst.id]
     const checkoutWaitMs = checkout?.checkoutWaitMs
     const effectiveConnections = checkout ? activeConnections * (1 - checkout.checkoutTimeoutErrorFraction) : activeConnections
-    const rawRamMb = workload.ramBaseMb + workload.ramPerConnMb * effectiveConnections
+    // FEAT-001: fold in the same leak accumulator the enforcement side (worldEngine/index.ts's
+    // InstanceLoad.ramBaseMb) already reads — 0 when absent/no leak, byte-identical to pre-FEAT-001.
+    const rawRamMb = workload.ramBaseMb + workload.ramPerConnMb * effectiveConnections + (leakAccumMb?.get(inst.id) ?? 0)
     instances[inst.id] = {
       instanceId: inst.id,
       rps,

@@ -2213,4 +2213,40 @@ describe('FEAT-001 faults', () => {
     expect(sim.events.some(e => e.kind === 'instance_restarted')).toBe(true)
     sim.engine.stop()
   })
+
+  // Divergence guard (seeds Task 6's later, more thorough version): the RAM hostScheduler
+  // enforces (and OOM-kills on) folds in s.faults.leakAccumMb via InstanceLoad.ramBaseMb —
+  // published InstanceMetrics.ramMb must move together with it, not stay frozen at the static
+  // workload.ramBaseMb while the enforced number silently climbs toward OOM underneath it.
+  it('published InstanceMetrics.ramMb reflects an active memory-leak, not frozen at the static workload value', () => {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    // Roomy host — the point here is observing ramMb climb, not triggering OOM mid-measurement.
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    server.specs.ramMb = 100_000
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    doc.servers[server.id] = server
+    const web = publicBlueprint('web', 0)
+    web.workload = { cpuMsPerRequest: 2, ramBaseMb: 100, ramPerConnMb: 0, diskIoPerRequest: 0 }
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id)
+    doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 1
+    doc.populations[pop.id] = pop
+    const compiled = compileWorld(doc)
+    const inst = instanceId(pl.id, 0)
+
+    const sim = drive(doc, compiled)
+    sim.stepFor(1)
+    const ramBeforeLeak = sim.latest().instances[inst].ramMb   // ~100 (static base, no connections)
+    sim.engine.setFault('server', server.id, { kind: 'memory-leak', mbPerMinute: 6000 })   // 100 MB/s
+    sim.stepFor(3)
+    const ramAfterLeak = sim.latest().instances[inst].ramMb
+    // Published RAM must have moved with the leak, not stayed pinned at the static workload value.
+    expect(ramAfterLeak).toBeGreaterThan(ramBeforeLeak + 100)
+    sim.engine.stop()
+  })
 })

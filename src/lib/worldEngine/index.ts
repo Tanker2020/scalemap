@@ -1317,7 +1317,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // computed from the same profile the host scheduler just enforced RAM against.
       // effectiveCpuMsByInstance is the SAME map fed to the host scheduler's InstanceLoad above,
       // so published cpuCoresUsed reflects the CPU the scheduler actually enforced (ISSUE-011).
-      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance)
+      // s.faults.leakAccumMb is the SAME map InstanceLoad.ramBaseMb already folded in above, so
+      // published ramMb can never diverge from the RAM the scheduler enforces/OOM-kills on
+      // (FEAT-001, mirrors the connProfileByInstance/effectiveCpuMsByInstance discipline).
+      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance, s.faults.leakAccumMb)
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
       s.tracer.sample(flows, compiled, doc, simMs, entryId => populationsForEntry(entryId), managedDbRt)
