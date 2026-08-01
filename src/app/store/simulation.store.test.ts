@@ -218,6 +218,50 @@ describe('simulation.store — End erases run visuals, Pause preserves them', ()
   })
 })
 
+// FEAT-001 (Task 6): setFault is the store-level entry point Task 8's chaos UI calls. It
+// delegates to the engine facade and keeps a SEPARATE activeFaults map (not healthOverrides) so
+// non-`down` fault kinds don't get misread as a full outage by existing healthOverrides
+// consumers — only a `down` fault (or clearing one) also updates healthOverrides, mirroring
+// setOutage's existing semantics exactly.
+describe('simulation.store — setFault / setOutage (FEAT-001)', () => {
+  beforeEach(() => {
+    vi.spyOn(worldEngine, 'setFault').mockImplementation(() => {})
+    vi.spyOn(worldEngine, 'setOutage').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    useSimulationStore.setState({ healthOverrides: {}, activeFaults: {} })
+    vi.restoreAllMocks()
+  })
+
+  it('setFault delegates to the engine facade and updates healthOverrides for a down fault', () => {
+    const store = useSimulationStore.getState()
+    store.setFault('server', 'srv-1', { kind: 'down' })
+    expect(worldEngine.setFault).toHaveBeenCalledWith('server', 'srv-1', { kind: 'down' })
+    expect(useSimulationStore.getState().healthOverrides['srv-1']).toBe(true)
+    expect(useSimulationStore.getState().activeFaults['srv-1']).toEqual({ kind: 'down' })
+
+    store.setFault('server', 'srv-1', null)
+    expect(useSimulationStore.getState().healthOverrides['srv-1']).toBe(false)
+    expect(useSimulationStore.getState().activeFaults['srv-1']).toBeNull()
+  })
+
+  it('a non-down fault updates activeFaults but does NOT touch healthOverrides', () => {
+    const store = useSimulationStore.getState()
+    useSimulationStore.setState({ healthOverrides: {} })
+    store.setFault('server', 'srv-2', { kind: 'cpu-brownout', capacityFraction: 0.5 })
+    expect(useSimulationStore.getState().activeFaults['srv-2']).toEqual({ kind: 'cpu-brownout', capacityFraction: 0.5 })
+    expect(useSimulationStore.getState().healthOverrides['srv-2']).toBeUndefined()
+  })
+
+  it('setOutage still works, implemented in terms of setFault', () => {
+    const store = useSimulationStore.getState()
+    store.setOutage('server', 'srv-1', true)
+    expect(worldEngine.setFault).toHaveBeenCalledWith('server', 'srv-1', { kind: 'down' })
+    expect(useSimulationStore.getState().healthOverrides['srv-1']).toBe(true)
+    expect(useSimulationStore.getState().activeFaults['srv-1']).toEqual({ kind: 'down' })
+  })
+})
+
 // Audit ISSUE-019: a fresh start() rebuilds every slow-converging piece of engine state from
 // cold (burst credits, failover hysteresis, metric EMAs) — this is correct-to-reset, per
 // CLAUDE.md's topology-mutability model, but nothing in the UI told a user that the first few

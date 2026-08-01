@@ -7,6 +7,7 @@ import { create } from 'zustand'
 import type { WorldDoc, CompiledWorld } from '../../lib/world/types'
 import type {
   MetricsBatch, EngineEvent, RenderScope, FramePayload, DetachFn, ReplayFrame, TracedRequest,
+  FaultScope, FaultSpec,
 } from '../../lib/worldEngine/types'
 import { worldEngine } from '../../lib/worldEngine'
 import { DEFAULT_HYSTERESIS } from '../../lib/worldEngine/failover'
@@ -131,6 +132,13 @@ interface SimulationStoreV2 {
   latestBatch: MetricsBatch | null
   events: EngineEvent[]
   healthOverrides: Record<string, boolean>
+  // FEAT-001: which fault (if any) is currently active per entity id — a SEPARATE map from
+  // healthOverrides. healthOverrides specifically means "hard down" to its existing consumers;
+  // folding every fault kind into it would silently change their meaning. Only a `down` fault
+  // (or clearing one) also touches healthOverrides, mirroring setOutage's pre-existing semantics
+  // exactly. "Absent"/cleared is represented as `null` (or the key missing), matching
+  // healthOverrides's own convention of a plain value per id with no override recorded.
+  activeFaults: Record<string, FaultSpec | null>
   scrubIndex: number | null
   scrubBatch: MetricsBatch | null
   degraded: boolean
@@ -153,6 +161,13 @@ interface SimulationStoreV2 {
   // frames from a world that no longer exists (see ScrubberV2.tsx's latestBatch gate).
   resetSession: () => void
   setTimeScale: (scale: number) => void
+  // FEAT-001: the general fault-injection entry point (Task 8's chaos UI calls this). Delegates
+  // to the engine facade and records the active fault in `activeFaults`; a `down` fault (or
+  // clearing one) ALSO updates `healthOverrides`, since that specifically IS what a down fault
+  // means to existing healthOverrides consumers.
+  setFault: (scope: FaultScope, id: string, spec: FaultSpec | null) => void
+  // Alias for setFault(scope, id, down ? { kind: 'down' } : null) — kept so no existing caller
+  // breaks. New code should prefer setFault.
   setOutage: (scope: 'server' | 'az' | 'region' | 'managed', id: string, down: boolean) => void
   // `frames` (audit ISSUE-052): the caller's OWN captured frame array, so the resolved batch
   // matches what the caller displays — re-reading the live ring here could disagree with the
@@ -180,6 +195,7 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
   latestBatch: null,
   events: [],
   healthOverrides: {},
+  activeFaults: {},
   scrubIndex: null,
   scrubBatch: null,
   degraded: false,
@@ -242,7 +258,7 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
     // start()). Same field set resetSession clears — the run is over either way.
     set({
       running: false, paused: false, latestBatch: null, events: [], scrubIndex: null, scrubBatch: null,
-      degraded: false, healthOverrides: {}, eventLogRunId: null, eventLogTotal: 0, warmupBatchesRemaining: 0,
+      degraded: false, healthOverrides: {}, activeFaults: {}, eventLogRunId: null, eventLogTotal: 0, warmupBatchesRemaining: 0,
     })
   },
   // Pause: halt the engine (which PRESERVES state) and keep the whole session — latestBatch,
@@ -268,16 +284,24 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
     eventBuffer = []
     set({
       running: false, paused: false, latestBatch: null, events: [], scrubIndex: null, scrubBatch: null,
-      degraded: false, healthOverrides: {}, eventLogRunId: null, eventLogTotal: 0, warmupBatchesRemaining: 0,
+      degraded: false, healthOverrides: {}, activeFaults: {}, eventLogRunId: null, eventLogTotal: 0, warmupBatchesRemaining: 0,
     })
   },
   setTimeScale: (scale) => {
     worldEngine.setTimeScale(scale)
     set({ timeScale: scale })
   },
+  setFault: (scope, id, spec) => {
+    worldEngine.setFault(scope, id, spec)
+    set((s) => ({
+      activeFaults: { ...s.activeFaults, [id]: spec },
+      ...(spec === null || spec.kind === 'down'
+        ? { healthOverrides: { ...s.healthOverrides, [id]: spec !== null } }
+        : {}),
+    }))
+  },
   setOutage: (scope, id, down) => {
-    worldEngine.setOutage(scope, id, down)
-    set((s) => ({ healthOverrides: { ...s.healthOverrides, [id]: down } }))
+    get().setFault(scope, id, down ? { kind: 'down' } : null)
   },
   setScrubIndex: (i, frames) => {
     const resolved = frames ?? worldEngine.getReplayFrames()

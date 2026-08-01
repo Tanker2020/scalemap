@@ -2320,6 +2320,41 @@ describe('FEAT-001 faults', () => {
     expect(ramAfterLeak).toBeGreaterThan(ramBeforeLeak + 100)
     sim.engine.stop()
   })
+
+  // Task 6's formal, named divergence guard for memory-leak RAM (the ad-hoc test above seeds
+  // it) — same discipline as the other DIVERGENCE GUARD tests: scheduler-enforced RAM
+  // (servers[].ramUsedMb) and published per-instance RAM summed (servers[].ramByInstance) must
+  // agree within a bounded ratio, not stay frozen or diverge while a leak accumulates.
+  it('DIVERGENCE GUARD: memory-leak RAM growth agrees between scheduler and metrics', () => {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    server.specs.ramMb = 100_000   // roomy — observe growth, not OOM mid-measurement
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    doc.servers[server.id] = server
+    const web = publicBlueprint('web', 0)
+    web.workload = { cpuMsPerRequest: 2, ramBaseMb: 100, ramPerConnMb: 0, diskIoPerRequest: 0 }
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id)
+    doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 1
+    doc.populations[pop.id] = pop
+    const compiled = compileWorld(doc)
+
+    const sim = drive(doc, compiled)
+    sim.engine.setFault('server', server.id, { kind: 'memory-leak', mbPerMinute: 60 })
+    sim.stepFor(30)
+    const b = sim.latest()
+    const schedulerRam = b.servers[server.id].ramUsedMb
+    const metricsRam = b.servers[server.id].ramByInstance.reduce((sum, r) => sum + r.ramMb, 0)
+    expect(schedulerRam).toBeGreaterThan(0)
+    expect(schedulerRam / metricsRam).toBeGreaterThan(0.5)
+    expect(schedulerRam / metricsRam).toBeLessThan(2)
+    sim.engine.stop()
+  })
 })
 
 // ─── Fault injection (Task 5): error-inject wired into flows.ts ─────────────
