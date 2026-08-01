@@ -100,6 +100,8 @@ export function addPartition(state: FaultState, fault: PartitionFault, simMs: nu
   }
 }
 
+// Returns null when index is out of range (no-op) rather than throwing — splice on an invalid
+// index yields `removed === undefined`, so there is no fault to describe in the event.
 export function removePartition(state: FaultState, index: number, simMs: number): EngineEvent | null {
   const [removed] = state.partitions.splice(index, 1)
   if (!removed) return null

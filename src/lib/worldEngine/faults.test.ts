@@ -101,6 +101,12 @@ describe('faults: impairmentFor', () => {
     expect(impairmentFor({ regionId: 'r1' }, { regionId: 'r2' }, [partition]).delayMs).toBe(150)
   })
 
+  it('delayMs accumulates additively across multiple co-located delay partitions', () => {
+    const a: PartitionFault = { from: { kind: 'region', id: 'r1' }, to: { kind: 'region', id: 'r2' }, mode: 'delay', delayMs: 100, symmetric: true }
+    const b: PartitionFault = { from: { kind: 'region', id: 'r1' }, to: { kind: 'region', id: 'r2' }, mode: 'delay', delayMs: 50, symmetric: true }
+    expect(impairmentFor({ regionId: 'r1' }, { regionId: 'r2' }, [a, b]).delayMs).toBe(150)
+  })
+
   it('an unrelated endpoint pair returns the zero/false baseline exactly', () => {
     const partition: PartitionFault = { from: { kind: 'region', id: 'r1' }, to: { kind: 'region', id: 'r2' }, mode: 'drop', symmetric: true }
     expect(impairmentFor({ regionId: 'r3' }, { regionId: 'r4' }, [partition])).toEqual({ blocked: false, lossFraction: 0, delayMs: 0 })
