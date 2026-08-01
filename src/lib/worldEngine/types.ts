@@ -164,6 +164,10 @@ export interface MetricsBatch {
   // it when the world has event dependencies; older/test-built batches may omit it — read as
   // `batch.topics?.[dependencyId]`. See contract-drift.md §ISSUE-002.
   topics?: Record<string, TopicMetrics>
+  // Additive-optional (frozen-contract rule): count of operator-injected faults (`FaultState.active.
+  // size`) active when this batch was built — lets the analysis engine explain observed degradation
+  // as intentional rather than architectural. See contract-drift.md §Task 7.
+  activeFaultCount?: number
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────

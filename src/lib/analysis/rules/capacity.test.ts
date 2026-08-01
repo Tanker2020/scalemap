@@ -234,3 +234,35 @@ describe('capacity: ttl-outlives-detection', () => {
     expect(ids(runAnalysis(s.doc, s.compile(), null), 'ttl-outlives-detection')).toHaveLength(0)
   })
 })
+
+// FEAT-001 Task 7: surfaces operator-injected chaos faults so degradation from a deliberate fault
+// isn't mistaken for an architectural finding.
+describe('capacity: fault-injected', () => {
+  it('fires an info finding when the batch reports an active operator fault', () => {
+    const s = scenario()
+    const batch = { servers: {}, instances: {}, activeFaultCount: 1 } as unknown as MetricsBatch
+    const f = ids(runAnalysis(s.doc, s.compile(), batch), 'fault-injected')
+    expect(f).toHaveLength(1)
+    expect(f[0].severity).toBe('info')
+    expect(f[0].id).toBe('fault-injected:world')
+    expect(f[0].why).toMatch(/1 fault is/)
+  })
+  it('pluralizes for more than one active fault', () => {
+    const s = scenario()
+    const batch = { servers: {}, instances: {}, activeFaultCount: 3 } as unknown as MetricsBatch
+    const f = ids(runAnalysis(s.doc, s.compile(), batch), 'fault-injected')
+    expect(f).toHaveLength(1)
+    expect(f[0].why).toMatch(/3 faults are/)
+  })
+  it('silent with a null batch', () => {
+    const s = scenario()
+    expect(ids(runAnalysis(s.doc, s.compile(), null), 'fault-injected')).toHaveLength(0)
+  })
+  it('silent when activeFaultCount is 0 or undefined', () => {
+    const s = scenario()
+    const zero = { servers: {}, instances: {}, activeFaultCount: 0 } as unknown as MetricsBatch
+    expect(ids(runAnalysis(s.doc, s.compile(), zero), 'fault-injected')).toHaveLength(0)
+    const undef = { servers: {}, instances: {} } as unknown as MetricsBatch
+    expect(ids(runAnalysis(s.doc, s.compile(), undef), 'fault-injected')).toHaveLength(0)
+  })
+})

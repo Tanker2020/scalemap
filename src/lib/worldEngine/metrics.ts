@@ -255,6 +255,10 @@ export function buildBatch(
   // from the RAM published here and shown in the UI. Optional: absent ⇒ 0 for every instance, so
   // every existing direct-buildBatch caller/test is unchanged by omission.
   leakAccumMb?: Map<InstanceId, number>,
+  // Task 7: count of currently-active operator-injected faults (FaultState.active.size), threaded
+  // straight through to the published batch for the fault-injected analysis rule. Optional: absent
+  // ⇒ omitted from the batch, so every existing direct-buildBatch caller/test is unchanged.
+  activeFaultCount?: number,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
   const servers: Record<ServerId, ServerMetrics> = {}
@@ -518,5 +522,5 @@ export function buildBatch(
   state.droppedWindow.clear()
   state.droppedSteps = 0
 
-  return { simMs, instances, servers, azs, regions, world, managedServices, topics }
+  return { simMs, instances, servers, azs, regions, world, managedServices, topics, activeFaultCount: activeFaultCount ?? 0 }
 }

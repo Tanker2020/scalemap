@@ -176,7 +176,24 @@ const consumerLagBehindProducer: AnalysisRule = {
   },
 }
 
+// FEAT-001 Task 7: surfaces operator-injected chaos faults so the operator can tell observed
+// degradation apart from an architectural finding — info severity only, never touches
+// compiled.findings.
+const faultInjected: AnalysisRule = {
+  id: 'fault-injected', family: 'capacity',
+  run: ({ lastBatch }) => {
+    if (!lastBatch?.activeFaultCount) return []
+    return [{
+      id: 'fault-injected:world', ruleId: 'fault-injected', family: 'capacity', severity: 'info',
+      title: 'Operator-induced fault active',
+      why: `${lastBatch.activeFaultCount} fault${lastBatch.activeFaultCount === 1 ? ' is' : 's are'} currently injected by the operator — observed degradation may be intentional, not architectural.`,
+      fix: 'Clear active faults from the Chaos controls to see baseline behavior.',
+      affected: [],
+    }]
+  },
+}
+
 export const capacityRules: AnalysisRule[] = [
   ramOversubscribed, burstableSustainedLoad, oceanCrossingPopulation, ttlOutlivesDetection,
-  consumerLagBehindProducer,
+  consumerLagBehindProducer, faultInjected,
 ]
