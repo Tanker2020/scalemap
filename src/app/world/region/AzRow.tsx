@@ -1,9 +1,9 @@
 // src/app/world/region/AzRow.tsx
 // One AZ's card in the region flow (Region v4, Polish 3 T3, mockup `.azcard`): health ring +
 // name + live inbound rps + $/mo in the header, a hover-revealed `.r3-cfgbar` (⏎ enter / +
-// server / ⚡ kill·✓ restore — all three reuse EXISTING dispatches byte-for-byte, no new store
-// surface: `onNavigateAz`, `addServer(azId, getPreset('vps-medium')!)`, `setOutage('az', azId,
-// !azDown)`), then either the drain line (down) or one static-bar `.azrow` per server — a
+// server / the shared `ChaosControl` split button, FEAT-001 Task 8 — `onNavigateAz`,
+// `addServer(azId, getPreset('vps-medium')!)` still reuse EXISTING dispatches byte-for-byte),
+// then either the drain line (down) or one static-bar `.azrow` per server — a
 // db-tagged row (amber fill, ◆ PRIMARY/◇ REPLICA chip) for every server this AZ's `dbEndpoints`
 // prop marks as a replica-rail endpoint (computed once in RegionView.tsx via
 // `regionData.ts`'s `replicaRailPairs` and threaded down, the same "compute once, thread down"
@@ -16,6 +16,7 @@ import { useSimulationStore } from '../../store/simulation.store'
 import { useCompiledWorld, instancesByAzFor, instancesByServerFor } from '../useCompiledWorld'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { dominantBlueprintColor, regionAzManaged } from './regionData'
+import { ChaosControl } from '../dock/ChaosControl'
 import type { AzId, RegionId, ServerId } from '../../../lib/world/types'
 import type { HealthState } from '../../../lib/worldEngine/types'
 import './r3Styles'
@@ -66,7 +67,6 @@ export function AzRow({
   const running = useSimulationStore(s => s.running)
   const isManuallyDown = useSimulationStore(s => s.healthOverrides[azId] ?? false)
   const healthOverrides = useSimulationStore(s => s.healthOverrides)
-  const setOutage = useSimulationStore(s => s.setOutage)
   // Managed cloud services scoped to THIS az (node-model Phase 5.2) — shown as usage rows below the
   // servers, since they have no hardware but still take load and can be taken down.
   const managedHere = regionAzManaged(azId, doc, batch)
@@ -124,13 +124,7 @@ export function AzRow({
         {/* Authoring is edit-locked while the sim runs (user request 2026-07-11); kill is the
             inverse — it only makes sense DURING a run. */}
         <button className="r3-cfgbtn" style={CFG_BTN_STYLE} disabled={running} title={running ? 'stop the simulation to edit' : undefined} onClick={() => addServer(azId, getPreset('vps-medium')!)}>+ server</button>
-        <button
-          className="r3-cfgbtn x" style={CFG_BTN_STYLE} disabled={!running}
-          aria-label={`${isManuallyDown ? 'Clear' : 'Simulate'} outage for ${az?.label ?? azId}`}
-          onClick={() => setOutage('az', azId, !isManuallyDown)}
-        >
-          {isManuallyDown ? '✓ restore' : 'kill'}
-        </button>
+        <ChaosControl scope="az" id={azId} running={running} label={az?.label ?? azId} />
       </div>
 
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, cursor: 'pointer' }} onClick={onNavigateAz}>
@@ -254,19 +248,7 @@ export function AzRow({
                   {down ? 'down' : (dbReadout ?? `${capLabel} rps`)}
                   {!down && (m.refusedRps > 0.5 || m.errorRps > 0.5) ? ' ⚠' : ''}
                 </span>
-                {running && (
-                  <button
-                    type="button" aria-label={`${down ? 'restore' : 'kill'} ${m.label}`}
-                    onClick={() => setOutage('managed', m.id, !down)}
-                    style={{
-                      font: '9px var(--font-mono)', cursor: 'pointer', padding: '1px 6px', borderRadius: 3,
-                      border: `1px solid ${down ? 'var(--color-success)' : 'var(--color-danger)'}`,
-                      background: '#10141bee', color: down ? 'var(--color-success)' : 'var(--color-danger)',
-                    }}
-                  >
-                    {down ? '✓ restore' : 'kill'}
-                  </button>
-                )}
+                <ChaosControl scope="managed" id={m.id} running={running} label={m.label} />
               </div>
             )
           })}

@@ -22,6 +22,7 @@ import { SourcesColumn } from './region/SourcesColumn'
 import { RegionLbCard } from './region/RegionLbCard'
 import { ReplicaRail, type ReplicaRailEntry } from './region/ReplicaRail'
 import { TimelineV2 } from './region/TimelineV2'
+import { ChaosControl } from './dock/ChaosControl'
 
 const POLICY_LABEL: Record<RoutingPolicyKind, string> = {
   latency: 'latency-based routing', geo: 'geo-based routing',
@@ -44,9 +45,7 @@ export function RegionView() {
   const running = useSimulationStore(s => s.running)
   const live = useSimulationStore(selectLive)
   const events = useSimulationStore(s => s.events)
-  const isDown = useSimulationStore(s => s.healthOverrides[regionId ?? ''] ?? false)
   const healthOverrides = useSimulationStore(s => s.healthOverrides)
-  const setOutage = useSimulationStore(s => s.setOutage)
   const [hoveredServerId, setHoveredServerId] = useState<ServerId | null>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
 
@@ -129,19 +128,7 @@ export function RegionView() {
           <span style={{ ...CHIP, border: `1px solid ${SUCCESS_CHIP_BORDER}`, color: 'var(--color-success)' }}>
             health: {Math.round(doc.routing.healthCheckIntervalMs / 1000)}s interval
           </span>
-          {running && (
-            <button
-              style={{
-                background: 'var(--color-node-base)',
-                border: `1px solid ${isDown ? 'var(--color-danger)' : 'var(--color-node-border)'}`,
-                borderRadius: 4, padding: '3px 8px', cursor: 'pointer',
-                font: '11px var(--font-mono)', color: isDown ? 'var(--color-danger)' : 'var(--color-text-secondary)',
-              }}
-              onClick={() => setOutage('region', regionId, !isDown)}
-            >
-              {isDown ? '✓ Clear region outage' : 'Simulate region outage'}
-            </button>
-          )}
+          <ChaosControl scope="region" id={regionId} running={running} killLabel="Simulate region outage" />
         </div>
       </div>
 
@@ -195,19 +182,7 @@ export function RegionView() {
                         {Math.round(e.rps).toLocaleString('en-US')} rps{troubled ? ' ⚠' : ''}
                       </span>
                     : <span style={{ color: 'var(--color-text-muted)' }}>idle</span>}
-                {running && (
-                  <button
-                    type="button" aria-label={`${down ? 'restore' : 'kill'} ${e.label}`}
-                    onClick={() => setOutage('managed', e.id, !down)}
-                    style={{
-                      font: '9px var(--font-mono)', cursor: 'pointer', padding: '0 5px', borderRadius: 3,
-                      border: `1px solid ${down ? 'var(--color-success)' : 'var(--color-danger)'}`,
-                      background: '#10141bee', color: down ? 'var(--color-success)' : 'var(--color-danger)',
-                    }}
-                  >
-                    {down ? '✓' : 'kill'}
-                  </button>
-                )}
+                <ChaosControl scope="managed" id={e.id} running={running} label={e.label} />
               </span>
             )
           })}

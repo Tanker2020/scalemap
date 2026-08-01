@@ -16,6 +16,7 @@ import { serverAccents, meanUtilization } from '../az/floorData'
 import { AzConnectionsView } from '../az/AzConnectionsView'
 import { healthWord } from '../ui/derived'
 import { scopedCost } from './scopeData'
+import { ChaosControl } from './ChaosControl'
 import { azConnectionGraph } from '../../../lib/world/connections'
 import type { RackId, Server, ServerId } from '../../../lib/world/types'
 import type { HealthState } from '../../../lib/worldEngine/types'
@@ -53,19 +54,12 @@ const actionBtn: CSSProperties = {
   color: 'var(--color-text-secondary)', cursor: 'pointer',
 }
 const actionBtnLocked: CSSProperties = { ...actionBtn, opacity: 0.35, cursor: 'default' }
-const dangerBtn: CSSProperties = {
-  ...actionBtn, color: 'var(--color-danger)',
-  borderColor: 'color-mix(in srgb, var(--color-danger) 25%, transparent)',
-}
-const dangerBtnLocked: CSSProperties = { ...dangerBtn, opacity: 0.35, cursor: 'default' }
 
 export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const running = useSimulationStore(s => s.running)
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
-  const isManuallyDown = useSimulationStore(s => s.healthOverrides[azId] ?? false)
-  const setOutage = useSimulationStore(s => s.setOutage)
   const selectedServerId = useUiStore(s => s.selectedServerId)
   const setSelectedServerId = useUiStore(s => s.setSelectedServerId)
   const reducedMotion = useReducedMotion() ?? false
@@ -342,28 +336,12 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
         >
           auto-arrange
         </button>
-        {/* "kill AZ": AzRow.tsx's EXACT kill/restore pair — `setOutage('az', azId, !isManuallyDown)`,
-            run-only (disabled while stopped, standard title). A plain <div>, not a <button> — the
-            SAME fieldset escape as the slat rows above, but for the opposite reason: this control
-            is run-ONLY (must be clickable while `running`, disabled while stopped), the exact
-            inverse of WorldPanel.tsx's `<fieldset disabled={running}>`, which would otherwise make
-            it permanently unclickable at the one moment it's supposed to work — confirmed live
-            (Playwright against `npm run dev`) before this fix landed. `aria-disabled` (not the
-            native `disabled` attribute, which only a real form control has) carries the
-            disabled semantics for assistive tech; the click handler self-guards on `running` too,
-            since nothing here can rely on the browser's native disabled-click suppression. */}
-        <div
-          role="button" tabIndex={running ? 0 : -1} className="kit-press"
-          style={running ? dangerBtn : dangerBtnLocked} aria-disabled={!running}
-          title={running ? undefined : 'start the simulation to break things'}
-          aria-label={`${isManuallyDown ? 'Clear' : 'Simulate'} outage for ${az?.label ?? azId}`}
-          onClick={() => { if (running) setOutage('az', azId, !isManuallyDown) }}
-          onKeyDown={e => {
-            if (running && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setOutage('az', azId, !isManuallyDown) }
-          }}
-        >
-          {isManuallyDown ? '↺ restore' : 'kill AZ'}
-        </div>
+        {/* "kill AZ": the shared ChaosControl split button (FEAT-001 Task 8), fieldset-escaped —
+            run-only (disabled while stopped, standard title), clickable exactly while
+            `running` despite sitting inside WorldPanel.tsx's ambient
+            `<fieldset disabled={running}>` edit-lock — confirmed live (Playwright against
+            `npm run dev`) before this escape first landed. */}
+        <ChaosControl scope="az" id={azId} running={running} label={az?.label ?? azId} killLabel="kill AZ" escapeFieldset />
       </div>
     </div>
   )

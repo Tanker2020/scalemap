@@ -45,13 +45,14 @@ function seedRegion() {
 }
 
 // Captured once, pristine — restored by resetSim() every test so a spy installed by one test
-// (e.g. the outage-switch test overriding setOutage) never leaks into the next.
+// (e.g. the outage-switch test overriding setOutage/setFault) never leaks into the next.
 const realSetOutage = useSimulationStore.getState().setOutage
+const realSetFault = useSimulationStore.getState().setFault
 
 function resetSim() {
   useSimulationStore.setState({
     running: false, paused: false, timeScale: 1, latestBatch: null, events: [], healthOverrides: {},
-    scrubIndex: null, scrubBatch: null, degraded: false, setOutage: realSetOutage,
+    scrubIndex: null, scrubBatch: null, degraded: false, setOutage: realSetOutage, setFault: realSetFault,
   })
 }
 
@@ -127,13 +128,13 @@ describe('RegionView (Phase 4 flow page)', () => {
     expect(screen.getByText('outage (manual)')).toBeInTheDocument()
   })
 
-  it("az outage switch dispatches setOutage('az')", () => {
+  it("az outage switch dispatches setFault('az', id, { kind: 'down' })", () => {
     const { azA } = seedRegion()
-    const setOutageSpy = vi.fn()
-    useSimulationStore.setState({ running: true, setOutage: setOutageSpy })
+    const setFaultSpy = vi.fn()
+    useSimulationStore.setState({ running: true, setFault: setFaultSpy })
     render(<RegionView />)
     fireEvent.click(screen.getByLabelText('Simulate outage for us-east-1a'))
-    expect(setOutageSpy).toHaveBeenCalledWith('az', azA.id, true)
+    expect(setFaultSpy).toHaveBeenCalledWith('az', azA.id, { kind: 'down' })
   })
 
   it('server strip click navigates to server, row click to az', () => {
@@ -189,19 +190,19 @@ describe('RegionView (Phase 4 flow page)', () => {
     for (const el of screen.getAllByText('$26/mo')) expect(el).toHaveStyle({ color: 'var(--color-price)' })
   })
 
-  it("az card kill is disabled while stopped and dispatches setOutage('az', id, true) while running", () => {
+  it("az card kill is disabled while stopped and dispatches setFault('az', id, { kind: 'down' }) while running", () => {
     const { azA } = seedRegion()
     const { rerender } = render(<RegionView />)
     const stoppedBtn = screen.getByLabelText('Simulate outage for us-east-1a') as HTMLButtonElement
     expect(stoppedBtn.disabled).toBe(true)
 
-    const setOutageSpy = vi.fn()
-    useSimulationStore.setState({ running: true, setOutage: setOutageSpy })
+    const setFaultSpy = vi.fn()
+    useSimulationStore.setState({ running: true, setFault: setFaultSpy })
     rerender(<RegionView />)
     const runningBtn = screen.getByLabelText('Simulate outage for us-east-1a') as HTMLButtonElement
     expect(runningBtn.disabled).toBe(false)
     fireEvent.click(runningBtn)
-    expect(setOutageSpy).toHaveBeenCalledWith('az', azA.id, true)
+    expect(setFaultSpy).toHaveBeenCalledWith('az', azA.id, { kind: 'down' })
   })
 
   it('sources column renders one row per population, top-5 animated', () => {

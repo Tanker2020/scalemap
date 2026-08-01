@@ -8,7 +8,8 @@ import { useNavStore } from '../../../store/nav.store'
 import { useSimulationStore } from '../../../store/simulation.store'
 import { WORLD_REGIONS } from '../../../../lib/regionConfig'
 import type { RegionId } from '../../../../lib/world/types'
-import { SceneOverlay, ovlActPrimary, ovlActDanger } from '../SceneOverlay'
+import { SceneOverlay, ovlActPrimary } from '../SceneOverlay'
+import { ChaosControl } from '../../dock/ChaosControl'
 import { Segmented, SpecBar, ChipValue } from '../kit'
 import { useRollingNumber } from '../motion'
 
@@ -29,8 +30,6 @@ export function RegionOverlay({ regionId, onClose }: { regionId: RegionId; onClo
   const doc = useWorldStore(s => s.doc)
   const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const running = useSimulationStore(s => s.running)
-  const isDown = useSimulationStore(s => s.healthOverrides[regionId] ?? false)
-  const setOutage = useSimulationStore(s => s.setOutage)
   const goRegion = useNavStore(s => s.goRegion)
 
   const region = doc.regions[regionId]
@@ -59,12 +58,7 @@ export function RegionOverlay({ regionId, onClose }: { regionId: RegionId; onClo
             onClick={() => goRegion(regionId)}>
             enter ⏎
           </button>
-          <button type="button" className="kit-press" style={ovlActDanger}
-            disabled={!running}
-            title={running ? 'Chaos: simulate a full region outage' : 'start the simulation to break things'}
-            onClick={() => setOutage('region', regionId, !isDown)}>
-            {isDown ? 'restore' : 'kill'}
-          </button>
+          <ChaosControl scope="region" id={regionId} running={running} />
         </>
       }
     >

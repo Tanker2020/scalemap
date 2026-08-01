@@ -404,11 +404,11 @@ describe('DatacenterFloor — lines survive racking (2026-07-12 follow-up)', () 
     useSimulationStore.setState({ running: true, latestBatch: makeBatch({}, []) })
 
     render(<DatacenterFloor />)
-    fireEvent.click(screen.getByLabelText('kill Q'))
+    fireEvent.click(screen.getByLabelText('Simulate outage for Q'))
     expect(useSimulationStore.getState().healthOverrides[msId]).toBe(true)
     expect(screen.getByTestId(`appliance-${msId}`).getAttribute('data-managed-down')).toBe('true')
     // now a restore control is offered
-    fireEvent.click(screen.getByLabelText('restore Q'))
+    fireEvent.click(screen.getByLabelText('Clear fault on Q'))
     expect(useSimulationStore.getState().healthOverrides[msId]).toBe(false)
   })
 

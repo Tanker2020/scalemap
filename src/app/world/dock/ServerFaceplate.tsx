@@ -27,6 +27,7 @@ import { useServerDisplayMetrics } from '../server/useServerDisplayMetrics'
 import { meanUtilization } from '../az/floorData'
 import { HEALTH_COLOR } from '../server/healthColor'
 import { Drawer } from './Drawer'
+import { ChaosControl } from './ChaosControl'
 import { HardwareDrawer, hardwarePv } from './drawers/HardwareDrawer'
 import { FirewallDrawer, firewallPv } from './drawers/FirewallDrawer'
 import { ServicesDrawer, servicesPv } from './drawers/ServicesDrawer'
@@ -100,8 +101,6 @@ export function ServerFaceplate({ serverId, showEnter, openFirewallRules }: Serv
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const running = useSimulationStore(s => s.running)
-  const isManuallyDown = useSimulationStore(s => s.healthOverrides[serverId] ?? false)
-  const setOutage = useSimulationStore(s => s.setOutage)
   const navRegionId = useNavStore(s => s.regionId)
   const navAzId = useNavStore(s => s.azId)
   const goServer = useNavStore(s => s.goServer)
@@ -291,22 +290,12 @@ export function ServerFaceplate({ serverId, showEnter, openFirewallRules }: Serv
                 enter board ⏎
               </div>
             )}
-            {/* kill/restore — a `<div role="button">`, not a native `<button>`: this control is
-                RUN-ONLY (must stay clickable exactly while WorldPanel.tsx's ambient
-                `<fieldset disabled={running}>` is active), the same escape AzConfigTab's "kill AZ"
-                and InspectorV2's original card used — a real <button> would be fieldset-disabled
-                at the one moment it needs to work. */}
-            <div
-              role="button" tabIndex={running ? 0 : -1} data-testid="faceplate-kill" className="kit-press"
-              style={running ? dangerBtn : dangerBtnLocked} aria-disabled={!running}
-              title={running ? undefined : 'start the simulation to break things'}
-              onClick={() => { if (running) setOutage('server', serverId, !isManuallyDown) }}
-              onKeyDown={e => {
-                if (running && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setOutage('server', serverId, !isManuallyDown) }
-              }}
-            >
-              {isManuallyDown ? '↺ restore' : 'kill'}
-            </div>
+            {/* kill/restore — the shared ChaosControl split button (FEAT-001 Task 8), fieldset-
+                escaped: this control is RUN-ONLY (must stay clickable exactly while WorldPanel.tsx's
+                ambient `<fieldset disabled={running}>` is active), the same escape AzConfigTab's
+                "kill AZ" and InspectorV2's original card used — a real <button> would be
+                fieldset-disabled at the one moment it needs to work. */}
+            <ChaosControl scope="server" id={serverId} running={running} escapeFieldset testId="faceplate-kill" />
             <button
               type="button" className="kit-press" data-testid="faceplate-remove"
               style={running ? dangerBtnLocked : dangerBtn} disabled={running}

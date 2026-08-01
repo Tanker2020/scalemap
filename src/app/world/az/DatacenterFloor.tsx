@@ -24,6 +24,7 @@ import { getPreset } from '../../../lib/world/instanceCatalog'
 import { RackCabinet, cabinetHeightPx } from './RackCabinet'
 import { FreePoolPod, POD_HEIGHT_PX } from './FreePoolPod'
 import { InspectorV2 } from '../InspectorV2'
+import { ChaosControl } from '../dock/ChaosControl'
 import { useFloorCamera, INTERACTIVE_SEL } from './useFloorCamera'
 import { VIEW_W, VIEW_H, floorOutline, tileOutline, tileCenter, isoBox, type IsoBox } from './iso'
 import type { RackId, Server, ServerId } from '../../../lib/world/types'
@@ -66,7 +67,6 @@ export function DatacenterFloor() {
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const running = useSimulationStore(s => s.running)
   const healthOverrides = useSimulationStore(s => s.healthOverrides)
-  const setOutage = useSimulationStore(s => s.setOutage)
   // Flow traces + LED blink march only while the sim is actively ticking; a paused/ended/scrubbed
   // run freezes them (the batch stays non-zero, so a rate-only gate would keep marching).
   const live = useSimulationStore(selectLive)
@@ -622,19 +622,7 @@ export function DatacenterFloor() {
                 style={{ ...lblStyle, left: r.x, top: r.y, color, borderColor: '#3fc7b83a', pointerEvents: running ? 'auto' : 'none', display: 'flex', alignItems: 'center', gap: 5 }}
               >
                 <span>{m.label} <small>· {m.nodeType}{manuallyDown ? ' · down' : showRps ? ` · ${Math.round(mm!.rps).toLocaleString('en-US')} rps` : ''}{throttling && !manuallyDown ? ' ⚠' : ''}</small></span>
-                {running && (
-                  <button
-                    type="button" aria-label={`${manuallyDown ? 'restore' : 'kill'} ${m.label}`}
-                    onClick={() => setOutage('managed', m.id, !manuallyDown)}
-                    style={{
-                      font: '8px var(--font-mono)', cursor: 'pointer', padding: '0 4px', borderRadius: 3,
-                      border: `1px solid ${manuallyDown ? 'var(--color-success)' : 'var(--color-danger)'}`,
-                      background: '#0d1014', color: manuallyDown ? 'var(--color-success)' : 'var(--color-danger)',
-                    }}
-                  >
-                    {manuallyDown ? '✓' : 'kill'}
-                  </button>
-                )}
+                <ChaosControl scope="managed" id={m.id} running={running} label={m.label} />
               </div>
             )
           })}

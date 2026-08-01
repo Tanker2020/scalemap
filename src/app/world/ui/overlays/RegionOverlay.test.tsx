@@ -51,9 +51,9 @@ describe('RegionOverlay', () => {
     expect(useFileStore.getState().dirty).toBe(true)
   })
 
-  it('kill is disabled while stopped and dispatches setOutage("region", id, true) while running', () => {
+  it('kill is disabled while stopped and dispatches setFault("region", id, { kind: "down" }) while running', () => {
     const { regionId } = seedRegion()
-    const spy = vi.spyOn(useSimulationStore.getState(), 'setOutage').mockImplementation(() => {})
+    const spy = vi.spyOn(useSimulationStore.getState(), 'setFault')
     const { rerender } = render(<RegionOverlay regionId={regionId} onClose={() => {}} />)
     const kill = screen.getByRole('button', { name: /kill/ })
     expect(kill).toBeDisabled()
@@ -62,7 +62,7 @@ describe('RegionOverlay', () => {
     useSimulationStore.setState({ running: true })
     rerender(<RegionOverlay regionId={regionId} onClose={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: /kill/ }))
-    expect(spy).toHaveBeenCalledWith('region', regionId, true)
+    expect(spy).toHaveBeenCalledWith('region', regionId, { kind: 'down' })
   })
 
   it('enter ⏎ navigates into the region', () => {
