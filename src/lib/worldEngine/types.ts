@@ -182,6 +182,7 @@ export type EngineEventKind =
   | 'replica_promoted'
   | 'primary_failback'           // recovered authored primary reclaimed the role (audit ISSUE-007)
   | 'outage_triggered' | 'outage_cleared'   // manual switches
+  | 'fault_injected' | 'fault_cleared'   // FEAT-001 fault-kind spec (down/latency-add/cpu-brownout/memory-leak/error-inject)
   | 'engine_degraded'            // perf watch halved the step rate (spec decision 9); info severity
   // Audit ISSUE-010: silent fan-out truncation, surfaced. Both were previously invisible — an
   // instance past MAX_DEPTH reports zero traffic/cost/findings for whatever it would have called,
@@ -254,6 +255,19 @@ export const MAX_GLOBE_ARCS = 200
 
 export type DetachFn = () => void
 
+// ─── Fault injection (FEAT-001) ──────────────────────────────────────────────
+
+export type FaultKind = 'down' | 'latency-add' | 'cpu-brownout' | 'memory-leak' | 'error-inject'
+
+export type FaultSpec =
+  | { kind: 'down' }
+  | { kind: 'latency-add'; ms: number }
+  | { kind: 'cpu-brownout'; capacityFraction: number }
+  | { kind: 'memory-leak'; mbPerMinute: number }
+  | { kind: 'error-inject'; errorFraction: number }
+
+export type FaultScope = 'server' | 'az' | 'region' | 'managed'
+
 // ─── Control API (the engine facade's exported surface) ─────────────────────
 
 export interface EngineCallbacks {
@@ -271,8 +285,13 @@ export interface WorldEngineApi {
   resume: () => void
   isRunning: () => boolean
   setTimeScale: (scale: number) => void
-  // Manual failure switches (spec D8). Idempotent; emit outage_triggered/cleared.
-  setOutage: (scope: 'server' | 'az' | 'region' | 'managed', id: string, down: boolean) => void
+  // Fault injection (spec FEAT-001). setFault(scope, id, null) clears any active fault on that
+  // scope/id. Idempotent; emits fault_injected/fault_cleared (or outage_triggered/cleared for
+  // the 'down' kind, unchanged from today).
+  setFault: (scope: FaultScope, id: string, spec: FaultSpec | null) => void
+  // Alias for setFault(scope, id, down ? { kind: 'down' } : null) — kept so no existing caller
+  // breaks. New code should prefer setFault.
+  setOutage: (scope: FaultScope, id: string, down: boolean) => void
   attachRenderer: (scope: RenderScope, onFrame: (p: FramePayload) => void) => DetachFn
   // Replay: scope-aware 1 Hz snapshots, ring buffer of 300 (5 min).
   getReplayFrames: () => ReplayFrame[]

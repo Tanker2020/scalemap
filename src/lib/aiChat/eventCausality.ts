@@ -47,6 +47,8 @@ export function decodeAffected(
     case 'burst_credits_exhausted':
     case 'outage_triggered':
     case 'outage_cleared':
+    case 'fault_injected':
+    case 'fault_cleared':
       return { primaryId: affected[0] ?? '', secondaryId: null }
     case 'engine_degraded':
       return { primaryId: '', secondaryId: null }
