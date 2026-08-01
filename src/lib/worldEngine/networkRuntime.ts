@@ -51,9 +51,9 @@ export function baseHopLatencyMs(
   }
 }
 
-// Cross-region intentionally uses the PURE interRegionLatencyMs + rng jitter rather than
-// regionConfig's sampleInterRegionLatencyMs (which calls Math.random — forbidden inside
-// worldEngine). Identical distribution, deterministic under seed. SKELETON CONCERNS #1.
+// Jittered wrapper for simulation use. The engine's own seeded Rng drives the jitter here —
+// NOT regionConfig.ts's interRegionLatencyMs, which stays pure/deterministic for callers
+// relying on stable cost/region-metadata display (Math.random() is forbidden inside worldEngine).
 export function hopLatencyMs(
   hopClass: HopClass | 'internet',
   fromRegionCatalogId: string | null,

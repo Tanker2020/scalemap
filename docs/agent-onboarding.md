@@ -152,9 +152,10 @@ These were each established by explicit user decisions. Do not re-litigate them.
     Settings input (render masked `•••• <last4>`). It is REDACTED from error strings on both
     the Rust and TS sides. Settings live in `llm_settings.json` in the app data dir (0600).
     Each invariant has an asserting test — keep them passing.
-12. **Serializer is additive.** `.scalemap` v2 only. New doc fields must be optional-on-load
-    (old files keep opening); v1 files are rejected with a dedicated error. Never write
-    derived/ephemeral state (analysis findings, LLM reviews) into the file.
+12. **Serializer is additive.** `.scalemap` is at v3 (`serializer.ts:38`); both v1 and v2 are
+    rejected at the version gate (`serializer.ts:53-64`). New doc fields must be optional-on-load
+    (old v3 files keep opening). Never write derived/ephemeral state (analysis findings, LLM
+    reviews) into the file.
 13. **Font.** JetBrains Mono everywhere. Don't add fonts.
 14. **Cross-platform.** All native calls go through Tauri's abstractions; Rust commands live in
     `src-tauri/src/commands.rs` (single file, keep it that way until it hurts). Any HTTP to

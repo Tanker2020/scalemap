@@ -327,6 +327,16 @@ only caller singular. `worldEngine/types.ts` changes fan out to all 13 subsystem
 `index.ts` — extend additively (see `.superpowers/sdd/contract-drift.md` for the process),
 never reshape.
 
+**Wave-1 additions (fault injection + scenario timeline, 2026-08-01 onward):**
+
+| File | Role |
+|---|---|
+| `src/lib/worldEngine/faults.ts` | Pure fault-type definitions and impairment math (FEAT-001/002: down/cpu-brownout/memory-leak faults + latency-add, error-inject helpers; FEAT-009/010: `LinkEndpoint`/`PartitionFault` types + `impairmentFor` directional health checks) — do not import any store or worldEngine subsystem, only types |
+| `src/lib/world/types.ts` | Wave-1 additions: `FaultSpec`/`FaultScope` union types on root, `ScenarioFrame` + `Scenario` types; hub file, sequence with other Wave-1 mutators |
+| `src/lib/worldEngine/types.ts` | Wave-1 additions: `FaultInjection` field on `EngineState`/`WorldEngineApi`, `impairmentMemo` on per-step state; frozen contract, additive-only, see `.superpowers/sdd/contract-drift.md` |
+| `src/app/store/simulation.store.ts` | Wave-1 additions: `setFault`/`setPartition` actions, `impairmentMemo` selector; hub file, sequence with other Wave-1 mutators |
+| `src/app/world/panels/WorldPanel.tsx` | Wave-1 additions: `ScenarioPanel` integration + Chaos split-control (5 call sites); hub file, sequence with other Wave-1 mutators |
+
 ---
 
 ### L. Server interior board — Phase 3 Level-4 view (`src/app/world/server/`, 2026-07-09)
