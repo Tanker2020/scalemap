@@ -5132,3 +5132,72 @@ This closes out every issue in `audit-spec.md`'s 7 waves (19/19: 5 Critical, 9 M
 ISSUE-004's full engine wiring of `resolvedFrameRps` and ISSUE-006's `statusCode` 4xx/5xx semantics
 remain explicitly deferred follow-ups (primitives implemented and tested; wiring/semantics scoped
 down and documented at the time, not silently dropped).
+
+## Fault Injection Wave 1, Task 3 — wiring `down`/`cpu-brownout`/`memory-leak` into `index.ts` (2026-08-01)
+
+### `src/lib/worldEngine/index.ts` (hub file) — real `setFault`/`setOutage` facade methods
+
+Tasks 0-2 (merged earlier) added `FaultKind`/`FaultSpec`/`FaultScope` to `types.ts` and the pure
+`src/lib/worldEngine/faults.ts` module (`createFaultState`/`setFault`/`faultsForServer`/
+`stepLeaks`), plus declared `setFault`/`setOutage` on `WorldEngineApi` — but left both
+unimplemented on the engine object `createWorldEngine()` returns (the one `npx tsc --noEmit` error
+Task 1 left standing on purpose). This task wires them in:
+
+- `EngineState` gained `faults: FaultState` (constructed via `createFaultState()` in `start()`,
+  right alongside `failover: createFailoverState()` — identical lifecycle/ownership pattern) and
+  two reverse-lookup indexes built once at `start()`, next to the existing `serversByAz`/
+  `azsByRegion` forward indexes: `azOfServer: Map<ServerId, AzId>` and
+  `regionOfAz: Map<AzId, RegionId>` — `faultsForServer` needs a server's az/region to resolve
+  az-/region-scoped faults per server per step, and no reverse map already existed.
+- **`setFault(scope, id, spec)`** calls the pure `setFaultPure` on `state.faults` for
+  bookkeeping/event emission, THEN — only when `spec === null` or `spec.kind === 'down'` — routes
+  through the EXISTING `failoverSetOutage`/`applyAzOutageToManaged` path unchanged, so a `down`
+  fault (or clearing one) is byte-identical to the pre-FEAT-001 `setOutage` behavior: same events,
+  same state, same AZ→managed-service cascade. `faults.ts`'s own `active` map is bookkeeping/event
+  only for the `down` kind — `failover.ts`'s `manualOutages`/`healthByScope` remain the SOLE source
+  of truth for actual down-state behavior.
+- **`setOutage(scope, id, down)`** is now a true thin alias: `api.setFault(scope, id, down ? {
+  kind: 'down' } : null)` — referencing the `api` closure variable from inside its own method body
+  is safe (called only after `api` is fully constructed, never during construction).
+- A new module-level helper, `instanceIdsForFaultScope(state, scope, id)`, resolves a fault
+  scope/id down to the concrete `InstanceId[]` it covers (via `instancesByServer`/`serversByAz`/
+  `azsByRegion`; `'managed'` scope always `[]` — managed services have no compiled
+  `ServiceInstance`s) — passed as `setFault`'s `affectedInstanceIds` so clearing a fault also clears
+  those instances' `leakAccumMb` entries immediately, not just on their next OOM.
+- **cpu-brownout**: in the per-server host-scheduling loop, `faultsForServer(server.id, azId,
+  regionId, s.faults)` is resolved once per server per step (also feeds the memory-leak wiring
+  below); `effectiveVcpu` becomes `server.specs.vcpu * (s.vpsFactor.get(server.id) ?? 1) *
+  (brownout?.capacityFraction ?? 1)` — multiplicative composition with the existing VPS steal
+  factor, `1` (no-op) when no brownout is active, so the zero-fault path is untouched.
+- **memory-leak**: before building each server's `InstanceLoad[]`, `stepLeaks(s.faults,
+  resident.map(i => ({ instanceId: i.id, mbPerMinute: leak.mbPerMinute })), stepSec)` accumulates
+  into `s.faults.leakAccumMb` for that server's resident instances (called per-server rather than
+  once globally — functionally identical to a single global call, since `stepLeaks` just iterates
+  whatever list it's handed). Each `InstanceLoad.ramBaseMb` folds in
+  `s.faults.leakAccumMb.get(instanceId) ?? 0` (0 when no leak — no-op on the zero-fault path). The
+  existing OOM-restart handler (`host.oomVictim && !s.oomRestartAt.has(...)`) now also calls
+  `s.faults.leakAccumMb.delete(host.oomVictim)` — a restarted process gets a fresh heap.
+- Task 4 (latency-add) and Task 5 (error-inject) both read `state.faults`/`faultsForServer` this
+  task established; neither is wired into the engine yet.
+
+### Tests
+
+Added a `describe('FEAT-001 faults', ...)` block to `index.test.ts` (4 tests), reusing the file's
+existing `drive(doc, compiled)` harness and fixture-builder patterns (`e2eFixture`,
+`overloadedServer`-style inline docs, the existing OOM RAM-starved fixture shape) rather than new
+harness code:
+
+- Byte-identical output across two independent runs of the same fixture with zero faults active
+  (the regression floor) — `expect(batchA).toEqual(batchB)`.
+- `setOutage('region', id, true)` and `setFault('region', id, { kind: 'down' })` produce the exact
+  same event-kind sequence.
+- cpu-brownout at `capacityFraction: 0.5` roughly doubles mean `ServerMetrics.coreUtilization` at
+  the same offered load (a lightly-loaded 8-vCPU/40ms-per-request/100rps fixture: baseline ~0.5
+  mean core fill vs. throttled ~1.0, capped).
+- memory-leak at a steep `mbPerMinute` rate OOM-kills a near-idle instance within a bounded step
+  window, then fires `instance_restarted` after `OOM_RESTART_MS`.
+
+Verified RED first (`setFault is not a function` on all 3 fault-specific tests, zero-fault test
+already passing since it exercises no new code path) before implementing, then GREEN. Full suite
+(144 files / 1724 tests) and `npx tsc --noEmit` both clean after the change — the type error Task 1
+left standing is now resolved by implementation, not silenced.

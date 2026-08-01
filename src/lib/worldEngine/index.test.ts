@@ -2113,3 +2113,104 @@ describe('demand backpressure (audit ISSUE-008)', () => {
     sim.engine.stop()
   })
 })
+
+// ─── Fault injection (FEAT-001): down / cpu-brownout / memory-leak ───────────
+describe('FEAT-001 faults', () => {
+  it('byte-identical output with zero faults active, fixed seed', () => {
+    const f = e2eFixture()
+    const a = drive(f.doc, f.compiled)
+    a.stepFor(5)
+    const batchA = a.latest()
+    a.engine.stop()
+
+    const b = drive(f.doc, f.compiled)
+    b.stepFor(5)
+    const batchB = b.latest()
+    b.engine.stop()
+
+    expect(batchA).toEqual(batchB)
+  })
+
+  it('setOutage(scope, id, true) and setFault(scope, id, {kind:"down"}) produce identical events', () => {
+    const f1 = e2eFixture()
+    const sim1 = drive(f1.doc, f1.compiled)
+    sim1.stepFor(1)
+    sim1.engine.setOutage('region', f1.r1.id, true)
+    sim1.stepFor(3)
+    const kinds1 = sim1.events.map(e => e.kind)
+    sim1.engine.stop()
+
+    const f2 = e2eFixture()
+    const sim2 = drive(f2.doc, f2.compiled)
+    sim2.stepFor(1)
+    sim2.engine.setFault('region', f2.r1.id, { kind: 'down' })
+    sim2.stepFor(3)
+    const kinds2 = sim2.events.map(e => e.kind)
+    sim2.engine.stop()
+
+    expect(kinds2).toEqual(kinds1)
+  })
+
+  it('cpu-brownout at capacityFraction 0.5 roughly halves effective CPU capacity', () => {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)   // 8 vCPU, dedicated (no VPS noise)
+    doc.servers[server.id] = server
+    const web = publicBlueprint('web', 0)
+    web.workload = { ...web.workload, cpuMsPerRequest: 40 }          // capacity ≈ 200 rps @ effectiveVcpu 8
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id); doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0); pop.peakRps = 100; pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+    const compiled = compileWorld(doc)
+
+    const baseline = drive(doc, compiled)
+    baseline.stepFor(6)
+    const baseUtil = baseline.latest().servers[server.id].coreUtilization
+    const baseMean = baseUtil.reduce((a, b) => a + b, 0) / baseUtil.length
+    baseline.engine.stop()
+
+    const throttled = drive(doc, compiled)
+    throttled.engine.setFault('server', server.id, { kind: 'cpu-brownout', capacityFraction: 0.5 })
+    throttled.stepFor(6)
+    const throttledUtil = throttled.latest().servers[server.id].coreUtilization
+    const throttledMean = throttledUtil.reduce((a, b) => a + b, 0) / throttledUtil.length
+    throttled.engine.stop()
+
+    // Halved capacity at the same offered load roughly doubles core utilization (capped at 1).
+    expect(throttledMean).toBeGreaterThan(baseMean * 1.5)
+  })
+
+  it('memory-leak accumulates ramBaseMb until OOM, then clears leakAccumMb on kill', () => {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    const server = createServer(az.id, getPreset('vps-small')!)
+    server.specs.ramMb = 512
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    doc.servers[server.id] = server
+    const web = publicBlueprint('web', 0)
+    // Comfortably fits at 512 MB with zero traffic — only the leak should push it over.
+    web.workload = { cpuMsPerRequest: 2, ramBaseMb: 100, ramPerConnMb: 0, diskIoPerRequest: 0 }
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id)
+    doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 1
+    doc.populations[pop.id] = pop
+
+    const compiled = compileWorld(doc)
+    const sim = drive(doc, compiled)
+    // A steep leak rate so the instance OOMs within a bounded window.
+    sim.engine.setFault('server', server.id, { kind: 'memory-leak', mbPerMinute: 6000 })
+    sim.stepFor(10)
+    expect(sim.events.some(e => e.kind === 'oom_kill')).toBe(true)
+    sim.stepFor(6)   // > 5s restart delay
+    expect(sim.events.some(e => e.kind === 'instance_restarted')).toBe(true)
+    sim.engine.stop()
+  })
+})

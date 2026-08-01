@@ -5,7 +5,7 @@
 // src/app/. Determinism: all randomness flows through the seeded rng built here.
 import type {
   WorldEngineApi, EngineCallbacks, EngineEvent, EngineEventKind, HealthState,
-  RenderScope, FramePayload, VisualParticle, VisualArc,
+  RenderScope, FramePayload, VisualParticle, VisualArc, FaultScope, FaultSpec,
 } from './types'
 import { MAX_GLOBE_ARCS } from './types'
 import type {
@@ -49,6 +49,9 @@ import {
   type VpsPublish,
 } from './metrics'
 import { createEventRing, mkEvent, type EventRing } from './events'
+import {
+  createFaultState, setFault as setFaultPure, faultsForServer, stepLeaks, type FaultState,
+} from './faults'
 import { createReplayBuffer, createTracer, type ReplayBuffer, type Tracer } from './replay'
 import { REGION_GEO as REGION_GEO_LOCAL } from '../world/regionGeo'
 
@@ -322,6 +325,11 @@ interface EngineState {
   // against. The doc is frozen for the run, so these can never go stale.
   serversByAz: Map<AzId, Server[]>
   azsByRegion: Map<RegionId, AvailabilityZone[]>
+  // Reverse of serversByAz/azsByRegion (FEAT-001): faultsForServer needs a server's az/region to
+  // resolve az- and region-scoped faults per server per step. Built once at start() alongside the
+  // forward indexes above, from the same frozen doc — never goes stale.
+  azOfServer: Map<ServerId, AzId>
+  regionOfAz: Map<AzId, RegionId>
   // Compiled instances grouped by server, built once at start() (audit ISSUE-076): compiled
   // is frozen for the run, so rebuilding this O(instances) Map every step was pure waste.
   instancesByServer: Map<ServerId, ServiceInstance[]>
@@ -357,6 +365,10 @@ interface EngineState {
 
   routing: RoutingState
   failover: FailoverState
+  // FEAT-001 fault injection bookkeeping (down/latency-add/cpu-brownout/memory-leak/error-inject).
+  // 'down' faults ALSO route through failover's setOutage — this is bookkeeping/leak-accumulator
+  // state only, never a second source of truth for outage/health.
+  faults: FaultState
   // Per-population burst state (audit ISSUE-017) — the on-off flash-crowd process is stateful
   // across ticks; demand.ts stays a pure function of (pop, simMs, rng, state).
   demandStates: Map<PopulationId, PopulationDemandState>
@@ -879,6 +891,19 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const serviceRateByInstance: Record<InstanceId, number> = {}
     for (const server of Object.values(doc.servers)) {
       const resident = instancesByServer.get(server.id) ?? []
+      // FEAT-001: resolve any active server/az/region-scoped fault for this server once per step.
+      const faultAzId = s.azOfServer.get(server.id)
+      const faultRegionId = faultAzId ? s.regionOfAz.get(faultAzId) : undefined
+      const activeFaults = faultAzId && faultRegionId
+        ? faultsForServer(server.id, faultAzId, faultRegionId, s.faults)
+        : []
+      const brownout = activeFaults.find(
+        (f): f is Extract<FaultSpec, { kind: 'cpu-brownout' }> => f.kind === 'cpu-brownout')
+      const leak = activeFaults.find(
+        (f): f is Extract<FaultSpec, { kind: 'memory-leak' }> => f.kind === 'memory-leak')
+      if (leak) {
+        stepLeaks(s.faults, resident.map(i => ({ instanceId: i.id, mbPerMinute: leak.mbPerMinute })), stepSec)
+      }
       const loads: InstanceLoad[] = resident.map(i => {
         const pf = s.prevFlows[i.id]
         const bp = doc.blueprints[i.blueprintId]
@@ -900,7 +925,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           // OOM-kills on — can never diverge from the RAM the user is shown. With the keep-alive
           // identity this is bit-for-bit the old `admitted * (latency / 1000)`.
           activeConnections: activeConnections(admitted, latency, connProfileOf(i.id)),
-          ramBaseMb: bp?.workload.ramBaseMb ?? 0,
+          // FEAT-001: a memory-leak fault's accumulator folds into the base footprint so it grows
+          // the RAM the host scheduler enforces (and OOM-kills on) — 0 when no leak is active,
+          // byte-identical to pre-FEAT-001 behavior.
+          ramBaseMb: (bp?.workload.ramBaseMb ?? 0) + (s.faults.leakAccumMb.get(i.id) ?? 0),
           ramPerConnMb: bp?.workload.ramPerConnMb ?? 0,
           memLimitMb: runtime && runtime.type === 'container' ? runtime.memLimitMb : null,
           // Audit ISSUE-018/013: fair-share weight + carried backlog, so the scheduler can grant
@@ -913,7 +941,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           checkoutTimeoutMs: bp?.workload.checkoutTimeoutMs,
         }
       })
-      const effectiveVcpu = server.specs.vcpu * (s.vpsFactor.get(server.id) ?? 1)
+      // FEAT-001: cpu-brownout composes MULTIPLICATIVELY with the existing VPS steal factor
+      // (capacityFraction defaults to 1 — a no-op — when no brownout is active).
+      const effectiveVcpu = server.specs.vcpu * (s.vpsFactor.get(server.id) ?? 1) * (brownout?.capacityFraction ?? 1)
       const host = stepHost(server, loads, effectiveVcpu, s.rng)
       hostResults[server.id] = host
       // Fold the NIC's ABSOLUTE line-rate ceiling into each instance's capacity (audit
@@ -959,6 +989,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       if (host.oomVictim && !s.oomRestartAt.has(host.oomVictim)) {
         s.oomRestartAt.set(host.oomVictim, simMs + OOM_RESTART_MS)
         s.instanceHealth.set(host.oomVictim, 'down')
+        // FEAT-001: a restarted process gets a fresh heap — any accumulated leak resets with it.
+        s.faults.leakAccumMb.delete(host.oomVictim)
         emit('oom_kill', 'critical', `${host.oomVictim} OOM-killed on ${server.label}`, [host.oomVictim, server.id], simMs)
       }
 
@@ -1574,6 +1606,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         depPickTableById: depIndexes.depPickTableById,
         serversByAz: groupBy(Object.values(doc.servers), sv => sv.azId),
         azsByRegion: groupBy(Object.values(doc.azs), az => az.regionId),
+        azOfServer: new Map(Object.values(doc.servers).map(sv => [sv.id, sv.azId])),
+        regionOfAz: new Map(Object.values(doc.azs).map(az => [az.id, az.regionId])),
         instancesByServer: groupInstancesByServer(compiled),
         hasManagedDbs: Object.values(doc.managedServices).some(ms => !!managedDbEngine(ms.nodeType)),
         hasEventDeps: Object.values(doc.blueprints).some(bp =>
@@ -1582,7 +1616,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         regionShedFraction: new Map(), regionOverloadStreak: new Map(), regionRecoverStreak: new Map(),
         roleResolver: null, roleResolverKey: '',
         downstreamAdj: buildDownstreamAdj(compiled),
-        routing: createRoutingState(), failover: createFailoverState(),
+        routing: createRoutingState(), failover: createFailoverState(), faults: createFaultState(),
         demandStates: new Map(),
         vpsStates: new Map(Object.values(doc.servers).map(sv => [sv.id, createVpsState(sv)])),
         vpsFactor: new Map(),
@@ -1620,15 +1654,27 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     setTimeScale(scale) {
       if (state) state.timeScale = scale
     },
-    setOutage(scope, id, down) {
+    setFault(scope, id, spec) {
       if (!state) return
-      for (const e of failoverSetOutage(state.failover, scope, id, down, state.clock.simMs)) emitEvent(e)
-      // audit ISSUE-008: an AZ failure is a SIMULATED outage for the managed services scoped to
-      // it — they go down with the AZ (and multi-AZ DBs may then auto-promote their standby),
-      // and recover with it. Manual per-service kills are untouched in both directions.
-      if (scope === 'az') {
-        for (const e of applyAzOutageToManaged(state.failover, state.doc, id, down, state.clock.simMs)) emitEvent(e)
+      const affected = instanceIdsForFaultScope(state, scope, id)
+      for (const e of setFaultPure(state.faults, scope, id, spec, state.clock.simMs, affected)) emitEvent(e)
+      // 'down' (and clearing back to null) routes through the EXISTING failover outage path so
+      // behavior stays byte-identical to the pre-FEAT-001 setOutage — faults.ts's own state above
+      // is bookkeeping/event-emission only, never a second source of truth for down/health.
+      if (spec === null || spec.kind === 'down') {
+        const down = spec !== null
+        for (const e of failoverSetOutage(state.failover, scope as OutageScope, id, down, state.clock.simMs)) emitEvent(e)
+        // audit ISSUE-008: an AZ failure is a SIMULATED outage for the managed services scoped to
+        // it — they go down with the AZ (and multi-AZ DBs may then auto-promote their standby),
+        // and recover with it. Manual per-service kills are untouched in both directions.
+        if (scope === 'az') {
+          for (const e of applyAzOutageToManaged(state.failover, state.doc, id, down, state.clock.simMs)) emitEvent(e)
+        }
       }
+    },
+    setOutage(scope, id, down) {
+      // Thin alias (contract-drift.md) — new callers should prefer setFault directly.
+      api.setFault(scope, id, down ? { kind: 'down' } : null)
     },
     attachRenderer(scope, onFrame) {
       if (!state) return () => {}
@@ -1664,6 +1710,29 @@ function buildDownstreamAdj(compiled: CompiledWorld): Map<InstanceId, InstanceId
     else adj.set(p.fromInstanceId, [p.to.instanceId])
   }
   return adj
+}
+
+// FEAT-001: resolve a fault scope/id to the concrete instance ids it covers, so setFault can
+// clear their leakAccumMb entries on fault-clear (a fresh heap the moment the fault stops, not
+// just on the next OOM). 'managed' scope has no compiled ServiceInstances — always [].
+function instanceIdsForFaultScope(state: EngineState, scope: FaultScope, id: string): InstanceId[] {
+  if (scope === 'managed') return []
+  if (scope === 'server') return (state.instancesByServer.get(id) ?? []).map(i => i.id)
+  if (scope === 'az') {
+    const out: InstanceId[] = []
+    for (const sv of state.serversByAz.get(id) ?? []) {
+      for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+    }
+    return out
+  }
+  // region
+  const out: InstanceId[] = []
+  for (const az of state.azsByRegion.get(id) ?? []) {
+    for (const sv of state.serversByAz.get(az.id) ?? []) {
+      for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+    }
+  }
+  return out
 }
 
 // Order-preserving single-pass grouping (audit ISSUE-032) — same shape as groupInstancesByServer.
