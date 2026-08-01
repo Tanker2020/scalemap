@@ -16,7 +16,7 @@ import { useSimulationStore } from '../../store/simulation.store'
 import { useCompiledWorld, instancesByAzFor, instancesByServerFor } from '../useCompiledWorld'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { dominantBlueprintColor, regionAzManaged } from './regionData'
-import { ChaosControl } from '../dock/ChaosControl'
+import { ChaosControl, isNonFatalFault, NON_FATAL_FAULT_ACCENT } from '../dock/ChaosControl'
 import type { AzId, RegionId, ServerId } from '../../../lib/world/types'
 import type { HealthState } from '../../../lib/worldEngine/types'
 import './r3Styles'
@@ -67,6 +67,8 @@ export function AzRow({
   const running = useSimulationStore(s => s.running)
   const isManuallyDown = useSimulationStore(s => s.healthOverrides[azId] ?? false)
   const healthOverrides = useSimulationStore(s => s.healthOverrides)
+  const azFault = useSimulationStore(s => s.activeFaults[azId] ?? null)
+  const activeFaults = useSimulationStore(s => s.activeFaults)
   // Managed cloud services scoped to THIS az (node-model Phase 5.2) — shown as usage rows below the
   // servers, since they have no hardware but still take load and can be taken down.
   const managedHere = regionAzManaged(azId, doc, batch)
@@ -115,6 +117,9 @@ export function AzRow({
     border: `1px solid ${isDown ? 'var(--color-danger)' : 'var(--color-node-border)'}`,
     borderRadius: 10, background: 'var(--color-node-base)', padding: '11px 13px',
     position: 'relative', font: '11px var(--font-mono)', opacity: isDown ? 0.85 : 1,
+    // Non-fatal operator fault (FEAT-001, plan design section) — amber accent distinct from the
+    // dark/struck `isDown` treatment above, so "degraded by operator" never reads as "dead".
+    ...(isNonFatalFault(azFault) ? NON_FATAL_FAULT_ACCENT : {}),
   }
 
   return (
@@ -236,6 +241,7 @@ export function AzRow({
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, fontSize: 10, color: 'var(--color-text-secondary)',
                   padding: '3px 6px', borderRadius: 4, borderLeft: `2px solid ${barColor}`,
+                  ...(isNonFatalFault(activeFaults[m.id] ?? null) ? NON_FATAL_FAULT_ACCENT : {}),
                 }}
               >
                 <span style={{ width: 108, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

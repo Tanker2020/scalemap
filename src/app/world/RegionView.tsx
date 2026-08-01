@@ -22,7 +22,7 @@ import { SourcesColumn } from './region/SourcesColumn'
 import { RegionLbCard } from './region/RegionLbCard'
 import { ReplicaRail, type ReplicaRailEntry } from './region/ReplicaRail'
 import { TimelineV2 } from './region/TimelineV2'
-import { ChaosControl } from './dock/ChaosControl'
+import { ChaosControl, isNonFatalFault, NON_FATAL_FAULT_ACCENT } from './dock/ChaosControl'
 
 const POLICY_LABEL: Record<RoutingPolicyKind, string> = {
   latency: 'latency-based routing', geo: 'geo-based routing',
@@ -46,6 +46,7 @@ export function RegionView() {
   const live = useSimulationStore(selectLive)
   const events = useSimulationStore(s => s.events)
   const healthOverrides = useSimulationStore(s => s.healthOverrides)
+  const activeFaults = useSimulationStore(s => s.activeFaults)
   const [hoveredServerId, setHoveredServerId] = useState<ServerId | null>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
 
@@ -114,7 +115,15 @@ export function RegionView() {
 
   return (
     <div style={{ padding: 18, font: '12px var(--font-mono)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+      <div
+        style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4,
+          borderRadius: 6, padding: 2,
+          // Non-fatal operator fault on this region (FEAT-001, plan design section) — amber accent
+          // distinct from the region page's existing down/degraded treatment elsewhere on this page.
+          ...(isNonFatalFault(activeFaults[regionId] ?? null) ? NON_FATAL_FAULT_ACCENT : {}),
+        }}
+      >
         <div>
           <span style={{ font: '16px var(--font-mono)', color: 'var(--color-text-primary)' }}>{region.catalogId}</span>
           <span style={{ font: '10px var(--font-mono)', color: 'var(--color-text-muted)' }}>
@@ -160,6 +169,7 @@ export function RegionView() {
                   display: 'inline-flex', alignItems: 'center', gap: 6,
                   border: `1px solid ${down ? 'var(--color-danger)' : 'var(--color-node-border)'}`, borderRadius: 6,
                   background: 'var(--color-node-base)', padding: '3px 8px', fontSize: 10,
+                  ...(isNonFatalFault(activeFaults[e.id] ?? null) ? NON_FATAL_FAULT_ACCENT : {}),
                 }}
               >
                 <span aria-hidden>🗄</span>

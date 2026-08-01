@@ -16,7 +16,7 @@ import { serverAccents, meanUtilization } from '../az/floorData'
 import { AzConnectionsView } from '../az/AzConnectionsView'
 import { healthWord } from '../ui/derived'
 import { scopedCost } from './scopeData'
-import { ChaosControl } from './ChaosControl'
+import { ChaosControl, isNonFatalFault, NON_FATAL_FAULT_ACCENT } from './ChaosControl'
 import { azConnectionGraph } from '../../../lib/world/connections'
 import type { RackId, Server, ServerId } from '../../../lib/world/types'
 import type { HealthState } from '../../../lib/worldEngine/types'
@@ -60,6 +60,7 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
   const compiled = useCompiledWorld()
   const running = useSimulationStore(s => s.running)
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
+  const activeFault = useSimulationStore(s => s.activeFaults[azId] ?? null)
   const selectedServerId = useUiStore(s => s.selectedServerId)
   const setSelectedServerId = useUiStore(s => s.setSelectedServerId)
   const reducedMotion = useReducedMotion() ?? false
@@ -133,7 +134,10 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
   const ghostVisible = !running
 
   return (
-    <div data-testid="az-config-tab">
+    <div
+      data-testid="az-config-tab"
+      style={isNonFatalFault(activeFault) ? { ...NON_FATAL_FAULT_ACCENT, borderRadius: 6 } : undefined}
+    >
       <SectionRail label="RACKS — capacity wells" />
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', minWidth: 0 }}>
         <div style={{ display: 'flex', gap: 10, flexShrink: 0, paddingTop: 2, flexWrap: 'wrap' }}>

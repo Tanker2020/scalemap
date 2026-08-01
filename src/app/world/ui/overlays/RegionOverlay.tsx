@@ -9,7 +9,7 @@ import { useSimulationStore } from '../../../store/simulation.store'
 import { WORLD_REGIONS } from '../../../../lib/regionConfig'
 import type { RegionId } from '../../../../lib/world/types'
 import { SceneOverlay, ovlActPrimary } from '../SceneOverlay'
-import { ChaosControl } from '../../dock/ChaosControl'
+import { ChaosControl, isNonFatalFault, NON_FATAL_FAULT_ACCENT } from '../../dock/ChaosControl'
 import { Segmented, SpecBar, ChipValue } from '../kit'
 import { useRollingNumber } from '../motion'
 
@@ -30,6 +30,7 @@ export function RegionOverlay({ regionId, onClose }: { regionId: RegionId; onClo
   const doc = useWorldStore(s => s.doc)
   const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const running = useSimulationStore(s => s.running)
+  const activeFault = useSimulationStore(s => s.activeFaults[regionId] ?? null)
   const goRegion = useNavStore(s => s.goRegion)
 
   const region = doc.regions[regionId]
@@ -62,35 +63,40 @@ export function RegionOverlay({ regionId, onClose }: { regionId: RegionId; onClo
         </>
       }
     >
-      <div style={{ display: 'flex', gap: 6, padding: '10px 13px 2px', flexWrap: 'wrap' }}>
-        <ChipValue>{azs.length} AZ{azs.length === 1 ? '' : 's'}</ChipValue>
-        <ChipValue>{servers.length} server{servers.length === 1 ? '' : 's'}</ChipValue>
-        <ChipValue>{metrics ? `~${Math.round(rolledRps)} rps in` : '~— rps in'}</ChipValue>
-        <ChipValue>{metrics ? `p50 ${Math.round(metrics.p50Ms)} ms` : 'p50 — ms'}</ChipValue>
-        <ChipValue><span style={{ color: 'var(--color-price)' }}>${hourly.toFixed(2)}/hr</span></ChipValue>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 13px', fontSize: 11 }}>
-        <span style={{ color: 'var(--color-text-muted)', fontSize: 10, width: 64, flexShrink: 0 }}>role</span>
-        <Segmented<'active' | 'passive'>
-          ariaLabel="region-role"
-          value={region.role}
-          onChange={v => {
-            // Role toggle writes via setState directly — deliberately no history push for a
-            // two-value toggle (see plan Task 11 note). History bypass is deliberate;
-            // dirty-marking is still required. [TopologyPanel.tsx:88-95, copied verbatim]
-            useWorldStore.setState(s => ({ doc: { ...s.doc, regions: { ...s.doc.regions, [region.id]: { ...region, role: v } } } }))
-            useFileStore.getState().setDirty(true)
-          }}
-          options={[{ value: 'active', label: 'active' }, { value: 'passive', label: 'passive' }]}
-        />
-      </div>
-      <div style={{ padding: '0 13px' }}>
-        <SpecBar
-          label="capacity"
-          fraction={capacity ?? 0}
-          color="var(--color-accent)"
-          value={capacity === null ? '—' : `${Math.round(capacity * 100)}%`}
-        />
+      {/* Non-fatal operator fault on this region (FEAT-001, plan design section) — amber accent
+          wraps the overlay's own body, distinct from SceneOverlay's health-dot down/degraded
+          treatment in the header (unmodified, out of this task's scope). */}
+      <div style={isNonFatalFault(activeFault) ? { ...NON_FATAL_FAULT_ACCENT, borderRadius: 4 } : undefined}>
+        <div style={{ display: 'flex', gap: 6, padding: '10px 13px 2px', flexWrap: 'wrap' }}>
+          <ChipValue>{azs.length} AZ{azs.length === 1 ? '' : 's'}</ChipValue>
+          <ChipValue>{servers.length} server{servers.length === 1 ? '' : 's'}</ChipValue>
+          <ChipValue>{metrics ? `~${Math.round(rolledRps)} rps in` : '~— rps in'}</ChipValue>
+          <ChipValue>{metrics ? `p50 ${Math.round(metrics.p50Ms)} ms` : 'p50 — ms'}</ChipValue>
+          <ChipValue><span style={{ color: 'var(--color-price)' }}>${hourly.toFixed(2)}/hr</span></ChipValue>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 13px', fontSize: 11 }}>
+          <span style={{ color: 'var(--color-text-muted)', fontSize: 10, width: 64, flexShrink: 0 }}>role</span>
+          <Segmented<'active' | 'passive'>
+            ariaLabel="region-role"
+            value={region.role}
+            onChange={v => {
+              // Role toggle writes via setState directly — deliberately no history push for a
+              // two-value toggle (see plan Task 11 note). History bypass is deliberate;
+              // dirty-marking is still required. [TopologyPanel.tsx:88-95, copied verbatim]
+              useWorldStore.setState(s => ({ doc: { ...s.doc, regions: { ...s.doc.regions, [region.id]: { ...region, role: v } } } }))
+              useFileStore.getState().setDirty(true)
+            }}
+            options={[{ value: 'active', label: 'active' }, { value: 'passive', label: 'passive' }]}
+          />
+        </div>
+        <div style={{ padding: '0 13px' }}>
+          <SpecBar
+            label="capacity"
+            fraction={capacity ?? 0}
+            color="var(--color-accent)"
+            value={capacity === null ? '—' : `${Math.round(capacity * 100)}%`}
+          />
+        </div>
       </div>
     </SceneOverlay>
   )

@@ -27,7 +27,7 @@ import { useServerDisplayMetrics } from '../server/useServerDisplayMetrics'
 import { meanUtilization } from '../az/floorData'
 import { HEALTH_COLOR } from '../server/healthColor'
 import { Drawer } from './Drawer'
-import { ChaosControl } from './ChaosControl'
+import { ChaosControl, isNonFatalFault, NON_FATAL_FAULT_ACCENT } from './ChaosControl'
 import { HardwareDrawer, hardwarePv } from './drawers/HardwareDrawer'
 import { FirewallDrawer, firewallPv } from './drawers/FirewallDrawer'
 import { ServicesDrawer, servicesPv } from './drawers/ServicesDrawer'
@@ -101,6 +101,7 @@ export function ServerFaceplate({ serverId, showEnter, openFirewallRules }: Serv
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
   const running = useSimulationStore(s => s.running)
+  const activeFault = useSimulationStore(s => s.activeFaults[serverId] ?? null)
   const navRegionId = useNavStore(s => s.regionId)
   const navAzId = useNavStore(s => s.azId)
   const goServer = useNavStore(s => s.goServer)
@@ -187,6 +188,7 @@ export function ServerFaceplate({ serverId, showEnter, openFirewallRules }: Serv
         style={{
           position: 'relative', background: PLATE_BG, borderBottom: `1px solid ${PLATE_BORDER}`,
           borderRadius: '8px 8px 0 0', padding: '11px 16px 10px',
+          ...(isNonFatalFault(activeFault) ? NON_FATAL_FAULT_ACCENT : {}),
         }}
       >
         <span aria-hidden style={{ ...screwStyle, top: 5, left: 5 }} />

@@ -224,6 +224,29 @@ describe('ServerFaceplate — action row', () => {
     expect(useSimulationStore.getState().healthOverrides[serverId]).toBe(true)
   })
 
+  it('plate renders the amber non-fatal-fault accent for a non-down fault, not for down or no fault', () => {
+    const { serverId } = seedServer()
+    act(() => { useSimulationStore.setState({ running: true }) })
+
+    // No fault: no amber accent.
+    const { rerender } = render(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
+    let plate = screen.getByTestId('faceplate-plate')
+    expect(plate.style.boxShadow).toBe('')
+
+    // Non-fatal fault (e.g. cpu-brownout): amber accent present.
+    act(() => { useSimulationStore.getState().setFault('server', serverId, { kind: 'cpu-brownout', capacityFraction: 0.5 }) })
+    rerender(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
+    plate = screen.getByTestId('faceplate-plate')
+    expect(plate.style.boxShadow).toContain('var(--color-warning)')
+
+    // Down fault: the accent is NOT the non-fatal amber one (existing dark/struck treatment
+    // stays unchanged by this fix).
+    act(() => { useSimulationStore.getState().setFault('server', serverId, { kind: 'down' }) })
+    rerender(<ServerFaceplate serverId={serverId} showEnter={false} openFirewallRules={() => {}} />)
+    plate = screen.getByTestId('faceplate-plate')
+    expect(plate.style.boxShadow).toBe('')
+  })
+
   it('"remove…" requires a two-step confirm, then dispatches removeServer + clears selection', () => {
     const { serverId } = seedServer()
     useUiStore.setState({ selectedServerId: serverId })

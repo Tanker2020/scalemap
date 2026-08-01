@@ -28,6 +28,21 @@ import type { FaultKind, FaultScope, FaultSpec } from '../../../lib/worldEngine/
 
 export const CHAOS_LOCKED_TITLE = 'start the simulation to break things'
 
+// Shared amber "non-fatal fault" entity accent (plan FEAT-001 design section: "A faulted entity
+// renders with a distinct non-fatal affordance (amber hatch) versus a killed one (existing
+// dark/struck treatment)"). `ChaosControl`'s own button already carries this tone on its border/
+// text; the six call sites additionally apply this SAME accent to the entity element they already
+// render (rack row/card/chip/faceplate) so the distinction reads without hovering the control.
+// One shared constant/predicate instead of six inline literals — not a new component/hook, just
+// avoids the exact CSS drifting six ways.
+export function isNonFatalFault(spec: FaultSpec | null | undefined): boolean {
+  return spec != null && spec.kind !== 'down'
+}
+
+export const NON_FATAL_FAULT_ACCENT: CSSProperties = {
+  boxShadow: 'inset 0 0 0 1px var(--color-warning), inset 0 0 20px color-mix(in srgb, var(--color-warning) 16%, transparent)',
+}
+
 type NonDownKind = Exclude<FaultKind, 'down'>
 
 const FAULT_LABELS: Record<NonDownKind, string> = {

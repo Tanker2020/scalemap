@@ -412,6 +412,32 @@ describe('DatacenterFloor — lines survive racking (2026-07-12 follow-up)', () 
     expect(useSimulationStore.getState().healthOverrides[msId]).toBe(false)
   })
 
+  it('appliance box carries the amber non-fatal-fault accent for a non-down fault, not for down or no fault', () => {
+    const { azId } = seedAz()
+    const msId = useWorldStore.getState().addManagedService('queue', 'Q', { kind: 'az', azId }, 5672)
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useSimulationStore.setState({ running: true, latestBatch: makeBatch({}, []) })
+
+    // No fault: no accent.
+    const { rerender } = render(<DatacenterFloor />)
+    let box = screen.getByTestId(`appliance-${msId}`)
+    expect(box.getAttribute('data-nonfatal-fault')).toBe('false')
+
+    // Non-fatal fault (e.g. latency-add): accent present, still NOT reported as "down".
+    useSimulationStore.getState().setFault('managed', msId, { kind: 'latency-add', ms: 400 })
+    rerender(<DatacenterFloor />)
+    box = screen.getByTestId(`appliance-${msId}`)
+    expect(box.getAttribute('data-nonfatal-fault')).toBe('true')
+    expect(box.getAttribute('data-managed-down')).toBe('false')
+
+    // Down fault: accent flag flips back off (existing dark/struck `data-managed-down` path owns it).
+    useSimulationStore.getState().setFault('managed', msId, { kind: 'down' })
+    rerender(<DatacenterFloor />)
+    box = screen.getByTestId(`appliance-${msId}`)
+    expect(box.getAttribute('data-nonfatal-fault')).toBe('false')
+    expect(box.getAttribute('data-managed-down')).toBe('true')
+  })
+
   it('leaves a managed box static (no rps) when the sim is not live', () => {
     const { azId } = seedAz()
     const msId = useWorldStore.getState().addManagedService('dbSql', 'SQL DB', { kind: 'az', azId }, 5432)

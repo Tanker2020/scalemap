@@ -24,7 +24,7 @@ import { getPreset } from '../../../lib/world/instanceCatalog'
 import { RackCabinet, cabinetHeightPx } from './RackCabinet'
 import { FreePoolPod, POD_HEIGHT_PX } from './FreePoolPod'
 import { InspectorV2 } from '../InspectorV2'
-import { ChaosControl } from '../dock/ChaosControl'
+import { ChaosControl, isNonFatalFault, NON_FATAL_FAULT_ACCENT } from '../dock/ChaosControl'
 import { useFloorCamera, INTERACTIVE_SEL } from './useFloorCamera'
 import { VIEW_W, VIEW_H, floorOutline, tileOutline, tileCenter, isoBox, type IsoBox } from './iso'
 import type { RackId, Server, ServerId } from '../../../lib/world/types'
@@ -67,6 +67,7 @@ export function DatacenterFloor() {
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const running = useSimulationStore(s => s.running)
   const healthOverrides = useSimulationStore(s => s.healthOverrides)
+  const activeFaults = useSimulationStore(s => s.activeFaults)
   // Flow traces + LED blink march only while the sim is actively ticking; a paused/ended/scrubbed
   // run freezes them (the batch stays non-zero, so a rate-only gate would keep marching).
   const live = useSimulationStore(selectLive)
@@ -558,16 +559,24 @@ export function DatacenterFloor() {
               const activeRps = mm ? mm.rps : 0
               // Manually taken down (node-model Phase 5.2) reads red at rest, independent of traffic.
               const manuallyDown = healthOverrides[m.id] ?? false
+              // Non-fatal operator fault (FEAT-001, plan design section) — a distinct amber outline
+              // from organic `degraded`/idle dashing, so "operator injected latency/CPU/memory/error
+              // fault" never reads as either "dead" (manuallyDown/red) or merely "busy" (teal).
+              const nonFatalFault = isNonFatalFault(activeFaults[m.id] ?? null)
               const accent = manuallyDown || mm?.health === 'down' ? 'var(--color-danger)'
-                : mm?.health === 'degraded' ? 'var(--color-warning)'
-                  : 'var(--az-teal)'
+                : nonFatalFault ? 'var(--color-warning)'
+                  : mm?.health === 'degraded' ? 'var(--color-warning)'
+                    : 'var(--az-teal)'
               return (
-                <g key={m.id} data-testid={`appliance-${m.id}`} data-managed-rps={Math.round(activeRps)} data-managed-down={manuallyDown ? 'true' : 'false'}>
+                <g
+                  key={m.id} data-testid={`appliance-${m.id}`} data-managed-rps={Math.round(activeRps)}
+                  data-managed-down={manuallyDown ? 'true' : 'false'} data-nonfatal-fault={nonFatalFault ? 'true' : 'false'}
+                >
                   <polygon points={box.side} fill="url(#az-rackside)" stroke="#232b38" />
                   <polygon
                     points={box.front} fill="url(#az-rackfront)" stroke={accent}
-                    strokeWidth={activeRps > 0.5 || manuallyDown ? 1.5 : 1}
-                    strokeDasharray={activeRps > 0.5 && !manuallyDown ? undefined : '2 3'}
+                    strokeWidth={activeRps > 0.5 || manuallyDown || nonFatalFault ? 1.5 : 1}
+                    strokeDasharray={nonFatalFault ? '3 2' : activeRps > 0.5 && !manuallyDown ? undefined : '2 3'}
                   />
                   <polygon points={box.top} fill="url(#az-racktop)" stroke="#333d4d" />
                 </g>
@@ -619,7 +628,11 @@ export function DatacenterFloor() {
             return (
               <div
                 key={m.id}
-                style={{ ...lblStyle, left: r.x, top: r.y, color, borderColor: '#3fc7b83a', pointerEvents: running ? 'auto' : 'none', display: 'flex', alignItems: 'center', gap: 5 }}
+                style={{
+                  ...lblStyle, left: r.x, top: r.y, color, borderColor: '#3fc7b83a',
+                  pointerEvents: running ? 'auto' : 'none', display: 'flex', alignItems: 'center', gap: 5,
+                  ...(isNonFatalFault(activeFaults[m.id] ?? null) ? NON_FATAL_FAULT_ACCENT : {}),
+                }}
               >
                 <span>{m.label} <small>· {m.nodeType}{manuallyDown ? ' · down' : showRps ? ` · ${Math.round(mm!.rps).toLocaleString('en-US')} rps` : ''}{throttling && !manuallyDown ? ' ⚠' : ''}</small></span>
                 <ChaosControl scope="managed" id={m.id} running={running} label={m.label} />
