@@ -194,6 +194,7 @@ export type EngineEventKind =
   // recorded (unchanged) but nothing marked that the re-entry was cut instead of followed.
   | 'chain_depth_exceeded'       // dependency chain hit MAX_DEPTH and stopped fanning out further
   | 'chain_cycle_cut'            // BFS cycle guard stopped re-queueing into an ancestor instance
+  | 'partition_started' | 'partition_healed'   // FEAT-002 network partition added/removed
 
 export interface EngineEvent {
   id: string
@@ -271,6 +272,27 @@ export type FaultSpec =
   | { kind: 'error-inject'; errorFraction: number }
 
 export type FaultScope = 'server' | 'az' | 'region' | 'managed'
+
+// ─── Network partitions (FEAT-002) ───────────────────────────────────────────
+// A LinkEndpoint names one side of a partitioned link at region/az/server granularity
+// (or 'internet' for a population-facing edge). PartitionFault pairs two endpoints with
+// an impairment mode; `impairmentFor` (faults.ts) is the pure predicate that resolves a
+// concrete from/to identity pair against the active partition list.
+
+export type LinkEndpoint =
+  | { kind: 'region'; id: string }
+  | { kind: 'az'; id: string }
+  | { kind: 'server'; id: string }
+  | { kind: 'internet' }
+
+export interface PartitionFault {
+  from: LinkEndpoint
+  to: LinkEndpoint
+  mode: 'drop' | 'loss' | 'delay'
+  lossFraction?: number
+  delayMs?: number
+  symmetric: boolean
+}
 
 // ─── Control API (the engine facade's exported surface) ─────────────────────
 

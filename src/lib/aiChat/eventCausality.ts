@@ -56,6 +56,9 @@ export function decodeAffected(
       return { primaryId: affected[0] ?? '', secondaryId: null }
     case 'chain_cycle_cut':
       return { primaryId: affected[0] ?? '', secondaryId: affected[1] || null }
+    case 'partition_started':
+    case 'partition_healed':
+      return { primaryId: affected[0] ?? '', secondaryId: affected[1] || null }
   }
 }
 
