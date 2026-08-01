@@ -297,6 +297,12 @@ export interface FlowInput {
   // other protocol) — direct `solveFlows` callers/tests that don't wire this through are
   // unaffected; the real engine (index.ts) always supplies it.
   topicRuntime?: TopicRuntime
+  // Per-path (keyed by CompiledPath.id) network-partition impairment (FEAT-002, Task 10), built
+  // ONCE per step by the engine (index.ts) from state.faults.partitions and threaded through here.
+  // NOT YET consumed inside this file — a later task (11) wires actual blocking/loss/delay
+  // behavior off this map. Optional: absent ⇒ unchanged behavior, so existing callers/tests are
+  // unaffected.
+  impairmentMemo?: Map<string, { blocked: boolean; lossFraction: number; delayMs: number }>
   rng: Rng
 }
 

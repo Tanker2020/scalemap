@@ -5,7 +5,7 @@
 // src/app/. Determinism: all randomness flows through the seeded rng built here.
 import type {
   WorldEngineApi, EngineCallbacks, EngineEvent, EngineEventKind, HealthState,
-  RenderScope, FramePayload, VisualParticle, VisualArc, FaultScope, FaultSpec,
+  RenderScope, FramePayload, VisualParticle, VisualArc, FaultScope, FaultSpec, PartitionFault,
 } from './types'
 import { MAX_GLOBE_ARCS } from './types'
 import type {
@@ -50,7 +50,7 @@ import {
 } from './metrics'
 import { createEventRing, mkEvent, type EventRing } from './events'
 import {
-  createFaultState, setFault as setFaultPure, faultsForServer, stepLeaks, type FaultState,
+  createFaultState, setFault as setFaultPure, faultsForServer, stepLeaks, impairmentFor, type FaultState,
 } from './faults'
 import { createReplayBuffer, createTracer, type ReplayBuffer, type Tracer } from './replay'
 import { REGION_GEO as REGION_GEO_LOCAL } from '../world/regionGeo'
@@ -1066,6 +1066,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // its own queue and the topic it drains. Skipped outright when the world has no event
     // dependency (audit ISSUE-079's hasManagedDbs pattern).
     const topicRt = s.hasEventDeps ? topicRuntime(s.prevFlows, compiled, doc, serviceRateByInstance, s.topicBacklog, stepSec) : {}
+    // FEAT-002 (Task 10): per-path network-partition impairment, resolved once per step from
+    // s.faults.partitions. Skipped entirely when no partition is active (the common case),
+    // matching the anyFaultsActive short-circuit discipline above. NOT consumed inside flows.ts
+    // yet — a later task wires actual blocking/loss/delay behavior off this map.
+    const impairmentMemo = buildImpairmentMemo(compiled, doc, s.faults.partitions, s.regionOfAz)
     const { flows, totals, depthExceededInstanceIds, cycleCutEdges } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       extraLatencyMsByServer,
@@ -1091,6 +1096,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       managedDown: (id) => hasOutage(s.failover, 'managed', id),
       managedDbRuntime: managedDbRt,
       topicRuntime: topicRt,
+      impairmentMemo,
     })
 
     // Audit ISSUE-010: surface silently-dropped fan-out. Both conditions previously left no trace
@@ -1737,6 +1743,49 @@ function buildDownstreamAdj(compiled: CompiledWorld): Map<InstanceId, InstanceId
     else adj.set(p.fromInstanceId, [p.to.instanceId])
   }
   return adj
+}
+
+// FEAT-002 (Task 10): resolve every CompiledPath's from/to into plain EndpointIds and memo the
+// resulting impairment, keyed on CompiledPath.id (already the path's unique identity — no
+// synthesized key needed). Exported as a standalone pure function — not inlined in runStep —
+// purely so it's independently testable without spinning up the whole engine's closure state;
+// runStep's only job is to call it with the live compiled/doc/partitions/regionOfAz each step.
+// Guarded by the caller-visible early return: an empty `partitions` array (the common case) does
+// zero work — no compiled.paths iteration, no impairmentFor calls at all.
+export function buildImpairmentMemo(
+  compiled: CompiledWorld,
+  doc: WorldDoc,
+  partitions: PartitionFault[],
+  regionOfAz: Map<AzId, RegionId>,
+): Map<string, { blocked: boolean; lossFraction: number; delayMs: number }> {
+  const memo = new Map<string, { blocked: boolean; lossFraction: number; delayMs: number }>()
+  if (partitions.length === 0) return memo
+  for (const path of compiled.paths) {
+    const fromInst = compiled.instances[path.fromInstanceId]
+    const fromIds = fromInst
+      ? { regionId: fromInst.regionId, azId: fromInst.azId, serverId: fromInst.serverId }
+      : {}
+    let toIds: { regionId?: string; azId?: string; serverId?: string }
+    if (path.to.kind === 'instance') {
+      const toInst = compiled.instances[path.to.instanceId]
+      toIds = toInst
+        ? { regionId: toInst.regionId, azId: toInst.azId, serverId: toInst.serverId }
+        : {}
+    } else {
+      const ms = doc.managedServices[path.to.managedServiceId]
+      if (ms?.scope.kind === 'region') {
+        toIds = { regionId: ms.scope.regionId }
+      } else if (ms?.scope.kind === 'az') {
+        // A region-level partition must still reach an az-scoped managed service, so derive its
+        // parent region via the same reverse-index map used for server fault resolution.
+        toIds = { azId: ms.scope.azId, regionId: regionOfAz.get(ms.scope.azId) }
+      } else {
+        toIds = {}
+      }
+    }
+    memo.set(path.id, impairmentFor(fromIds, toIds, partitions))
+  }
+  return memo
 }
 
 // FEAT-001: resolve a fault scope/id to the concrete instance ids it covers, so setFault can

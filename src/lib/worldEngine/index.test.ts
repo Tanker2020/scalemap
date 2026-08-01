@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createWorldEngine } from './index'
+import { createWorldEngine, buildImpairmentMemo } from './index'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, createPopulation,
   createLoadBalancer,
@@ -2414,5 +2414,59 @@ describe('FEAT-001 error-inject fault (Task 5)', () => {
     sim.stepFor(10)                                     // let the windowed weighted rate settle
     expect(sim.events.some(e => e.kind === 'breaker_open')).toBe(true)
     sim.engine.stop()
+  })
+})
+
+// ─── FEAT-002 (Task 10): per-step impairment memo ────────────────────────────
+describe('FEAT-002 impairment memo (Task 10)', () => {
+  // web (region r1) -> managed service ms-1, az-scoped to az2a in region r2. No servers needed
+  // in r2 — a managed service has no backing instance.
+  function crossRegionManagedFixture() {
+    const doc = createWorld()
+    const r1 = createRegion('us-east-1')
+    const r2 = createRegion('eu-west-1')
+    const az1a = createAz(r1.id, 'us-east-1a')
+    const az2a = createAz(r2.id, 'eu-west-1a')
+    Object.assign(doc.regions, { [r1.id]: r1, [r2.id]: r2 })
+    Object.assign(doc.azs, { [az1a.id]: az1a, [az2a.id]: az2a })
+
+    const server = createServer(az1a.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+
+    doc.managedServices['ms-1'] = {
+      id: 'ms-1', label: 'RDS', nodeType: 'dbSql',
+      scope: { kind: 'az', azId: az2a.id }, provider: 'aws', port: 5432,
+    }
+
+    const web = publicBlueprint('web', 0)
+    web.dependencies = [
+      { id: 'd-ms', target: { kind: 'managed', managedServiceId: 'ms-1' }, port: 5432, protocol: 'db', packetTemplateId: null },
+    ]
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id)
+    doc.placements[pl.id] = pl
+
+    const compiled = compileWorld(doc)
+    const webInst = instanceId(pl.id, 0)
+    const path = compiled.paths.find(p => p.fromInstanceId === webInst && p.to.kind === 'managed')!
+    return { doc, compiled, r1, r2, az1a, az2a, path }
+  }
+
+  it('does no work (empty memo) when there are no partitions', () => {
+    const f = crossRegionManagedFixture()
+    const memo = buildImpairmentMemo(f.compiled, f.doc, [], new Map([[f.az1a.id, f.r1.id], [f.az2a.id, f.r2.id]]))
+    expect(memo.size).toBe(0)
+  })
+
+  it('resolves an AZ-scoped managed target through a REGION-level partition via regionOfAz', () => {
+    const f = crossRegionManagedFixture()
+    const regionOfAz = new Map([[f.az1a.id, f.r1.id], [f.az2a.id, f.r2.id]])
+    const partitions = [
+      { from: { kind: 'region' as const, id: f.r1.id }, to: { kind: 'region' as const, id: f.r2.id }, mode: 'drop' as const, symmetric: true },
+    ]
+    const memo = buildImpairmentMemo(f.compiled, f.doc, partitions, regionOfAz)
+    expect(memo.size).toBeGreaterThan(0)
+    const entry = memo.get(f.path.id)
+    expect(entry).toEqual({ blocked: true, lossFraction: 0, delayMs: 0 })
   })
 })
