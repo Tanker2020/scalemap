@@ -247,6 +247,12 @@ export interface FlowInput {
   // settlement, added on top of the multiplied service latency. Optional: absent ⇒ 0 extra,
   // so existing callers and tests are unchanged.
   extraLatencyMsByServer?: Record<ServerId, number>
+  // Per-TARGET-server error fraction (0..1) from an active error-inject fault (FEAT-001, Task 5),
+  // resolved ONCE per server per step by the engine (index.ts, from the same activeFaults array
+  // that resolves brownout/leak/latencyFault) — this file stays decoupled from faults.ts/
+  // FaultState entirely, consuming a plain precomputed record like extraLatencyMsByServer above.
+  // Optional: absent ⇒ no error injected, so existing callers/tests are unaffected.
+  faultErrorFractionByServer?: Record<ServerId, number>
   // Per-entry-instance client-facing wire bytes (packet-driven egress, slice 1): the request+
   // response payload size the route mix landing on each entry instance implies. Seeds the
   // client→entry internet byte total by real payload size. Optional: absent ⇒ the flat
@@ -307,7 +313,7 @@ export interface DownstreamFlow {
   // analogues: a topic's retention-cap overflow (at-most-once loses these) vs a message that
   // exhausted its redelivery budget. Absent on every non-managed/non-event row and on admitted
   // rows, which keeps existing row-equality assertions unchanged.
-  failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq'
+  failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq' | 'fault'
 }
 
 export interface InstanceFlow {
@@ -471,7 +477,7 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
     rps: number,
     hopClass: HopClass,
     blocked: boolean,
-    failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq',
+    failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq' | 'fault',
   ): void => {
     const key = `${dependencyId}|${target.toInstanceId ?? ''}|${target.toManagedServiceId ?? ''}|${blocked}|${failure ?? ''}`
     let rows = rowIndex.get(f.instanceId)
@@ -795,6 +801,27 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
             addDownstream(flow, dep.id, target, timedOut, path.hopClass, true, 'timeout')
             admittedShare = share - timedOut
           }
+        }
+        if (admittedShare <= EPSILON_RPS) continue
+
+        // FEAT-001 (Task 5): an error-inject fault active on the TARGET's server errors a flat
+        // fraction of whatever survived the timeout deduction above — composes with it rather than
+        // replacing it, same "both can be non-zero simultaneously" shape as cpu-brownout composing
+        // with VPS steal (Task 3). Resolved once per server per step by the engine (index.ts); this
+        // file only ever sees the plain precomputed fraction, never FaultState itself.
+        //
+        // Split into two statements with an explicit ServerId annotation on the second (rather
+        // than one `compiled.instances[toId]?.serverId` expression) — TS7022 flags the loop's
+        // `path` binding as an implicit-any self-reference otherwise; this is the minimal
+        // rewrite that keeps the type-checker's inference from looping back through it.
+        const targetInst = compiled.instances[toId]
+        const targetServerId: ServerId | undefined = targetInst?.serverId
+        const errorFraction = targetServerId ? input.faultErrorFractionByServer?.[targetServerId] : undefined
+        if (errorFraction && admittedShare > EPSILON_RPS) {
+          const faultErrors = admittedShare * errorFraction
+          flow.errorRps += faultErrors
+          addDownstream(flow, dep.id, target, faultErrors, path.hopClass, true, 'fault')
+          admittedShare -= faultErrors
         }
         if (admittedShare <= EPSILON_RPS) continue
 

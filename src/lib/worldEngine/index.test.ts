@@ -2321,3 +2321,63 @@ describe('FEAT-001 faults', () => {
     sim.engine.stop()
   })
 })
+
+// ─── Fault injection (Task 5): error-inject wired into flows.ts ─────────────
+describe('FEAT-001 error-inject fault (Task 5)', () => {
+  // 1 region / 1 AZ / 2 servers: web[entry] -> api, single dependency edge, no firewall block.
+  // Faulting api's server with error-inject should show up as the CALLER's (web's) own errorRps
+  // growing, exactly like the existing client-timeout error path just above it in flows.ts.
+  function webApiFixture() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r
+    doc.azs[az.id] = az
+    const s1 = createServer(az.id, getPreset('dedicated-8')!)
+    const s2 = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[s1.id] = s1
+    doc.servers[s2.id] = s2
+    const web = publicBlueprint('web', 0)
+    const api = createBlueprint('api', 1)
+    web.dependencies = [{ id: 'd-api', target: { kind: 'blueprint', blueprintId: api.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+    Object.assign(doc.blueprints, { [web.id]: web, [api.id]: api })
+    const webPl = createPlacement(web.id, s1.id); doc.placements[webPl.id] = webPl
+    const apiPl = createPlacement(api.id, s2.id); doc.placements[apiPl.id] = apiPl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 120
+    doc.populations[pop.id] = pop
+    return {
+      doc, compiled: compileWorld(doc), apiServer: s2,
+      webInst: instanceId(webPl.id, 0), apiInst: instanceId(apiPl.id, 0),
+    }
+  }
+
+  it('error-inject at 0.1 raises the caller\'s published errorRate to ~0.1', () => {
+    const f = webApiFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(2)                                      // steady healthy load, EMA settled
+    const baseline = sim.latest().instances[f.webInst]?.errorRate ?? 0
+    expect(baseline).toBeLessThan(0.02)
+
+    sim.engine.setFault('server', f.apiServer.id, { kind: 'error-inject', errorFraction: 0.1 })
+    sim.stepFor(8)                                      // let the EMA settle onto the new fraction
+    const errRate = sim.latest().instances[f.webInst]?.errorRate ?? 0
+    expect(errRate).toBeGreaterThan(0.05)
+    expect(errRate).toBeLessThan(0.2)
+    sim.engine.stop()
+  })
+
+  it('sustained error-inject trips the caller circuit breaker via the EXISTING breaker mechanism', () => {
+    const f = webApiFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(2)
+    expect(sim.events.some(e => e.kind === 'breaker_open')).toBe(false)
+
+    // Well past the 0.5 errorThreshold so the windowed weighted rate crosses it quickly.
+    sim.engine.setFault('server', f.apiServer.id, { kind: 'error-inject', errorFraction: 0.9 })
+    sim.stepFor(10)                                     // let the windowed weighted rate settle
+    expect(sim.events.some(e => e.kind === 'breaker_open')).toBe(true)
+    sim.engine.stop()
+  })
+})

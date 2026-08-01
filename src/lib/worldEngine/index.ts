@@ -883,6 +883,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const admittedScaleByServer: Record<ServerId, number> = {}
     const latencyMultiplierByServer: Record<ServerId, number> = {}
     const extraLatencyMsByServer: Record<ServerId, number> = {}
+    // FEAT-001 (Task 5): per-server error-inject fraction, resolved from the SAME activeFaults
+    // array as brownout/leak/latencyFault below — solveFlows consumes this plain record and stays
+    // decoupled from FaultState entirely.
+    const faultErrorFractionByServer: Record<ServerId, number> = {}
     const hostResults: Record<ServerId, HostStepResult> = {}
     const vpsPublish: Record<ServerId, VpsPublish> = {}
     const nicByServer: Record<ServerId, NicState> = {}
@@ -900,6 +904,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       let brownout: Extract<FaultSpec, { kind: 'cpu-brownout' }> | undefined
       let leak: Extract<FaultSpec, { kind: 'memory-leak' }> | undefined
       let latencyFault: Extract<FaultSpec, { kind: 'latency-add' }> | undefined
+      let errorInject: Extract<FaultSpec, { kind: 'error-inject' }> | undefined
       if (anyFaultsActive) {
         const faultAzId = s.azOfServer.get(server.id)
         const faultRegionId = faultAzId ? s.regionOfAz.get(faultAzId) : undefined
@@ -912,6 +917,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           (f): f is Extract<FaultSpec, { kind: 'memory-leak' }> => f.kind === 'memory-leak')
         latencyFault = activeFaults.find(
           (f): f is Extract<FaultSpec, { kind: 'latency-add' }> => f.kind === 'latency-add')
+        errorInject = activeFaults.find(
+          (f): f is Extract<FaultSpec, { kind: 'error-inject' }> => f.kind === 'error-inject')
+        if (errorInject) faultErrorFractionByServer[server.id] = errorInject.errorFraction
         const activeLeak = leak
         if (activeLeak) {
           stepLeaks(s.faults, resident.map(i => ({ instanceId: i.id, mbPerMinute: activeLeak.mbPerMinute })), stepSec)
@@ -1061,6 +1069,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     const { flows, totals, depthExceededInstanceIds, cycleCutEdges } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       extraLatencyMsByServer,
+      // FEAT-001 (Task 5): active error-inject faults, resolved once per server above.
+      faultErrorFractionByServer,
       // Queue model (audit ISSUE-013): fair-share service rates + the persistent queue map
       // (mutated in place) + step length — activates the queueing path in the solver.
       serviceRateByInstance, queueDepth: s.queueDepth, stepSec,
