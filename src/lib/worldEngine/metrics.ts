@@ -257,7 +257,7 @@ export function buildBatch(
   leakAccumMb?: Map<InstanceId, number>,
   // Task 7: count of currently-active operator-injected faults (FaultState.active.size), threaded
   // straight through to the published batch for the fault-injected analysis rule. Optional: absent
-  // ⇒ omitted from the batch, so every existing direct-buildBatch caller/test is unchanged.
+  // ⇒ defaults to 0 in the batch, so every existing direct-buildBatch caller/test is unchanged.
   activeFaultCount?: number,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
