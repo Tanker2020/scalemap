@@ -899,6 +899,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // skipped entirely when no fault is active anywhere (the common case).
       let brownout: Extract<FaultSpec, { kind: 'cpu-brownout' }> | undefined
       let leak: Extract<FaultSpec, { kind: 'memory-leak' }> | undefined
+      let latencyFault: Extract<FaultSpec, { kind: 'latency-add' }> | undefined
       if (anyFaultsActive) {
         const faultAzId = s.azOfServer.get(server.id)
         const faultRegionId = faultAzId ? s.regionOfAz.get(faultAzId) : undefined
@@ -909,6 +910,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
           (f): f is Extract<FaultSpec, { kind: 'cpu-brownout' }> => f.kind === 'cpu-brownout')
         leak = activeFaults.find(
           (f): f is Extract<FaultSpec, { kind: 'memory-leak' }> => f.kind === 'memory-leak')
+        latencyFault = activeFaults.find(
+          (f): f is Extract<FaultSpec, { kind: 'latency-add' }> => f.kind === 'latency-add')
         const activeLeak = leak
         if (activeLeak) {
           stepLeaks(s.faults, resident.map(i => ({ instanceId: i.id, mbPerMinute: activeLeak.mbPerMinute })), stepSec)
@@ -988,7 +991,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       admittedScaleByServer[server.id] = s.nicDeliveredFraction.get(server.id) ?? 1
       latencyMultiplierByServer[server.id] = host.latencyMultiplier
       const queuedMs = s.nicQueuedLatencyMs.get(server.id) ?? 0
-      if (queuedMs > 0) extraLatencyMsByServer[server.id] = queuedMs
+      const faultMs = latencyFault?.ms ?? 0
+      if (queuedMs + faultMs > 0) extraLatencyMsByServer[server.id] = queuedMs + faultMs
       let nic = s.nics.get(server.id)
       if (!nic) {
         nic = createNicState()

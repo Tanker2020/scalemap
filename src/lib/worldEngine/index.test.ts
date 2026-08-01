@@ -314,6 +314,77 @@ describe('NIC backpressure (audit ISSUE-002)', () => {
     expect(capInst.p50Ms).toBeGreaterThan(baseInst.p50Ms + 30)    // queued latency raises p50
     capSim.engine.stop()
   })
+
+  it('latency-add ADDS to queued NIC latency, does not overwrite it', () => {
+    // Build a saturated NIC world: 1 Mbps with 300 rps produces deep NIC backpressure
+    const saturated = nicWorld(1)
+    const sim = drive(saturated.doc, saturated.compiled)
+    sim.stepFor(6)  // reach steady state
+    const baselineP50 = sim.latest().instances[saturated.webInst]!.p50Ms
+    // Now apply a 200ms latency-add fault
+    sim.engine.setFault('server', Object.values(saturated.doc.servers)[0]!.id, { kind: 'latency-add', ms: 200 })
+    sim.stepFor(4)  // let the fault take effect and metrics converge
+    const faultedP50 = sim.latest().instances[saturated.webInst]!.p50Ms
+    // The fault must ADD to existing NIC latency, not replace it
+    // (regression: the bug would cause p50 to drop if only latency-add was active)
+    expect(faultedP50).toBeGreaterThan(baselineP50)
+    expect(faultedP50 - baselineP50).toBeGreaterThanOrEqual(150)  // ~200ms added (with EMA lag/variance)
+    sim.engine.stop()
+  })
+
+  it('latency-add of 200ms raises p50Ms by ~200ms on the faulted server only', () => {
+    // Two-server world: one saturated NIC (1 Mbps), one fast (10 Gbps)
+    // Apply latency-add only to one; verify it affects only that server's p50
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r
+    doc.azs[az.id] = az
+
+    // Two servers, one saturated, one fast
+    const serverSaturated = createServer(az.id, getPreset('dedicated-8')!)
+    serverSaturated.specs = { ...serverSaturated.specs, nicMbps: 1 }  // saturated
+    const serverFast = createServer(az.id, getPreset('dedicated-8')!)
+    serverFast.specs = { ...serverFast.specs, nicMbps: 10_000 }  // ample
+    doc.servers[serverSaturated.id] = serverSaturated
+    doc.servers[serverFast.id] = serverFast
+
+    const webSat = publicBlueprint('web-sat', 0)
+    const webFast = publicBlueprint('web-fast', 1)
+    doc.blueprints[webSat.id] = webSat
+    doc.blueprints[webFast.id] = webFast
+
+    const plSat = createPlacement(webSat.id, serverSaturated.id)
+    const plFast = createPlacement(webFast.id, serverFast.id)
+    doc.placements[plSat.id] = plSat
+    doc.placements[plFast.id] = plFast
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 300
+    doc.populations[pop.id] = pop
+
+    const compiled = compileWorld(doc)
+    const sim = drive(doc, compiled)
+    sim.stepFor(6)  // steady state
+    const webSatInstId = instanceId(plSat.id, 0)
+    const webFastInstId = instanceId(plFast.id, 0)
+    const baselineSatP50 = sim.latest().instances[webSatInstId]!.p50Ms
+    const baselineFastP50 = sim.latest().instances[webFastInstId]!.p50Ms
+
+    // Apply latency-add ONLY to the saturated server
+    sim.engine.setFault('server', serverSaturated.id, { kind: 'latency-add', ms: 200 })
+    sim.stepFor(4)  // let the fault take effect and metrics converge
+    const faultedSatP50 = sim.latest().instances[webSatInstId]!.p50Ms
+    const faultedFastP50 = sim.latest().instances[webFastInstId]!.p50Ms
+
+    // Saturated server's p50 must rise by ~150ms+ (accounting for EMA lag and variance)
+    expect(faultedSatP50 - baselineSatP50).toBeGreaterThanOrEqual(150)
+    // Fast server's p50 must stay relatively stable (small variance allowed for EMA)
+    // Verify it's not growing by 150+ like the faulted server
+    expect(faultedFastP50 - baselineFastP50).toBeLessThan(100)
+    sim.engine.stop()
+  })
 })
 
 describe('world engine integration', () => {
