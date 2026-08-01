@@ -889,20 +889,30 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
 
     const instancesByServer = s.instancesByServer
     const serviceRateByInstance: Record<InstanceId, number> = {}
+    // FEAT-001 perf gate: every fault subsystem must short-circuit to ~0 ms/step when inactive.
+    // Computed once per tick (not per server) so the common zero-fault path pays a single
+    // Map.size check instead of 3 Map.get()s per server per step.
+    const anyFaultsActive = s.faults.active.size > 0
     for (const server of Object.values(doc.servers)) {
       const resident = instancesByServer.get(server.id) ?? []
-      // FEAT-001: resolve any active server/az/region-scoped fault for this server once per step.
-      const faultAzId = s.azOfServer.get(server.id)
-      const faultRegionId = faultAzId ? s.regionOfAz.get(faultAzId) : undefined
-      const activeFaults = faultAzId && faultRegionId
-        ? faultsForServer(server.id, faultAzId, faultRegionId, s.faults)
-        : []
-      const brownout = activeFaults.find(
-        (f): f is Extract<FaultSpec, { kind: 'cpu-brownout' }> => f.kind === 'cpu-brownout')
-      const leak = activeFaults.find(
-        (f): f is Extract<FaultSpec, { kind: 'memory-leak' }> => f.kind === 'memory-leak')
-      if (leak) {
-        stepLeaks(s.faults, resident.map(i => ({ instanceId: i.id, mbPerMinute: leak.mbPerMinute })), stepSec)
+      // FEAT-001: resolve any active server/az/region-scoped fault for this server once per step —
+      // skipped entirely when no fault is active anywhere (the common case).
+      let brownout: Extract<FaultSpec, { kind: 'cpu-brownout' }> | undefined
+      let leak: Extract<FaultSpec, { kind: 'memory-leak' }> | undefined
+      if (anyFaultsActive) {
+        const faultAzId = s.azOfServer.get(server.id)
+        const faultRegionId = faultAzId ? s.regionOfAz.get(faultAzId) : undefined
+        const activeFaults = faultAzId && faultRegionId
+          ? faultsForServer(server.id, faultAzId, faultRegionId, s.faults)
+          : []
+        brownout = activeFaults.find(
+          (f): f is Extract<FaultSpec, { kind: 'cpu-brownout' }> => f.kind === 'cpu-brownout')
+        leak = activeFaults.find(
+          (f): f is Extract<FaultSpec, { kind: 'memory-leak' }> => f.kind === 'memory-leak')
+        const activeLeak = leak
+        if (activeLeak) {
+          stepLeaks(s.faults, resident.map(i => ({ instanceId: i.id, mbPerMinute: activeLeak.mbPerMinute })), stepSec)
+        }
       }
       const loads: InstanceLoad[] = resident.map(i => {
         const pf = s.prevFlows[i.id]
