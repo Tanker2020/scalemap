@@ -80,4 +80,30 @@ describe('SimControls', () => {
     render(<SimControls />)
     expect(screen.queryByText(/warming up/)).toBeNull()
   })
+
+  // FEAT-003 Task 20: "running a scenario" IS running the engine — start() already applies
+  // doc.scenario's steps once the engine sees it, so there is no separate run-scenario action to
+  // test here, only the label/progress readout that tells the user what Simulate will do.
+  describe('Scenario integration', () => {
+    it('shows a run-scenario control (relabeled Simulate button) only when doc.scenario exists', () => {
+      const { rerender } = render(<SimControls />)
+      expect(screen.getByText('Simulate')).toBeInTheDocument()
+      expect(screen.queryByText('Run scenario')).toBeNull()
+
+      useWorldStore.getState().setScenario({ id: 's1', label: 'Test scenario', seed: 1, durationMs: 60000, steps: [] })
+      rerender(<SimControls />)
+      expect(screen.queryByText('Simulate')).toBeNull()
+      expect(screen.getByText('Run scenario')).toBeInTheDocument()
+    })
+
+    it('shows the scenario progress chip only while running with a scenario present', () => {
+      useWorldStore.getState().setScenario({ id: 's1', label: 'Test scenario', seed: 1, durationMs: 60000, steps: [] })
+      const { rerender } = render(<SimControls />)
+      expect(screen.queryByTestId('scenario-progress-chip')).toBeNull()
+
+      useSimulationStore.setState({ running: true, latestBatch: { simMs: 30000 } as never })
+      rerender(<SimControls />)
+      expect(screen.getByTestId('scenario-progress-chip')).toHaveTextContent('50%')
+    })
+  })
 })

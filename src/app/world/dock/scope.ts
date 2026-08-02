@@ -59,7 +59,9 @@ export function deriveScope(nav: NavSnapshot, selectedServerId: string | null, d
 // packet library (2026-07-28): 'blueprints' and 'packets' sit next to 'topology' as the two
 // global LIBRARIES — reusable definitions that exist independently of where they run — ahead of
 // the tabs that describe a specific wiring (managed/connections/traffic/routes).
-const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'packets', 'managed', 'connections', 'traffic', 'routes', 'analysis', 'events', 'cost']
+// FEAT-003 Task 20: 'scenario' sits after 'routes' — the scenario timeline is a world-only
+// authoring surface (like routes/traffic), not a per-scope config concern.
+const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'packets', 'managed', 'connections', 'traffic', 'routes', 'scenario', 'analysis', 'events', 'cost']
 const SCOPED_TABS: PanelTab[] = ['config', 'analysis', 'events', 'cost']
 
 export function scopeTabs(scope: DockScope): PanelTab[] {

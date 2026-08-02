@@ -86,6 +86,21 @@ function threeTier(): WorldDoc {
   place(doc, db.id, dbR.id, 'replica')
   // No populations: a single-region world's only population would trip no-failover-region. Shows
   // no live traffic until a population is added (auto-baseline removed 2026-07-15).
+
+  // FEAT-003 Task 20 example scenario: "creeping memory leak" — a bad deploy on api-01 leaks
+  // memory, which by the time it's noticed has tipped into outright request errors (a single
+  // `activeFaults` slot per entity means the second inject-fault REPLACES the first, matching how
+  // an on-call engineer would actually see it: "leak" escalates into "erroring"), then rolled
+  // back. Demonstrates a fault changing kind mid-run and clearing — the kind of scripted, timed
+  // cascade a scenario timeline exists to reproduce deterministically.
+  doc.scenario = {
+    id: 'scn-memory-leak', label: 'Creeping memory leak — api-01', seed: 7, durationMs: 150000,
+    steps: [
+      { atMs: 5000, action: { type: 'inject-fault', scope: 'server', id: api1.id, spec: { kind: 'memory-leak', mbPerMinute: 600 } }, note: 'api-01 starts leaking memory after a bad deploy' },
+      { atMs: 60000, action: { type: 'inject-fault', scope: 'server', id: api1.id, spec: { kind: 'error-inject', errorFraction: 0.15 } }, note: 'heap pressure has tipped requests into errors' },
+      { atMs: 110000, action: { type: 'clear-fault', scope: 'server', id: api1.id }, note: 'rollback deployed — the fault clears' },
+    ],
+  }
   return doc
 }
 
@@ -107,8 +122,10 @@ function multiRegion(): WorldDoc {
   web.dependencies = [dep('d-web-api', { kind: 'blueprint', blueprintId: api.id }, 8080, 'http')]
   api.dependencies = [dep('d-api-db', { kind: 'blueprint', blueprintId: db.id }, 5432, 'db')]
 
+  let usEastRegionId = ''
   for (const catalogId of ['us-east-1', 'eu-west-1']) {
     const r = region(doc, catalogId)
+    if (catalogId === 'us-east-1') usEastRegionId = r.id
     const aza = az(doc, r.id, `${catalogId}a`)
     const azb = az(doc, r.id, `${catalogId}b`)
     const webS = server(doc, aza.id, 'vps-large', `web-${catalogId}`)
@@ -131,6 +148,20 @@ function multiRegion(): WorldDoc {
   const nyc = createPopulation('NYC', 40.7, -74.0); nyc.peakRps = 400; doc.populations[nyc.id] = nyc
   const lon = createPopulation('London', 51.5, -0.1); lon.peakRps = 400; doc.populations[lon.id] = lon
   const sp = createPopulation('São Paulo', -23.5, -46.6); sp.peakRps = 200; doc.populations[sp.id] = sp
+
+  // FEAT-003 Task 20 example scenario: "regional failure" — the natural fit for this world, per
+  // its own TTL-tuned failover story above. us-east-1 goes dark, a retry-storm demand bump lands
+  // as clients fail over, then the region recovers. `doc.scenario` is inert data — it does not
+  // participate in compileWorld/runAnalysis, so this leaves the world's zero-findings contract
+  // (exampleWorlds.test.ts) untouched.
+  doc.scenario = {
+    id: 'scn-regional-failure', label: 'Regional failure — us-east-1 goes down', seed: 42, durationMs: 120000,
+    steps: [
+      { atMs: 10000, action: { type: 'inject-fault', scope: 'region', id: usEastRegionId, spec: { kind: 'down' } }, note: 'us-east-1 goes dark' },
+      { atMs: 15000, action: { type: 'demand-multiplier', factor: 1.4, rampSec: 10 }, note: 'retry storm as clients fail over to eu-west-1' },
+      { atMs: 70000, action: { type: 'clear-fault', scope: 'region', id: usEastRegionId }, note: 'us-east-1 recovers' },
+    ],
+  }
   return doc
 }
 
@@ -178,6 +209,20 @@ function eventDriven(): WorldDoc {
   sp1.runtime = { type: 'container', stackName: 'data', networkNames: ['datanet'], portMappings: [{ host: 5432, container: 5432 }], cpuLimit: null, memLimitMb: null }
   // No populations: a single-region world's only population would trip no-failover-region. Shows
   // no live traffic until a population is added (auto-baseline removed 2026-07-15).
+
+  // FEAT-003 Task 20 example scenario: "Black Friday ramp" — demand climbs in two waves (the
+  // morning ramp, then a flash-sale spike) before falling back to baseline. `demand-multiplier`
+  // scales engine-wide demand generation regardless of whether a population is authored, so this
+  // still exercises the ramp math deterministically even on this population-less world; add a
+  // population before running it live to see the traffic itself move.
+  doc.scenario = {
+    id: 'scn-black-friday', label: 'Black Friday ramp', seed: 99, durationMs: 180000,
+    steps: [
+      { atMs: 10000, action: { type: 'demand-multiplier', factor: 3, rampSec: 30 }, note: 'Black Friday traffic ramps in' },
+      { atMs: 90000, action: { type: 'demand-multiplier', factor: 5, rampSec: 20 }, note: 'flash-sale spike' },
+      { atMs: 150000, action: { type: 'demand-multiplier', factor: 1, rampSec: 30 }, note: 'traffic returns to normal after the sale' },
+    ],
+  }
   return doc
 }
 

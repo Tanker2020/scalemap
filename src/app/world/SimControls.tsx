@@ -4,7 +4,7 @@
 // (Task 18 adds a `degraded` amber chip, shown when the facade halved its step rate.)
 import type { CSSProperties } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
-import { useSimulationStore, selectWarmingUp } from '../store/simulation.store'
+import { useSimulationStore, selectWarmingUp, selectScenarioProgressMs } from '../store/simulation.store'
 import { useWorldStore } from '../store/world.store'
 import { useCompiledWorld } from './useCompiledWorld'
 
@@ -27,6 +27,10 @@ const warmupChip: CSSProperties = {
   padding: '2px 6px', borderRadius: 3, font: '10px var(--font-mono)',
   color: 'var(--color-text-secondary)', border: '1px solid var(--color-node-border)',
 }
+const scenarioChip: CSSProperties = {
+  padding: '2px 6px', borderRadius: 3, font: '10px var(--font-mono)',
+  color: 'var(--color-warning)', border: '1px solid var(--color-warning)',
+}
 
 export function SimControls() {
   const running = useSimulationStore(s => s.running)
@@ -35,6 +39,7 @@ export function SimControls() {
   const degraded = useSimulationStore(s => s.degraded)
   const warmingUp = useSimulationStore(selectWarmingUp)
   const warmupBatchesRemaining = useSimulationStore(s => s.warmupBatchesRemaining)
+  const scenarioProgressMs = useSimulationStore(selectScenarioProgressMs)
   const start = useSimulationStore(s => s.start)
   const stop = useSimulationStore(s => s.stop)
   const pause = useSimulationStore(s => s.pause)
@@ -60,7 +65,15 @@ export function SimControls() {
       )}
 
       {!running ? (
-        <button className="kit-press" style={btn} onClick={() => start(doc, compiled)}>Simulate</button>
+        // FEAT-003 Task 20: "running a scenario" IS running the engine (the engine's own start()
+        // already sorts+applies doc.scenario's steps by atMs — worldEngine/index.ts's
+        // scenarioSteps/scenarioCursor, wired in Task 18/19) — so this button doesn't need a
+        // sibling "Run scenario" action, just a relabel that tells the user what pressing it will
+        // do once a scenario is authored. A redundant second start control would just be two ways
+        // to call the same start(doc, compiled).
+        <button className="kit-press" style={btn} onClick={() => start(doc, compiled)}>
+          {doc.scenario ? 'Run scenario' : 'Simulate'}
+        </button>
       ) : (
         <>
           {/* Pause/Resume toggles the freeze (run state kept — scrub/inspect); End tears the run
@@ -86,6 +99,14 @@ export function SimControls() {
         <option value={2}>2x</option>
         <option value={4}>4x</option>
       </select>
+      {running && doc.scenario && (
+        <span
+          data-testid="scenario-progress-chip" style={scenarioChip}
+          title={`${doc.scenario.label} — ${(scenarioProgressMs / 1000).toFixed(0)}s / ${(doc.scenario.durationMs / 1000).toFixed(0)}s`}
+        >
+          scenario {Math.min(100, Math.round((scenarioProgressMs / Math.max(1, doc.scenario.durationMs)) * 100))}%
+        </span>
+      )}
       {degraded && (
         <span style={degradedChip} title="Sustained step-cost overrun — the engine halved its tick rate to keep up (see Events)">
           degraded tick

@@ -197,6 +197,15 @@ export const selectLive = (s: SimulationStoreV2): boolean => s.running && !s.pau
 // only, gates nothing but the warm-up badge itself.
 export const selectWarmingUp = (s: SimulationStoreV2): boolean => s.running && s.warmupBatchesRemaining > 0
 
+// FEAT-003 Task 20: how far into the CURRENT run's sim-clock we are, in ms — read by
+// SimControls's progress chip and ScenarioPanel's ruler. "Running a scenario" is simply running
+// the engine with `doc.scenario` present (the engine's own start() already sorts+applies its
+// steps by atMs, worldEngine/index.ts's scenarioSteps/scenarioCursor) — no parallel run loop or
+// separate runScenario()/stopScenario() action needed; the existing start()/stop() already do
+// the right thing once a scenario is authored. This selector exists purely so the UI doesn't
+// reach into latestBatch.simMs directly in two places.
+export const selectScenarioProgressMs = (s: SimulationStoreV2): number => s.latestBatch?.simMs ?? 0
+
 export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
   running: false,
   paused: false,

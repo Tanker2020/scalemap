@@ -30,7 +30,10 @@ import type { ServerId } from '../../lib/world/types'
 // entity, discoverable only through a host already running it; this is the missing library
 // surface, not a revival of the retired generic-blueprint authoring model (the VPS door remains
 // the way a service gets onto a host).
-export type PanelTab = 'topology' | 'blueprints' | 'packets' | 'managed' | 'connections' | 'traffic' | 'routes' | 'analysis' | 'events' | 'cost' | 'config'
+// 2026-08-02 (FEAT-003 Task 20): gained 'scenario' — the scenario-timeline authoring tab
+// (ScenarioPanel.tsx). World scope only, alongside routes/traffic; configuration, not a live
+// chaos surface, so it rides the ambient WorldPanel fieldset normally (disabled while running).
+export type PanelTab = 'topology' | 'blueprints' | 'packets' | 'managed' | 'connections' | 'traffic' | 'routes' | 'scenario' | 'analysis' | 'events' | 'cost' | 'config'
 
 export interface SceneOverlayTarget { kind: 'region' | 'population'; id: string }
 

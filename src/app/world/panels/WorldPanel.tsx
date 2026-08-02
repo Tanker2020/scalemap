@@ -7,6 +7,7 @@ import { ConnectionsPanel } from './ConnectionsPanel'
 import { isEntryBlueprint } from '../../../lib/world/connections'
 import { TrafficPanel } from './TrafficPanel'
 import { RoutesPanel } from './RoutesPanel'
+import { ScenarioPanel } from './ScenarioPanel'
 import { AnalysisTab, unsuppressedCompileFindings } from './AnalysisTab'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { useWorldStore } from '../../store/world.store'
@@ -67,7 +68,7 @@ function SignatureHeader({ glyph, accent, summary, summaryColor }: SignatureHead
 const TAB_LABELS: Record<PanelTab, string> = {
   topology: 'Topology', blueprints: 'Blueprints', packets: 'Packets', managed: 'Managed',
   connections: 'Connections', traffic: 'Traffic',
-  routes: 'Routes', analysis: 'Analysis', events: 'Events', cost: 'Cost', config: 'Config',
+  routes: 'Routes', scenario: 'Scenario', analysis: 'Analysis', events: 'Events', cost: 'Cost', config: 'Config',
 }
 
 export interface WorldPanelProps {
@@ -238,6 +239,13 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
       }
       break
     }
+    case 'scenario': {
+      const nSteps = doc.scenario?.steps.length ?? 0
+      header = doc.scenario
+        ? { glyph: '⏱', accent: 'var(--color-warning)', summary: `${nSteps} step${nSteps === 1 ? '' : 's'} · ${Math.round(doc.scenario.durationMs / 1000)}s` }
+        : { glyph: '⏱', accent: 'var(--color-warning)', summary: 'no scenario yet' }
+      break
+    }
     case 'analysis': {
       const errorCount = scopedFindingsResult.analysis.filter(f => f.severity === 'critical').length
         + scopedFindingsResult.compile.filter(cf => cf.severity === 'error').length
@@ -325,6 +333,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
               <TrafficPanel placeMode={placeMode} onTogglePlaceMode={onTogglePlaceMode} selectedPopulationId={selectedPopulationId} />
             )}
             {tab === 'routes' && <RoutesPanel />}
+            {tab === 'scenario' && <ScenarioPanel />}
             {tab === 'analysis' && <AnalysisTab openSettings={openSettings} />}
             {tab === 'events' && <EventsTab />}
             {tab === 'cost' && <CostTab />}
