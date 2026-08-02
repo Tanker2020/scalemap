@@ -5204,3 +5204,46 @@ Verified RED first (`setFault is not a function` on all 3 fault-specific tests, 
 already passing since it exercises no new code path) before implementing, then GREEN. Full suite
 (144 files / 1724 tests) and `npx tsc --noEmit` both clean after the change — the type error Task 1
 left standing is now resolved by implementation, not silenced.
+
+## Fault Injection Wave 1, Task 14 — partition authoring UI + severed-link visuals (2026-08-01)
+
+Closes out FEAT-002. Three new/changed pieces, all reusing `worldEngine/faults.ts`'s pure
+`impairmentFor` predicate directly (no reimplementation of its forward/backward matching):
+
+- **`src/app/store/simulation.store.ts`**: `partitions: PartitionFault[]` is now real store state
+  (not just the facade delegation Task 12 left in place) — `setPartition`/`healPartition` append/
+  splice it locally, and it's cleared alongside `activeFaults`/`healthOverrides` in `start()`/
+  `stop()`/`resetSession()` since the engine's own `start()` always rebuilds a fresh `FaultState`
+  (`createFaultState()`), which would otherwise silently diverge from a stale store-side list.
+- **`src/app/world/panels/PartitionsSection.tsx`** (new): the partition-authoring form — endpoint-
+  pair scope+id pickers (region/az/server/internet), mode (drop/loss/delay) with its matching
+  numeric field, symmetric toggle, add/heal — mounted as a `RegionConfigTab.tsx` sibling section
+  (NOT gated behind the LB section's `azs.length >= 2` condition, since a partition can name any
+  endpoint in the world, not just this region's AZs). Follows `ChaosControl.tsx`'s edit-lock
+  **inverse** (`CHAOS_LOCKED_TITLE`, enabled only while running) since authoring a partition is a
+  chaos action, not a topology edit.
+- **`ArcsLayer.tsx`/`CrossAzColumn.tsx`/`DatacenterFloor.tsx`**: each resolves its own rendered
+  link's endpoints to `EndpointIds` and calls `impairmentFor`. `ArcsLayer` is the interesting case —
+  `VisualArc` (the frozen render contract) carries only lat/lon, no region id, so a new pure
+  `buildRegionGeoIndex(doc)` reverse-maps `REGION_GEO` (the same table `RegionPins.tsx` uses
+  forward) back to a region id per arc endpoint; a client-population arc endpoint (no known region)
+  simply never matches, mirroring `impairmentFor`'s own `internet`-kind semantics (which never
+  match a concrete id on either side — confirmed by reading every engine call site; an
+  `internet`-endpoint partition currently has no observable effect anywhere, engine OR UI, and this
+  task didn't change that). `DatacenterFloor.tsx`'s new `flowImpairment` helper builds the SAME
+  `EndpointIds` shape the engine's own `buildImpairmentMemo` builds per `CompiledPath` (a managed-
+  service target resolves through its `scope`, no serverId), so the floor never shows an
+  impairment the engine itself wouldn't apply. `drop` renders a broken/severed link (danger-red,
+  frozen wide gap/dash, no new looping animation — same "static gap, not a pulse" treatment
+  reduced-motion already gets elsewhere); `loss` stipples it thinner/dimmer without blocking;
+  `delay` renders normally (the existing latency chip already reflects it off the 1 Hz batch).
+
+Tests: `PartitionsSection.test.tsx` (new, 4), `ArcsLayer.test.ts` (+6, pure `arcImpairment`/
+`buildRegionGeoIndex` coverage — no WebGL needed), `CrossAzColumn.test.tsx` (new, 4),
+`DatacenterFloor.test.tsx` (+2). Full suite (147 files / 1788 tests), `npx tsc --noEmit`, and
+`npm run build` all green; `npm run bench` unaffected (both partition-matching code paths
+early-return with zero work at `partitions.length === 0`, mirroring `buildImpairmentMemo`'s own
+guard). Live `npm run tauri dev` smoke (asymmetric region partition → broken globe arc → dual
+promoted primaries → `split-brain-risk` finding, both themes) was NOT performed in this
+session — no browser/Tauri automation was available — flagged explicitly in the task report
+rather than assumed.
