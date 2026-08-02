@@ -169,12 +169,15 @@ interface SimulationStoreV2 {
   // Alias for setFault(scope, id, down ? { kind: 'down' } : null) — kept so no existing caller
   // breaks. New code should prefer setFault.
   setOutage: (scope: 'server' | 'az' | 'region' | 'managed', id: string, down: boolean) => void
-  // FEAT-002: thin delegations to the engine facade's setPartition/healPartition (added ahead of
-  // this task by Task 12 — see contract-drift.md). Task 14's partition-authoring UI calls these
-  // directly; no store-side bookkeeping (no local active-partitions list) — the facade owns that
-  // state, mirroring setFault/setOutage's own thin-delegation shape above.
+  // FEAT-002: delegations to the engine facade's setPartition/healPartition (added ahead of this
+  // task by Task 12 — see contract-drift.md), PLUS local store-side bookkeeping: partitions are
+  // operator-authored chaos state, not derived metrics, so Task 14's authoring UI (and the three
+  // render files) read this list directly rather than round-tripping through MetricsBatch.
   setPartition: (fault: PartitionFault) => void
   healPartition: (index: number) => void
+  // FEAT-002 Task 14: the authored partition list itself, updated locally by setPartition/
+  // healPartition above (never read back from the engine each tick).
+  partitions: PartitionFault[]
   // `frames` (audit ISSUE-052): the caller's OWN captured frame array, so the resolved batch
   // matches what the caller displays — re-reading the live ring here could disagree with the
   // scrubber's snapshot when a late final frame lands between capture and click.
@@ -208,6 +211,7 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
   eventLogRunId: null,
   eventLogTotal: 0,
   warmupBatchesRemaining: 0,
+  partitions: [],
 
   start: (doc, compiled) => {
     // Re-entry guard (audit ISSUE-048): a second start() while running would overwrite engine
@@ -217,6 +221,7 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
     set({
       running: true, paused: false, latestBatch: null, events: [], degraded: false, scrubIndex: null,
       scrubBatch: null, eventLogRunId: null, eventLogTotal: 0, warmupBatchesRemaining: WARMUP_SECONDS,
+      partitions: [], // the engine's own start() always rebuilds a fresh FaultState (createFaultState())
     })
     pendingEvents = []
     spillBroken = false
@@ -265,6 +270,7 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
     set({
       running: false, paused: false, latestBatch: null, events: [], scrubIndex: null, scrubBatch: null,
       degraded: false, healthOverrides: {}, activeFaults: {}, eventLogRunId: null, eventLogTotal: 0, warmupBatchesRemaining: 0,
+      partitions: [],
     })
   },
   // Pause: halt the engine (which PRESERVES state) and keep the whole session — latestBatch,
@@ -291,6 +297,7 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
     set({
       running: false, paused: false, latestBatch: null, events: [], scrubIndex: null, scrubBatch: null,
       degraded: false, healthOverrides: {}, activeFaults: {}, eventLogRunId: null, eventLogTotal: 0, warmupBatchesRemaining: 0,
+      partitions: [],
     })
   },
   setTimeScale: (scale) => {
@@ -311,9 +318,11 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
   },
   setPartition: (fault) => {
     worldEngine.setPartition(fault)
+    set((s) => ({ partitions: [...s.partitions, fault] }))
   },
   healPartition: (index) => {
     worldEngine.healPartition(index)
+    set((s) => ({ partitions: s.partitions.filter((_, i) => i !== index) }))
   },
   setScrubIndex: (i, frames) => {
     const resolved = frames ?? worldEngine.getReplayFrames()

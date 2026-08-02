@@ -11,6 +11,7 @@ import { SectionHeader, EdgeRow, Segmented, Explainer } from '../ui/kit'
 import { smallBtn, dangerBtn, field, row } from '../panels/panelStyles'
 import { nextWorldId } from '../../../lib/world/factories'
 import { listRoutes } from '../../../lib/nodeConfig'
+import { PartitionsSection } from '../panels/PartitionsSection'
 import type { AvailabilityZone, LbAlgorithm, LbMode, LoadBalancer } from '../../../lib/world/types'
 
 export interface RegionConfigTabProps { regionId: string }
@@ -100,6 +101,12 @@ export function RegionConfigTab({ regionId }: RegionConfigTabProps) {
           Add a second AZ to configure this region's load balancer.
         </div>
       ) : null}
+
+      {/* FEAT-002 Task 14: partition authoring lives alongside the region-scope config, not as
+          a new top-level tab — unlike the LB section above, NOT gated behind the AZ-count
+          conditional (a partition can name any region/az/server/internet endpoint, not just
+          this region's own AZs). */}
+      <PartitionsSection />
     </div>
   )
 }

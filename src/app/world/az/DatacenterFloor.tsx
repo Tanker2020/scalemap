@@ -27,7 +27,11 @@ import { InspectorV2 } from '../InspectorV2'
 import { ChaosControl, isNonFatalFault, NON_FATAL_FAULT_ACCENT } from '../dock/ChaosControl'
 import { useFloorCamera, INTERACTIVE_SEL } from './useFloorCamera'
 import { VIEW_W, VIEW_H, floorOutline, tileOutline, tileCenter, isoBox, type IsoBox } from './iso'
-import type { RackId, Server, ServerId } from '../../../lib/world/types'
+// FEAT-002 Task 14: impairmentFor is a pure predicate (no engine-runtime deps), safe to import
+// directly rather than reimplementing its forward/backward matching by hand.
+import { impairmentFor } from '../../../lib/worldEngine/faults'
+import type { AzId, RackId, RegionId, Server, ServerId, WorldDoc } from '../../../lib/world/types'
+import type { PartitionFault } from '../../../lib/worldEngine/types'
 import './azFloorStyles'
 
 // Motion budget (D1, T8 sweep): the floor has TWO independent top-N-by-magnitude animated
@@ -50,6 +54,30 @@ function byLabelThenId(a: { label: string; id: string }, b: { label: string; id:
   return a.label.localeCompare(b.label) || a.id.localeCompare(b.id)
 }
 
+// FEAT-002 (Task 14): resolve a flow's source/target into the SAME EndpointIds shape the
+// engine's own buildImpairmentMemo (worldEngine/index.ts) builds for a CompiledPath, so the
+// floor's flow traces agree with what the engine actually impairs — a `target` is either another
+// server in this AZ or a managed service (whose scope contributes region/az ids but no serverId,
+// exactly like the engine's own managed-service branch). Pure + exported for unit coverage
+// without mounting the DOM/SVG component.
+export function flowImpairment(
+  doc: WorldDoc, azId: AzId, regionId: RegionId | null, source: ServerId, target: string,
+  partitions: PartitionFault[],
+): { blocked: boolean; lossFraction: number; delayMs: number } {
+  if (partitions.length === 0) return { blocked: false, lossFraction: 0, delayMs: 0 }
+  const fromIds = { serverId: source, azId, regionId: regionId ?? undefined }
+  let toIds: { regionId?: string; azId?: string; serverId?: string }
+  if (doc.servers[target]) {
+    toIds = { serverId: target, azId, regionId: regionId ?? undefined }
+  } else {
+    const ms = doc.managedServices[target]
+    toIds = ms?.scope.kind === 'region' ? { regionId: ms.scope.regionId }
+      : ms?.scope.kind === 'az' ? { azId: ms.scope.azId, regionId: doc.azs[ms.scope.azId]?.regionId }
+        : {}
+  }
+  return impairmentFor(fromIds, toIds, partitions)
+}
+
 const btnStyle: CSSProperties = {
   font: '10px var(--font-mono)', background: '#10141bee', border: '1px solid var(--az-hud-dim)',
   color: 'var(--az-hud)', borderRadius: 5, padding: '4px 12px', cursor: 'pointer',
@@ -68,6 +96,7 @@ export function DatacenterFloor() {
   const running = useSimulationStore(s => s.running)
   const healthOverrides = useSimulationStore(s => s.healthOverrides)
   const activeFaults = useSimulationStore(s => s.activeFaults)
+  const partitions = useSimulationStore(s => s.partitions)
   // Flow traces + LED blink march only while the sim is actively ticking; a paused/ended/scrubbed
   // run freezes them (the batch stays non-zero, so a rate-only gate would keep marching).
   const live = useSimulationStore(selectLive)
@@ -143,6 +172,18 @@ export function DatacenterFloor() {
     () => (azId ? aggregateFlows(compiled, azId, managedHere) : []),
     [compiled, azId, managedHere],
   )
+
+  // FEAT-002 (Task 14): per-flow partition impairment, keyed identically to the flow's own
+  // `${source}->${target}` testid/key — presentation-only, computed off the store's authored
+  // `partitions` list (never per animation frame).
+  const flowImpairmentByKey = useMemo(() => {
+    const m = new Map<string, { blocked: boolean; lossFraction: number; delayMs: number }>()
+    if (!azId || partitions.length === 0) return m
+    for (const f of flows) {
+      m.set(`${f.source}->${f.target}`, flowImpairment(doc, azId, regionId, f.source, f.target, partitions))
+    }
+    return m
+  }, [doc, azId, regionId, flows, partitions])
 
   // Internet ingress (user request 2026-07-12: "which server is receiving traffic from
   // outside?"): one edge per server hosting a public-port blueprint, drawn from the ISP box
@@ -336,7 +377,8 @@ export function DatacenterFloor() {
     const to = anchorFor(f.target)
     if (!from || !to) continue
     if (from.x === to.x && from.y === to.y) continue   // same-cabinet pair — no line, no chip
-    const text = f.blocked > 0 ? `✕ ${f.reason}` : `${f.total} dep${f.total > 1 ? 's' : ''}`
+    const partitioned = flowImpairmentByKey.get(`${f.source}->${f.target}`)?.blocked ?? false
+    const text = f.blocked > 0 ? `✕ ${f.reason}` : partitioned ? '✕ partitioned' : `${f.total} dep${f.total > 1 ? 's' : ''}`
     const { w, h } = estimateLabelSize(text)
     labelSpecs.push({ id: `dep:${f.source}->${f.target}`, x: (from.x + to.x) / 2 - w / 2, y: (from.y + to.y) / 2 - h / 2, w, h })
   }
@@ -417,7 +459,11 @@ export function DatacenterFloor() {
             )}
 
             {/* Flow traces — top 5 by source rps animate (dash speed ∝ rate); blocked flows are
-                always static red dash + reason (never shimmer a refused path). */}
+                always static red dash + reason (never shimmer a refused path). FEAT-002 (Task
+                14): a `drop` partition on this source->target link renders the SAME static
+                red-dash treatment as a firewall block (both mean "can't get through") but is
+                marked `data-partitioned` so it's distinguishable in tests/inspection; a `loss`
+                partition stipples a still-open link with a tighter dash, no color change. */}
             {flows.map(f => {
               const key = `${f.source}->${f.target}`
               const from = anchorFor(f.source)
@@ -425,7 +471,10 @@ export function DatacenterFloor() {
               if (!from || !to) return null
               // Both endpoints racked in the same cabinet resolve to one anchor — no line to draw.
               if (from.x === to.x && from.y === to.y) return null
-              const blocked = f.blocked > 0
+              const impairment = flowImpairmentByKey.get(key)
+              const partitioned = impairment?.blocked ?? false
+              const lossy = !partitioned && (impairment?.lossFraction ?? 0) > 0
+              const blocked = f.blocked > 0 || partitioned
               const rate = animatedKeys.get(key)
               const animated = !blocked && rate !== undefined
               const dur = animated ? (0.5 + (1 - (rate as number) / maxAnimatedRate) * 1.1).toFixed(2) : undefined
@@ -435,14 +484,15 @@ export function DatacenterFloor() {
                   key={key}
                   data-testid={`flow-${key}`}
                   data-animated={animated ? 'true' : 'false'}
+                  data-partitioned={partitioned ? 'true' : 'false'}
                   d={d}
                   fill="none"
                   stroke={blocked ? 'var(--color-danger)' : 'var(--color-accent)'}
                   strokeWidth={blocked ? 2 : 1.8}
-                  strokeDasharray={blocked ? '5 4' : '7 8'}
+                  strokeDasharray={blocked ? '5 4' : lossy ? '3 6' : '7 8'}
                   className={animated ? 'az-trace-animated' : undefined}
                   style={animated ? { animationDuration: `${dur}s` } : undefined}
-                  opacity={blocked ? 0.85 : 0.75}
+                  opacity={blocked ? 0.85 : lossy ? 0.5 : 0.75}
                 />
               )
             })}
@@ -661,7 +711,8 @@ export function DatacenterFloor() {
             const key = `${f.source}->${f.target}`
             const r = placedLabels.get(`dep:${key}`)
             if (!r) return null
-            const blocked = f.blocked > 0
+            const partitioned = flowImpairmentByKey.get(key)?.blocked ?? false
+            const blocked = f.blocked > 0 || partitioned
             return (
               <div
                 key={`lbl-${key}`}
@@ -671,7 +722,7 @@ export function DatacenterFloor() {
                   borderColor: blocked ? undefined : '#2dd4bf3a',
                 }}
               >
-                {blocked ? `✕ ${f.reason}` : `${f.total} dep${f.total > 1 ? 's' : ''}`}
+                {f.blocked > 0 ? `✕ ${f.reason}` : partitioned ? '✕ partitioned' : `${f.total} dep${f.total > 1 ? 's' : ''}`}
               </div>
             )
           })}

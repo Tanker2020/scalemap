@@ -450,4 +450,58 @@ describe('DatacenterFloor — lines survive racking (2026-07-12 follow-up)', () 
     expect(screen.getByTestId(`appliance-${msId}`).getAttribute('data-managed-rps')).toBe('0')
     expect(screen.queryByText(/420 rps/)).toBeNull()
   })
+
+  // FEAT-002 Task 14: a server-scoped partition dashes red the flow trace between its two
+  // endpoints (mirrors the firewall-blocked treatment, marked with data-partitioned so the two
+  // are distinguishable).
+  it('dashes red for a partitioned flow trace (drop mode)', () => {
+    const { azId } = seedAz()
+    const api = useWorldStore.getState().addBlueprint('api')
+    const db = useWorldStore.getState().addBlueprint('db')
+    useWorldStore.getState().updateBlueprint(api, {
+      dependencies: [{ id: 'dep-1', target: { kind: 'blueprint', blueprintId: db }, port: 8080, protocol: 'http', packetTemplateId: null }],
+    })
+    const serverA = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const serverB = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useWorldStore.getState().addPlacement(api, serverA)
+    useWorldStore.getState().addPlacement(db, serverB)
+
+    const { rerender } = render(<DatacenterFloor />)
+    const key = `${serverA}->${serverB}`
+    let trace = screen.getByTestId(`flow-${key}`)
+    expect(trace.getAttribute('data-partitioned')).toBe('false')
+    expect(trace).toHaveAttribute('stroke', 'var(--color-accent)')
+
+    useSimulationStore.setState({
+      partitions: [{ from: { kind: 'server', id: serverA }, to: { kind: 'server', id: serverB }, mode: 'drop', symmetric: true }],
+    })
+    rerender(<DatacenterFloor />)
+    trace = screen.getByTestId(`flow-${key}`)
+    expect(trace.getAttribute('data-partitioned')).toBe('true')
+    expect(trace).toHaveAttribute('stroke', 'var(--color-danger)')
+    expect(trace).toHaveAttribute('stroke-dasharray', '5 4')
+    expect(trace.getAttribute('data-animated')).toBe('false')
+  })
+
+  it('stipples (not fully severed) for a loss-mode partition', () => {
+    const { azId } = seedAz()
+    const api = useWorldStore.getState().addBlueprint('api')
+    const db = useWorldStore.getState().addBlueprint('db')
+    useWorldStore.getState().updateBlueprint(api, {
+      dependencies: [{ id: 'dep-1', target: { kind: 'blueprint', blueprintId: db }, port: 8080, protocol: 'http', packetTemplateId: null }],
+    })
+    const serverA = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const serverB = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useWorldStore.getState().addPlacement(api, serverA)
+    useWorldStore.getState().addPlacement(db, serverB)
+    useSimulationStore.setState({
+      partitions: [{ from: { kind: 'server', id: serverA }, to: { kind: 'server', id: serverB }, mode: 'loss', lossFraction: 0.5, symmetric: true }],
+    })
+
+    render(<DatacenterFloor />)
+    const trace = screen.getByTestId(`flow-${serverA}->${serverB}`)
+    expect(trace.getAttribute('data-partitioned')).toBe('false')
+    expect(trace).toHaveAttribute('stroke', 'var(--color-accent)')
+    expect(trace).toHaveAttribute('stroke-dasharray', '3 6')
+  })
 })
