@@ -50,7 +50,8 @@ import {
 } from './metrics'
 import { createEventRing, mkEvent, type EventRing } from './events'
 import {
-  createFaultState, setFault as setFaultPure, faultsForServer, stepLeaks, impairmentFor, type FaultState,
+  createFaultState, setFault as setFaultPure, faultsForServer, stepLeaks, impairmentFor,
+  addPartition, removePartition, type FaultState,
 } from './faults'
 import { createReplayBuffer, createTracer, type ReplayBuffer, type Tracer } from './replay'
 import { REGION_GEO as REGION_GEO_LOCAL } from '../world/regionGeo'
@@ -668,9 +669,31 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // recovered after restore — the post-Polish-2 bug).
     const probeOfScope = (scope: OutageScope, id: string): HealthState =>
       hasOutage(s.failover, scope, id) ? 'down' : (s.probePrev.get(id) ?? 'healthy')
+    // FEAT-002 Task 12: DIRECTIONAL region-pair health checks — the split-brain enabler. An
+    // asymmetric partition can make region B's probe of region A fail while region A's probe of
+    // B still succeeds; a single global per-scope health value (the entries below) can't express
+    // that, so for every ordered (observer, target) region pair we ALSO probe "is the TARGET
+    // reachable FROM the observer" via impairmentFor, composing a distinct scope id per pair so
+    // runHealthChecks' consecutive-failure/success debounce tracks each direction independently
+    // (runHealthChecks itself is untouched — it just consumes whatever health value a scope is
+    // handed). Direction convention (verified against impairmentFor's from/to matching): an
+    // observer sees a target as down iff the TARGET->OBSERVER leg is impaired — i.e. call
+    // impairmentFor(fromIds=target, toIds=observer) — since a health check's "did I get a
+    // response back" signal depends on the response leg (target->observer), not the request leg.
+    const regionIds = Object.values(doc.regions).map(r => r.id)
+    const regionPairScopeId = (observerId: RegionId, targetId: RegionId): string => `region-pair:${observerId}->${targetId}`
+    const regionPairScopes = s.faults.partitions.length === 0 ? [] : regionIds.flatMap(observerId =>
+      regionIds.filter(targetId => targetId !== observerId).map(targetId => {
+        const imp = impairmentFor({ regionId: targetId }, { regionId: observerId }, s.faults.partitions)
+        const baseHealth = probeOfScope('region', targetId)
+        const health: HealthState = imp.blocked ? 'down' : baseHealth
+        return { id: regionPairScopeId(observerId, targetId), health }
+      }),
+    )
     const scopes = [
       ...Object.values(doc.regions).map(r => ({ id: r.id, health: probeOfScope('region', r.id) })),
       ...Object.values(doc.azs).map(a => ({ id: a.id, health: probeOfScope('az', a.id) })),
+      ...regionPairScopes,
     ]
     const checkResults = runHealthChecks(s.routing, doc.routing, simMs, scopes)
     const checkFailedById = new Map(checkResults.map(c => [c.id, c.checkFailed]))
@@ -678,6 +701,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       if (c.checkFailed && !s.checkFailedPrev.get(c.id)) emit('health_check_failed', 'warning', `health check failed for ${c.id}`, [c.id], simMs)
       s.checkFailedPrev.set(c.id, c.checkFailed)
     }
+    // "Does observerId currently believe targetId is unreachable?" — falls back to targetId's own
+    // (non-directional) checkFailed when there's no active partition (byte-identical to today's
+    // global behavior in the common no-partition case).
+    const regionSeesRegionDown = (observerId: RegionId, targetId: RegionId): boolean =>
+      checkFailedById.get(regionPairScopeId(observerId, targetId)) ?? checkFailedById.get(targetId) ?? false
 
     // ── 3. routing: resolve + build entry demand ──
     const populationRoutes: RoutingSnapshot['populationRoutes'] = []
@@ -1280,6 +1308,43 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     for (const e of failbackPromotions(s.failover, compiled, doc, healthOfInstance, simMs)) emitEvent(e)
     const downInstances = Object.values(compiled.instances).filter(i => healthOfInstance(i.id) === 'down').map(i => i.id)
     for (const e of promoteReplicas(s.failover, compiled, doc, downInstances, simMs, healthOfInstance)) emitEvent(e)
+
+    // FEAT-002 Task 12: cross-region split-brain. promoteReplicas (failover.ts) only ever picks a
+    // sibling replica in the SAME region as the down primary (spec decision 7's same-region HA
+    // model) — a replica placed in a DIFFERENT region than every authored primary of its
+    // blueprint is structurally invisible to it. This is the ONLY path such a replica can ever
+    // take over: if its OWN region cannot (directionally) reach ANY region hosting an authored
+    // primary for its blueprint, it unilaterally promotes itself — the textbook split-brain
+    // failure mode, since the primary's own region (still able to reach itself) never demotes it.
+    // Deliberately independent of promoteReplicas' same-region sibling selection above — it does
+    // not touch that logic or its semantics, only adds a second, narrower promotion path for the
+    // case that logic can never reach.
+    for (const inst of Object.values(compiled.instances)) {
+      if (inst.role !== 'replica') continue
+      const crossRegionPrimaries = Object.values(compiled.instances).filter(
+        p => p.role === 'primary' && p.blueprintId === inst.blueprintId && p.regionId !== inst.regionId,
+      )
+      if (crossRegionPrimaries.length === 0) continue   // an ordinary same-region cluster — promoteReplicas already owns this
+      const isolated = crossRegionPrimaries.every(p => regionSeesRegionDown(inst.regionId, p.regionId))
+      const alreadyPromoted = s.failover.promotedAt.has(inst.placementId)
+      if (isolated && !alreadyPromoted) {
+        s.failover.promotedAt.set(inst.placementId, simMs)
+        const bpName = doc.blueprints[inst.blueprintId]?.name ?? inst.blueprintId
+        emitEvent({
+          id: `split-brain-promote-${inst.id}-${simMs}`, simMs, kind: 'replica_promoted', severity: 'critical',
+          message: `${bpName} replica ${inst.id} unilaterally promoted — its region lost reachability to every primary (partition isolation)`,
+          affected: [inst.id, ...crossRegionPrimaries.map(p => p.id)],
+        })
+      } else if (!isolated && alreadyPromoted) {
+        s.failover.promotedAt.delete(inst.placementId)
+        const bpName = doc.blueprints[inst.blueprintId]?.name ?? inst.blueprintId
+        emitEvent({
+          id: `split-brain-failback-${inst.id}-${simMs}`, simMs, kind: 'primary_failback', severity: 'info',
+          message: `${bpName} reachability restored — ${inst.id} failed back from its isolation promotion`,
+          affected: [inst.id, ...crossRegionPrimaries.map(p => p.id)],
+        })
+      }
+    }
     // Phase 5.4: a multi-AZ managed DB promotes its standby and clears its own SIMULATED outage
     // once the failover window elapses; a single-AZ one stays down until its AZ recovers, and a
     // manual operator outage stays down until explicitly resumed (audit ISSUE-008).
@@ -1708,6 +1773,15 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     setOutage(scope, id, down) {
       // Thin alias (contract-drift.md) — new callers should prefer setFault directly.
       api.setFault(scope, id, down ? { kind: 'down' } : null)
+    },
+    setPartition(fault) {
+      if (!state) return
+      emitEvent(addPartition(state.faults, fault, state.clock.simMs))
+    },
+    healPartition(index) {
+      if (!state) return
+      const e = removePartition(state.faults, index, state.clock.simMs)
+      if (e) emitEvent(e)
     },
     attachRenderer(scope, onFrame) {
       if (!state) return () => {}

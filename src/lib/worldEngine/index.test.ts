@@ -2470,3 +2470,94 @@ describe('FEAT-002 impairment memo (Task 10)', () => {
     expect(entry).toEqual({ blocked: true, lossFraction: 0, delayMs: 0 })
   })
 })
+
+// ─── FEAT-002 (Task 12): directional health checks — the split-brain enabler ─────────────────
+// promoteReplicas (failover.ts) only ever promotes a sibling replica in the SAME region as the
+// down primary (spec decision 7's same-region HA model) — it structurally cannot reach a
+// cross-region standby. So a genuine cross-region primary/replica pair (primary in region A,
+// standby replica in region B) can only ever "split" via a SEPARATE mechanism: a replica whose
+// own region loses reachability (per the new directional health check) to every region hosting
+// an authored primary of its blueprint unilaterally self-promotes — textbook split-brain, since
+// the primary's own region, still reachable from itself, has no reason to step down.
+describe('FEAT-002 Task 12: directional health / split-brain', () => {
+  function crossRegionReplicaFixture() {
+    const doc = createWorld()
+    const regionA = createRegion('us-east-1')
+    const regionB = createRegion('eu-west-1')
+    const azA = createAz(regionA.id, 'us-east-1a')
+    const azB = createAz(regionB.id, 'eu-west-1a')
+    doc.regions[regionA.id] = regionA; doc.regions[regionB.id] = regionB
+    doc.azs[azA.id] = azA; doc.azs[azB.id] = azB
+    const sA = createServer(azA.id, getPreset('dedicated-8')!)
+    const sB = createServer(azB.id, getPreset('dedicated-8')!)
+    doc.servers[sA.id] = sA; doc.servers[sB.id] = sB
+
+    const db = createBlueprint('db', 0)
+    db.kind = 'db-sql'
+    db.dbConfig = { engine: 'sql', storageGb: 50 }
+    doc.blueprints[db.id] = db
+
+    const primaryPl = createPlacement(db.id, sA.id)                        // authored primary, region A
+    const replicaPl = createPlacement(db.id, sB.id); replicaPl.role = 'replica'  // cross-region standby, region B
+    doc.placements[primaryPl.id] = primaryPl
+    doc.placements[replicaPl.id] = replicaPl
+
+    const compiled = compileWorld(doc)
+    return {
+      doc, compiled, regionA: regionA.id, regionB: regionB.id,
+      primaryIid: instanceId(primaryPl.id, 0), replicaIid: instanceId(replicaPl.id, 0),
+    }
+  }
+
+  it('THE SPLIT-BRAIN TEST: an asymmetric partition isolates the cross-region replica, which self-promotes while the original primary keeps serving', () => {
+    const f = crossRegionReplicaFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(2)   // settle before the partition lands
+
+    // region A -> region B, drop, asymmetric: per the direction convention (an observer sees a
+    // target as down iff the TARGET->OBSERVER leg is impaired), this means region B's probe of
+    // region A fails (A->B is the blocked leg) while region A's probe of B still succeeds.
+    sim.engine.setPartition!({ from: { kind: 'region', id: f.regionA }, to: { kind: 'region', id: f.regionB }, mode: 'drop', symmetric: false })
+    sim.stepFor(60)  // past the health-check interval + consecutive-failure debounce
+
+    const promotions = sim.events.filter(e => e.kind === 'replica_promoted' && e.affected.includes(f.replicaIid))
+    expect(promotions).toHaveLength(1)
+
+    // Both instances read healthy: the original primary was never actually touched (region A can
+    // still reach itself and region B fine), and the promoted replica has no error/pressure signal
+    // of its own — the ONLY thing that changed is which side believes it holds the primary role.
+    const b = sim.latest()
+    expect(b.instances[f.primaryIid]?.health).toBe('healthy')
+    expect(b.instances[f.replicaIid]?.health).toBe('healthy')
+    sim.engine.stop()
+  })
+
+  it('does NOT self-promote a cross-region replica without the directional-health mechanism (regression guard)', () => {
+    // Same fixture and same partition, but asserting the NEGATIVE: if directional health were
+    // reverted to the non-directional fallback (target's own raw health, which stays healthy
+    // throughout since region A itself never degrades), no promotion fires. This is the "for the
+    // right reason" guard — it documents what the mechanism must NOT do in the absence of a
+    // partition, so a future regression that silently drops directionality is caught here too.
+    const f = crossRegionReplicaFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(2)
+    sim.stepFor(60)   // no partition ever added
+    const promotions = sim.events.filter(e => e.kind === 'replica_promoted')
+    expect(promotions).toHaveLength(0)
+    sim.engine.stop()
+  })
+
+  it('healing the partition restores reachability and fails the isolated replica back', () => {
+    const f = crossRegionReplicaFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(2)
+    sim.engine.setPartition!({ from: { kind: 'region', id: f.regionA }, to: { kind: 'region', id: f.regionB }, mode: 'drop', symmetric: false })
+    sim.stepFor(60)
+    expect(sim.events.filter(e => e.kind === 'replica_promoted' && e.affected.includes(f.replicaIid))).toHaveLength(1)
+
+    sim.engine.healPartition!(0)
+    sim.stepFor(60)  // past the healthy-threshold's consecutive-success debounce
+    expect(sim.events.some(e => e.kind === 'primary_failback' && e.affected.includes(f.replicaIid))).toBe(true)
+    sim.engine.stop()
+  })
+})

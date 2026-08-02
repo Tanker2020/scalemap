@@ -79,6 +79,15 @@ export function resolveRegion(
 // failures (as before); RISING needs `healthCheckHealthyThreshold` (default 2) consecutive
 // successes before the failure counter clears. A single healthy probe no longer wipes the
 // count, so a scope flapping pass/fail RATCHETS toward failed instead of never tripping.
+//
+// FEAT-002 Task 12 (directional health / split-brain): this function needed NO changes to
+// support per-direction health. `scopes[].id` is just a debounce key — index.ts now also feeds
+// it composite ids of the shape `region-pair:${observerRegionId}->${targetRegionId}` (one entry
+// per ordered region pair, alongside the existing plain-id region/AZ entries), each carrying a
+// health value that's already been forced to 'down' by the caller when `impairmentFor` reports
+// the target unreachable FROM that observer. Because debounce state is keyed by `id`, each
+// (observer, target) direction gets its own independent consecutive-failure counter for free —
+// no signature or logic change here.
 export function runHealthChecks(
   state: RoutingState,
   config: RoutingConfig,

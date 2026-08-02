@@ -318,6 +318,15 @@ export interface WorldEngineApi {
   // Alias for setFault(scope, id, down ? { kind: 'down' } : null) — kept so no existing caller
   // breaks. New code should prefer setFault.
   setOutage: (scope: FaultScope, id: string, down: boolean) => void
+  // Network partitions (FEAT-002). Minimal facade surface added ahead of Task 13 (which owns the
+  // full partition-authoring UI wiring) so Task 12's directional-health test can drive a real
+  // partition through the engine instead of poking at internal state. Task 13 should extend this
+  // surface (e.g. list/inspect active partitions), not duplicate it.
+  setPartition: (fault: PartitionFault) => void
+  // Removes the partition at `index` (its position in the active-partitions list, in insertion
+  // order) — a no-op if out of range. Index-based rather than by-value because PartitionFault has
+  // no stable id of its own.
+  healPartition: (index: number) => void
   attachRenderer: (scope: RenderScope, onFrame: (p: FramePayload) => void) => DetachFn
   // Replay: scope-aware 1 Hz snapshots, ring buffer of 300 (5 min).
   getReplayFrames: () => ReplayFrame[]
