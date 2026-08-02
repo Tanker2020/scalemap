@@ -130,7 +130,7 @@ shows the finding) fail silently.
 (the `worldEngine/types.ts`, new `metrics.ts` row, `index.ts`, and the D2 `structural.ts` rules-table
 entries all updated to describe the `effectiveRole` plumbing and why it was needed).
 
-**New commit:** `1e7c2bd` (see `git log` — fix commit on top of the original `045ba57`).
+**New commit:** `a65530b` (fix commit on top of the original `045ba57`).
 Confirmed `git rev-parse --abbrev-ref HEAD` prints `worktree-fault-injection-wave1`.
 
 Status: **DONE** (fix-round complete, no further open findings).
