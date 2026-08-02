@@ -1,6 +1,7 @@
 // World document entities (normalized, id-keyed) + compiled output types.
 // Spec: docs/superpowers/specs/2026-07-08-world-model-multiscale-simulation-design.md §3
 import type { PacketMixEntry, PacketRegistry } from '../nodeConfig'
+import type { FaultScope, FaultSpec, PartitionFault } from '../worldEngine/types'
 
 export type RegionId = string
 export type AzId = string
@@ -35,7 +36,7 @@ export interface RoutingConfig {
 // the analysis rules and any future engine consumption share one value.
 export const DEFAULT_HEALTH_CHECK_TIMEOUT_MS = 5_000
 
-export type DiurnalPattern = 'flat' | 'day-night'
+export type DiurnalPattern = 'flat' | 'day-night' | 'custom'
 
 // A single entry of a population's request mix (Phase 2 route system): the fraction (relative
 // weight) of this population's rps that belongs to a given route. `routeId` is a route's id (an
@@ -61,6 +62,9 @@ export interface ClientPopulation {
   // Burst intensity knob (audit ISSUE-017): scales the engine's flash-crowd burst probability
   // for this population. Optional + additive: absent ⇒ 1 (default bursts); 0 disables bursts.
   burstiness?: number
+  // Custom diurnal curve (FEAT-003). Defined only when diurnal === 'custom'. Array of
+  // (atFraction, multiplier) pairs linearly interpolated. Optional + additive.
+  curve?: { atFraction: number; multiplier: number }[]
 }
 
 export type RegionRole = 'active' | 'passive'
@@ -357,6 +361,30 @@ export interface LoadBalancer {
   azWeights?: Record<AzId, number>
 }
 
+// ─── Scenario Timeline (FEAT-003) ────────────────────────────────────────────
+
+export type ScenarioAction =
+  | { type: 'inject-fault'; scope: FaultScope; id: string; spec: FaultSpec }
+  | { type: 'clear-fault'; scope: FaultScope; id: string }
+  | { type: 'partition'; fault: PartitionFault }
+  | { type: 'heal-partition'; index: number }
+  | { type: 'demand-multiplier'; factor: number; rampSec: number }
+  | { type: 'set-population-rps'; populationId: string; peakRps: number; rampSec: number }
+
+export interface ScenarioStep {
+  atMs: number
+  action: ScenarioAction
+  note?: string
+}
+
+export interface Scenario {
+  id: string
+  label: string
+  seed: number
+  durationMs: number
+  steps: ScenarioStep[]
+}
+
 export interface WorldDoc {
   routing: RoutingConfig
   populations: Record<PopulationId, ClientPopulation>
@@ -378,6 +406,9 @@ export interface WorldDoc {
   // user-dragged OVERRIDES — a node absent here falls back to the auto tree-layout. Additive/
   // normalized-on-load (defaulted to {}); "auto-arrange" clears it back to pure auto-layout.
   connectionLayout: Record<string, NodeLayout>
+  // Scenario timeline (FEAT-003). Optional; absent ⇒ no scenario defined. Drives the scenario
+  // timeline UI and deterministic action replay during simulation.
+  scenario?: Scenario
 }
 
 export interface NodeLayout { x: number; y: number }
