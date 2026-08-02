@@ -3,7 +3,7 @@
 // additive-optional extension only. Governs every module in src/lib/worldEngine/.
 import type {
   InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId, ManagedServiceId,
-  CompiledWorld, WorldDoc,
+  CompiledWorld, WorldDoc, PlacementRole,
 } from '../world/types'
 
 // ─── Time ────────────────────────────────────────────────────────────────────
@@ -47,6 +47,17 @@ export interface InstanceMetrics {
   // `poolCheckoutFor`), never re-derived, so the two can never disagree about which instances are
   // pool-saturated.
   checkoutWaitMs?: number
+  // Additive-optional (contract-drift, FEAT-002/Wave-1 Task 13 fix): the LIVE promotion-aware
+  // role — `failover.ts`'s `effectiveRoleResolver(compiled, promotedAt)`, memoized per-step as
+  // `index.ts`'s `s.roleResolver` — as opposed to the STATIC authored `ServiceInstance.role` on
+  // the compiled world, which never changes at runtime. A partition-induced promotion only
+  // mutates `state.failover.promotedAt`; without this field, nothing published to the metrics
+  // batch could ever see a live promotion, so `analysis/rules/structural.ts`'s `split-brain-risk`
+  // rule (which reads `lastBatch.instances[id].effectiveRole ?? compiled.instances[id].role`)
+  // could only ever fire on a hand-authored double-primary, never a genuine live split-brain.
+  // Absent ⇒ callers fall back to the compiled role, so every existing direct-`buildBatch`
+  // caller/test is unchanged by omission.
+  effectiveRole?: PlacementRole
 }
 
 export interface ServerMetrics {

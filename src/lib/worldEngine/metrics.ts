@@ -18,7 +18,7 @@ import type { HostStepResult } from './hostScheduler'
 import type { NicState } from './networkRuntime'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, ManagedServiceId,
-  ServiceInstance,
+  ServiceInstance, PlacementRole,
 } from '../world/types'
 
 const EMA_ALPHA = 0.3
@@ -259,6 +259,13 @@ export function buildBatch(
   // straight through to the published batch for the fault-injected analysis rule. Optional: absent
   // ⇒ defaults to 0 in the batch, so every existing direct-buildBatch caller/test is unchanged.
   activeFaultCount?: number,
+  // FEAT-002/Wave-1 Task 13 fix: the SAME memoized effective-role resolver worldEngine/index.ts's
+  // step loop already built for flow routing (`failover.ts`'s `effectiveRoleResolver(compiled,
+  // promotedAt)`, index.ts's `s.roleResolver`) — never re-derived here, so the promoted-role
+  // overlay published to InstanceMetrics.effectiveRole can never disagree with the role the flow
+  // solver actually routed writes to this step. Optional: absent ⇒ InstanceMetrics.effectiveRole
+  // stays undefined and every existing direct-buildBatch caller/test is unchanged by omission.
+  roleOf?: (id: InstanceId) => PlacementRole,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
   const servers: Record<ServerId, ServerMetrics> = {}
@@ -349,6 +356,7 @@ export function buildBatch(
       ramMb: memLimitMb != null ? Math.min(rawRamMb, memLimitMb) : rawRamMb,
       health: starved?.has(inst.id) && baseHealth === 'healthy' ? 'degraded' : baseHealth,
       ...(checkoutWaitMs != null ? { checkoutWaitMs } : {}),
+      ...(roleOf ? { effectiveRole: roleOf(inst.id) } : {}),
     }
   }
 

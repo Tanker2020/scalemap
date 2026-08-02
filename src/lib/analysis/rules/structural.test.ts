@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { scenario, dep } from '../__fixtures__/worlds'
 import { runAnalysis } from '../runAnalysis'
 import type { AnalysisFinding } from '../types'
+import type { MetricsBatch } from '../../worldEngine/types'
 
 const ids = (fs: AnalysisFinding[], ruleId: string) => fs.filter(f => f.ruleId === ruleId)
 const run = (s: ReturnType<typeof scenario>) => runAnalysis(s.doc, s.compile(), null)
@@ -293,6 +294,38 @@ describe('structural: split-brain-risk', () => {
     s.placement(db.id, s.server(a1.id).id)   // primary, region 1
     const p2 = s.placement(db.id, s.server(a2.id).id); p2.role = 'primary'   // primary, region 2 — different cluster key
     expect(ids(run(s), 'split-brain-risk')).toHaveLength(0)
+  })
+
+  // Review fix: the rule must detect a LIVE partition-induced promotion, not just a hand-authored
+  // double-primary. A real promotion never touches the doc/compiled role (failover.ts's
+  // promoteReplicas only mutates the engine's internal promotedAt map) — it surfaces ONLY through
+  // MetricsBatch.instances[id].effectiveRole (metrics.ts's buildBatch, fed by index.ts's memoized
+  // roleResolver). This fixture keeps the AUTHORED roles exactly as a healthy primary+replica pair
+  // (compiled.instances[replica].role === 'replica') and asserts the rule still fires once the
+  // published batch reports the replica as an effective primary — proving the rule reads
+  // lastBatch.effectiveRole, not just the static compiled role.
+  it('fires when lastBatch reports a live promotion (effectiveRole), even though the authored roles are a normal primary+replica pair', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const a1 = s.az(r.id, 'us-east-1a'); const a2 = s.az(r.id, 'us-east-1b')
+    const db = s.blueprint('db'); db.stateful = true
+    const primary = s.placement(db.id, s.server(a1.id).id)              // authored primary
+    const replica = s.placement(db.id, s.server(a2.id).id); replica.role = 'replica'   // authored replica
+    const compiled = s.compile()
+    const primaryInstanceId = Object.values(compiled.instances).find(i => i.placementId === primary.id)!.id
+    const replicaInstanceId = Object.values(compiled.instances).find(i => i.placementId === replica.id)!.id
+    // Sanity: authored roles are a normal, non-split-brain pair.
+    expect(runAnalysis(s.doc, compiled, null).some(f => f.ruleId === 'split-brain-risk')).toBe(false)
+
+    const batch = {
+      instances: {
+        [primaryInstanceId]: { effectiveRole: 'primary' },
+        [replicaInstanceId]: { effectiveRole: 'primary' },   // self-promoted — a live split-brain
+      },
+    } as unknown as MetricsBatch
+    const findings = ids(runAnalysis(s.doc, compiled, batch), 'split-brain-risk')
+    expect(findings).toHaveLength(1)
+    expect(findings[0].affected).toHaveLength(2)
+    expect(findings[0].affected).toEqual(expect.arrayContaining([primaryInstanceId, replicaInstanceId]))
   })
 })
 

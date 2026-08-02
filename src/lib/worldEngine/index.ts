@@ -1415,7 +1415,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       // s.faults.leakAccumMb is the SAME map InstanceLoad.ramBaseMb already folded in above, so
       // published ramMb can never diverge from the RAM the scheduler enforces/OOM-kills on
       // (FEAT-001, mirrors the connProfileByInstance/effectiveCpuMsByInstance discipline).
-      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance, s.faults.leakAccumMb, s.faults.active.size)
+      // roleOf (FEAT-002/Wave-1 Task 13 fix): the SAME memoized effective-role resolver built
+      // above (§6, promoKey-memoized) for flow routing — publishing it lets split-brain-risk see
+      // a LIVE partition-induced promotion, not just the static authored role.
+      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance, s.faults.leakAccumMb, s.faults.active.size, roleOf)
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
       s.tracer.sample(flows, compiled, doc, simMs, entryId => populationsForEntry(entryId), managedDbRt)
