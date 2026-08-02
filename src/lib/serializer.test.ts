@@ -177,6 +177,27 @@ describe('scalemap v3 serializer', () => {
     expect(parsed.world).toEqual(world)
   })
 
+  it('a world with a scenario round-trips through serialize/deserialize intact', () => {
+    const world = createWorld()
+    world.scenario = { id: 's1', label: 'Test', seed: 42, durationMs: 60000, steps: [] }
+    const serialized = serializeWorld(world, 'with-scenario', '2026-07-08T00:00:00.000Z')
+    const parsed = deserializeWorld(serialized)
+    expect(parsed.world.scenario).toEqual(world.scenario)
+  })
+
+  it('a pre-feature v3 file with no scenario field still loads, scenario undefined', () => {
+    const legacyV3 = JSON.stringify({
+      version: '3',
+      meta: { name: 'legacy', created: '2026-07-08T00:00:00.000Z', modified: '2026-07-08T00:00:00.000Z' },
+      world: {
+        routing: { policy: 'latency', weights: {}, priorityOrder: [], healthCheckIntervalMs: 10_000, healthCheckFailureThreshold: 3, dnsTtlSec: 30 },
+        populations: {}, regions: {}, azs: {}, servers: {}, blueprints: {}, placements: {}, managedServices: {},
+      },
+    })
+    const parsed = deserializeWorld(legacyV3)
+    expect(parsed.world.scenario).toBeUndefined()
+  })
+
   // node-model Phase 3: writeFraction rides inside a blueprint's dependency, so it needs no
   // dedicated serializer handling — but pin the round-trip so a future serializer change can't
   // silently drop it.

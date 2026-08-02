@@ -154,6 +154,7 @@ export function deserializeWorld(raw: string): ScalemapFileV3 {
     loadBalancers: src.world.loadBalancers ?? {},
     packets: src.world.packets ?? legacyPackets ?? emptyPacketRegistry(),
     connectionLayout: src.world.connectionLayout ?? {},
+    scenario: src.world.scenario ?? undefined,
   }
   return {
     version: '3',
