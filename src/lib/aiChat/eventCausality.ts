@@ -59,6 +59,8 @@ export function decodeAffected(
     case 'partition_started':
     case 'partition_healed':
       return { primaryId: affected[0] ?? '', secondaryId: affected[1] || null }
+    case 'scenario_step_applied':
+      return { primaryId: affected[0] ?? '', secondaryId: affected[1] || null }
   }
 }
 

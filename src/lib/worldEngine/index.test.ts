@@ -2561,3 +2561,161 @@ describe('FEAT-002 Task 12: directional health / split-brain', () => {
     sim.engine.stop()
   })
 })
+
+// ─── FEAT-003: Scenario timeline — cursor-indexed step application + rng seeding (Task 18) ──
+describe('FEAT-003 scenario timeline (Task 18)', () => {
+  // 1 region / 1 AZ / 1 server, one public entry blueprint, one population — minimal but real
+  // enough that a server-scoped fault is observable in published metrics.
+  function scenarioFixture() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    doc.servers[server.id] = server
+    const web = publicBlueprint('web', 0)
+    web.workload = { ...web.workload, cpuMsPerRequest: 40 }
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id)
+    doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 100
+    pop.diurnal = 'flat'
+    doc.populations[pop.id] = pop
+    const compiled = compileWorld(doc)
+    return { doc, compiled, serverId: server.id }
+  }
+
+  function faultClearScenario(serverId: string): NonNullable<WorldDoc['scenario']> {
+    return {
+      id: 's1', label: 'T', seed: 777, durationMs: 60000,
+      steps: [
+        { atMs: 10000, action: { type: 'inject-fault', scope: 'server', id: serverId, spec: { kind: 'cpu-brownout', capacityFraction: 0.5 } } },
+        { atMs: 30000, action: { type: 'clear-fault', scope: 'server', id: serverId } },
+      ],
+    }
+  }
+
+  // helper: start engine, step in 100ms increments to 60,000ms, collect every published MetricsBatch.
+  function runFullScenario(doc: WorldDoc, compiled: ReturnType<typeof compileWorld>): MetricsBatch[] {
+    const engine = createWorldEngine(0)
+    const batches: MetricsBatch[] = []
+    engine.start(doc, compiled, {
+      onMetrics: b => batches.push(b),
+      onEvent: () => {},
+      onHealthChange: () => {},
+    })
+    engine.__test_step(600)   // 600 x 100ms steps = 60,000ms
+    engine.stop()
+    return batches
+  }
+
+  it('THE DETERMINISM TEST: same scenario + seed + doc produces deep-equal MetricsBatch sequences over 60s, run twice', () => {
+    const { doc, compiled, serverId } = scenarioFixture()
+    doc.scenario = faultClearScenario(serverId)
+    const runA = runFullScenario(doc, compiled)
+    const runB = runFullScenario(doc, compiled)
+    expect(runA.length).toBeGreaterThan(0)
+    expect(runA).toEqual(runB)
+  })
+
+  it('inject-fault at atMs 30000 fires between step 299 and 300 at 100ms steps, exactly once', () => {
+    const { doc, compiled, serverId } = scenarioFixture()
+    doc.scenario = {
+      id: 's2', label: 'T', seed: 42, durationMs: 60000,
+      steps: [{ atMs: 30000, action: { type: 'inject-fault', scope: 'server', id: serverId, spec: { kind: 'cpu-brownout', capacityFraction: 0.5 } } }],
+    }
+    const events: EngineEvent[] = []
+    const engine = createWorldEngine(0)
+    engine.start(doc, compiled, { onMetrics: () => {}, onEvent: e => events.push(e), onHealthChange: () => {} })
+    engine.__test_step(299)   // steps to exactly 29,900ms — no fault yet
+    expect(events.some(e => e.kind === 'fault_injected')).toBe(false)
+    engine.__test_step(1)     // one more 100ms step — exactly 30,000ms, fault fires once
+    expect(events.filter(e => e.kind === 'fault_injected')).toHaveLength(1)
+    engine.__test_step(10)    // further steps: no additional fault_injected for the same step
+    expect(events.filter(e => e.kind === 'fault_injected')).toHaveLength(1)
+    engine.stop()
+  })
+
+  it('a world with no scenario is byte-identical to pre-feature for a fixed seed', () => {
+    const { doc, compiled } = scenarioFixture()
+    const a = runFullScenario(doc, compiled)
+    const b = runFullScenario(doc, compiled)
+    expect(a[a.length - 1]).toEqual(b[b.length - 1])
+  })
+
+  it('doc.scenario.seed overrides createWorldEngine\'s default seed rather than adding a second rng source', () => {
+    const { doc, compiled, serverId } = scenarioFixture()
+    doc.scenario = faultClearScenario(serverId)
+    // Two engines constructed with DIFFERENT default seeds but the SAME scenario.seed must
+    // produce byte-identical output — proof the scenario seed REPLACES the default, rather than
+    // merely composing with it (which would leave the two runs diverging).
+    const engineA = createWorldEngine(1)
+    const batchesA: MetricsBatch[] = []
+    engineA.start(doc, compiled, { onMetrics: b => batchesA.push(b), onEvent: () => {}, onHealthChange: () => {} })
+    engineA.__test_step(600)
+    engineA.stop()
+
+    const engineB = createWorldEngine(999)
+    const batchesB: MetricsBatch[] = []
+    engineB.start(doc, compiled, { onMetrics: b => batchesB.push(b), onEvent: () => {}, onHealthChange: () => {} })
+    engineB.__test_step(600)
+    engineB.stop()
+
+    expect(batchesA).toEqual(batchesB)
+  })
+
+  it('emits scenario_step_applied exactly once per step, alongside the action\'s own domain event', () => {
+    const { doc, compiled, serverId } = scenarioFixture()
+    doc.scenario = faultClearScenario(serverId)
+    const events: EngineEvent[] = []
+    const engine = createWorldEngine(0)
+    engine.start(doc, compiled, { onMetrics: () => {}, onEvent: e => events.push(e), onHealthChange: () => {} })
+    engine.__test_step(600)
+    engine.stop()
+    expect(events.filter(e => e.kind === 'scenario_step_applied')).toHaveLength(2)
+    expect(events.filter(e => e.kind === 'fault_injected')).toHaveLength(1)
+    expect(events.filter(e => e.kind === 'fault_cleared')).toHaveLength(1)
+  })
+
+  it('partition/heal-partition scenario actions reuse the exact facade path (partition_started/partition_healed events fire)', () => {
+    const { doc, compiled, serverId } = scenarioFixture()
+    doc.scenario = {
+      id: 's4', label: 'T', seed: 3, durationMs: 20000,
+      steps: [
+        { atMs: 1000, action: { type: 'partition', fault: { from: { kind: 'server', id: serverId }, to: { kind: 'internet' }, mode: 'drop', symmetric: false } } },
+        { atMs: 5000, action: { type: 'heal-partition', index: 0 } },
+      ],
+    }
+    const events: EngineEvent[] = []
+    const engine = createWorldEngine(0)
+    engine.start(doc, compiled, { onMetrics: () => {}, onEvent: e => events.push(e), onHealthChange: () => {} })
+    engine.__test_step(200)
+    engine.stop()
+    expect(events.some(e => e.kind === 'partition_started')).toBe(true)
+    expect(events.some(e => e.kind === 'partition_healed')).toBe(true)
+    expect(events.filter(e => e.kind === 'scenario_step_applied')).toHaveLength(2)
+  })
+
+  it('demand-multiplier and set-population-rps actions apply without error and each emit one scenario_step_applied event', () => {
+    const { doc, compiled } = scenarioFixture()
+    const popId = Object.keys(doc.populations)[0]
+    doc.scenario = {
+      id: 's5', label: 'T', seed: 5, durationMs: 20000,
+      steps: [
+        { atMs: 2000, action: { type: 'demand-multiplier', factor: 2, rampSec: 5 } },
+        { atMs: 8000, action: { type: 'set-population-rps', populationId: popId, peakRps: 50, rampSec: 3 } },
+      ],
+    }
+    const events: EngineEvent[] = []
+    const engine = createWorldEngine(0)
+    expect(() => {
+      engine.start(doc, compiled, { onMetrics: () => {}, onEvent: e => events.push(e), onHealthChange: () => {} })
+      engine.__test_step(200)
+    }).not.toThrow()
+    engine.stop()
+    expect(events.filter(e => e.kind === 'scenario_step_applied')).toHaveLength(2)
+  })
+})

@@ -11,6 +11,7 @@ import { MAX_GLOBE_ARCS } from './types'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
   ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole, BlueprintDependency,
+  ScenarioAction, ScenarioStep,
 } from '../world/types'
 import { managedDbEngine } from '../world/types'
 import { routeMatchesPattern, listRoutes } from '../nodeConfig'
@@ -370,6 +371,20 @@ interface EngineState {
   // 'down' faults ALSO route through failover's setOutage — this is bookkeeping/leak-accumulator
   // state only, never a second source of truth for outage/health.
   faults: FaultState
+  // FEAT-003 (Task 18): the scenario's steps, sorted once at start() by atMs, plus a monotonic
+  // apply cursor — runStep's cursor loop applies every step whose atMs has been reached exactly
+  // once, in atMs order, never re-applying or skipping one that shares a step boundary with
+  // another. Empty/0 for a doc with no scenario (byte-identical to pre-feature).
+  scenarioSteps: ScenarioStep[]
+  scenarioCursor: number
+  // FEAT-003: engine-owned demand-shaping overlay, written here by the 'demand-multiplier' (every
+  // population) / 'set-population-rps' (one population) scenario actions and consumed by
+  // demand.ts's populationDemandRps (Task 19 — this task only populates the map). A population
+  // absent from this map has no active overlay (multiplier 1, demand unchanged from authored).
+  // `multiplier` is the ramp's starting value (the effective value at the moment the action fired,
+  // so a second action mid-ramp continues smoothly instead of jumping back to 1); `targetMultiplier`
+  // is where the ramp is heading; `rampStartMs`/`rampSec` define the linear interpolation window.
+  demandOverlay: Map<PopulationId, { multiplier: number; targetMultiplier: number; rampStartMs: number; rampSec: number }>
   // Per-population burst state (audit ISSUE-017) — the on-off flash-crowd process is stateful
   // across ticks; demand.ts stays a pure function of (pop, simMs, rng, state).
   demandStates: Map<PopulationId, PopulationDemandState>
@@ -561,11 +576,107 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     else if (to === 'closed') emit('breaker_closed', 'info', 'circuit closed', affected, simMs)
   }
 
+  // FEAT-003 (Task 18): linear ramp — the current effective value of a demand overlay entry at
+  // `simMs`, given its ramp start/target/duration. Shared by applyScenarioAction below (to seed a
+  // NEW action's starting multiplier from wherever the ramp actually is right now, rather than
+  // resetting to 1 — a second demand-multiplier fired mid-ramp must continue smoothly) — Task 19's
+  // demand.ts consumption side computes the same shape independently since it reads the overlay
+  // from a pure, engine-decoupled function; if the two ever need to share exact ramp math, hoist
+  // this to a shared module then.
+  const effectiveOverlayMultiplier = (
+    entry: { multiplier: number; targetMultiplier: number; rampStartMs: number; rampSec: number },
+    simMs: number,
+  ): number => {
+    if (entry.rampSec <= 0) return entry.targetMultiplier
+    const elapsedSec = Math.max(0, simMs - entry.rampStartMs) / 1000
+    if (elapsedSec >= entry.rampSec) return entry.targetMultiplier
+    return entry.multiplier + (entry.targetMultiplier - entry.multiplier) * (elapsedSec / entry.rampSec)
+  }
+
+  const linkLabel = (e: PartitionFault['from']): string => (e.kind === 'internet' ? 'internet' : `${e.kind}:${e.id}`)
+
+  // Human-readable fallback message for a scenario_step_applied event when the authored step
+  // carries no `note` — never the primary UX (authors should write notes), just a reasonable
+  // default so the Events tab never shows a blank message.
+  const describeScenarioAction = (action: ScenarioAction): string => {
+    switch (action.type) {
+      case 'inject-fault': return `scenario: inject-fault ${action.scope}:${action.id} (${action.spec.kind})`
+      case 'clear-fault': return `scenario: clear-fault ${action.scope}:${action.id}`
+      case 'partition': return `scenario: partition ${linkLabel(action.fault.from)} -> ${linkLabel(action.fault.to)} (${action.fault.mode})`
+      case 'heal-partition': return `scenario: heal-partition #${action.index}`
+      case 'demand-multiplier': return `scenario: demand-multiplier x${action.factor} over ${action.rampSec}s`
+      case 'set-population-rps': return `scenario: set-population-rps ${action.populationId} -> ${action.peakRps}rps over ${action.rampSec}s`
+    }
+  }
+
+  // FEAT-003 (Task 18): dispatches one scenario step's action, reusing the EXACT existing code
+  // paths — inject-fault/clear-fault go through api.setFault (the same facade a UI-driven setFault
+  // call uses, so 'down'/failover wiring/applyAzOutageToManaged all fire identically), partition/
+  // heal-partition go through api.setPartition/healPartition (thin wrappers over faults.ts's
+  // addPartition/removePartition). demand-multiplier/set-population-rps write into the engine-owned
+  // demandOverlay map (Task 19 makes demand.ts's populationDemandRps actually read it).
+  const applyScenarioAction = (s: EngineState, action: ScenarioAction, simMs: number): void => {
+    switch (action.type) {
+      case 'inject-fault':
+        api.setFault(action.scope, action.id, action.spec)
+        return
+      case 'clear-fault':
+        api.setFault(action.scope, action.id, null)
+        return
+      case 'partition':
+        api.setPartition(action.fault)
+        return
+      case 'heal-partition':
+        api.healPartition(action.index)
+        return
+      case 'demand-multiplier': {
+        // Global: applies to EVERY population currently authored in the doc.
+        for (const popId of Object.keys(s.doc.populations) as PopulationId[]) {
+          const existing = s.demandOverlay.get(popId)
+          const current = existing ? effectiveOverlayMultiplier(existing, simMs) : 1
+          s.demandOverlay.set(popId, {
+            multiplier: current, targetMultiplier: action.factor, rampStartMs: simMs, rampSec: action.rampSec,
+          })
+        }
+        return
+      }
+      case 'set-population-rps': {
+        // Targets ONE population; the absolute peakRps is converted to a multiplier RELATIVE to
+        // that population's own authored baseline (ClientPopulation.peakRps).
+        const popId = action.populationId as PopulationId
+        const basePeakRps = s.doc.populations[popId]?.peakRps ?? 0
+        // Guard: an authored-zero baseline has no meaningful "relative to itself" scale factor.
+        // Choosing a targetMultiplier of 0 (rather than skipping the write) keeps every overlay
+        // entry's semantics uniform — "targeting a population with no authored baseline" reads as
+        // "stays at zero," not as a silent no-op that leaves stale state behind.
+        const targetMultiplier = basePeakRps === 0 ? 0 : action.peakRps / basePeakRps
+        const existing = s.demandOverlay.get(popId)
+        const current = existing ? effectiveOverlayMultiplier(existing, simMs) : 1
+        s.demandOverlay.set(popId, {
+          multiplier: current, targetMultiplier, rampStartMs: simMs, rampSec: action.rampSec,
+        })
+        return
+      }
+    }
+  }
+
   function runStep(simMs: number): void {
     const s = state!
     const { doc, compiled } = s
     const stepMs = s.stepMs
     const stepSec = stepMs / 1000
+
+    // ── FEAT-003: scenario timeline — apply every due step exactly once, in atMs order ──
+    // Cursor-indexed, never re-applied and never skipped: scenarioSteps was sorted once at
+    // start(), so advancing scenarioCursor monotonically and applying every step whose atMs has
+    // now been reached (<=, so a step landing exactly on a step boundary fires that same step)
+    // guarantees each step fires exactly once regardless of how many steps share a boundary.
+    while (s.scenarioCursor < s.scenarioSteps.length && s.scenarioSteps[s.scenarioCursor].atMs <= simMs) {
+      const step = s.scenarioSteps[s.scenarioCursor]
+      applyScenarioAction(s, step.action, simMs)
+      emit('scenario_step_applied', 'info', step.note ?? describeScenarioAction(step.action), [], simMs)
+      s.scenarioCursor += 1
+    }
 
     // ── 0. OOM restart timers ──
     for (const [iid, restartAt] of [...s.oomRestartAt]) {
@@ -1695,8 +1806,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         cancelAnimationFrame(state.rafId)
       }
       const depIndexes = buildDepIndexes(doc)
+      // FEAT-003: doc.scenario.seed OVERRIDES the engine's default seed source (the `seed` param
+      // createWorldEngine was constructed with) rather than creating a second, independent rng
+      // instance — every stochastic draw in the run (demand, tracer sampling, etc.) must come from
+      // ONE seeded source for the determinism guarantee to hold. Absent a scenario, behavior is
+      // byte-identical to pre-feature.
+      const effectiveSeed = doc.scenario?.seed ?? seed
       state = {
-        running: true, seed, rng: createRng(seed), clock: createClock(DEFAULT_STEP_MS), stepMs: DEFAULT_STEP_MS,
+        running: true, seed: effectiveSeed, rng: createRng(effectiveSeed), clock: createClock(DEFAULT_STEP_MS), stepMs: DEFAULT_STEP_MS,
         timeScale: 1, doc, compiled, callbacks, entryBlueprintIds: new Set(entryBlueprints(doc)),
         routePathById: buildRoutePathById(doc),
         routeBytesById: buildRouteBytesById(doc),
@@ -1718,13 +1835,18 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         roleResolver: null, roleResolverKey: '',
         downstreamAdj: buildDownstreamAdj(compiled),
         routing: createRoutingState(), failover: createFailoverState(), faults: createFaultState(),
+        // FEAT-003: steps sorted once by atMs (a stable sort — ScenarioStep carries no secondary
+        // ordering key, so authored array order breaks ties among same-atMs steps), cursor at 0.
+        scenarioSteps: doc.scenario ? [...doc.scenario.steps].sort((a, b) => a.atMs - b.atMs) : [],
+        scenarioCursor: 0,
+        demandOverlay: new Map(),
         demandStates: new Map(),
         vpsStates: new Map(Object.values(doc.servers).map(sv => [sv.id, createVpsState(sv)])),
         vpsFactor: new Map(),
         nics: new Map(Object.values(doc.servers).map(sv => [sv.id, createNicState()])),
         nicDeliveredFraction: new Map(), nicQueuedLatencyMs: new Map(),
         breakers: new Map(), queueDepth: new Map(), metrics: createMetricsState(),
-        events: createEventRing(500), replay: createReplayBuffer(300), tracer: createTracer(createRng(seed ^ 0x1234)),
+        events: createEventRing(500), replay: createReplayBuffer(300), tracer: createTracer(createRng(effectiveSeed ^ 0x1234)),
         prevFlows: {}, windowTotals: { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} },
         lastRoutingSnapshot: { populationRoutes: [] }, popRegion: new Map(), pendingFailover: new Map(),
         popPrevRegion: new Map(),

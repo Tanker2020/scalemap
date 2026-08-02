@@ -206,6 +206,7 @@ export type EngineEventKind =
   | 'chain_depth_exceeded'       // dependency chain hit MAX_DEPTH and stopped fanning out further
   | 'chain_cycle_cut'            // BFS cycle guard stopped re-queueing into an ancestor instance
   | 'partition_started' | 'partition_healed'   // FEAT-002 network partition added/removed
+  | 'scenario_step_applied'      // FEAT-003 scenario timeline: a step's action fired at its atMs
 
 export interface EngineEvent {
   id: string
