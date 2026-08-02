@@ -318,9 +318,15 @@ export interface DownstreamFlow {
   // THROTTLE from a query TIMEOUT — they look identical as rps but mean opposite things to the
   // user (too much load vs too slow). 'dropped'/'dlq' (audit ISSUE-002) are the event-broker
   // analogues: a topic's retention-cap overflow (at-most-once loses these) vs a message that
-  // exhausted its redelivery budget. Absent on every non-managed/non-event row and on admitted
-  // rows, which keeps existing row-equality assertions unchanged.
-  failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq' | 'fault'
+  // exhausted its redelivery budget. 'partition' (FEAT-002, Task 11) is a network-partition
+  // refusal (drop-mode block OR loss-mode fraction) — kept DISTINCT from the pre-existing 'fault'
+  // tag (error-inject, Task 5) even though both are server/network-caused failures, because they
+  // share the SAME addDownstream merge key (dependencyId|target|blocked|failure) whenever both an
+  // active partition and an active error-inject fault target the same path in the same step — a
+  // shared tag would silently sum their rps into one indistinguishable row. Absent on every
+  // non-managed/non-event row and on admitted rows, which keeps existing row-equality assertions
+  // unchanged.
+  failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq' | 'fault' | 'partition'
   // Additive per-hop delay (ms) from an active network-partition impairment (FEAT-002, Task 11),
   // consulted from FlowInput.impairmentMemo and folded into the composed-latency pass
   // (computeTotalLatencyMs). Only ever set on a row carrying traffic that actually transits the
@@ -490,7 +496,7 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
     rps: number,
     hopClass: HopClass,
     blocked: boolean,
-    failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq' | 'fault',
+    failure?: 'throttled' | 'timeout' | 'dropped' | 'dlq' | 'fault' | 'partition',
     // Impairment delay (FEAT-002, Task 11): a static per-path property, so every contribution
     // aggregating into the same row agrees on it — set once, on first touch, like every other
     // row field.
@@ -710,7 +716,7 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
           // Mechanism B's overload signal.
           flow.refusedRps += share
           flow.structuralRefusedRps = (flow.structuralRefusedRps ?? 0) + share
-          addDownstream(flow, dep.id, target, share, path.hopClass, true, path.verdict === 'blocked' ? undefined : 'fault')
+          addDownstream(flow, dep.id, target, share, path.hopClass, true, path.verdict === 'blocked' ? undefined : 'partition')
           continue   // refused attempts carry no payload and reach nothing
         }
 
@@ -722,7 +728,7 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
         if (lossShare > EPSILON_RPS) {
           flow.refusedRps += lossShare
           flow.structuralRefusedRps = (flow.structuralRefusedRps ?? 0) + lossShare
-          addDownstream(flow, dep.id, target, lossShare, path.hopClass, true, 'fault')
+          addDownstream(flow, dep.id, target, lossShare, path.hopClass, true, 'partition')
         }
         if (remainingShare <= EPSILON_RPS) continue
 

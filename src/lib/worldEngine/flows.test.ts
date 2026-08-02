@@ -1176,7 +1176,7 @@ describe('solveFlows — network-partition impairment memo (FEAT-002)', () => {
 
     const crossRegionPathId = `${api.iid}->d-repl->${repl.iid}`
     const sameAzPathId = `${svc.iid}->d-db->${db.iid}`
-    return { doc, api, repl, svc, db, crossRegionPathId, sameAzPathId }
+    return { doc, api, repl, svc, db, replServerId: s3.id, crossRegionPathId, sameAzPathId }
   }
 
   it('a symmetric drop partition zeroes cross-region flow via structuralRefusedRps, NOT the overload-shedding signal', () => {
@@ -1193,7 +1193,7 @@ describe('solveFlows — network-partition impairment memo (FEAT-002)', () => {
     expect(flows[api.iid].refusedRps - (flows[api.iid].structuralRefusedRps ?? 0)).toBe(0)
     expect(flows[repl.iid]).toBeUndefined()   // nothing transits a fully dropped path
     const row = flows[api.iid].downstream.find(r => r.dependencyId === 'd-repl')
-    expect(row).toMatchObject({ rps: 100, blocked: true, failure: 'fault' })
+    expect(row).toMatchObject({ rps: 100, blocked: true, failure: 'partition' })
 
     // Control: the unrelated same-az path is completely untouched.
     expect(flows[svc.iid].refusedRps).toBe(0)
@@ -1213,7 +1213,7 @@ describe('solveFlows — network-partition impairment memo (FEAT-002)', () => {
     const admittedRow = flows[api.iid].downstream.find(r => !r.blocked)
     expect(admittedRow?.rps).toBeCloseTo(70, 9)
     const lossRow = flows[api.iid].downstream.find(r => r.blocked)
-    expect(lossRow).toMatchObject({ rps: 30, failure: 'fault' })
+    expect(lossRow).toMatchObject({ rps: 30, failure: 'partition' })
 
     // Unrelated same-az path: exact digit match against the zero-partition baseline.
     expect(flows[svc.iid].refusedRps).toBe(baseline.flows[svc.iid].refusedRps)
@@ -1233,5 +1233,29 @@ describe('solveFlows — network-partition impairment memo (FEAT-002)', () => {
 
     const svcDelta = delayed.flows[svc.iid].totalLatencyMs! - baseline.flows[svc.iid].totalLatencyMs!
     expect(svcDelta).toBe(0)
+  })
+
+  it('a loss partition AND an error-inject fault on the same path produce TWO separate rows, not a merged one', () => {
+    // Regression guard: both partition-loss and error-inject refusals were tagged 'fault' before
+    // this fix, and addDownstream's merge key is (dependencyId|target|blocked|failure) — a shared
+    // tag would silently sum their rps into one indistinguishable row.
+    const { doc, api, repl, crossRegionPathId, replServerId } = partitionWorld()
+    const impairmentMemo = new Map([[crossRegionPathId, { blocked: false, lossFraction: 0.3, delayMs: 0 }]])
+
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }, {
+      impairmentMemo,
+      faultErrorFractionByServer: { [replServerId]: 0.2 },
+    }))
+
+    const blockedRows = flows[api.iid].downstream.filter(r => r.dependencyId === 'd-repl' && r.blocked)
+    const partitionRow = blockedRows.find(r => r.failure === 'partition')
+    const faultRow = blockedRows.find(r => r.failure === 'fault')
+
+    expect(partitionRow).toBeDefined()
+    expect(faultRow).toBeDefined()
+    expect(partitionRow).not.toBe(faultRow)
+    expect(partitionRow?.rps).toBeCloseTo(30, 9)          // 30% of the 100 offered share
+    expect(faultRow?.rps).toBeCloseTo(70 * 0.2, 9)         // 20% of what survived the loss deduction
+    expect(flows[repl.iid].offeredRps).toBeCloseTo(70 * 0.8, 9)   // the rest actually transits
   })
 })
