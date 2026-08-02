@@ -7,7 +7,7 @@ import { create } from 'zustand'
 import type { WorldDoc, CompiledWorld } from '../../lib/world/types'
 import type {
   MetricsBatch, EngineEvent, RenderScope, FramePayload, DetachFn, ReplayFrame, TracedRequest,
-  FaultScope, FaultSpec,
+  FaultScope, FaultSpec, PartitionFault,
 } from '../../lib/worldEngine/types'
 import { worldEngine } from '../../lib/worldEngine'
 import { DEFAULT_HYSTERESIS } from '../../lib/worldEngine/failover'
@@ -169,6 +169,12 @@ interface SimulationStoreV2 {
   // Alias for setFault(scope, id, down ? { kind: 'down' } : null) — kept so no existing caller
   // breaks. New code should prefer setFault.
   setOutage: (scope: 'server' | 'az' | 'region' | 'managed', id: string, down: boolean) => void
+  // FEAT-002: thin delegations to the engine facade's setPartition/healPartition (added ahead of
+  // this task by Task 12 — see contract-drift.md). Task 14's partition-authoring UI calls these
+  // directly; no store-side bookkeeping (no local active-partitions list) — the facade owns that
+  // state, mirroring setFault/setOutage's own thin-delegation shape above.
+  setPartition: (fault: PartitionFault) => void
+  healPartition: (index: number) => void
   // `frames` (audit ISSUE-052): the caller's OWN captured frame array, so the resolved batch
   // matches what the caller displays — re-reading the live ring here could disagree with the
   // scrubber's snapshot when a late final frame lands between capture and click.
@@ -302,6 +308,12 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
   },
   setOutage: (scope, id, down) => {
     get().setFault(scope, id, down ? { kind: 'down' } : null)
+  },
+  setPartition: (fault) => {
+    worldEngine.setPartition(fault)
+  },
+  healPartition: (index) => {
+    worldEngine.healPartition(index)
   },
   setScrubIndex: (i, frames) => {
     const resolved = frames ?? worldEngine.getReplayFrames()

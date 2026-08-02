@@ -262,6 +262,33 @@ describe('simulation.store — setFault / setOutage (FEAT-001)', () => {
   })
 })
 
+// FEAT-002 (Task 13): setPartition/healPartition are thin delegations to the engine facade's
+// methods of the same name (added by Task 12 ahead of this task — see contract-drift.md). No
+// store-side bookkeeping — the facade owns the active-partitions list — so these tests just
+// assert delegation, mirroring the setFault/setOutage shape above.
+describe('simulation.store — setPartition / healPartition (FEAT-002)', () => {
+  beforeEach(() => {
+    vi.spyOn(worldEngine, 'setPartition').mockImplementation(() => {})
+    vi.spyOn(worldEngine, 'healPartition').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('setPartition delegates the fault to the engine facade', () => {
+    const store = useSimulationStore.getState()
+    const fault = { from: { kind: 'region' as const, id: 'r1' }, to: { kind: 'region' as const, id: 'r2' }, mode: 'drop' as const, symmetric: false }
+    store.setPartition(fault)
+    expect(worldEngine.setPartition).toHaveBeenCalledWith(fault)
+  })
+
+  it('healPartition delegates the index to the engine facade', () => {
+    const store = useSimulationStore.getState()
+    store.healPartition(2)
+    expect(worldEngine.healPartition).toHaveBeenCalledWith(2)
+  })
+})
+
 // Audit ISSUE-019: a fresh start() rebuilds every slow-converging piece of engine state from
 // cold (burst credits, failover hysteresis, metric EMAs) — this is correct-to-reset, per
 // CLAUDE.md's topology-mutability model, but nothing in the UI told a user that the first few

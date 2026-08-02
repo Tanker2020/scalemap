@@ -263,6 +263,39 @@ describe('structural: dangling-dependency-no-targets', () => {
   })
 })
 
+describe('structural: split-brain-risk', () => {
+  it('fires when two effective primaries exist in one blueprintId|regionId cluster', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const a1 = s.az(r.id, 'us-east-1a'); const a2 = s.az(r.id, 'us-east-1b')
+    const db = s.blueprint('db'); db.stateful = true
+    const p1 = s.placement(db.id, s.server(a1.id).id)   // primary by default
+    const p2 = s.placement(db.id, s.server(a2.id).id); p2.role = 'primary'   // second primary, same cluster
+    const f = ids(run(s), 'split-brain-risk')
+    expect(f).toHaveLength(1)
+    expect(f[0].severity).toBe('critical')
+    expect(f[0].affected).toHaveLength(2)
+    expect(f[0].affected.some(id => id.startsWith(p1.id))).toBe(true)
+    expect(f[0].affected.some(id => id.startsWith(p2.id))).toBe(true)
+  })
+  it('does not fire with exactly one primary per cluster', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const a1 = s.az(r.id, 'us-east-1a'); const a2 = s.az(r.id, 'us-east-1b')
+    const db = s.blueprint('db'); db.stateful = true
+    s.placement(db.id, s.server(a1.id).id)   // primary by default
+    const rep = s.placement(db.id, s.server(a2.id).id); rep.role = 'replica'
+    expect(ids(run(s), 'split-brain-risk')).toHaveLength(0)
+  })
+  it('does not fire for two primaries of the same blueprint in DIFFERENT regions (known gap)', () => {
+    const s = scenario()
+    const r1 = s.region('us-east-1'); const a1 = s.az(r1.id, 'us-east-1a')
+    const r2 = s.region('eu-west-1'); const a2 = s.az(r2.id, 'eu-west-1a')
+    const db = s.blueprint('db'); db.stateful = true
+    s.placement(db.id, s.server(a1.id).id)   // primary, region 1
+    const p2 = s.placement(db.id, s.server(a2.id).id); p2.role = 'primary'   // primary, region 2 — different cluster key
+    expect(ids(run(s), 'split-brain-risk')).toHaveLength(0)
+  })
+})
+
 describe('runAnalysis ordering + id stability', () => {
   it('orders by severity then family', () => {
     const s = scenario()

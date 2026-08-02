@@ -244,7 +244,60 @@ const danglingDependencyNoTargets: AnalysisRule = {
   },
 }
 
+// FEAT-002 (network partitions): a stateful cluster with more than one instance carrying the
+// 'primary' role at once is a split-brain risk — usually the result of an asymmetric partition
+// that let a replica self-promote (failover.ts's promoteReplicas) while the original primary is
+// still up and serving on the other side of the partition. NOTE: `InstanceMetrics` (the
+// MetricsBatch per-instance shape in worldEngine/types.ts) carries no `role`/effective-role field
+// at all — the promoted-role overlay (`promotedAt`) lives only inside the engine's internal
+// FailoverState and is never published to the metrics batch. The only `role` available to a pure
+// analysis rule is the AUTHORED `PlacementRole` on the compiled `ServiceInstance`
+// (`compiled.instances[id].role`), so this rule can only catch two AUTHORED primaries in one
+// cluster, not a live promotion-driven split brain — see the cluster-key caveat below.
+//
+// Gated on `bp.stateful`, mirroring replicasColocated's own convention: `role` defaults to
+// 'primary' for EVERY placement regardless of blueprint (a plain horizontally-scaled stateless
+// tier like `web` with two placements is not a "split brain" just because both default to
+// 'primary' — that field is meaningless without primary/replica replication semantics). Confirmed
+// against the vault example worlds (`exampleWorlds.test.ts`'s zero-findings assertions), which
+// caught the ungated version false-firing on exactly this.
+//
+// clusterKey mirrors promoteReplicas's own inline `${blueprintId}|${regionId}` derivation
+// (failover.ts:351) — there's no exported helper for it (failover.ts derives it inline at both of
+// its own call sites too), so this rule derives it the same way rather than inventing a different
+// convention. Known gap (accepted, out of scope here): this key groups by region, so a GENUINE
+// cross-region split-brain (primary in region A, self-promoted replica in region B) never lands
+// in the same cluster and is not detected by this rule.
+const splitBrainRisk: AnalysisRule = {
+  id: 'split-brain-risk', family: 'structural',
+  run: ({ doc, compiled }) => {
+    const primariesByCluster = new Map<string, ServiceInstance[]>()
+    for (const inst of Object.values(compiled.instances)) {
+      if (inst.role !== 'primary') continue
+      if (!doc.blueprints[inst.blueprintId]?.stateful) continue
+      const clusterKey = `${inst.blueprintId}|${inst.regionId}`
+      const list = primariesByCluster.get(clusterKey) ?? []
+      list.push(inst)
+      primariesByCluster.set(clusterKey, list)
+    }
+    const out: AnalysisFinding[] = []
+    for (const [clusterKey, instances] of primariesByCluster) {
+      if (instances.length <= 1) continue
+      const regionIds = [...new Set(instances.map(i => i.regionId))]
+      const regionNames = regionIds.map(rid => rid).join(', ')
+      out.push({
+        id: `split-brain-risk:${clusterKey}`, ruleId: 'split-brain-risk', family: 'structural', severity: 'critical',
+        title: 'Split-brain: multiple effective primaries',
+        why: `${instances.length} instances in cluster ${clusterKey} (region${regionIds.length > 1 ? 's' : ''} ${regionNames}) are all acting as primary simultaneously — likely an asymmetric network partition.`,
+        fix: 'Heal the partition, or demote all but one primary once connectivity is restored.',
+        affected: instances.map(i => i.id),
+      })
+    }
+    return out
+  },
+}
+
 export const structuralRules: AnalysisRule[] = [
   singleAzRegion, noFailoverRegion, replicasColocated, dependencyCycle, deepSyncChain, unusedManagedService,
-  danglingDependencyNoTargets,
+  danglingDependencyNoTargets, splitBrainRisk,
 ]
