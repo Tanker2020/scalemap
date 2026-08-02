@@ -11,9 +11,40 @@
 // populations are iterated in a fixed order — same seed ⇒ identical demand.
 import type { ClientPopulation, RequestMixEntry } from '../world/types'
 import type { Rng } from './rng'
+import { effectiveOverlayMultiplier, type DemandOverlayEntry } from './rampMath'
 
 // A compressed 2-minute "day" so the day-night curve is visible within a short demo run.
 const DAY_MS = 120_000
+
+// FEAT-003 (Task 19): the diurnal-mean shape as a function of population + simMs, extracted
+// unchanged from populationDemandRps's former inline expression for 'flat'/'day-night' (bit-for-
+// bit identical output — no behavior change for existing worlds) plus a new 'custom' branch that
+// piecewise-linearly interpolates the authored `curve` points over one compressed day. Exported so
+// the scenario/demand-overlay tests can assert the curve shape in isolation from the Poisson draw.
+export function diurnalMultiplierFor(pop: ClientPopulation, simMs: number): number {
+  if (pop.diurnal === 'flat') return 1
+  if (pop.diurnal === 'day-night') return 0.55 + 0.45 * Math.sin((2 * Math.PI * simMs) / DAY_MS - Math.PI / 2)
+
+  // 'custom': piecewise-linear interpolation over the authored curve points, keyed by fraction of
+  // one compressed day. An absent/empty curve falls back to a flat 1x (no authored shape ⇒ no-op).
+  const curve = pop.curve
+  if (!curve || curve.length === 0) return 1
+  const atFraction = ((simMs % DAY_MS) + DAY_MS) % DAY_MS / DAY_MS
+  if (curve.length === 1) return curve[0].multiplier
+  const sorted = [...curve].sort((a, b) => a.atFraction - b.atFraction)
+  if (atFraction <= sorted[0].atFraction) return sorted[0].multiplier
+  if (atFraction >= sorted[sorted.length - 1].atFraction) return sorted[sorted.length - 1].multiplier
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i]
+    const b = sorted[i + 1]
+    if (atFraction >= a.atFraction && atFraction <= b.atFraction) {
+      const span = b.atFraction - a.atFraction
+      const t = span <= 0 ? 0 : (atFraction - a.atFraction) / span
+      return a.multiplier + (b.multiplier - a.multiplier) * t
+    }
+  }
+  return sorted[sorted.length - 1].multiplier
+}
 
 // Burst process constants (exported for tests). Expected ~1 burst per 200s of sim time per
 // population at burstiness 1; each burst multiplies mean demand 1.5–3× for 2–10s.
@@ -65,14 +96,22 @@ export function populationDemandRps(
   stepMs = 1_000,
   // Optional burst state (engine-owned, per population). Absent ⇒ no bursts (pure diurnal+Poisson).
   burst?: PopulationDemandState,
+  // FEAT-003 (Task 19): the engine-owned demand-shaping overlay (Task 18's 'demand-multiplier'/
+  // 'set-population-rps' scenario actions write into it; index.ts threads state.demandOverlay
+  // through here). Absent ⇒ no override (multiplier 1, pure diurnal+Poisson) — a pre-scenario
+  // world simulates byte-identically.
+  demandOverlay?: Map<string, DemandOverlayEntry>,
 ): number {
-  const mean =
-    pop.diurnal === 'flat'
-      ? pop.peakRps
-      : pop.peakRps * (0.55 + 0.45 * Math.sin((2 * Math.PI * simMs) / DAY_MS - Math.PI / 2))
+  const mean = pop.peakRps * diurnalMultiplierFor(pop, simMs)
+
+  const overlay = demandOverlay?.get(pop.id)
+  // Same ramp math as index.ts's write-time helper (both import effectiveOverlayMultiplier from
+  // rampMath.ts) — this is the "what's the multiplier right now" read that must match the write
+  // side exactly, or a scenario step firing mid-ramp would visibly discontinuity-jump.
+  const overlayMultiplier = overlay ? effectiveOverlayMultiplier(overlay, simMs) : 1
 
   const stepSec = stepMs / 1000
-  let effectiveMean = mean
+  let effectiveMean = mean * overlayMultiplier
   if (burst) {
     if (simMs < burst.burstUntilMs) {
       effectiveMean *= burst.burstMultiplier

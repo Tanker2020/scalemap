@@ -26,6 +26,7 @@ import {
   populationDemandRps, splitDemandByMix, createDemandState,
   type RouteDemand, type PopulationDemandState,
 } from './demand'
+import { effectiveOverlayMultiplier, type DemandOverlayEntry } from './rampMath'
 import {
   createRoutingState, resolveRegion, runHealthChecks, distributeToTargets, type RoutingState,
 } from './routingRuntime'
@@ -379,12 +380,13 @@ interface EngineState {
   scenarioCursor: number
   // FEAT-003: engine-owned demand-shaping overlay, written here by the 'demand-multiplier' (every
   // population) / 'set-population-rps' (one population) scenario actions and consumed by
-  // demand.ts's populationDemandRps (Task 19 — this task only populates the map). A population
-  // absent from this map has no active overlay (multiplier 1, demand unchanged from authored).
-  // `multiplier` is the ramp's starting value (the effective value at the moment the action fired,
-  // so a second action mid-ramp continues smoothly instead of jumping back to 1); `targetMultiplier`
-  // is where the ramp is heading; `rampStartMs`/`rampSec` define the linear interpolation window.
-  demandOverlay: Map<PopulationId, { multiplier: number; targetMultiplier: number; rampStartMs: number; rampSec: number }>
+  // demand.ts's populationDemandRps (Task 19 — threaded through as its `demandOverlay` param). A
+  // population absent from this map has no active overlay (multiplier 1, demand unchanged from
+  // authored). `multiplier` is the ramp's starting value (the effective value at the moment the
+  // action fired, so a second action mid-ramp continues smoothly instead of jumping back to 1);
+  // `targetMultiplier` is where the ramp is heading; `rampStartMs`/`rampSec` define the linear
+  // interpolation window. Shape defined once in rampMath.ts's `DemandOverlayEntry`.
+  demandOverlay: Map<PopulationId, DemandOverlayEntry>
   // Per-population burst state (audit ISSUE-017) — the on-off flash-crowd process is stateful
   // across ticks; demand.ts stays a pure function of (pop, simMs, rng, state).
   demandStates: Map<PopulationId, PopulationDemandState>
@@ -576,23 +578,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     else if (to === 'closed') emit('breaker_closed', 'info', 'circuit closed', affected, simMs)
   }
 
-  // FEAT-003 (Task 18): linear ramp — the current effective value of a demand overlay entry at
-  // `simMs`, given its ramp start/target/duration. Shared by applyScenarioAction below (to seed a
-  // NEW action's starting multiplier from wherever the ramp actually is right now, rather than
-  // resetting to 1 — a second demand-multiplier fired mid-ramp must continue smoothly) — Task 19's
-  // demand.ts consumption side computes the same shape independently since it reads the overlay
-  // from a pure, engine-decoupled function; if the two ever need to share exact ramp math, hoist
-  // this to a shared module then.
-  const effectiveOverlayMultiplier = (
-    entry: { multiplier: number; targetMultiplier: number; rampStartMs: number; rampSec: number },
-    simMs: number,
-  ): number => {
-    if (entry.rampSec <= 0) return entry.targetMultiplier
-    const elapsedSec = Math.max(0, simMs - entry.rampStartMs) / 1000
-    if (elapsedSec >= entry.rampSec) return entry.targetMultiplier
-    return entry.multiplier + (entry.targetMultiplier - entry.multiplier) * (elapsedSec / entry.rampSec)
-  }
-
+  // FEAT-003 (Task 18/19): linear ramp — the current effective value of a demand overlay entry at
+  // `simMs`, given its ramp start/target/duration. Used here to seed a NEW action's starting
+  // multiplier from wherever an in-flight ramp actually is (rather than resetting to 1 — a second
+  // demand-multiplier fired mid-ramp must continue smoothly), and by demand.ts's
+  // populationDemandRps to scale the diurnal mean before the Poisson draw — hoisted to
+  // rampMath.ts so both call sites share the EXACT same formula (see that file's header).
   const linkLabel = (e: PartitionFault['from']): string => (e.kind === 'internet' ? 'internet' : `${e.kind}:${e.id}`)
 
   // Human-readable fallback message for a scenario_step_applied event when the authored step
@@ -770,7 +761,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         ds = createDemandState()
         s.demandStates.set(pop.id, ds)
       }
-      demandByPop[pop.id] = populationDemandRps(pop, simMs, s.rng, stepMs, ds)
+      demandByPop[pop.id] = populationDemandRps(pop, simMs, s.rng, stepMs, ds, s.demandOverlay)
     }
 
     // ── 2. routing: health checks ──
