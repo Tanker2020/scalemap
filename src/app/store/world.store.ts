@@ -5,6 +5,7 @@ import { create } from 'zustand'
 import type {
   WorldDoc, Server, ServiceBlueprint, Placement, ManagedScope, ManagedService, ClientPopulation,
   RoutingConfig, AzId, Rack, RackId, LoadBalancer, DependencyTarget, BlueprintDependency,
+  Scenario, ScenarioStep,
 } from '../../lib/world/types'
 import { planReachability, applyReachabilityPlan } from '../../lib/world/connections'
 import { planSpread } from '../../lib/world/spread'
@@ -166,6 +167,10 @@ interface WorldStore {
   removeRack: (id: RackId) => void
   assignServerToRack: (serverId: string, rackId: RackId | null) => void
   autoArrangeAz: (azId: AzId) => void
+  setScenario: (scenario: Scenario | null) => void
+  addScenarioStep: (step: ScenarioStep) => void
+  removeScenarioStep: (index: number) => void
+  updateScenarioStep: (index: number, step: ScenarioStep) => void
   pushHistory: () => void
   undo: () => void
   redo: () => void
@@ -626,6 +631,20 @@ export const useWorldStore = create<WorldStore>((set, get) => {
         servers[sid] = { ...servers[sid], rack: pos }
       }
       return { ...d, racks, servers }
+    }),
+
+    setScenario: (scenario) => mutate(d => ({ ...d, scenario: scenario ?? undefined })),
+    addScenarioStep: (step) => mutate(d => {
+      if (!d.scenario) return d
+      return { ...d, scenario: { ...d.scenario, steps: [...d.scenario.steps, step] } }
+    }),
+    removeScenarioStep: (index) => mutate(d => {
+      if (!d.scenario) return d
+      return { ...d, scenario: { ...d.scenario, steps: d.scenario.steps.filter((_, i) => i !== index) } }
+    }),
+    updateScenarioStep: (index, step) => mutate(d => {
+      if (!d.scenario) return d
+      return { ...d, scenario: { ...d.scenario, steps: d.scenario.steps.map((s, i) => (i === index ? step : s)) } }
     }),
 
     // Audit ISSUE-031: history/future hold doc REFERENCES, not JSON deep clones. Every mutation

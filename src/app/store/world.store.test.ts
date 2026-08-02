@@ -843,3 +843,19 @@ describe('world.store — duplicateBlueprint', () => {
     expect(st().doc).toBe(before)
   })
 })
+
+describe('world.store — Scenario CRUD', () => {
+  it('setScenario replaces the doc scenario and marks dirty', () => {
+    const store = useWorldStore.getState()
+    store.setScenario({ id: 's1', label: 'Test', seed: 1, durationMs: 60000, steps: [] })
+    expect(useWorldStore.getState().doc.scenario?.id).toBe('s1')
+  })
+  it('addScenarioStep appends a step, pushable to undo/redo history', () => {
+    const store = useWorldStore.getState()
+    store.setScenario({ id: 's1', label: 'Test', seed: 1, durationMs: 60000, steps: [] })
+    store.addScenarioStep({ atMs: 30000, action: { type: 'clear-fault', scope: 'server', id: 's1' } })
+    expect(useWorldStore.getState().doc.scenario?.steps).toHaveLength(1)
+    store.undo()
+    expect(useWorldStore.getState().doc.scenario?.steps).toHaveLength(0)
+  })
+})
