@@ -368,6 +368,40 @@ describe('structural: split-brain-risk', () => {
     expect(findings[0].affected).toHaveLength(2)
     expect(findings[0].affected).toEqual(expect.arrayContaining([primaryInstanceId, replicaInstanceId]))
   })
+
+  // Re-review N1: false-positive regression. Same topology as worldEngine/index.test.ts's
+  // `sameRegionPlusCrossRegionPrimaryFixture` (C1) and the vault's multi-region-failover example
+  // world UNDER a live failover — a same-region primary (P_A) + same-region replica (R_A) in
+  // region A, PLUS a SEPARATE, unrelated authored primary (P_B) for the SAME blueprint in region
+  // B. P_A goes down and R_A is correctly promoted (ordinary same-region HA failover, NOT a
+  // partition or a bug). Before the N1 fix, the coarse guard ("any candidate's authored role !=
+  // 'primary' anywhere in the cluster") fired here because R_A's authored role is 'replica' even
+  // though R_A has a same-region authored primary sibling (P_A) — this is NOT cross-region
+  // split-brain evidence and the rule must stay silent.
+  it('does NOT fire for a same-region HA promotion that happens to share a blueprintId with a separate cross-region authored primary (N1 false-positive fix)', () => {
+    const s = scenario()
+    const r1 = s.region('us-east-1'); const a1 = s.az(r1.id, 'us-east-1a')
+    const r2 = s.region('eu-west-1'); const a2 = s.az(r2.id, 'eu-west-1a')
+    const db = s.blueprint('db'); db.stateful = true
+    const primaryA = s.placement(db.id, s.server(a1.id).id)                // authored primary, region A
+    const replicaA = s.placement(db.id, s.server(a1.id).id); replicaA.role = 'replica'   // same-region replica, region A
+    const primaryB = s.placement(db.id, s.server(a2.id).id)                // SEPARATE authored primary, region B
+    const compiled = s.compile()
+    const primaryAIid = Object.values(compiled.instances).find(i => i.placementId === primaryA.id)!.id
+    const replicaAIid = Object.values(compiled.instances).find(i => i.placementId === replicaA.id)!.id
+    const primaryBIid = Object.values(compiled.instances).find(i => i.placementId === primaryB.id)!.id
+
+    // P_A is down (its server failed) and R_A was correctly promoted — a normal same-region
+    // failover. P_B is untouched, still authored+effective primary.
+    const batch = {
+      instances: {
+        [primaryAIid]: { effectiveRole: 'primary' },   // still authored primary, unaffected by this fixture's own health
+        [replicaAIid]: { effectiveRole: 'primary' },   // promoted — same-region HA, not split-brain
+        [primaryBIid]: { effectiveRole: 'primary' },   // separate, unrelated authored primary
+      },
+    } as unknown as MetricsBatch
+    expect(ids(runAnalysis(s.doc, compiled, batch), 'split-brain-risk')).toHaveLength(0)
+  })
 })
 
 describe('runAnalysis ordering + id stability', () => {

@@ -282,6 +282,18 @@ const danglingDependencyNoTargets: AnalysisRule = {
 // original behavior unchanged (still fires on a purely authored double-primary, no promotion
 // needed) — only the newly-added cross-region path requires promotion evidence, since same-region
 // dual-authoring was already flagged pre-fix and multi-region-failover never authors that shape.
+//
+// Re-review N1 fix: the I2 guard above ("any candidate's authored role isn't 'primary'") was too
+// coarse — it fires on ANY promotion anywhere in the cluster, including an ordinary SAME-region HA
+// promotion that happens to also share a blueprintId with an unrelated separate authored primary in
+// another region (the `sameRegionPlusCrossRegionPrimaryFixture` shape in worldEngine/index.test.ts,
+// and the vault's own multi-region-failover example world UNDER a live failover — neither is a bug).
+// Narrowed to require a genuine CROSS-REGION ORPHAN promotion specifically, mirroring
+// worldEngine/index.ts's `buildCrossRegionOrphanReplicaIds`: a promoted candidate only counts as
+// split-brain evidence when its OWN region has ZERO authored primary for this blueprint (checked
+// against ALL of compiled.instances, not just this cluster's candidates). A same-region authored
+// primary sibling means the promotion is normal same-region failover, not cross-region split-brain,
+// regardless of what else shares the blueprintId elsewhere.
 const splitBrainRisk: AnalysisRule = {
   id: 'split-brain-risk', family: 'structural',
   run: ({ doc, compiled, lastBatch }) => {
@@ -300,10 +312,31 @@ const splitBrainRisk: AnalysisRule = {
       if (candidates.length <= 1) continue
       const regionIds = [...new Set(candidates.map(c => c.inst.regionId))]
       const spansRegions = regionIds.length > 1
-      // Cross-region: require evidence of an actual promotion (authored role != primary somewhere
-      // in the cluster) — an authored active-active design (every member genuinely authored
-      // 'primary') is not split-brain, it's the topology working as intended.
-      if (spansRegions && !candidates.some(c => c.authoredRole !== 'primary')) continue
+      // Cross-region: require evidence of a genuine CROSS-REGION ORPHAN self-promotion, mirroring
+      // worldEngine/index.ts's buildCrossRegionOrphanReplicaIds eligibility (only a replica with
+      // ZERO same-region authored primary sibling can ever be a real cross-region split-brain
+      // promotion). A candidate whose authored role isn't 'primary' only counts as evidence when
+      // its OWN region has no authored primary for this blueprint at all — if a same-region
+      // authored primary sibling exists, the promotion is an ordinary same-region HA failover
+      // (promoteReplicas in failover.ts), not evidence of anything cross-region, even though this
+      // candidate is now ALSO part of a cross-region cluster because of an unrelated separate
+      // authored primary elsewhere (the sameRegionPlusCrossRegionPrimaryFixture / vault
+      // multi-region-failover-under-failover shape). Without this narrowing, the coarse "any
+      // authored role != primary anywhere in the cluster" guard false-fires on that exact normal
+      // topology.
+      if (spansRegions) {
+        const hasCrossRegionOrphanEvidence = candidates.some(c => {
+          if (c.authoredRole === 'primary') return false   // not a promotion at all
+          // Mirrors buildCrossRegionOrphanReplicaIds: only an orphan (its OWN region has NO
+          // authored primary for this blueprint, among ALL compiled instances — not just this
+          // cluster's candidates, since a same-region authored primary sibling may not currently
+          // be an effective primary itself) counts as cross-region split-brain evidence.
+          return !Object.values(compiled.instances).some(
+            other => other.id !== c.inst.id && other.blueprintId === blueprintId &&
+              other.regionId === c.inst.regionId && other.role === 'primary')
+        })
+        if (!hasCrossRegionOrphanEvidence) continue
+      }
       const instances = candidates.map(c => c.inst)
       out.push({
         id: `split-brain-risk:${blueprintId}`, ruleId: 'split-brain-risk', family: 'structural', severity: 'critical',
