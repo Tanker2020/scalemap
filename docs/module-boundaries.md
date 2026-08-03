@@ -5252,3 +5252,78 @@ guard). Live `npm run tauri dev` smoke (asymmetric region partition → broken g
 promoted primaries → `split-brain-risk` finding, both themes) was NOT performed in this
 session — no browser/Tauri automation was available — flagged explicitly in the task report
 rather than assumed.
+
+## Fault & Scenario Substrate — Wave 1 (2026-08-01/02, Tasks 0-21)
+
+Final, consolidated accounting for the whole wave — supersedes Task 0's original seed table (the
+"Wave-1 additions" mini-table still sitting inline in §K above §L, which now doubles as a
+per-task engine-internals changelog and is left in place for that detail; this section is the
+one-stop summary a new reader should start from). Landed FEAT-001 (Fault Injection Primitives),
+FEAT-002 (Network Partition & Link Impairment), and FEAT-003 (Scenario Timeline) — the three
+features `feature-spec.md` groups as Wave 1 — plus this Task 21 close-out sweep.
+
+**The new leaf module — `src/lib/worldEngine/faults.ts`:** pure fault + partition state and
+math, no store or engine-subsystem imports (only types), so it's safe to unit-test and reason
+about in isolation. Owns `FaultState` (`createFaultState`/`setFaultPure`/`faultsForServer`/
+`stepLeaks`) for the five `FaultKind`s (`down`/`latency-add`/`cpu-brownout`/`memory-leak`/
+`error-inject`, defined on `worldEngine/types.ts`'s `FaultKind`/`FaultSpec`/`FaultScope`), and
+`impairmentFor` — the one directional (from→to) predicate both the engine's health checks and
+every render-side severed-link visual (`ArcsLayer`/`CrossAzColumn`/`DatacenterFloor`) call
+against `PartitionFault`/`LinkEndpoint` (also defined on `worldEngine/types.ts`), so a partition
+can never be visually asymmetric without the engine agreeing, or vice versa.
+
+**One-line Wave-1 summary per hub file:**
+
+| Hub file | What Wave 1 added |
+|---|---|
+| `src/lib/world/types.ts` | Imports `FaultScope`/`FaultSpec`/`PartitionFault` from `worldEngine/types.ts` (not the reverse) to type `ScenarioAction`'s `inject-fault`/`clear-fault`/`partition`/`heal-partition` variants; adds `ScenarioStep`/`Scenario` and the optional `WorldDoc.scenario` field (absent ⇒ no scenario, byte-identical to pre-Wave-1 worlds) |
+| `src/lib/worldEngine/types.ts` | Adds `FaultKind`/`FaultSpec`/`FaultScope`/`LinkEndpoint`/`PartitionFault` (the frozen types `faults.ts` operates on), `WorldEngineApi.setFault`/`setOutage`/`setPartition`/`healPartition`, and two new `EngineEventKind`s (`fault_injected`/`fault_cleared`/`scenario_step_applied`) — additive-only per the frozen-contract convention |
+| `src/app/store/simulation.store.ts` | Adds `activeFaults: Record<string, FaultSpec \| null>` and `partitions: PartitionFault[]` state plus `setFault`/`setOutage`/`setPartition`/`healPartition` thin delegations to the `worldEngine` facade (mirroring every other store action's pattern — no fault/partition logic duplicated store-side); both are cleared on `start()`/`stop()`/`resetSession()` since the engine's own `start()` always rebuilds a fresh `FaultState` |
+| `src/app/store/world.store.ts` | Adds `setScenario`/`addScenarioStep`/`removeScenarioStep`/`updateScenarioStep`, routed through the existing `mutate()` helper — undo/redo and dirty-marking for free, no new wiring |
+| `src/app/world/panels/WorldPanel.tsx` | Mounts the new `ScenarioPanel` as a world-scope `scenario` tab (alongside `routes`/`traffic`) and wires the shared `ChaosControl` split-button into its five pre-existing kill/restore call sites (`ServerFaceplate`/`AzConfigTab`/`AzRow`'s az+managed rows/`RegionView`/`RegionOverlay`/`DatacenterFloor`'s managed row) |
+
+**Feature-by-feature landing:**
+
+- **FEAT-001 (Tasks 1-8):** `faults.ts` + types (Tasks 0-2), wired into `worldEngine/index.ts`'s
+  step loop (Task 3 — `down`/`cpu-brownout`/`memory-leak`; Tasks 4/5 added `latency-add`/
+  `error-inject`), then the shared `ChaosControl` split-button (Task 8) replaced six forked
+  bare kill/restore controls app-wide with one component offering all five fault kinds via a
+  `▾` menu.
+- **FEAT-002 (Tasks 9-14):** `LinkEndpoint`/`PartitionFault`/`impairmentFor` (Tasks 9-10),
+  directional (asymmetric, split-brain-capable) health checks in `index.ts` plus a
+  `split-brain-risk` analysis rule (Tasks 11-13), then `PartitionsSection.tsx` (the
+  region-scope partition-authoring form) and severed-link visuals across the globe/region/AZ
+  views (Task 14).
+- **FEAT-003 (Tasks 15-20):** `Scenario`/`ScenarioStep`/`ScenarioAction` types and
+  `world.store.ts` CRUD (Tasks 15-17), engine-side step application at step boundaries plus
+  `scenario.seed` overriding the run's rng seed (Task 18), demand-overlay consumption with a
+  shared `rampMath.ts` ramp formula so a live-ramping demand multiplier never discontinuity-jumps
+  (Task 19), and `ScenarioPanel.tsx` — the authoring surface, plus three of the four vault example
+  worlds gaining an authored scenario — (Task 20).
+- **Task 21 (this close-out):** full regression sweep — `npx tsc --noEmit` clean, `npx vitest run`
+  green (148 files / 1814 tests, including every pre-existing byte-identical-with-zero-faults
+  regression test), `npm run build` clean, `npm run bench` at baseline (zero faults/partitions/
+  scenario, no regression). Live smoke via Playwright against the Vite dev server (`tauriMock`
+  fallback — no Tauri window automation was available, only browser) exercised a scenario-driven
+  world end to end: an authored scenario firing a `memory-leak` then `error-inject` fault on a
+  timer, a manually authored AZ↔AZ `drop` partition producing a severed cross-AZ link + timeline
+  marker, and a dark/light theme toggle mid-run — zero console errors in the final state. The
+  smoke pass also caught and fixed two live bugs neither the unit suite nor any single task's own
+  review surfaced:
+  - `ChaosControl.tsx`'s per-fault-kind menu (`latency-add`/`cpu-brownout`/`memory-leak`/
+    `error-inject`) was completely unusable via the UI at `ServerFaceplate`/`AzConfigTab` — the
+    ONLY two call sites needing `escapeFieldset` — because the menu's native `NumberField`
+    `<input>` and `apply` `<button>` sat inside WorldPanel.tsx's ambient
+    `<fieldset disabled={running}>` unescaped: only the primary kill/toggle controls had been
+    made `role="button"` divs, and a native form control stays fieldset-disabled no matter how
+    many plain `<div>`s wrap it. Fixed with a `FieldsetSafeStepper` (role="button" +/- divs, no
+    native input) plus a `role="button"` apply div for the escaped case, mirroring
+    `PartitionsSection.tsx`'s own escape-fieldset lesson; a new regression test nests
+    `ChaosControl` in a real `<fieldset disabled>` and drives the full menu-apply flow, which the
+    existing suite never covered.
+  - `PartitionsSection.tsx`'s `btnActive`/`btnDanger` overrode only `borderColor` while `btnBase`
+    set the `border` shorthand — toggling a `Pressable`'s active state (e.g. the partition scope
+    buttons) spammed a "Removing borderColor border" React console error every rerender. Fixed by
+    overriding the full `border` shorthand in both.
+  Both fixes shipped in a separate commit from this doc update, per the wave's convention of
+  keeping incidental bug fixes distinguishable from documentation-only commits in history.
