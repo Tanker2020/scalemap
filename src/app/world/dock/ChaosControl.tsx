@@ -21,7 +21,7 @@
 //     worth preserving verbatim.
 // The restore/clear labels, the `▾` menu, the menu's four fault rows, and every color are the
 // SAME across every call site — that's the actual standardization this task delivers.
-import { useState, type CSSProperties, type ReactElement } from 'react'
+import { useState, type CSSProperties, type KeyboardEvent, type ReactElement } from 'react'
 import { useSimulationStore } from '../../store/simulation.store'
 import { NumberField } from '../panels/NumberField'
 import type { FaultKind, FaultScope, FaultSpec } from '../../../lib/worldEngine/types'
@@ -52,11 +52,11 @@ const FAULT_LABELS: Record<NonDownKind, string> = {
   'error-inject': 'inject errors',
 }
 
-const FAULT_PARAM: Record<NonDownKind, { unit: string; min: number; max: number; default: number }> = {
-  'latency-add': { unit: 'ms', min: 0, max: 5000, default: 200 },
-  'cpu-brownout': { unit: 'capacity frac', min: 0, max: 1, default: 0.5 },
-  'memory-leak': { unit: 'MB/min', min: 0, max: 2000, default: 60 },
-  'error-inject': { unit: 'error frac', min: 0, max: 1, default: 0.1 },
+const FAULT_PARAM: Record<NonDownKind, { unit: string; min: number; max: number; default: number; step: number }> = {
+  'latency-add': { unit: 'ms', min: 0, max: 5000, default: 200, step: 50 },
+  'cpu-brownout': { unit: 'capacity frac', min: 0, max: 1, default: 0.5, step: 0.05 },
+  'memory-leak': { unit: 'MB/min', min: 0, max: 2000, default: 60, step: 10 },
+  'error-inject': { unit: 'error frac', min: 0, max: 1, default: 0.1, step: 0.05 },
 }
 
 function specFor(kind: NonDownKind, value: number): FaultSpec {
@@ -103,6 +103,44 @@ const applyBtn: CSSProperties = {
 const clearRow: CSSProperties = {
   font: '10px var(--font-mono)', color: 'var(--color-text-muted)', cursor: 'pointer',
   padding: '4px 2px', textAlign: 'center', borderTop: '1px solid var(--color-node-border)', marginTop: 2,
+}
+const stepBtn: CSSProperties = {
+  font: '10px var(--font-mono)', background: 'var(--color-node-base)',
+  border: '1px solid var(--color-node-border)', borderRadius: 4, width: 16, height: 16,
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+  color: 'var(--color-text-secondary)', userSelect: 'none',
+}
+const stepValue: CSSProperties = {
+  minWidth: 40, textAlign: 'center', font: '9px var(--font-mono)', color: 'var(--color-text-primary)',
+  fontVariantNumeric: 'tabular-nums',
+}
+
+const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n))
+const round3 = (n: number) => Math.round(n * 1000) / 1000
+
+// Escape-safe stand-in for `NumberField` — a native `<input>` gets disabled by ANY ancestor
+// `<fieldset disabled>`, no matter how many plain `<div>`s wrap it (the same lesson
+// PartitionsSection.tsx's file banner documents for its own Stepper). ServerFaceplate/
+// AzConfigTab nest this menu inside WorldPanel.tsx's ambient `<fieldset disabled={running}>` —
+// exactly the moment this control needs to work — so it's built entirely from `role="button"`
+// divs, immune to that cascade. Only used when `escapeFieldset` is set; the two non-dock call
+// sites (RegionView/RegionOverlay/AzRow/DatacenterFloor — never nested in a disabling fieldset)
+// keep the plain `NumberField` + free-text entry unchanged.
+function FieldsetSafeStepper({ value, min, max, step, onChange, ariaLabel }: {
+  value: number; min: number; max: number; step: number; onChange: (n: number) => void; ariaLabel: string
+}): ReactElement {
+  const dec = () => onChange(round3(clamp(value - step, min, max)))
+  const inc = () => onChange(round3(clamp(value + step, min, max)))
+  const keyHandler = (fn: () => void) => (e: KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn() }
+  }
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      <div role="button" tabIndex={0} className="kit-press" style={stepBtn} aria-label={`${ariaLabel} decrease`} onClick={dec} onKeyDown={keyHandler(dec)}>−</div>
+      <span data-testid={`${ariaLabel}-value`} style={stepValue}>{value}</span>
+      <div role="button" tabIndex={0} className="kit-press" style={stepBtn} aria-label={`${ariaLabel} increase`} onClick={inc} onKeyDown={keyHandler(inc)}>+</div>
+    </div>
+  )
 }
 
 export interface ChaosControlProps {
@@ -210,7 +248,7 @@ export function ChaosControl({
       {running && menuOpen && (
         <div style={menuStyle} data-testid="chaos-menu">
           {(Object.keys(FAULT_LABELS) as NonDownKind[]).map(kind => (
-            <ChaosMenuRow key={kind} kind={kind} onApply={applyKind} />
+            <ChaosMenuRow key={kind} kind={kind} onApply={applyKind} escapeFieldset={escapeFieldset} />
           ))}
           {isFaulted && (
             <div
@@ -227,16 +265,33 @@ export function ChaosControl({
   )
 }
 
-function ChaosMenuRow({ kind, onApply }: { kind: NonDownKind; onApply: (spec: FaultSpec) => void }): ReactElement {
+function ChaosMenuRow({ kind, onApply, escapeFieldset }: {
+  kind: NonDownKind; onApply: (spec: FaultSpec) => void; escapeFieldset: boolean
+}): ReactElement {
   const param = FAULT_PARAM[kind]
   const [value, setValue] = useState(param.default)
+  const ariaLabel = `${FAULT_LABELS[kind]} ${param.unit}`
   return (
     <div style={menuRow} data-testid={`chaos-menu-row-${kind}`}>
       <span style={menuRowLabel}>{FAULT_LABELS[kind]} <span style={{ color: 'var(--color-text-muted)' }}>({param.unit})</span></span>
-      <NumberField label={`${FAULT_LABELS[kind]} ${param.unit}`} value={value} min={param.min} max={param.max} onCommit={setValue} />
-      <button type="button" className="kit-press" style={applyBtn} onClick={() => onApply(specFor(kind, value))}>
-        apply
-      </button>
+      {escapeFieldset ? (
+        <FieldsetSafeStepper value={value} min={param.min} max={param.max} step={param.step} onChange={setValue} ariaLabel={ariaLabel} />
+      ) : (
+        <NumberField label={ariaLabel} value={value} min={param.min} max={param.max} onCommit={setValue} />
+      )}
+      {escapeFieldset ? (
+        <div
+          role="button" tabIndex={0} className="kit-press" style={applyBtn}
+          onClick={() => onApply(specFor(kind, value))}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onApply(specFor(kind, value)) } }}
+        >
+          apply
+        </div>
+      ) : (
+        <button type="button" className="kit-press" style={applyBtn} onClick={() => onApply(specFor(kind, value))}>
+          apply
+        </button>
+      )}
     </div>
   )
 }

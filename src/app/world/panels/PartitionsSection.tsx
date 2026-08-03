@@ -72,12 +72,17 @@ const btnBase: CSSProperties = {
   border: '1px solid var(--color-node-border)', borderRadius: 5, padding: '4px 8px',
   color: 'var(--color-text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap', userSelect: 'none',
 }
+// NOTE: override the full `border` shorthand here, not just `borderColor` — React warns (and can
+// misapply styles) when an element's inline style toggles between a shorthand (`btnBase`'s
+// `border`) and a longhand override of the same shorthand's sub-property across rerenders. Found
+// live during Task 21's smoke pass: toggling any Pressable's `active` state (e.g. the partition
+// scope buttons) spammed "Removing borderColor border" console errors.
 const btnActive: CSSProperties = {
   background: 'color-mix(in srgb, var(--color-accent) 13%, transparent)',
-  color: 'var(--color-accent)', borderColor: 'var(--color-accent)',
+  color: 'var(--color-accent)', border: '1px solid var(--color-accent)',
 }
 const btnLocked: CSSProperties = { opacity: 0.35, cursor: 'default' }
-const btnDanger: CSSProperties = { color: 'var(--color-danger)', borderColor: 'color-mix(in srgb, var(--color-danger) 25%, transparent)' }
+const btnDanger: CSSProperties = { color: 'var(--color-danger)', border: '1px solid color-mix(in srgb, var(--color-danger) 25%, transparent)' }
 
 // A `role="button"` div, never a native `<button>` — immune to ancestor-fieldset disabling.
 // `locked` mirrors ChaosControl's `!running` gate exactly (tabIndex -1, aria-disabled,

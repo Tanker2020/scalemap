@@ -3,7 +3,7 @@
 // three behaviors the brief calls out — disabled+tooltip while stopped, primary click applies a
 // `down` fault, and the `▾` menu's numeric-parameter rows apply the typed FaultSpec.
 import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { ChaosControl } from './ChaosControl'
 import { useSimulationStore } from '../../store/simulation.store'
 
@@ -66,5 +66,28 @@ describe('ChaosControl', () => {
 
     rerender(<ChaosControl scope="az" id="az1" running={false} label="us-east-1a" />)
     expect(screen.getByLabelText('Simulate outage for us-east-1a')).toBeInTheDocument()
+  })
+
+  // Task 21 (Wave-1 close-out) live smoke found this: ServerFaceplate/AzConfigTab nest
+  // ChaosControl inside WorldPanel.tsx's ambient `<fieldset disabled={running}>`, so with
+  // `escapeFieldset`, the menu's native `NumberField` `<input>` + `<button>apply</button>` were
+  // STILL fieldset-disabled (a wrapping `role="button"` div doesn't shield a real descendant form
+  // control — only the primary/toggle controls' OWN elements being non-native does). The fault
+  // menu was completely unusable via the UI at the one moment it matters. Fixed by making the
+  // escaped menu row's stepper + apply control non-native too (`FieldsetSafeStepper` + a
+  // `role="button"` div), mirroring PartitionsSection.tsx's own escape-fieldset lesson.
+  it('escapeFieldset: the menu apply flow survives an ambient <fieldset disabled> too, not just the primary/toggle buttons', () => {
+    render(
+      <fieldset disabled>
+        <ChaosControl scope="server" id="s1" running escapeFieldset />
+      </fieldset>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /more fault options/i }))
+    const row = screen.getByTestId('chaos-menu-row-cpu-brownout')
+    // The escaped stepper has no native <input> — bump the value via its +/- role="button" divs.
+    expect(row.querySelector('input')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'CPU brownout capacity frac increase' }))
+    fireEvent.click(within(row).getByRole('button', { name: 'apply' }))
+    expect(useSimulationStore.getState().activeFaults.s1).toEqual({ kind: 'cpu-brownout', capacityFraction: 0.55 })
   })
 })
