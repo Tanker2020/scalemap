@@ -2555,9 +2555,68 @@ describe('FEAT-002 Task 12: directional health / split-brain', () => {
     sim.stepFor(60)
     expect(sim.events.filter(e => e.kind === 'replica_promoted' && e.affected.includes(f.replicaIid))).toHaveLength(1)
 
-    sim.engine.healPartition!(0)
+    sim.engine.healPartition!('partition-0')   // auto-assigned by addPartition (audit final-review I3) — first partition of the run
     sim.stepFor(60)  // past the healthy-threshold's consecutive-success debounce
     expect(sim.events.some(e => e.kind === 'primary_failback' && e.affected.includes(f.replicaIid))).toBe(true)
+    sim.engine.stop()
+  })
+
+  // Audit final-review C1 (permanent regression fixture): the reviewer's exact repro — a
+  // same-region primary (P_A) + same-region replica (R_A) in region A, PLUS a SEPARATE authored
+  // primary (P_B) for the SAME blueprint in region B — a realistic active-active-with-local-HA
+  // topology. Unlike crossRegionReplicaFixture above, R_A here has BOTH a same-region primary
+  // sibling AND a cross-region primary, which is the exact combination the old
+  // `crossRegionPrimaries.length === 0` guard failed to exclude: it let the cross-region block
+  // read `alreadyPromoted` off the SHARED promotedAt map right after promoteReplicas legitimately
+  // promoted R_A, saw a stale "isolated: false, alreadyPromoted: true" and incorrectly failed R_A
+  // back — which promoteReplicas then re-promoted next step, forever (200 promote + 200 failback
+  // events over 20s in the reviewer's measurement). ZERO partitions are active in this test: this
+  // is a same-region FEAT-001 kill interacting with FEAT-002's promotion bookkeeping, not a
+  // partition-gated bug — gating the whole block on partitions.length === 0 would mask this
+  // exact repro without fixing it (see the block's comment in index.ts).
+  function sameRegionPlusCrossRegionPrimaryFixture() {
+    const doc = createWorld()
+    const regionA = createRegion('us-east-1')
+    const regionB = createRegion('eu-west-1')
+    const azA = createAz(regionA.id, 'us-east-1a')
+    const azB = createAz(regionB.id, 'eu-west-1a')
+    doc.regions[regionA.id] = regionA; doc.regions[regionB.id] = regionB
+    doc.azs[azA.id] = azA; doc.azs[azB.id] = azB
+    const sA1 = createServer(azA.id, getPreset('dedicated-8')!)
+    const sA2 = createServer(azA.id, getPreset('dedicated-8')!)
+    const sB = createServer(azB.id, getPreset('dedicated-8')!)
+    doc.servers[sA1.id] = sA1; doc.servers[sA2.id] = sA2; doc.servers[sB.id] = sB
+
+    const db = createBlueprint('db', 0)
+    db.kind = 'db-sql'
+    db.dbConfig = { engine: 'sql', storageGb: 50 }
+    doc.blueprints[db.id] = db
+
+    const primaryAPl = createPlacement(db.id, sA1.id)                             // authored primary, region A
+    const replicaAPl = createPlacement(db.id, sA2.id); replicaAPl.role = 'replica' // SAME-region replica, region A
+    const primaryBPl = createPlacement(db.id, sB.id)                              // SEPARATE authored primary, region B
+    doc.placements[primaryAPl.id] = primaryAPl
+    doc.placements[replicaAPl.id] = replicaAPl
+    doc.placements[primaryBPl.id] = primaryBPl
+
+    const compiled = compileWorld(doc)
+    return {
+      doc, compiled, primaryAServerId: sA1.id,
+      primaryAIid: instanceId(primaryAPl.id, 0), replicaAIid: instanceId(replicaAPl.id, 0), primaryBIid: instanceId(primaryBPl.id, 0),
+    }
+  }
+
+  it('C1 regression: killing a same-region primary with a same-region replica AND a separate cross-region primary promotes the replica exactly once — no promote/failback flap, no partition active', () => {
+    const f = sameRegionPlusCrossRegionPrimaryFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(2)   // settle
+    sim.engine.setFault('server', f.primaryAServerId, { kind: 'down' })   // FEAT-001: kill P_A's server — no partition anywhere
+    sim.stepFor(20)  // ~20 simulated seconds — the reviewer's measured flap window
+
+    const promotions = sim.events.filter(e => e.kind === 'replica_promoted')
+    const failbacks = sim.events.filter(e => e.kind === 'primary_failback')
+    expect(promotions.length).toBeLessThanOrEqual(1)
+    expect(failbacks).toHaveLength(0)
     sim.engine.stop()
   })
 })
@@ -2680,13 +2739,49 @@ describe('FEAT-003 scenario timeline (Task 18)', () => {
     expect(events.filter(e => e.kind === 'fault_cleared')).toHaveLength(1)
   })
 
+  // Audit final-review I1: runFrame's replay loop advances the clock for the WHOLE frame's step
+  // batch FIRST (state.clock.simMs lands on the batch's LAST step), then replays each step
+  // backdated. A scenario action applied on an EARLIER, backdated step must be timestamped with
+  // THAT step's own simMs — not state.clock.simMs, which by the time applyScenarioAction runs
+  // already holds the batch's end time. The existing determinism test above (__test_step, default
+  // timeScale=1) runs exactly one step per frame and structurally cannot exercise this: this test
+  // forces a 4-step batch in ONE runFrame call via setTimeScale, the same mechanism any timeScale
+  // > 1 (or a slow real frame) triggers in production.
+  it('audit final-review I1: a scenario action applied on a backdated step (multi-step frame batch) is timestamped with the STEP\'s own simMs, not the batch\'s end time', () => {
+    const { doc, compiled } = scenarioFixture()
+    const azId = Object.values(doc.azs)[0].id
+    doc.scenario = {
+      id: 's-i1', label: 'T', seed: 11, durationMs: 60000,
+      steps: [
+        { atMs: 200, action: { type: 'inject-fault', scope: 'az', id: azId, spec: { kind: 'down' } } },
+      ],
+    }
+    const events: EngineEvent[] = []
+    const engine = createWorldEngine(0)
+    engine.start(doc, compiled, { onMetrics: () => {}, onEvent: e => events.push(e), onHealthChange: () => {} })
+    // timeScale=4 + a single __test_step(1) call: runFrame(stepMs=100) -> clock.advance(100, 4)
+    // accumulates 400ms of sim time in ONE frame -> 4 backdated steps (100/200/300/400ms) replayed
+    // in that one runFrame call. The scenario step (atMs=200) lands on the SECOND of those steps.
+    engine.setTimeScale(4)
+    engine.__test_step(1)
+    engine.stop()
+
+    const stepApplied = events.filter(e => e.kind === 'scenario_step_applied')
+    expect(stepApplied).toHaveLength(1)
+    expect(stepApplied[0]!.simMs).toBe(200)   // the step's own simMs, not the batch's end (400)
+
+    const outages = events.filter(e => e.kind === 'outage_triggered')
+    expect(outages.length).toBeGreaterThan(0)
+    for (const e of outages) expect(e.simMs).toBe(200)   // faults.ts + failover.ts both emit one; both must agree
+  })
+
   it('partition/heal-partition scenario actions reuse the exact facade path (partition_started/partition_healed events fire)', () => {
     const { doc, compiled, serverId } = scenarioFixture()
     doc.scenario = {
       id: 's4', label: 'T', seed: 3, durationMs: 20000,
       steps: [
-        { atMs: 1000, action: { type: 'partition', fault: { from: { kind: 'server', id: serverId }, to: { kind: 'internet' }, mode: 'drop', symmetric: false } } },
-        { atMs: 5000, action: { type: 'heal-partition', index: 0 } },
+        { atMs: 1000, action: { type: 'partition', fault: { id: 'p1', from: { kind: 'server', id: serverId }, to: { kind: 'internet' }, mode: 'drop', symmetric: false } } },
+        { atMs: 5000, action: { type: 'heal-partition', partitionId: 'p1' } },
       ],
     }
     const events: EngineEvent[] = []

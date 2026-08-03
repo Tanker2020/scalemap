@@ -22,6 +22,12 @@ New `WorldEngineApi` methods: `setPartition(fault: PartitionFault): void` (thin 
 
 Added a task early: this facade surface was originally planned for Task 13 (the full partition-authoring API), but Task 12's directional-health/split-brain test needed a way to drive a real partition through a *running* engine (`engine.step()` over wall-time, to exercise the health-check consecutive-failure debounce) rather than poking at `state.faults.partitions` directly, and nothing exposed partitions to a running engine yet. Task 13 should extend this minimal pair (e.g. listing/inspecting active partitions, or a by-value removal instead of by-index) rather than duplicating it.
 
+## 2026-08-01 — Task 13 (review fix): `MetricsBatch.instances[id].effectiveRole` (FEAT-002)
+
+Added `effectiveRole?: PlacementRole` to `InstanceMetrics` (additive-optional, `worldEngine/types.ts`; `PlacementRole` added to the file's `world/types` import). Populated by `metrics.ts`'s `buildBatch` via a new trailing optional parameter `roleOf?: (id: InstanceId) => PlacementRole`, threaded from `index.ts`'s sole `buildBatch` call site using the ALREADY-MEMOIZED `roleOf`/`s.roleResolver` built earlier in the same step (§6, `failover.ts`'s `effectiveRoleResolver(compiled, s.failover.promotedAt)`, memoized on `promoKey`) — never re-derived, so the published role can never disagree with the role the flow solver actually routed writes to that step.
+
+Reason: code review of Task 13's first commit (`045ba57`) found `analysis/rules/structural.ts`'s `split-brain-risk` rule read only the STATIC authored `compiled.instances[id].role`, which never changes at runtime — a partition-induced promotion only ever mutates the engine's internal `state.failover.promotedAt`, and nothing published to `MetricsBatch` could see it before this fix, so the rule could only ever fire on a hand-authored double-primary, never a genuine live split-brain (the exact scenario Task 12's own split-brain test produces, and Task 14's planned live-smoke-test step depends on). `split-brain-risk` now reads `lastBatch?.instances[id]?.effectiveRole ?? compiled.instances[id].role`. Absent `roleOf`/no batch yet ⇒ every existing direct-`buildBatch` caller/test and the rule's own doc-only fallback are unchanged by omission.
+
 ## 2026-08-02 — Task 18: `scenario_step_applied` `EngineEventKind` + `EngineState.scenarioSteps`/`scenarioCursor`/`demandOverlay` (FEAT-003)
 
 New `EngineEventKind` member `scenario_step_applied` (`worldEngine/types.ts`) — emitted once per
@@ -53,8 +59,36 @@ two engines with different default seeds but the same `scenario.seed`, asserting
 output. A `doc` with no `scenario` is unaffected (`scenarioSteps: []`, `effectiveSeed === seed`),
 preserving pre-feature determinism byte-for-byte.
 
-## 2026-08-01 — Task 13 (review fix): `MetricsBatch.instances[id].effectiveRole` (FEAT-002)
+## 2026-08-02 — Final-review fix wave, I3: `PartitionFault.id` + `WorldEngineApi.healPartition` addresses by id, not index (FEAT-002)
 
-Added `effectiveRole?: PlacementRole` to `InstanceMetrics` (additive-optional, `worldEngine/types.ts`; `PlacementRole` added to the file's `world/types` import). Populated by `metrics.ts`'s `buildBatch` via a new trailing optional parameter `roleOf?: (id: InstanceId) => PlacementRole`, threaded from `index.ts`'s sole `buildBatch` call site using the ALREADY-MEMOIZED `roleOf`/`s.roleResolver` built earlier in the same step (§6, `failover.ts`'s `effectiveRoleResolver(compiled, s.failover.promotedAt)`, memoized on `promoKey`) — never re-derived, so the published role can never disagree with the role the flow solver actually routed writes to that step.
+Added `id?: string` to `PartitionFault` (`worldEngine/types.ts`, additive-optional). `faults.ts`'s
+`addPartition` now auto-assigns one (`partition-${FaultState.nextPartitionId++}`, a new counter
+field on `FaultState`) when the caller didn't supply one, so every partition that ever lands in
+`FaultState.partitions` carries a real id.
 
-Reason: code review of Task 13's first commit (`045ba57`) found `analysis/rules/structural.ts`'s `split-brain-risk` rule read only the STATIC authored `compiled.instances[id].role`, which never changes at runtime — a partition-induced promotion only ever mutates the engine's internal `state.failover.promotedAt`, and nothing published to `MetricsBatch` could see it before this fix, so the rule could only ever fire on a hand-authored double-primary, never a genuine live split-brain (the exact scenario Task 12's own split-brain test produces, and Task 14's planned live-smoke-test step depends on). `split-brain-risk` now reads `lastBatch?.instances[id]?.effectiveRole ?? compiled.instances[id].role`. Absent `roleOf`/no batch yet ⇒ every existing direct-`buildBatch` caller/test and the rule's own doc-only fallback are unchanged by omission.
+**Breaking, deliberately, on reviewer instruction:** `WorldEngineApi.healPartition`'s signature
+changed from `(index: number) => void` to `(id: string) => void`, and `faults.ts`'s
+`removePartition` changed from `(state, index: number, simMs)` to `(state, id: string, simMs)` —
+both now resolve the target partition by `p.id === id` (a no-op returning `null`/nothing on an
+unknown id) rather than array position. Reason: `PartitionsSection.tsx`'s partition-authoring UI
+is usable WHILE the sim is running (`ChaosControl`'s inverse edit-lock), so a hand-authored
+partition or heal mid-run could shift every LATER partition's array index out from under a
+scenario's `heal-partition` step, silently healing the wrong one — array position was never a
+safe identity for a live-mutable list. `src/lib/world/types.ts`'s `ScenarioAction`'s
+`heal-partition` variant changed from `{ index: number }` to `{ partitionId: string }` to match;
+every call site updated in lockstep: `simulation.store.ts`'s `healPartition` action (and its local
+`partitions` mirror, which now assigns the id itself via a module-level counter so the mirror
+stays self-consistent even when the engine isn't running — see that file's own comment),
+`PartitionsSection.tsx`'s heal button (`p.id`, not the row index), and `ScenarioPanel.tsx`'s
+`AddStepForm` (a `partition` step can now author an explicit id to pair with a later
+`heal-partition` step; left blank, the engine auto-assigns one at apply time, which a
+same-scenario `heal-partition` step then cannot reference by name).
+
+Landed alongside audit finding C1's fix (the cross-region self-promotion promote/failback flap —
+see the "Fault & Scenario Substrate — Wave 1" section of `docs/module-boundaries.md` for the full
+writeup) and I1 (scenario-driven fault/partition actions now thread the STEP's own `simMs`
+explicitly through internal `doSetFault`/`doSetPartition`/`doHealPartition` helpers, rather than
+each reading `state.clock.simMs` — which, mid-replay of a multi-step frame batch, holds the
+batch's LAST step's time, not the step actually being applied. The public `WorldEngineApi`
+facade methods (`setFault`/`setPartition`/`healPartition`) are unaffected — UI-driven calls are
+never backdated, so they still read `state.clock.simMs` at the call site).

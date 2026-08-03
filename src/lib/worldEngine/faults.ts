@@ -5,10 +5,13 @@ export interface FaultState {
   active: Map<string, FaultSpec>        // keyed `${scope}:${id}`, mirrors failover.ts's outageKey shape
   leakAccumMb: Map<InstanceId, number>  // memory-leak accumulator, reset on restart/clear
   partitions: PartitionFault[]          // FEAT-002 active network partitions
+  // Monotonic counter backing addPartition's auto-assigned id (audit final-review I3) — never
+  // reused within a run, so an id always names exactly one partition even after others are healed.
+  nextPartitionId: number
 }
 
 export function createFaultState(): FaultState {
-  return { active: new Map(), leakAccumMb: new Map(), partitions: [] }
+  return { active: new Map(), leakAccumMb: new Map(), partitions: [], nextPartitionId: 0 }
 }
 
 function faultKey(scope: FaultScope, id: string): string {
@@ -88,10 +91,18 @@ function endpointLabel(e: LinkEndpoint): string {
   return e.kind === 'internet' ? 'internet' : `${e.kind}:${e.id}`
 }
 
+// Audit final-review I3: partitions are addressed by stable id, not array position — the
+// PartitionsSection UI is usable WHILE running (edit-lock inverse), so authoring/healing a
+// partition by hand mid-scenario-run must never shift another partition's identity out from
+// under a scenario's `heal-partition` step. `fault.id` is caller-supplied when the author needs a
+// stable handle to pair with a later heal (e.g. a scenario's matched partition/heal-partition step
+// pair); when absent, it is auto-assigned here from the run's monotonic counter — every partition
+// gets a real id either way, so removePartition can always address by identity.
 export function addPartition(state: FaultState, fault: PartitionFault, simMs: number): EngineEvent {
+  if (!fault.id) fault.id = `partition-${state.nextPartitionId++}`
   state.partitions.push(fault)
   return {
-    id: `evt-partition:${state.partitions.length - 1}:${simMs}`,
+    id: `evt-partition:${fault.id}:${simMs}`,
     kind: 'partition_started',
     severity: 'warning',
     message: `partition ${endpointLabel(fault.from)} -> ${endpointLabel(fault.to)} (${fault.mode})`,
@@ -100,13 +111,15 @@ export function addPartition(state: FaultState, fault: PartitionFault, simMs: nu
   }
 }
 
-// Returns null when index is out of range (no-op) rather than throwing — splice on an invalid
-// index yields `removed === undefined`, so there is no fault to describe in the event.
-export function removePartition(state: FaultState, index: number, simMs: number): EngineEvent | null {
+// Returns null when the id is unknown (no-op) rather than throwing — a stale/already-healed id
+// (e.g. a scenario step racing a manual heal, or replaying against a shifted list under the OLD
+// index-based scheme) simply has no matching partition to describe an event for.
+export function removePartition(state: FaultState, id: string, simMs: number): EngineEvent | null {
+  const index = state.partitions.findIndex(p => p.id === id)
+  if (index === -1) return null
   const [removed] = state.partitions.splice(index, 1)
-  if (!removed) return null
   return {
-    id: `evt-partition-healed:${index}:${simMs}`,
+    id: `evt-partition-healed:${id}:${simMs}`,
     kind: 'partition_healed',
     severity: 'info',
     message: `partition healed: ${endpointLabel(removed.from)} -> ${endpointLabel(removed.to)}`,

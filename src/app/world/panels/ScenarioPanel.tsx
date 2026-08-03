@@ -67,9 +67,9 @@ function describeAction(action: ScenarioAction, doc: WorldDoc): string {
     case 'clear-fault':
       return `clear fault → ${entityLabel(action.scope, action.id, doc)}`
     case 'partition':
-      return `partition ${endpointLabel(action.fault.from, doc)} ${action.fault.symmetric ? '⇄' : '→'} ${endpointLabel(action.fault.to, doc)} (${action.fault.mode})`
+      return `partition${action.fault.id ? ` [${action.fault.id}]` : ''} ${endpointLabel(action.fault.from, doc)} ${action.fault.symmetric ? '⇄' : '→'} ${endpointLabel(action.fault.to, doc)} (${action.fault.mode})`
     case 'heal-partition':
-      return `heal partition #${action.index}`
+      return `heal partition [${action.partitionId}]`
     case 'demand-multiplier':
       return `demand ×${action.factor} over ${action.rampSec}s`
     case 'set-population-rps':
@@ -293,9 +293,16 @@ function AddStepForm({ doc, onAdd }: { doc: WorldDoc; onAdd: (step: ScenarioStep
   const [lossFraction, setLossFraction] = useState('0.5')
   const [delayMs, setDelayMs] = useState('200')
   const [symmetric, setSymmetric] = useState(true)
+  // Audit final-review I3: partitions are now addressed by stable id, not array position (a
+  // partition authored/healed by hand via PartitionsSection mid-run shifted every later index,
+  // silently misdirecting a scenario's heal-partition step). Authoring a `partition` step lets you
+  // set an explicit id here so a LATER `heal-partition` step in the same scenario can reference it
+  // — left blank, the engine auto-assigns one at apply time, but then no later step can address it
+  // by name, so pairing a partition with a heal-partition step requires filling this in.
+  const [partitionId, setPartitionId] = useState('')
 
   // heal-partition
-  const [healIndex, setHealIndex] = useState('0')
+  const [healPartitionId, setHealPartitionId] = useState('')
 
   // demand-multiplier
   const [factor, setFactor] = useState('1.5')
@@ -319,7 +326,7 @@ function AddStepForm({ doc, onAdd }: { doc: WorldDoc; onAdd: (step: ScenarioStep
       case 'partition':
         return (fromScope === 'internet' || fromId !== '') && (toScope === 'internet' || toId !== '')
       case 'heal-partition':
-        return healIndex !== ''
+        return healPartitionId.trim() !== ''
       case 'demand-multiplier':
         return true
       case 'set-population-rps':
@@ -338,13 +345,14 @@ function AddStepForm({ doc, onAdd }: { doc: WorldDoc; onAdd: (step: ScenarioStep
         const to: LinkEndpoint = toScope === 'internet' ? { kind: 'internet' } : { kind: toScope, id: toId }
         const fault: PartitionFault = {
           from, to, mode, symmetric,
+          ...(partitionId.trim() ? { id: partitionId.trim() } : {}),
           ...(mode === 'loss' ? { lossFraction: Number(lossFraction) } : {}),
           ...(mode === 'delay' ? { delayMs: Number(delayMs) } : {}),
         }
         return { type: 'partition', fault }
       }
       case 'heal-partition':
-        return { type: 'heal-partition', index: Number(healIndex) }
+        return { type: 'heal-partition', partitionId: healPartitionId.trim() }
       case 'demand-multiplier':
         return { type: 'demand-multiplier', factor: Number(factor), rampSec: Number(rampSec) }
       case 'set-population-rps':
@@ -452,13 +460,19 @@ function AddStepForm({ doc, onAdd }: { doc: WorldDoc; onAdd: (step: ScenarioStep
               symmetric
             </label>
           </div>
+          <div style={row}>
+            <span style={miniLabel}>id (optional — set to pair with a later heal-partition step)</span>
+            <input style={{ ...field, flex: 1, marginBottom: 0 }} aria-label="new-step-partition-id" placeholder="e.g. p1"
+              value={partitionId} onChange={e => setPartitionId(e.target.value)} />
+          </div>
         </>
       )}
 
       {type === 'heal-partition' && (
         <div style={row}>
-          <span style={miniLabel}>index</span>
-          <input style={atMsField} type="number" min={0} aria-label="new-step-heal-index" value={healIndex} onChange={e => setHealIndex(e.target.value)} />
+          <span style={miniLabel}>partition id</span>
+          <input style={{ ...field, flex: 1, marginBottom: 0 }} aria-label="new-step-heal-partition-id" placeholder="matches a partition step's id"
+            value={healPartitionId} onChange={e => setHealPartitionId(e.target.value)} />
         </div>
       )}
 

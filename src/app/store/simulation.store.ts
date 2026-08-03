@@ -81,6 +81,16 @@ let eventBuffer: EngineEvent[] = []
 let eventFlushScheduled = false
 let eventGen = 0
 
+// Audit final-review I3: the store assigns a partition's stable id itself, rather than relying on
+// worldEngine.setPartition's addPartition fallback to mutate the fault object in place — that
+// fallback only fires while the engine is actually running (`if (!state) return` short-circuits
+// setPartition otherwise), so the local `partitions` mirror below would be left with an id-less
+// entry (and heal-partition-by-id silently unable to address it) if a partition were ever authored
+// while stopped. Assigning here means the local mirror is always self-consistent regardless of
+// engine liveness, and the SAME id is what reaches the engine (addPartition's own fallback never
+// triggers, since the fault already carries one).
+let partitionIdSeq = 0
+
 function applyEventBuffer(gen: number): void {
   eventFlushScheduled = false
   if (gen !== eventGen) { eventBuffer = []; return }
@@ -174,7 +184,11 @@ interface SimulationStoreV2 {
   // operator-authored chaos state, not derived metrics, so Task 14's authoring UI (and the three
   // render files) read this list directly rather than round-tripping through MetricsBatch.
   setPartition: (fault: PartitionFault) => void
-  healPartition: (index: number) => void
+  // Audit final-review I3: was index-based (array position in the local `partitions` mirror
+  // below) — a partition authored/healed by hand mid-scenario-run shifted every later index, so a
+  // scenario's `heal-partition` step could silently heal the WRONG partition. Now addresses by
+  // PartitionFault.id (stable identity; see worldEngine/types.ts's own comment).
+  healPartition: (id: string) => void
   // FEAT-002 Task 14: the authored partition list itself, updated locally by setPartition/
   // healPartition above (never read back from the engine each tick).
   partitions: PartitionFault[]
@@ -326,12 +340,15 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
     get().setFault(scope, id, down ? { kind: 'down' } : null)
   },
   setPartition: (fault) => {
-    worldEngine.setPartition(fault)
-    set((s) => ({ partitions: [...s.partitions, fault] }))
+    // Assign the id HERE (see partitionIdSeq's comment above) so the local mirror is always
+    // consistent even if the engine happens not to be running when this is called.
+    const withId: PartitionFault = fault.id ? fault : { ...fault, id: `ui-partition-${partitionIdSeq++}` }
+    worldEngine.setPartition(withId)
+    set((s) => ({ partitions: [...s.partitions, withId] }))
   },
-  healPartition: (index) => {
-    worldEngine.healPartition(index)
-    set((s) => ({ partitions: s.partitions.filter((_, i) => i !== index) }))
+  healPartition: (id) => {
+    worldEngine.healPartition(id)
+    set((s) => ({ partitions: s.partitions.filter((p) => p.id !== id) }))
   },
   setScrubIndex: (i, frames) => {
     const resolved = frames ?? worldEngine.getReplayFrames()

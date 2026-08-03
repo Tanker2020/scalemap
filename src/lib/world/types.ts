@@ -367,7 +367,11 @@ export type ScenarioAction =
   | { type: 'inject-fault'; scope: FaultScope; id: string; spec: FaultSpec }
   | { type: 'clear-fault'; scope: FaultScope; id: string }
   | { type: 'partition'; fault: PartitionFault }
-  | { type: 'heal-partition'; index: number }
+  // Audit final-review I3: was array-index addressed; a partition authored/healed by hand via
+  // PartitionsSection mid-run shifted every later index. Now addresses by PartitionFault.id — the
+  // matched `partition` action's `fault.id` (author-supplied so this step can reference it ahead
+  // of runtime, since ids aren't assigned until addPartition applies the fault).
+  | { type: 'heal-partition'; partitionId: string }
   | { type: 'demand-multiplier'; factor: number; rampSec: number }
   | { type: 'set-population-rps'; populationId: string; peakRps: number; rampSec: number }
 

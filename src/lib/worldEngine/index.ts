@@ -365,6 +365,16 @@ interface EngineState {
   // the 1 Hz starved-detection BFS walks it from the down set to find instances that are silent
   // because an UPSTREAM died, not because the world is idle.
   downstreamAdj: Map<InstanceId, InstanceId[]>
+  // FEAT-002 cross-region split-brain eligibility (audit final-review C1/I4), built once at
+  // start() from the frozen compiled world: every replica instance that has NO same-region
+  // authored primary sibling (promoteReplicas already owns that cluster) but DOES have an
+  // authored primary for its blueprint in at least one OTHER region — a genuinely orphaned
+  // cross-region-only replica, the only case index.ts's isolation-promotion block may act on. A
+  // replica with a same-region primary is excluded here structurally, not just gated at apply
+  // time, so it can never be a candidate for this block regardless of partition state. Empty in
+  // the overwhelming common case (no cross-region-only replica topology), so the per-step loop
+  // below is skipped entirely rather than scanning every instance every step.
+  crossRegionOrphanReplicaIds: Set<InstanceId>
 
   routing: RoutingState
   failover: FailoverState
@@ -594,31 +604,70 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       case 'inject-fault': return `scenario: inject-fault ${action.scope}:${action.id} (${action.spec.kind})`
       case 'clear-fault': return `scenario: clear-fault ${action.scope}:${action.id}`
       case 'partition': return `scenario: partition ${linkLabel(action.fault.from)} -> ${linkLabel(action.fault.to)} (${action.fault.mode})`
-      case 'heal-partition': return `scenario: heal-partition #${action.index}`
+      case 'heal-partition': return `scenario: heal-partition ${action.partitionId}`
       case 'demand-multiplier': return `scenario: demand-multiplier x${action.factor} over ${action.rampSec}s`
       case 'set-population-rps': return `scenario: set-population-rps ${action.populationId} -> ${action.peakRps}rps over ${action.rampSec}s`
     }
   }
 
+  // Audit final-review I1: the shared apply logic behind api.setFault/setPartition/healPartition,
+  // taking simMs EXPLICITLY rather than reading state.clock.simMs internally. runFrame's replay
+  // loop (below) advances the clock for the WHOLE frame's step batch first, then replays each step
+  // backdated — so a scenario action applied on a backdated step (any timeScale > 1, or a slow
+  // frame yielding >1 step) must be timestamped with THAT step's own simMs, not the batch's later
+  // endMs (which is what state.clock.simMs holds by the time applyScenarioAction runs). Getting
+  // this wrong doesn't just mistime an event: failoverSetOutage's simMs feeds beginDrain's
+  // drainUntil and managedDownSince.sinceMs, so an AZ/managed-scope scenario fault's drain ramp /
+  // multi-AZ recovery window would silently vary with real wall-clock frame batching — the exact
+  // determinism hole this feature exists to prevent. The public facade methods below keep reading
+  // state.clock.simMs (unchanged behavior for UI-driven calls, which are never backdated), and
+  // delegate to these same functions so there is exactly one implementation either way.
+  const doSetFault = (s: EngineState, scope: FaultScope, id: string, spec: FaultSpec | null, simMs: number): void => {
+    const affected = instanceIdsForFaultScope(s, scope, id)
+    for (const e of setFaultPure(s.faults, scope, id, spec, simMs, affected)) emitEvent(e)
+    // 'down' (and clearing back to null) routes through the EXISTING failover outage path so
+    // behavior stays byte-identical to the pre-FEAT-001 setOutage — faults.ts's own state above
+    // is bookkeeping/event-emission only, never a second source of truth for down/health.
+    if (spec === null || spec.kind === 'down') {
+      const down = spec !== null
+      for (const e of failoverSetOutage(s.failover, scope as OutageScope, id, down, simMs)) emitEvent(e)
+      // audit ISSUE-008: an AZ failure is a SIMULATED outage for the managed services scoped to
+      // it — they go down with the AZ (and multi-AZ DBs may then auto-promote their standby),
+      // and recover with it. Manual per-service kills are untouched in both directions.
+      if (scope === 'az') {
+        for (const e of applyAzOutageToManaged(s.failover, s.doc, id, down, simMs)) emitEvent(e)
+      }
+    }
+  }
+  const doSetPartition = (s: EngineState, fault: PartitionFault, simMs: number): void => {
+    emitEvent(addPartition(s.faults, fault, simMs))
+  }
+  const doHealPartition = (s: EngineState, partitionId: string, simMs: number): void => {
+    const e = removePartition(s.faults, partitionId, simMs)
+    if (e) emitEvent(e)
+  }
+
   // FEAT-003 (Task 18): dispatches one scenario step's action, reusing the EXACT existing code
-  // paths — inject-fault/clear-fault go through api.setFault (the same facade a UI-driven setFault
-  // call uses, so 'down'/failover wiring/applyAzOutageToManaged all fire identically), partition/
-  // heal-partition go through api.setPartition/healPartition (thin wrappers over faults.ts's
-  // addPartition/removePartition). demand-multiplier/set-population-rps write into the engine-owned
-  // demandOverlay map (Task 19 makes demand.ts's populationDemandRps actually read it).
+  // paths — inject-fault/clear-fault go through doSetFault (the SAME logic api.setFault uses, so
+  // 'down'/failover wiring/applyAzOutageToManaged all fire identically), partition/heal-partition
+  // go through doSetPartition/doHealPartition (thin wrappers over faults.ts's addPartition/
+  // removePartition). demand-multiplier/set-population-rps write into the engine-owned
+  // demandOverlay map (Task 19 makes demand.ts's populationDemandRps actually read it). Every path
+  // here is passed the STEP's own simMs (audit final-review I1) — never state.clock.simMs, which
+  // by the time this runs mid-replay already holds the WHOLE frame's batch end time.
   const applyScenarioAction = (s: EngineState, action: ScenarioAction, simMs: number): void => {
     switch (action.type) {
       case 'inject-fault':
-        api.setFault(action.scope, action.id, action.spec)
+        doSetFault(s, action.scope, action.id, action.spec, simMs)
         return
       case 'clear-fault':
-        api.setFault(action.scope, action.id, null)
+        doSetFault(s, action.scope, action.id, null, simMs)
         return
       case 'partition':
-        api.setPartition(action.fault)
+        doSetPartition(s, action.fault, simMs)
         return
       case 'heal-partition':
-        api.healPartition(action.index)
+        doHealPartition(s, action.partitionId, simMs)
         return
       case 'demand-multiplier': {
         // Global: applies to EVERY population currently authored in the doc.
@@ -1421,30 +1470,50 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // Deliberately independent of promoteReplicas' same-region sibling selection above — it does
     // not touch that logic or its semantics, only adds a second, narrower promotion path for the
     // case that logic can never reach.
-    for (const inst of Object.values(compiled.instances)) {
-      if (inst.role !== 'replica') continue
-      const crossRegionPrimaries = Object.values(compiled.instances).filter(
-        p => p.role === 'primary' && p.blueprintId === inst.blueprintId && p.regionId !== inst.regionId,
-      )
-      if (crossRegionPrimaries.length === 0) continue   // an ordinary same-region cluster — promoteReplicas already owns this
-      const isolated = crossRegionPrimaries.every(p => regionSeesRegionDown(inst.regionId, p.regionId))
-      const alreadyPromoted = s.failover.promotedAt.has(inst.placementId)
-      if (isolated && !alreadyPromoted) {
-        s.failover.promotedAt.set(inst.placementId, simMs)
-        const bpName = doc.blueprints[inst.blueprintId]?.name ?? inst.blueprintId
-        emitEvent({
-          id: `split-brain-promote-${inst.id}-${simMs}`, simMs, kind: 'replica_promoted', severity: 'critical',
-          message: `${bpName} replica ${inst.id} unilaterally promoted — its region lost reachability to every primary (partition isolation)`,
-          affected: [inst.id, ...crossRegionPrimaries.map(p => p.id)],
-        })
-      } else if (!isolated && alreadyPromoted) {
-        s.failover.promotedAt.delete(inst.placementId)
-        const bpName = doc.blueprints[inst.blueprintId]?.name ?? inst.blueprintId
-        emitEvent({
-          id: `split-brain-failback-${inst.id}-${simMs}`, simMs, kind: 'primary_failback', severity: 'info',
-          message: `${bpName} reachability restored — ${inst.id} failed back from its isolation promotion`,
-          affected: [inst.id, ...crossRegionPrimaries.map(p => p.id)],
-        })
+    //
+    // Audit final-review C1/I4: restricted to s.crossRegionOrphanReplicaIds (built once at
+    // start()) — replicas that have NO same-region authored primary sibling, i.e. genuinely
+    // invisible to promoteReplicas. A replica that ALSO has a same-region primary (promoteReplicas'
+    // own cluster) is excluded structurally, not just skipped here, so it can never reach this
+    // block's promote/failback bookkeeping regardless of partition state. Ownership of the
+    // promotion is tracked in the DEDICATED s.failover.isolationPromotedAt set — never
+    // promotedAt's `alreadyPromoted` alone — so this block only ever fails back a placement IT
+    // promoted, never one promoteReplicas promoted for an unrelated same-region cluster (the exact
+    // flap the previous version produced: 200 replica_promoted + 200 primary_failback events over
+    // 20s on a same-region-primary + same-region-replica + separate-region-primary topology, with
+    // ZERO partitions active). The set is still written into the shared promotedAt map so
+    // effectiveRoleResolver's routing overlay sees it — safe because failbackPromotions (same-
+    // region cluster keyed) finds zero authored primaries for an orphan's blueprint+region and
+    // no-ops on it, by the same eligibility guard.
+    if (s.crossRegionOrphanReplicaIds.size > 0) {
+      for (const instId of s.crossRegionOrphanReplicaIds) {
+        const inst = compiled.instances[instId]
+        if (!inst) continue   // defensive: instance ids are stable for a run, but guard anyway
+        const crossRegionPrimaries = Object.values(compiled.instances).filter(
+          p => p.role === 'primary' && p.blueprintId === inst.blueprintId && p.regionId !== inst.regionId,
+        )
+        if (crossRegionPrimaries.length === 0) continue   // defensive: precompute guarantees this is non-empty
+        const isolated = crossRegionPrimaries.every(p => regionSeesRegionDown(inst.regionId, p.regionId))
+        const alreadyPromoted = s.failover.isolationPromotedAt.has(inst.placementId)
+        if (isolated && !alreadyPromoted) {
+          s.failover.isolationPromotedAt.set(inst.placementId, simMs)
+          s.failover.promotedAt.set(inst.placementId, simMs)
+          const bpName = doc.blueprints[inst.blueprintId]?.name ?? inst.blueprintId
+          emitEvent({
+            id: `split-brain-promote-${inst.id}-${simMs}`, simMs, kind: 'replica_promoted', severity: 'critical',
+            message: `${bpName} replica ${inst.id} unilaterally promoted — its region lost reachability to every primary (partition isolation)`,
+            affected: [inst.id, ...crossRegionPrimaries.map(p => p.id)],
+          })
+        } else if (!isolated && alreadyPromoted) {
+          s.failover.isolationPromotedAt.delete(inst.placementId)
+          s.failover.promotedAt.delete(inst.placementId)
+          const bpName = doc.blueprints[inst.blueprintId]?.name ?? inst.blueprintId
+          emitEvent({
+            id: `split-brain-failback-${inst.id}-${simMs}`, simMs, kind: 'primary_failback', severity: 'info',
+            message: `${bpName} reachability restored — ${inst.id} failed back from its isolation promotion`,
+            affected: [inst.id, ...crossRegionPrimaries.map(p => p.id)],
+          })
+        }
       }
     }
     // Phase 5.4: a multi-AZ managed DB promotes its standby and clears its own SIMULATED outage
@@ -1825,6 +1894,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         regionShedFraction: new Map(), regionOverloadStreak: new Map(), regionRecoverStreak: new Map(),
         roleResolver: null, roleResolverKey: '',
         downstreamAdj: buildDownstreamAdj(compiled),
+        crossRegionOrphanReplicaIds: buildCrossRegionOrphanReplicaIds(compiled),
         routing: createRoutingState(), failover: createFailoverState(), faults: createFaultState(),
         // FEAT-003: steps sorted once by atMs (a stable sort — ScenarioStep carries no secondary
         // ordering key, so authored array order breaks ties among same-atMs steps), cursor at 0.
@@ -1870,21 +1940,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     },
     setFault(scope, id, spec) {
       if (!state) return
-      const affected = instanceIdsForFaultScope(state, scope, id)
-      for (const e of setFaultPure(state.faults, scope, id, spec, state.clock.simMs, affected)) emitEvent(e)
-      // 'down' (and clearing back to null) routes through the EXISTING failover outage path so
-      // behavior stays byte-identical to the pre-FEAT-001 setOutage — faults.ts's own state above
-      // is bookkeeping/event-emission only, never a second source of truth for down/health.
-      if (spec === null || spec.kind === 'down') {
-        const down = spec !== null
-        for (const e of failoverSetOutage(state.failover, scope as OutageScope, id, down, state.clock.simMs)) emitEvent(e)
-        // audit ISSUE-008: an AZ failure is a SIMULATED outage for the managed services scoped to
-        // it — they go down with the AZ (and multi-AZ DBs may then auto-promote their standby),
-        // and recover with it. Manual per-service kills are untouched in both directions.
-        if (scope === 'az') {
-          for (const e of applyAzOutageToManaged(state.failover, state.doc, id, down, state.clock.simMs)) emitEvent(e)
-        }
-      }
+      doSetFault(state, scope, id, spec, state.clock.simMs)
     },
     setOutage(scope, id, down) {
       // Thin alias (contract-drift.md) — new callers should prefer setFault directly.
@@ -1892,12 +1948,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     },
     setPartition(fault) {
       if (!state) return
-      emitEvent(addPartition(state.faults, fault, state.clock.simMs))
+      doSetPartition(state, fault, state.clock.simMs)
     },
-    healPartition(index) {
+    healPartition(id) {
       if (!state) return
-      const e = removePartition(state.faults, index, state.clock.simMs)
-      if (e) emitEvent(e)
+      doHealPartition(state, id, state.clock.simMs)
     },
     attachRenderer(scope, onFrame) {
       if (!state) return () => {}
@@ -1933,6 +1988,31 @@ function buildDownstreamAdj(compiled: CompiledWorld): Map<InstanceId, InstanceId
     else adj.set(p.fromInstanceId, [p.to.instanceId])
   }
   return adj
+}
+
+// Audit final-review C1/I4: every replica with NO same-region authored primary sibling, but WITH
+// an authored primary for its blueprint in at least one other region — the only instances index.ts's
+// per-step cross-region isolation-promotion block may ever act on. Built once at start() from the
+// frozen compiled world (see EngineState.crossRegionOrphanReplicaIds' own comment for the full
+// rationale); a replica with a same-region primary is excluded here structurally so it can never
+// reach that block regardless of partition/health state at any later step.
+function buildCrossRegionOrphanReplicaIds(compiled: CompiledWorld): Set<InstanceId> {
+  const primaryRegionsByBp = new Map<BlueprintId, Set<RegionId>>()
+  for (const inst of Object.values(compiled.instances)) {
+    if (inst.role !== 'primary') continue
+    const set = primaryRegionsByBp.get(inst.blueprintId) ?? new Set<RegionId>()
+    set.add(inst.regionId)
+    primaryRegionsByBp.set(inst.blueprintId, set)
+  }
+  const orphans = new Set<InstanceId>()
+  for (const inst of Object.values(compiled.instances)) {
+    if (inst.role !== 'replica') continue
+    const primaryRegions = primaryRegionsByBp.get(inst.blueprintId)
+    if (!primaryRegions || primaryRegions.size === 0) continue
+    if (primaryRegions.has(inst.regionId)) continue   // same-region primary sibling — promoteReplicas' cluster, never this block's
+    orphans.add(inst.id)
+  }
+  return orphans
 }
 
 // FEAT-002 (Task 10): resolve every CompiledPath's from/to into plain EndpointIds and memo the

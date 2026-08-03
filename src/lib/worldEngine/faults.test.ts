@@ -45,29 +45,53 @@ describe('faults: setFault', () => {
 })
 
 describe('faults: addPartition / removePartition', () => {
-  it('addPartition pushes the fault and emits a partition_started event', () => {
+  it('addPartition pushes the fault, auto-assigns an id, and emits a partition_started event', () => {
     const state = createFaultState()
     const fault: PartitionFault = { from: { kind: 'region', id: 'r1' }, to: { kind: 'region', id: 'r2' }, mode: 'drop', symmetric: true }
     const event = addPartition(state, fault, 1000)
     expect(state.partitions).toEqual([fault])
+    expect(fault.id).toBe('partition-0')   // audit final-review I3 — auto-assigned from the run-scoped counter
     expect(event.kind).toBe('partition_started')
     expect(event.simMs).toBe(1000)
   })
 
-  it('removePartition removes the fault at the given index and emits partition_healed', () => {
+  it('addPartition keeps a caller-supplied id as-is', () => {
+    const state = createFaultState()
+    const fault: PartitionFault = { id: 'p-custom', from: { kind: 'region', id: 'r1' }, to: { kind: 'region', id: 'r2' }, mode: 'drop', symmetric: true }
+    addPartition(state, fault, 1000)
+    expect(fault.id).toBe('p-custom')
+  })
+
+  // Audit final-review I3: was index-based — a partition authored/healed by hand mid-run shifted
+  // every later index, silently misdirecting a heal aimed at a DIFFERENT partition.
+  it('removePartition removes the fault matching the given id and emits partition_healed', () => {
     const state = createFaultState()
     const fault: PartitionFault = { from: { kind: 'az', id: 'az1' }, to: { kind: 'az', id: 'az2' }, mode: 'loss', lossFraction: 0.2, symmetric: true }
     addPartition(state, fault, 1000)
-    const event = removePartition(state, 0, 2000)
+    const event = removePartition(state, fault.id!, 2000)
     expect(state.partitions).toHaveLength(0)
     expect(event?.kind).toBe('partition_healed')
     expect(event?.simMs).toBe(2000)
   })
 
-  it('removePartition with an out-of-range index emits nothing (null) rather than throwing', () => {
+  it('removePartition addresses by id, immune to an earlier partition shifting array position', () => {
     const state = createFaultState()
-    expect(() => removePartition(state, 5, 1000)).not.toThrow()
-    expect(removePartition(state, 5, 1000)).toBeNull()
+    const f1: PartitionFault = { from: { kind: 'region', id: 'r1' }, to: { kind: 'region', id: 'r2' }, mode: 'drop', symmetric: true }
+    const f2: PartitionFault = { from: { kind: 'region', id: 'r3' }, to: { kind: 'region', id: 'r4' }, mode: 'drop', symmetric: true }
+    addPartition(state, f1, 1000)   // partition-0
+    addPartition(state, f2, 1000)   // partition-1
+    removePartition(state, f1.id!, 2000)   // heal the FIRST one, shifting f2 to array index 0
+    expect(state.partitions).toEqual([f2])
+    // f2's identity (id) is unaffected by the shift — healing it by id still works.
+    const event = removePartition(state, f2.id!, 3000)
+    expect(event?.kind).toBe('partition_healed')
+    expect(state.partitions).toHaveLength(0)
+  })
+
+  it('removePartition with an unknown id emits nothing (null) rather than throwing', () => {
+    const state = createFaultState()
+    expect(() => removePartition(state, 'no-such-id', 1000)).not.toThrow()
+    expect(removePartition(state, 'no-such-id', 1000)).toBeNull()
   })
 })
 

@@ -286,13 +286,54 @@ describe('structural: split-brain-risk', () => {
     const rep = s.placement(db.id, s.server(a2.id).id); rep.role = 'replica'
     expect(ids(run(s), 'split-brain-risk')).toHaveLength(0)
   })
-  it('does not fire for two primaries of the same blueprint in DIFFERENT regions (known gap)', () => {
+  // Audit final-review I2: previously an accepted "known gap" — clustered by
+  // `${blueprintId}|${regionId}`, so two primaries in different regions never shared a cluster and
+  // FEAT-002's actual cross-region self-promotion (primary in region A untouched + self-promoted
+  // replica in region B) went completely undetected. Widened to cluster by blueprintId alone, but
+  // (see the rule's own file comment) the cross-region case additionally requires promotion
+  // EVIDENCE — some instance's AUTHORED role isn't 'primary' — to avoid false-firing on an
+  // intentionally-authored active-active design (the vault's own multi-region-failover example
+  // authors a primary per active region, sharing one blueprintId, with no promotion involved).
+  // This fixture models the genuine case: region1's db is an authored primary, region2's db is an
+  // authored REPLICA that a live batch reports as a self-promoted effective primary.
+  it('fires for a genuine cross-region split-brain: an authored primary in region1 + a self-promoted (lastBatch) former replica in region2 (was a known gap — I2 fix)', () => {
     const s = scenario()
     const r1 = s.region('us-east-1'); const a1 = s.az(r1.id, 'us-east-1a')
     const r2 = s.region('eu-west-1'); const a2 = s.az(r2.id, 'eu-west-1a')
     const db = s.blueprint('db'); db.stateful = true
-    s.placement(db.id, s.server(a1.id).id)   // primary, region 1
-    const p2 = s.placement(db.id, s.server(a2.id).id); p2.role = 'primary'   // primary, region 2 — different cluster key
+    const primary = s.placement(db.id, s.server(a1.id).id)               // authored primary, region 1
+    const replica = s.placement(db.id, s.server(a2.id).id); replica.role = 'replica'   // authored replica, region 2
+    const compiled = s.compile()
+    const primaryInstanceId = Object.values(compiled.instances).find(i => i.placementId === primary.id)!.id
+    const replicaInstanceId = Object.values(compiled.instances).find(i => i.placementId === replica.id)!.id
+    // Sanity: with no lastBatch (authored roles only), this is a healthy cross-region primary +
+    // replica pair — not split-brain.
+    expect(runAnalysis(s.doc, compiled, null).some(f => f.ruleId === 'split-brain-risk')).toBe(false)
+
+    const batch = {
+      instances: {
+        [primaryInstanceId]: { effectiveRole: 'primary' },
+        [replicaInstanceId]: { effectiveRole: 'primary' },   // self-promoted in region2 — genuine cross-region split-brain
+      },
+    } as unknown as MetricsBatch
+    const f = ids(runAnalysis(s.doc, compiled, batch), 'split-brain-risk')
+    expect(f).toHaveLength(1)
+    expect(f[0].affected).toEqual(expect.arrayContaining([primaryInstanceId, replicaInstanceId]))
+    expect(f[0].why).toMatch(/across regions/)
+  })
+
+  // Audit final-review I2 regression guard: an intentionally-authored active-active topology (two
+  // DIFFERENT regions each with their own authored 'primary' for the same blueprint, no promotion
+  // anywhere) must NOT trip the widened rule — this is exactly the vault's multi-region-failover
+  // example world's shape (a `db` primary+replica pair per active region), and the widened
+  // blueprintId-only key would false-positive on it without the promotion-evidence guard.
+  it('does NOT fire for an intentionally-authored active-active pair (two authored primaries, different regions, no promotion) — regression guard for I2', () => {
+    const s = scenario()
+    const r1 = s.region('us-east-1'); const a1 = s.az(r1.id, 'us-east-1a')
+    const r2 = s.region('eu-west-1'); const a2 = s.az(r2.id, 'eu-west-1a')
+    const db = s.blueprint('db'); db.stateful = true
+    s.placement(db.id, s.server(a1.id).id)   // authored primary, region 1
+    const p2 = s.placement(db.id, s.server(a2.id).id); p2.role = 'primary'   // authored primary, region 2 — active-active by design
     expect(ids(run(s), 'split-brain-risk')).toHaveLength(0)
   })
 

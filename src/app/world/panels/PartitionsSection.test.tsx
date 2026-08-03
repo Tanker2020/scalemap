@@ -55,12 +55,18 @@ describe('PartitionsSection', () => {
     pickEndpoint('partition-to', regionB)
     fireEvent.click(screen.getByTestId('partition-add'))
 
-    expect(useSimulationStore.getState().partitions).toEqual([
+    // Audit final-review I3: addPartition now auto-assigns a stable `id` (faults.ts's run-scoped
+    // counter) in place on the fault object — asserted separately from the rest of the shape below
+    // since its exact value is an implementation detail, not part of what this test is verifying.
+    const partitions = useSimulationStore.getState().partitions
+    expect(partitions).toHaveLength(1)
+    expect(partitions[0].id).toBeTruthy()
+    expect(partitions[0]).toMatchObject(
       { from: { kind: 'region', id: regionA }, to: { kind: 'region', id: regionB }, mode: 'drop', symmetric: true },
-    ])
+    )
   })
 
-  it('Heal calls healPartition with the correct index', () => {
+  it('Heal calls healPartition with the correct id (audit final-review I3 — was index-based)', () => {
     const regionA = useWorldStore.getState().addRegion('us-east-1')
     const regionB = useWorldStore.getState().addRegion('eu-west-1')
     useSimulationStore.setState({ running: true })

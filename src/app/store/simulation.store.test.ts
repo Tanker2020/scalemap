@@ -275,17 +275,27 @@ describe('simulation.store — setPartition / healPartition (FEAT-002)', () => {
     vi.restoreAllMocks()
   })
 
-  it('setPartition delegates the fault to the engine facade', () => {
+  it('setPartition delegates the fault (with a store-assigned id — audit final-review I3) to the engine facade', () => {
     const store = useSimulationStore.getState()
     const fault = { from: { kind: 'region' as const, id: 'r1' }, to: { kind: 'region' as const, id: 'r2' }, mode: 'drop' as const, symmetric: false }
+    store.setPartition(fault)
+    expect(worldEngine.setPartition).toHaveBeenCalledTimes(1)
+    const passed = vi.mocked(worldEngine.setPartition).mock.calls[0]![0]
+    expect(passed.id).toBeTruthy()
+    expect(passed).toMatchObject(fault)
+  })
+
+  it('setPartition keeps an author-supplied id as-is', () => {
+    const store = useSimulationStore.getState()
+    const fault = { id: 'my-id', from: { kind: 'region' as const, id: 'r1' }, to: { kind: 'region' as const, id: 'r2' }, mode: 'drop' as const, symmetric: false }
     store.setPartition(fault)
     expect(worldEngine.setPartition).toHaveBeenCalledWith(fault)
   })
 
-  it('healPartition delegates the index to the engine facade', () => {
+  it('healPartition delegates the id to the engine facade (audit final-review I3 — was index-based)', () => {
     const store = useSimulationStore.getState()
-    store.healPartition(2)
-    expect(worldEngine.healPartition).toHaveBeenCalledWith(2)
+    store.healPartition('partition-2')
+    expect(worldEngine.healPartition).toHaveBeenCalledWith('partition-2')
   })
 })
 

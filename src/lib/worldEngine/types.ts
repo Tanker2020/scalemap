@@ -298,6 +298,14 @@ export type LinkEndpoint =
   | { kind: 'internet' }
 
 export interface PartitionFault {
+  // Stable identity (audit final-review I3, contract-drift.md 2026-08-02): addressing a partition
+  // by its array position in FaultState.partitions broke as soon as PartitionsSection's
+  // usable-while-running UI could add/heal partitions mid-scenario-run, shifting every later
+  // index. Optional at authoring time — an author (UI or ScenarioPanel) may set it explicitly to
+  // get a stable handle for a later heal-partition step; faults.ts's addPartition auto-assigns one
+  // from its run-scoped counter when absent, so every partition that ever lands in
+  // FaultState.partitions carries a real id.
+  id?: string
   from: LinkEndpoint
   to: LinkEndpoint
   mode: 'drop' | 'loss' | 'delay'
@@ -335,10 +343,12 @@ export interface WorldEngineApi {
   // partition through the engine instead of poking at internal state. Task 13 should extend this
   // surface (e.g. list/inspect active partitions), not duplicate it.
   setPartition: (fault: PartitionFault) => void
-  // Removes the partition at `index` (its position in the active-partitions list, in insertion
-  // order) — a no-op if out of range. Index-based rather than by-value because PartitionFault has
-  // no stable id of its own.
-  healPartition: (index: number) => void
+  // Removes the partition matching `id` (audit final-review I3 — was index-based; a no-op if the
+  // id is unknown/already healed, rather than throwing). Every partition that reaches
+  // FaultState.partitions carries an id (author-supplied or auto-assigned by addPartition), so
+  // this always has a real identity to match against, immune to any authored/healed partition
+  // shifting another's array position.
+  healPartition: (id: string) => void
   attachRenderer: (scope: RenderScope, onFrame: (p: FramePayload) => void) => DetachFn
   // Replay: scope-aware 1 Hz snapshots, ring buffer of 300 (5 min).
   getReplayFrames: () => ReplayFrame[]

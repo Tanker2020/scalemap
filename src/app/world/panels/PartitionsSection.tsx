@@ -320,14 +320,19 @@ export function PartitionsSection(): ReactElement {
       {partitions.length > 0 && (
         <div style={{ marginTop: 8, display: 'grid', gap: 4 }}>
           {partitions.map((p, i) => (
-            <div key={i} data-testid="partition-row" style={{ ...row, justifyContent: 'space-between' }}>
+            // Audit final-review I3: keyed/addressed by p.id (stable identity), not array index —
+            // healing mid-run must never target a DIFFERENT partition just because an earlier one
+            // in the list was healed first and shifted everything after it. worldEngine.setPartition
+            // always assigns a real id (author-supplied or auto-assigned) before this list is ever
+            // populated, so `p.id` is guaranteed set here.
+            <div key={p.id ?? i} data-testid="partition-row" style={{ ...row, justifyContent: 'space-between' }}>
               <span style={{ color: 'var(--color-text-secondary)' }}>
                 {endpointLabel(p.from, doc)} {p.symmetric ? '⇄' : '→'} {endpointLabel(p.to, doc)} · {p.mode}
               </span>
               <Pressable
                 locked={locked} ariaLabel={`heal-partition-${i}`} testId={`heal-partition-${i}`}
                 style={btnDanger}
-                onClick={() => healPartition(i)}
+                onClick={() => p.id && healPartition(p.id)}
               >
                 heal
               </Pressable>

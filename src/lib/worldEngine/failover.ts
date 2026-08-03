@@ -51,6 +51,20 @@ export interface FailoverState {
   healthByScope: Map<string, HealthState>
   drainUntil: Map<AzId, number>
   promotedAt: Map<PlacementId, number>
+  // Ownership bookkeeping for FEAT-002's cross-region self-promotion path (index.ts, Task 12),
+  // kept SEPARATE from promotedAt (audit final-review C1). promotedAt is written by BOTH
+  // promoteReplicas (same-region HA, below) and the cross-region isolation path — both write the
+  // SAME overlay so effectiveRoleResolver sees one unified promoted set for routing purposes. But
+  // failback for each mechanism must ask "did I, specifically, promote this?", never "is this
+  // promoted at all?" — the earlier bug was the cross-region block reading `alreadyPromoted` off
+  // promotedAt and deleting an entry promoteReplicas itself had written, causing perpetual
+  // promote/failback flapping. isolationPromotedAt is this block's OWN record of exactly the
+  // placements IT promoted, so its failback only ever reverses its own action. Combined with the
+  // orphan-replica eligibility guard in index.ts's start() (a replica with a same-region authored
+  // primary is NEVER a candidate here), the two mechanisms' promotedAt writes are additionally
+  // guaranteed to land in disjoint blueprint|region clusters, so promoteReplicas/failbackPromotions
+  // (same-region cluster keyed) can never observe or touch an isolation-promoted placement either.
+  isolationPromotedAt: Map<PlacementId, number>
   onsetPendingSince: Map<string, number>
   recoveryUntil: Map<string, number>
   // When and WHY each currently-down managed service went down (node-model Phase 5.4 + audit
@@ -65,6 +79,7 @@ export function createFailoverState(): FailoverState {
     healthByScope: new Map(),
     drainUntil: new Map(),
     promotedAt: new Map(),
+    isolationPromotedAt: new Map(),
     onsetPendingSince: new Map(),
     recoveryUntil: new Map(),
     managedDownSince: new Map(),

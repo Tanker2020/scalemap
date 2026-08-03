@@ -1,6 +1,6 @@
 // Structural analysis rules (Phase 6 D2). Pure; read doc + compiled only.
 import type { AnalysisFinding, AnalysisRule } from '../types'
-import type { ServiceInstance, WorldDoc } from '../../world/types'
+import type { ServiceInstance, WorldDoc, PlacementRole } from '../../world/types'
 
 // blueprint→blueprint edges (optionally protocol-filtered) present in the world.
 function blueprintEdges(doc: WorldDoc, protocols?: Array<'http' | 'db' | 'event' | 'stream'>): Map<string, string[]> {
@@ -263,36 +263,54 @@ const danglingDependencyNoTargets: AnalysisRule = {
 // against the vault example worlds (`exampleWorlds.test.ts`'s zero-findings assertions), which
 // caught the ungated version false-firing on exactly this.
 //
-// clusterKey mirrors promoteReplicas's own inline `${blueprintId}|${regionId}` derivation
-// (failover.ts:351) — there's no exported helper for it (failover.ts derives it inline at both of
-// its own call sites too), so this rule derives it the same way rather than inventing a different
-// convention. Known gap (accepted, out of scope here): this key groups by region — every instance
-// in a cluster necessarily shares one regionId — so a GENUINE cross-region split-brain (primary in
-// region A, self-promoted replica in region B) never lands in the same cluster and is not
-// detected by this rule.
+// Audit final-review I2 (was: clusterKey = `${blueprintId}|${regionId}`, mirroring
+// promoteReplicas's SAME-region cluster grouping in failover.ts). That key could only ever catch
+// two primaries within ONE region — never the genuine cross-region split-brain (primary in
+// region A untouched, self-promoted replica in region B) that FEAT-002's Task 12 cross-region
+// isolation-promotion mechanism (index.ts) specifically exists to produce, even though this
+// rule's own `why` string claimed "likely an asymmetric network partition" coverage it didn't
+// have. Widened to group by blueprintId ALONE, BUT with an extra guard on the cross-region case
+// specifically: a cross-region cluster only fires when at least one member's AUTHORED role isn't
+// 'primary' (i.e. compiled.instances[id].role — a promotion overlay never touches this field, so
+// a mismatch against the effective role proves a LIVE promotion happened). Without that guard,
+// widening the key naively broke the vault's own `multi-region-failover` example world
+// (exampleWorlds.test.ts's zero-analysis-findings assertion): it intentionally authors a `db`
+// primary+replica pair PER active region (active-active by design, not partition-induced) — two
+// authored primaries sharing a blueprintId across regions is a supported, deliberate topology
+// here, not a bug, and runAnalysis(doc, compiled, null) sees no lastBatch to distinguish "self-
+// promoted" from "authored primary" without this extra check. The SAME-region case keeps its
+// original behavior unchanged (still fires on a purely authored double-primary, no promotion
+// needed) — only the newly-added cross-region path requires promotion evidence, since same-region
+// dual-authoring was already flagged pre-fix and multi-region-failover never authors that shape.
 const splitBrainRisk: AnalysisRule = {
   id: 'split-brain-risk', family: 'structural',
   run: ({ doc, compiled, lastBatch }) => {
-    const primariesByCluster = new Map<string, ServiceInstance[]>()
+    interface Candidate { inst: ServiceInstance; authoredRole: PlacementRole }
+    const primariesByBlueprint = new Map<string, Candidate[]>()
     for (const inst of Object.values(compiled.instances)) {
       const effectiveRole = lastBatch?.instances?.[inst.id]?.effectiveRole ?? inst.role
       if (effectiveRole !== 'primary') continue
       if (!doc.blueprints[inst.blueprintId]?.stateful) continue
-      const clusterKey = `${inst.blueprintId}|${inst.regionId}`
-      const list = primariesByCluster.get(clusterKey) ?? []
-      list.push(inst)
-      primariesByCluster.set(clusterKey, list)
+      const list = primariesByBlueprint.get(inst.blueprintId) ?? []
+      list.push({ inst, authoredRole: inst.role })
+      primariesByBlueprint.set(inst.blueprintId, list)
     }
     const out: AnalysisFinding[] = []
-    for (const [clusterKey, instances] of primariesByCluster) {
-      if (instances.length <= 1) continue
-      // Every instance in one cluster shares clusterKey's regionId (blueprintId|regionId) by
-      // construction — a single region name, no pluralization branch needed.
-      const regionId = instances[0].regionId
+    for (const [blueprintId, candidates] of primariesByBlueprint) {
+      if (candidates.length <= 1) continue
+      const regionIds = [...new Set(candidates.map(c => c.inst.regionId))]
+      const spansRegions = regionIds.length > 1
+      // Cross-region: require evidence of an actual promotion (authored role != primary somewhere
+      // in the cluster) — an authored active-active design (every member genuinely authored
+      // 'primary') is not split-brain, it's the topology working as intended.
+      if (spansRegions && !candidates.some(c => c.authoredRole !== 'primary')) continue
+      const instances = candidates.map(c => c.inst)
       out.push({
-        id: `split-brain-risk:${clusterKey}`, ruleId: 'split-brain-risk', family: 'structural', severity: 'critical',
+        id: `split-brain-risk:${blueprintId}`, ruleId: 'split-brain-risk', family: 'structural', severity: 'critical',
         title: 'Split-brain: multiple effective primaries',
-        why: `${instances.length} instances in cluster ${clusterKey} (region ${regionId}) are all acting as primary simultaneously — likely an asymmetric network partition.`,
+        why: spansRegions
+          ? `${instances.length} instances of blueprint ${blueprintId} are all acting as primary simultaneously, across regions ${regionIds.join(', ')} — likely a cross-region partition that let an isolated replica self-promote while the original primary kept serving.`
+          : `${instances.length} instances of blueprint ${blueprintId} (region ${regionIds[0]}) are all acting as primary simultaneously — likely an asymmetric network partition.`,
         fix: 'Heal the partition, or demote all but one primary once connectivity is restored.',
         affected: instances.map(i => i.id),
       })
