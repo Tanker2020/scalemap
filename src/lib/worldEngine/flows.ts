@@ -319,6 +319,25 @@ export interface FlowInput {
   // didn't resolve to a configured cache). Optional: absent ⇒ unaffected, same regression-floor
   // shape as impairmentMemo/cacheMissFractionByInstance above.
   cacheAsideIndexByDepId?: Map<string, { cacheConfig: CacheConfig; warmKey: string }>
+  // FEAT-005 (Task 11): per-REPLICA-instance stale-read fraction, keyed by instance id — computed
+  // ONE STEP LAGGED by the engine (index.ts) from replication.ts's staleReadFraction(), off the
+  // PREVIOUS step's resolved write rps for that replica's cluster and the lag reading at the START
+  // of this step (same one-step-lag shape as managedDbRuntime/topicRuntime above: this step's OWN
+  // write rps only becomes known once THIS solveFlows call returns writeRpsByCluster below, so an
+  // unlagged value here would be circular). Applied in the dependency loop to any admitted row
+  // landing on an effective-role 'replica' instance — a stale read still SUCCEEDS (spec), so it is
+  // attached to the row as its own attribute, never folded into errorRps. Optional: absent ⇒ no
+  // world has any replica-role db instance (the regression floor), so existing callers/tests are
+  // unaffected.
+  staleReadFractionByReplica?: Record<InstanceId, number>
+  // FEAT-005 (Task 11, Step 6): static per-PRIMARY-instance semi-sync acknowledgement RTT (ms),
+  // resolved once at start() (index.ts's buildReplicationIndexes) from every semi-sync replica's
+  // locality — added onto that primary's OWN serviceLatencyMs at flow creation, the same
+  // mechanism extraLatencyMsByServer already uses for fault-injected extra latency. A narrower
+  // stand-in for hooking a `semiSyncMs` term into computeTotalLatencyMs's per-row network-ms
+  // composition (see index.ts's comment for the full rationale/simplification). Optional: absent
+  // ⇒ 0 extra, so a world with no semi-sync replica (the regression floor) is unaffected.
+  semiSyncExtraMsByInstance?: Record<InstanceId, number>
   rng: Rng
 }
 
@@ -348,6 +367,14 @@ export interface DownstreamFlow {
   // link — refused/blocked rows don't transit, so a delay there is moot. Absent ⇒ 0 extra ms,
   // so existing rows/tests are unchanged.
   impairmentDelayMs?: number
+  // FEAT-005 (Task 11): the fraction of THIS row's rps that reads stale data — set only on a row
+  // landing on an effective-role 'replica' db instance, sourced from
+  // FlowInput.staleReadFractionByReplica (a static per-instance-per-step value, so every
+  // contribution aggregating into the same row agrees on it, exactly like impairmentDelayMs
+  // above). A stale read still SUCCEEDS — this is never folded into errorRps/refusedRps, only
+  // published for Task 12's metrics/analysis consumers. Absent ⇒ 0 (no replica in the world, or
+  // this row didn't land on one), so existing rows/tests are unchanged.
+  staleReadFraction?: number
 }
 
 export interface InstanceFlow {
@@ -446,6 +473,14 @@ export interface SolveFlowsResult {
   // (unchanged) — this is additionally the raw fact that a cut happened, for the engine to turn
   // into a deduped `chain_cycle_cut` event.
   cycleCutEdges: { fromId: InstanceId; toId: InstanceId }[]
+  // FEAT-005 (Task 11): per-cluster write rps this step, keyed EXACTLY like index.ts's
+  // replicasByCluster/dbConfigByCluster — `${primaryBlueprintId}|${primaryRegionId}`, resolved
+  // from the AUTHORED (compiled, promotion-invariant) primary among a db dependency's own
+  // candidates, so the key can never drift from what index.ts indexed at start() regardless of
+  // any promotion overlay active this step. The engine threads this straight into stepReplication
+  // AFTER this call returns (the spec's own step ordering) — computing it any other way would
+  // require re-deriving the write share splitDependencyShares already resolved above.
+  writeRpsByCluster: Record<string, number>
 }
 
 export function solveFlows(input: FlowInput): SolveFlowsResult {
@@ -471,6 +506,8 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
   const totals: FlowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} }
   const depthExceededInstanceIds = new Set<InstanceId>()
   const cycleCutEdges: { fromId: InstanceId; toId: InstanceId }[] = []
+  // FEAT-005 (Task 11): see SolveFlowsResult.writeRpsByCluster's own comment above.
+  const writeRpsByCluster: Record<string, number> = {}
 
   // First-touch flow record; serviceLatencyMs is sampled exactly once per instance, in
   // BFS creation order (deterministic under a seeded rng).
@@ -482,6 +519,9 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
       const p50 = Math.max(0.1, input.effectiveCpuMsByInstance?.[id] ?? bp?.workload.cpuMsPerRequest ?? 1)
       const multiplier = inst ? (latencyMultiplierByServer[inst.serverId] ?? 1) : 1
       const extraMs = inst ? (input.extraLatencyMsByServer?.[inst.serverId] ?? 0) : 0
+      // FEAT-005 (Task 11, Step 6): a semi-sync primary's ack RTT, added onto its own self time —
+      // see FlowInput.semiSyncExtraMsByInstance's own comment.
+      const semiSyncMs = input.semiSyncExtraMsByInstance?.[id] ?? 0
       f = {
         instanceId: id,
         offeredRps: 0,
@@ -489,7 +529,7 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
         errorRps: 0,
         refusedRps: 0,
         structuralRefusedRps: 0,
-        serviceLatencyMs: sampleLatencyMs(p50, p50 * SERVICE_P99_OVER_P50, rng) * multiplier + extraMs,
+        serviceLatencyMs: sampleLatencyMs(p50, p50 * SERVICE_P99_OVER_P50, rng) * multiplier + extraMs + semiSyncMs,
         totalLatencyMs: 0,   // placeholder; overwritten by the composition pass before return
         downstream: [],
       }
@@ -516,6 +556,9 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
     // aggregating into the same row agrees on it — set once, on first touch, like every other
     // row field.
     impairmentDelayMs?: number,
+    // Stale-read fraction (FEAT-005, Task 11): same "static per-target-per-step, agrees on every
+    // contribution" shape as impairmentDelayMs above.
+    staleReadFraction?: number,
   ): void => {
     const key = `${dependencyId}|${target.toInstanceId ?? ''}|${target.toManagedServiceId ?? ''}|${blocked}|${failure ?? ''}`
     let rows = rowIndex.get(f.instanceId)
@@ -531,6 +574,7 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
         dependencyId, ...target, rps, hopClass, blocked,
         ...(failure ? { failure } : {}),
         ...(impairmentDelayMs ? { impairmentDelayMs } : {}),
+        ...(staleReadFraction ? { staleReadFraction } : {}),
       }
       rows.set(key, created)
       f.downstream.push(created)
@@ -725,6 +769,26 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
       const depWriteFraction = input.depBytesById?.[dep.id]?.writeFraction ?? dep.writeFraction ?? 0
       const shares = splitDependencyShares(admitted * cacheMissFraction, candidates, roleOf, targetBp, depWriteFraction, healthWeightOf)
 
+      // FEAT-005 (Task 11): attribute this dependency's write volume to its cluster's write rps —
+      // see SolveFlowsResult.writeRpsByCluster's own comment for why the key is resolved from the
+      // COMPILED (author-time) primary among the candidates, not the promotion-overlay-aware
+      // roleOf: the cluster identity index.ts built at start() is itself promotion-invariant, and
+      // this key must always agree with it. Skipped for a non-db target or one with no compiled
+      // primary among its candidates (nothing to attribute a "primary's cluster" to).
+      if (targetBp && (targetBp.kind === 'db-sql' || targetBp.kind === 'db-nosql')) {
+        const primaryCandidate = candidates.find(
+          p => p.to.kind === 'instance' && compiled.instances[p.to.instanceId]?.role === 'primary',
+        )
+        const primaryInst = primaryCandidate && primaryCandidate.to.kind === 'instance'
+          ? compiled.instances[primaryCandidate.to.instanceId]
+          : undefined
+        if (primaryInst) {
+          const clusterId = `${primaryInst.blueprintId}|${primaryInst.regionId}`
+          const clusterWriteRps = admitted * cacheMissFraction * Math.min(1, Math.max(0, depWriteFraction))
+          writeRpsByCluster[clusterId] = (writeRpsByCluster[clusterId] ?? 0) + clusterWriteRps
+        }
+      }
+
       for (let ci = 0; ci < candidates.length; ci++) {
         const path = candidates[ci]
         const share = shares[ci]
@@ -902,7 +966,12 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
         }
         if (admittedShare <= EPSILON_RPS) continue
 
-        addDownstream(flow, dep.id, target, admittedShare, path.hopClass, false, undefined, impairment?.delayMs)
+        // FEAT-005 (Task 11): a row landing on an effective-role 'replica' db instance may be
+        // serving stale data — roleOf here (unlike the write-rps attribution above) DELIBERATELY
+        // reads the promotion-aware effective role: a promoted replica reads back as 'primary' and
+        // is never stale-tagged, matching what actually happened to it.
+        const staleFrac = roleOf(toId) === 'replica' ? input.staleReadFractionByReplica?.[toId] : undefined
+        addDownstream(flow, dep.id, target, admittedShare, path.hopClass, false, undefined, impairment?.delayMs, staleFrac)
         bucketBytes(path.hopClass, admittedShare, dep.id)
 
         if (chainHas(item, toId)) {                 // cycle guard: row recorded, no re-entry
@@ -978,5 +1047,5 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
     flows[id].totalLatencyMs = computeTotalLatencyMs(id)
   }
 
-  return { flows, totals, depthExceededInstanceIds, cycleCutEdges }
+  return { flows, totals, depthExceededInstanceIds, cycleCutEdges, writeRpsByCluster }
 }

@@ -11,7 +11,7 @@ import { MAX_GLOBE_ARCS } from './types'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
   ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole, BlueprintDependency,
-  ScenarioAction, ScenarioStep, CacheConfig,
+  ScenarioAction, ScenarioStep, CacheConfig, DbConfig,
 } from '../world/types'
 import { effectiveMissFraction } from './cache'
 import { managedDbEngine } from '../world/types'
@@ -39,6 +39,10 @@ import {
   getBreaker, recordWeighted, transition, admitRequest, pathKey, type Breaker,
 } from './breakers'
 import { solveFlows, type InstanceFlow } from './flows'
+import {
+  stepReplication, createReplicationState, localityFloorSec, staleReadFraction,
+  WRITE_APPLY_EFFICIENCY_CONST, type ReplicaRef, type ReplicaLocality, type ReplicationState,
+} from './replication'
 import { managedDbRuntime } from '../managedDbRuntime'
 import { topicRuntime } from './broker'
 import {
@@ -461,6 +465,37 @@ interface EngineState {
   // re-walks bp.dependencies.find(...) per row per step (the same "build once at start(), read
   // every step" discipline as downstreamAdj/crossRegionOrphanReplicaIds above).
   cacheAsideIndexByDepId: Map<string, { cacheConfig: CacheConfig; warmKey: string }>
+  // FEAT-005 (Task 11): static replica topology, built once at start() from the frozen compiled
+  // world — cluster key `${primaryBlueprintId}|${primaryRegionId}`, reusing failover.ts's
+  // promoteReplicas grouping convention EXACTLY (siblings clustered by the AUTHORED PRIMARY's
+  // blueprint+region, not the replica's own — a cross-region standby's own region differs from
+  // its primary's, which is exactly what makes its locality 'cross-region'; all of a primary's
+  // replicas, wherever they live, share the SAME cluster key and therefore the SAME write
+  // stream). Entries here carry only the STRUCTURAL fields (id/locality/fromRegionId/toRegionId);
+  // applyCapacity is 0 here and re-derived live every step (Step 4's serviceRateByInstance is
+  // per-step, so it can't be baked in at start()).
+  replicasByCluster: Record<string, ReplicaRef[]>
+  // clusterId -> the primary blueprint's DbConfig, resolved once at start() alongside
+  // replicasByCluster so the per-step apply-capacity/stale-read/semi-sync logic never re-walks
+  // doc.blueprints.
+  dbConfigByCluster: Map<string, DbConfig>
+  // Static per-primary-instance semi-sync ack RTT (Step 6) — see buildReplicationIndexes' own
+  // comment for the narrowed hook this implements and why. Read every step, computed once here.
+  semiSyncExtraMsByInstance: Record<InstanceId, number>
+  // start()-time fast-path flag (the hasAnyCache precedent, Task 3): true iff the world has ANY
+  // replica-role db instance with a resolvable primary. Guards every per-step replication
+  // computation below so an unconfigured world (the overwhelming common case) pays zero extra
+  // cost per step.
+  hasAnyReplicas: boolean
+  // Task 10's pure backlog/lag tracker — persistent across ticks, mutated in place by
+  // stepReplication.
+  replication: ReplicationState
+  // Last step's per-cluster write rps, threaded out of solveFlows' result (Step 4) and read back
+  // ONE STEP LATER to seed staleReadFractionByReplica before the NEXT solveFlows call — the same
+  // one-step-lag shape as managedDbRuntime/topicRuntime: this step's OWN write rps only becomes
+  // known once THIS step's solveFlows call returns it, so computing an unlagged stale-read
+  // fraction to feed INTO that same call would be circular.
+  prevWriteRpsByCluster: Record<string, number>
   // Audit ISSUE-010: "already reported this run" — a chain that's over-depth or a cycle that's cut
   // every single step would otherwise spam one event per instance/edge per step; these fire once
   // per run instead (a state TRANSITION, not a steady-state condition), mirroring how other steady-
@@ -478,7 +513,14 @@ interface EngineState {
   rendererSeq: number
 }
 
-export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_step: (steps?: number) => void; __test_render: (wallMs?: number) => void } {
+export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
+  __test_step: (steps?: number) => void
+  __test_render: (wallMs?: number) => void
+  // FEAT-005 (Task 11): test-only accessor for a replica instance's current replication lag — the
+  // brief's own escape hatch ("directly inspectable via a test-only engine accessor") in place of
+  // Task 12's not-yet-built MetricsBatch.clusters publishing surface.
+  __test_replicationLagSec: (instanceId: string) => number | undefined
+} {
   // Constructed lazily on start(); this placeholder keeps the closure typed before the first run.
   let state: EngineState | null = null
 
@@ -1333,7 +1375,24 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         }
       }
     }
-    const { flows, totals, depthExceededInstanceIds, cycleCutEdges } = solveFlows({
+    // FEAT-005 (Task 11): stale-read fraction per replica, ONE-STEP LAGGED off the PREVIOUS step's
+    // resolved write rps (s.prevWriteRpsByCluster) and the lag reading at the START of this step
+    // (s.replication.lagSecByInstance, last written at the END of the previous step) — see
+    // EngineState.prevWriteRpsByCluster's own comment for why an unlagged value here would be
+    // circular. Skipped entirely when the world has no replica-role db instance.
+    let staleReadFractionByReplica: Record<string, number> | undefined
+    if (s.hasAnyReplicas) {
+      staleReadFractionByReplica = {}
+      for (const [clusterId, replicas] of Object.entries(s.replicasByCluster)) {
+        const writeRps = s.prevWriteRpsByCluster[clusterId] ?? 0
+        const hotKeyCount = s.dbConfigByCluster.get(clusterId)?.hotKeyCount ?? 1000
+        for (const replica of replicas) {
+          const lagSec = s.replication.lagSecByInstance.get(replica.id) ?? 0
+          staleReadFractionByReplica[replica.id] = staleReadFraction(writeRps, lagSec, hotKeyCount)
+        }
+      }
+    }
+    const { flows, totals, depthExceededInstanceIds, cycleCutEdges, writeRpsByCluster } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       extraLatencyMsByServer,
       // FEAT-004 (Task 3): cache economics multiplier — see cacheMissFractionByInstance's own
@@ -1363,7 +1422,49 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       managedDbRuntime: managedDbRt,
       topicRuntime: topicRt,
       impairmentMemo,
+      // FEAT-005 (Task 11): see the field's own comment just above for the one-step-lag rationale.
+      staleReadFractionByReplica,
+      // FEAT-005 (Task 11, Step 6): static semi-sync ack RTT per primary instance — see
+      // buildReplicationIndexes' comment for the narrowed hook this implements.
+      semiSyncExtraMsByInstance: s.hasAnyReplicas ? s.semiSyncExtraMsByInstance : undefined,
     })
+
+    // FEAT-005 (Task 11): advance the replication backlog/lag model, AFTER the flow solve — per
+    // the spec's own step ordering — so writeRpsByCluster reflects THIS step's actual resolved
+    // write traffic (threaded straight out of solveFlows' result) rather than a stale guess.
+    if (s.hasAnyReplicas) {
+      // Live per-step applyCapacity: dbConfig.applyRatePerReplica when authored, else derived from
+      // the replica's OWN service rate (hostScheduler's fair-share rps, already resolved above for
+      // the queue model) x the write-apply efficiency constant. Structural fields (id/locality/
+      // from-to region) are copied from the static index built at start() — only applyCapacity is
+      // re-derived, since it's the only per-step-varying field.
+      const liveReplicasByCluster: Record<string, ReplicaRef[]> = {}
+      for (const [clusterId, replicas] of Object.entries(s.replicasByCluster)) {
+        const dbConfig = s.dbConfigByCluster.get(clusterId)
+        liveReplicasByCluster[clusterId] = replicas.map(r => ({
+          ...r,
+          applyCapacity: dbConfig?.applyRatePerReplica ?? (serviceRateByInstance[r.id] ?? 0) * WRITE_APPLY_EFFICIENCY_CONST,
+        }))
+      }
+      stepReplication(s.replication, liveReplicasByCluster, writeRpsByCluster, stepSec)
+
+      // Semi-sync mode (Step 6): a semi-sync replica's lag is bounded by acknowledgement RTT, not
+      // async backlog — model it as DOUBLE localityFloorSec's one-way propagation floor (a
+      // request-response round trip: the primary waits for the replica's ack before completing the
+      // write, unlike async replication's fire-and-forget one-way floor). This OVERRIDES whatever
+      // stepReplication computed for this replica above; the spec doesn't pin an exact RTT-vs-floor
+      // convention, so doubling the one-way floor is this task's explicit, documented choice.
+      for (const [clusterId, replicas] of Object.entries(s.replicasByCluster)) {
+        const dbConfig = s.dbConfigByCluster.get(clusterId)
+        if (dbConfig?.replicationMode !== 'semi-sync') continue
+        for (const r of replicas) {
+          const rttSec = localityFloorSec(r.locality, r.fromRegionId, r.toRegionId) * 2
+          s.replication.lagSecByInstance.set(r.id, rttSec)
+        }
+      }
+
+      s.prevWriteRpsByCluster = writeRpsByCluster
+    }
 
     // Audit ISSUE-010: surface silently-dropped fan-out. Both conditions previously left no trace
     // anywhere — an instance past MAX_DEPTH read as a healthy, zero-traffic leaf; a cyclic re-entry
@@ -1944,7 +2045,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     if (typeof requestAnimationFrame === 'function') s.rafId = requestAnimationFrame(tick)
   }
 
-  const api: WorldEngineApi & { __test_step: (steps?: number) => void; __test_render: (wallMs?: number) => void } = {
+  const api: WorldEngineApi & {
+  __test_step: (steps?: number) => void
+  __test_render: (wallMs?: number) => void
+  // FEAT-005 (Task 11): test-only accessor for a replica instance's current replication lag — the
+  // brief's own escape hatch ("directly inspectable via a test-only engine accessor") in place of
+  // Task 12's not-yet-built MetricsBatch.clusters publishing surface.
+  __test_replicationLagSec: (instanceId: string) => number | undefined
+} = {
     start(doc, compiled, callbacks) {
       // Defense against double-start (audit ISSUE-048): cancel any live rAF chain BEFORE the
       // state swap — otherwise the old chain reads the module-level `state`, sees the new run's
@@ -1953,6 +2061,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         cancelAnimationFrame(state.rafId)
       }
       const depIndexes = buildDepIndexes(doc)
+      const replicationIndexes = buildReplicationIndexes(doc, compiled)
       // FEAT-003: doc.scenario.seed OVERRIDES the engine's default seed source (the `seed` param
       // createWorldEngine was constructed with) rather than creating a second, independent rng
       // instance — every stochastic draw in the run (demand, tracer sampling, etc.) must come from
@@ -1991,6 +2100,15 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         hasAnyCache: Object.values(doc.blueprints).some(bp => bp.cacheConfig != null)
           || Object.values(doc.managedServices).some(ms => ms.cacheConfig != null),
         cacheAsideIndexByDepId: buildCacheAsideIndex(doc, compiled),
+        // FEAT-005 (Task 11): static replica topology + its per-cluster DbConfig, resolved once
+        // here; hasAnyReplicas gates the per-step replication work below the same way hasAnyCache
+        // gates the cache path.
+        replicasByCluster: replicationIndexes.replicasByCluster,
+        dbConfigByCluster: replicationIndexes.dbConfigByCluster,
+        semiSyncExtraMsByInstance: replicationIndexes.semiSyncExtraMsByInstance,
+        hasAnyReplicas: Object.keys(replicationIndexes.replicasByCluster).length > 0,
+        replication: createReplicationState(),
+        prevWriteRpsByCluster: {},
         routing: createRoutingState(), failover: createFailoverState(), faults: createFaultState(),
         // FEAT-003: steps sorted once by atMs (a stable sort — ScenarioStep carries no secondary
         // ordering key, so authored array order breaks ties among same-atMs steps), cursor at 0.
@@ -2067,6 +2185,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       for (let i = 0; i < steps; i++) runFrame(state!.stepMs)
     },
     __test_render(wallMs = 1) { renderAll(wallMs) },
+    __test_replicationLagSec(instanceId) {
+      return state?.replication.lagSecByInstance.get(instanceId)
+    },
   }
   return api
 }
@@ -2124,6 +2245,94 @@ function buildCacheAsideIndex(
     }
   }
   return index
+}
+
+// FEAT-005 (Task 11): pairs every replica-role db instance with "the primary instance for its
+// cluster", reusing failover.ts's promoteReplicas grouping convention (blueprintId + the
+// PRIMARY's own regionId) rather than inventing a new lookup. A replica's own region can
+// legitimately differ from its primary's (a cross-region standby) — that's exactly what
+// determines its locality tier via localityFloorSec's same-az/cross-az/cross-region branch. When
+// a blueprint has no compiled primary instance anywhere (a malformed topology), that replica is
+// skipped entirely: there's nothing for it to lag behind. Both the PRIMARY lookup and the
+// resulting clusterId are resolved from the frozen COMPILED role only — never the promotion
+// overlay, which doesn't exist yet at start() and would make the cluster key promotion-dependent
+// (flows.ts's writeRpsByCluster attribution must always agree with these exact keys).
+function buildReplicationIndexes(
+  doc: WorldDoc,
+  compiled: CompiledWorld,
+): {
+  replicasByCluster: Record<string, ReplicaRef[]>
+  dbConfigByCluster: Map<string, DbConfig>
+  semiSyncExtraMsByInstance: Record<InstanceId, number>
+} {
+  const replicasByCluster: Record<string, ReplicaRef[]> = {}
+  const dbConfigByCluster = new Map<string, DbConfig>()
+  // FEAT-005 (Task 11, Step 6 — narrowed per the brief's own escape hatch): primaryInstanceId ->
+  // the additive ms a semi-sync replica's ack RTT adds to that primary's SELF time. Computed once
+  // here (not per step) because every input — locality + region pair — is static for the whole
+  // run. This is a deliberately SIMPLER hook than threading a semiSyncMs term through
+  // computeTotalLatencyMs's per-row network-ms composition (flows.ts): it folds the RTT into the
+  // primary's own serviceLatencyMs at flow creation, the exact same mechanism
+  // extraLatencyMsByServer already uses for fault-injected extra latency, rather than adding new
+  // per-row plumbing. The simplification: it adds to the primary's self time for EVERY request it
+  // serves (reads included), not scoped strictly to writes — a reasonable approximation given a
+  // semi-sync primary's writes and reads share one queue/thread pool in this model, documented
+  // here rather than left implicit. When a primary has multiple semi-sync replicas, the MAX RTT
+  // wins (the primary must wait for the slowest quorum ack).
+  const semiSyncExtraMsByInstance: Record<InstanceId, number> = {}
+
+  // blueprintId -> its authored primary instances, grouped once so a world with many replicas
+  // doesn't rescan every instance per replica.
+  const primariesByBp = new Map<BlueprintId, ServiceInstance[]>()
+  for (const inst of Object.values(compiled.instances)) {
+    if (inst.role !== 'primary') continue
+    const list = primariesByBp.get(inst.blueprintId)
+    if (list) list.push(inst)
+    else primariesByBp.set(inst.blueprintId, [inst])
+  }
+
+  for (const inst of Object.values(compiled.instances)) {
+    if (inst.role !== 'replica') continue
+    const bp = doc.blueprints[inst.blueprintId]
+    if (bp?.kind !== 'db-sql' && bp?.kind !== 'db-nosql') continue
+    const dbConfig = bp.dbConfig
+    if (!dbConfig) continue
+    const primaries = primariesByBp.get(inst.blueprintId)
+    if (!primaries || primaries.length === 0) continue
+    // Prefer a same-region primary (the promoteReplicas HA pair); otherwise fall back to the
+    // first primary by id (deterministic tiebreak) — the cross-region-standby case, where the
+    // replica's own region necessarily differs from every authored primary's.
+    const primary = primaries.find(p => p.regionId === inst.regionId)
+      ?? [...primaries].sort((a, b) => a.id.localeCompare(b.id))[0]
+
+    const locality: ReplicaLocality =
+      primary.azId === inst.azId ? 'same-az'
+        : primary.regionId === inst.regionId ? 'cross-az'
+          : 'cross-region'
+
+    // localityFloorSec's cross-region branch calls regionConfig's interRegionLatencyMs, which
+    // looks up WORLD_REGIONS by CATALOG id (e.g. 'us-east-1') — NOT the doc's internal Region.id
+    // (a generated `region-N-xxxx` string). Resolve both endpoints' catalogId here, exactly like
+    // flows.ts's computeTotalLatencyMs does (`doc.regions[inst.regionId]?.catalogId`), so a
+    // cross-region floor doesn't silently fall through interRegionLatencyMs' `!from || !to`
+    // guard and read as 0.
+    const fromCatalogId = doc.regions[primary.regionId]?.catalogId
+    const toCatalogId = doc.regions[inst.regionId]?.catalogId
+
+    const clusterId = `${primary.blueprintId}|${primary.regionId}`
+    const ref: ReplicaRef = {
+      id: inst.id, locality, applyCapacity: 0,   // live-derived per step (Step 4)
+      fromRegionId: fromCatalogId, toRegionId: toCatalogId,
+    }
+    ;(replicasByCluster[clusterId] ??= []).push(ref)
+    if (!dbConfigByCluster.has(clusterId)) dbConfigByCluster.set(clusterId, dbConfig)
+
+    if (dbConfig.replicationMode === 'semi-sync') {
+      const rttMs = localityFloorSec(locality, fromCatalogId, toCatalogId) * 2 * 1000
+      semiSyncExtraMsByInstance[primary.id] = Math.max(semiSyncExtraMsByInstance[primary.id] ?? 0, rttMs)
+    }
+  }
+  return { replicasByCluster, dbConfigByCluster, semiSyncExtraMsByInstance }
 }
 
 // Audit final-review C1/I4: every replica with NO same-region authored primary sibling, but WITH

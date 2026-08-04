@@ -2979,3 +2979,147 @@ describe('FEAT-004 cache hit ratio', () => {
     sim.engine.stop()
   })
 })
+
+// ─── FEAT-005 (Task 11): replication lag backlog + stale reads + semi-sync ───────────────────
+describe('FEAT-005 Task 11: replication lag wiring', () => {
+  // Minimal single-instance-per-blueprint world (mirrors twoAzIngress/e2eFixture's shape) with NO
+  // db-sql/db-nosql blueprint at all — the regression floor this task must not disturb.
+  function noReplicaWorld() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+    const web = publicBlueprint('web', 0)
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id)
+    doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 80
+    doc.populations[pop.id] = pop
+    return { doc }
+  }
+
+  it('REGRESSION FLOOR: a world with no replicas is byte-identical for a fixed seed', () => {
+    const w = noReplicaWorld()
+    const a = drive(w.doc, compileWorld(w.doc))
+    a.stepFor(5)
+    const b = drive(w.doc, compileWorld(w.doc))
+    b.stepFor(5)
+    expect(a.latest()).toEqual(b.latest())
+    a.engine.stop(); b.engine.stop()
+  })
+
+  // Primary in us-east-1, a single cross-region async replica in eu-west-1, NO client population
+  // (zero write load) — so backlog never accumulates and lag settles at the pure locality floor.
+  function crossRegionReplicaNoLoadWorld() {
+    const doc = createWorld()
+    const regionA = createRegion('us-east-1')
+    const regionB = createRegion('eu-west-1')
+    const azA = createAz(regionA.id, 'us-east-1a')
+    const azB = createAz(regionB.id, 'eu-west-1a')
+    doc.regions[regionA.id] = regionA; doc.regions[regionB.id] = regionB
+    doc.azs[azA.id] = azA; doc.azs[azB.id] = azB
+    const sA = createServer(azA.id, getPreset('dedicated-8')!)
+    const sB = createServer(azB.id, getPreset('dedicated-8')!)
+    doc.servers[sA.id] = sA; doc.servers[sB.id] = sB
+
+    const db = createBlueprint('db', 0)
+    db.kind = 'db-sql'
+    db.dbConfig = { engine: 'sql', storageGb: 50 }
+    doc.blueprints[db.id] = db
+
+    const primaryPl = createPlacement(db.id, sA.id)
+    const replicaPl = createPlacement(db.id, sB.id); replicaPl.role = 'replica'
+    doc.placements[primaryPl.id] = primaryPl
+    doc.placements[replicaPl.id] = replicaPl
+    // No populations authored: zero offered demand anywhere, so writeRps stays 0 for the whole run.
+
+    const compiled = compileWorld(doc)
+    return { doc, compiled, replicaIid: instanceId(replicaPl.id, 0) }
+  }
+
+  it('LOCALITY FLOOR: at zero write load, a cross-region replica settles at interRegionLatencyMs/1000', async () => {
+    const w = crossRegionReplicaNoLoadWorld()
+    const sim = drive(w.doc, w.compiled)
+    sim.stepFor(5)
+    const lagSec = sim.engine.__test_replicationLagSec(w.replicaIid)
+    const { interRegionLatencyMs } = await import('../regionConfig')
+    expect(lagSec).toBeCloseTo(interRegionLatencyMs('us-east-1', 'eu-west-1') / 1000, 2)
+    sim.engine.stop()
+  })
+
+  it('LOCALITY FLOOR: a same-AZ replica settles at the 5ms same-az floor', () => {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const sA = createServer(az.id, getPreset('dedicated-8')!)
+    const sB = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[sA.id] = sA; doc.servers[sB.id] = sB
+    const db = createBlueprint('db', 0)
+    db.kind = 'db-sql'
+    db.dbConfig = { engine: 'sql', storageGb: 50 }
+    doc.blueprints[db.id] = db
+    const primaryPl = createPlacement(db.id, sA.id)
+    const replicaPl = createPlacement(db.id, sB.id); replicaPl.role = 'replica'
+    doc.placements[primaryPl.id] = primaryPl
+    doc.placements[replicaPl.id] = replicaPl
+    const compiled = compileWorld(doc)
+    const replicaIid = instanceId(replicaPl.id, 0)
+
+    const sim = drive(doc, compiled)
+    sim.stepFor(5)
+    const lagSec = sim.engine.__test_replicationLagSec(replicaIid)
+    expect(lagSec).toBeCloseTo(0.005, 3)
+    sim.engine.stop()
+  })
+
+  it('a replica under sustained write load accumulates backlog and lag grows above the locality floor', () => {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const region = createRegion('us-east-1')
+    const azA = createAz(region.id, 'us-east-1a')
+    const azB = createAz(region.id, 'us-east-1b')
+    doc.regions[region.id] = region
+    doc.azs[azA.id] = azA; doc.azs[azB.id] = azB
+    const sA = createServer(azA.id, getPreset('dedicated-8')!)
+    const sB = createServer(azB.id, getPreset('dedicated-8')!)
+    doc.servers[sA.id] = sA; doc.servers[sB.id] = sB
+
+    const api = publicBlueprint('api', 0)
+    const db = createBlueprint('db', 1)
+    db.kind = 'db-sql'
+    // applyRatePerReplica deliberately far below the authored write rate so backlog is guaranteed
+    // to accumulate within a few steps — a purely capacity-starved replica.
+    db.dbConfig = { engine: 'sql', storageGb: 50, applyRatePerReplica: 1 }
+    doc.blueprints[api.id] = api; doc.blueprints[db.id] = db
+    api.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 8080, protocol: 'db', packetTemplateId: null, writeFraction: 1 }]
+
+    const apiPl = createPlacement(api.id, sA.id)
+    const primaryPl = createPlacement(db.id, sA.id)
+    const replicaPl = createPlacement(db.id, sB.id); replicaPl.role = 'replica'
+    doc.placements[apiPl.id] = apiPl
+    doc.placements[primaryPl.id] = primaryPl
+    doc.placements[replicaPl.id] = replicaPl
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 200
+    doc.populations[pop.id] = pop
+
+    const compiled = compileWorld(doc)
+    const replicaIid = instanceId(replicaPl.id, 0)
+    const sim = drive(doc, compiled)
+    sim.stepFor(10)
+    const lagSec = sim.engine.__test_replicationLagSec(replicaIid)
+    // cross-az floor is 0.02s; with applyCapacity pinned at 1 write/s against a much larger write
+    // rate, backlog-driven lag must dominate the floor by a wide margin.
+    expect(lagSec).toBeGreaterThan(1)
+    sim.engine.stop()
+  })
+})
