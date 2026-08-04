@@ -6,6 +6,7 @@ import {
   MANAGED_TYPES,
   PROVIDERS,
   STORAGE_CAPABLE,
+  CACHE_MANAGED_TYPES,
   scopeToKey,
   scopeFromKey,
   defaultManagedDraft,
@@ -36,6 +37,13 @@ describe('managedDraft', () => {
       expect(STORAGE_CAPABLE.has('dbNoSql')).toBe(true)
       expect(STORAGE_CAPABLE.has('queue')).toBe(false)
       expect(STORAGE_CAPABLE.has('redis')).toBe(false)
+    })
+
+    it('exports CACHE_MANAGED_TYPES with redis and memcached, excluding cdnCache', () => {
+      expect(CACHE_MANAGED_TYPES.has('redis')).toBe(true)
+      expect(CACHE_MANAGED_TYPES.has('memcached')).toBe(true)
+      expect(CACHE_MANAGED_TYPES.has('cdnCache')).toBe(false)
+      expect(CACHE_MANAGED_TYPES.has('dbSql')).toBe(false)
     })
   })
 
@@ -170,6 +178,27 @@ describe('managedDraft', () => {
 
       expect(draft.scopeKey).toBe('az:us-east-1a')
       expect(draft.provider).toBe('gcp')
+    })
+
+    it('builds cache fields from an existing redis service, defaulting when cacheConfig is absent', () => {
+      const withConfig: ManagedService = {
+        id: 'ms-4', label: 'session-cache', nodeType: 'redis',
+        scope: { kind: 'region', regionId: 'us-east-1' }, provider: 'aws', port: 6379,
+        cacheConfig: { hitRatio: 0.95, warmupSec: 60, ttlSec: 600 },
+      }
+      const draft = draftFromService(withConfig)
+      expect(draft.cacheHitRatio).toBe('0.95')
+      expect(draft.cacheWarmupSec).toBe('60')
+      expect(draft.cacheTtlSec).toBe('600')
+
+      const withoutConfig: ManagedService = {
+        id: 'ms-5', label: 'cache-no-config', nodeType: 'redis',
+        scope: { kind: 'region', regionId: 'us-east-1' }, provider: 'aws', port: 6379,
+      }
+      const defaultedDraft = draftFromService(withoutConfig)
+      expect(defaultedDraft.cacheHitRatio).toBe('0.9')
+      expect(defaultedDraft.cacheWarmupSec).toBe('30')
+      expect(defaultedDraft.cacheTtlSec).toBe('300')
     })
 
     it('converts undefined inherit-capable fields to empty strings', () => {
@@ -365,6 +394,46 @@ describe('managedDraft', () => {
       expect(dbConfig.capacityRps).toBeUndefined()
     })
 
+    it('emits cacheConfig only for CACHE_MANAGED_TYPES nodeTypes', () => {
+      const redisDraft: ManagedDraft = {
+        nodeType: 'redis',
+        label: 'session-cache',
+        port: 6379,
+        provider: 'aws',
+        scopeKey: 'region:us-east-1',
+        cacheHitRatio: '0.92',
+        cacheWarmupSec: '15',
+        cacheTtlSec: '120',
+      }
+      const redisConfig = draftToConfig(redisDraft)
+      expect(redisConfig.cacheConfig).toEqual({ hitRatio: 0.92, warmupSec: 15, ttlSec: 120 })
+
+      // Non-cache type should NOT have cacheConfig, even with the fields populated.
+      const dbDraft: ManagedDraft = {
+        nodeType: 'dbSql',
+        label: 'db',
+        port: 5432,
+        provider: 'aws',
+        scopeKey: 'region:us-east-1',
+        cacheHitRatio: '0.92', // Should be ignored
+      }
+      const dbConfig = draftToConfig(dbDraft)
+      expect(dbConfig.cacheConfig).toBeUndefined()
+    })
+
+    it('cacheConfig: blank fields fall back to defaults, but an explicit 0 hit ratio is honored', () => {
+      const blankDraft: ManagedDraft = {
+        nodeType: 'redis', label: 'c', port: 6379, provider: 'aws', scopeKey: 'region:us-east-1',
+      }
+      expect(draftToConfig(blankDraft).cacheConfig).toEqual({ hitRatio: 0.9, warmupSec: 30, ttlSec: 300 })
+
+      const zeroHitDraft: ManagedDraft = {
+        nodeType: 'redis', label: 'c', port: 6379, provider: 'aws', scopeKey: 'region:us-east-1',
+        cacheHitRatio: '0',
+      }
+      expect(draftToConfig(zeroHitDraft).cacheConfig?.hitRatio).toBe(0)
+    })
+
     it('returns undefined scope if scopeKey is empty', () => {
       const draft: ManagedDraft = {
         nodeType: 'dbSql',
@@ -531,6 +600,21 @@ describe('managedDraft', () => {
       expect(queueDraft.maxConnections).toBeUndefined()
       expect(queueDraft.replicaCount).toBeUndefined()
       expect(queueDraft.label).toBe('orders-db') // Label preserved
+    })
+
+    it('sets default cache fields when switching to redis; clears them switching away', () => {
+      const dbDraft: ManagedDraft = {
+        nodeType: 'dbSql', label: 'orders-db', port: 5432, provider: 'aws', scopeKey: 'region:us-east-1',
+      }
+      const redisDraft = applyNodeTypeChange(dbDraft, 'redis')
+      expect(redisDraft.cacheHitRatio).toBe('0.9')
+      expect(redisDraft.cacheWarmupSec).toBe('30')
+      expect(redisDraft.cacheTtlSec).toBe('300')
+
+      const backToDb = applyNodeTypeChange(redisDraft, 'dbSql')
+      expect(backToDb.cacheHitRatio).toBeUndefined()
+      expect(backToDb.cacheWarmupSec).toBeUndefined()
+      expect(backToDb.cacheTtlSec).toBeUndefined()
     })
 
     it('preserves non-type-derived fields when changing nodeType', () => {

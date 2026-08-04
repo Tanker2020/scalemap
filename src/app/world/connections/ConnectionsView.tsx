@@ -221,16 +221,35 @@ export function ConnectionsView({ open, onClose }: ConnectionsViewProps): ReactE
             // pure presentational component.
             const targetBp = doc.blueprints[selectedEdge.toId]
             const dbTarget = targetBp?.kind === 'db-sql' || targetBp?.kind === 'db-nosql'
-            const currentDep = doc.blueprints[selectedEdge.fromId]?.dependencies.find(x => x.id === selectedEdge.id)
+            const fromBp = doc.blueprints[selectedEdge.fromId]
+            const currentDep = fromBp?.dependencies.find(x => x.id === selectedEdge.id)
             // The Internet ingress edge is synthetic (no BlueprintDependency behind it), so there
             // is nothing to bind packets to — its byte sizes come from the ROUTE the client emits.
             const bindable = currentDep != null
+            // Cache-aside candidates (FEAT-004): sibling dependencies on the SAME blueprint whose
+            // target resolves to a cache (a blueprint or managed service carrying a cacheConfig).
+            // Only meaningful for a db-protocol edge — that's the shape the cache-aside pattern
+            // targets (api -> cache -> db, where the db edge's share is reduced by the cache's
+            // miss fraction).
+            const cacheOptions = (fromBp?.dependencies ?? [])
+              .filter(dep => dep.id !== selectedEdge.id)
+              .map(dep => {
+                const targetId = dep.target.kind === 'blueprint' ? dep.target.blueprintId : dep.target.managedServiceId
+                const hasCache = dep.target.kind === 'blueprint'
+                  ? doc.blueprints[targetId]?.cacheConfig != null
+                  : doc.managedServices[targetId]?.cacheConfig != null
+                return hasCache ? { depId: dep.id, label: nodeById[targetId]?.label ?? targetId } : null
+              })
+              .filter((x): x is { depId: string; label: string } => x != null)
             return (
               <EdgeInspector edge={selectedEdge} nodeById={nodeById}
                 dbTarget={dbTarget}
                 dbEngine={targetBp?.dbConfig?.engine ?? null}
                 writeFraction={currentDep?.writeFraction ?? 0}
                 onWriteFraction={w => store.setDependencyWriteFraction(selectedEdge.fromId, selectedEdge.id, w)}
+                cacheOptions={cacheOptions}
+                cacheAsideVia={currentDep?.cacheAsideVia ?? null}
+                onCacheAsideVia={depId => store.setDependencyCacheAsideVia(selectedEdge.fromId, selectedEdge.id, depId)}
                 registry={doc.packets}
                 packetMix={bindable ? currentDep.packetMix : undefined}
                 reqKb={currentDep?.reqKb}
@@ -345,11 +364,16 @@ function DraftBar({ draft, nodeById, onChange, onCommit, onCancel }: {
 
 function EdgeInspector({
   edge, nodeById, dbTarget, dbEngine, writeFraction, onWriteFraction,
+  cacheOptions, cacheAsideVia, onCacheAsideVia,
   registry, packetMix, reqKb, respKb, bindable, onPacketMix, onWireSize,
   onFix, onRemove, onClose,
 }: {
   edge: ConnEdge; nodeById: Record<string, ConnNode>
   dbTarget: boolean; dbEngine: 'sql' | 'nosql' | null; writeFraction: number; onWriteFraction: (w: number) => void
+  /** Sibling dependencies on the same blueprint that resolve to a cache — cache-aside candidates. */
+  cacheOptions: { depId: string; label: string }[]
+  cacheAsideVia: string | null
+  onCacheAsideVia: (depId: string | null) => void
   registry: PacketRegistry
   packetMix: PacketMixEntry[] | undefined
   reqKb: number | undefined; respKb: number | undefined
@@ -406,6 +430,35 @@ function EdgeInspector({
               ? 'writes spread across every node (scales out)'
               : 'writes go to the primary (single-writer ceiling)'}
           </div>
+        </div>
+      )}
+      {edge.protocol === 'db' && (
+        // Cache-aside (FEAT-004): binds this db edge to a sibling cache dependency on the same
+        // blueprint — its miss fraction reduces the db edge's share (api -> cache -> db). Only
+        // meaningful on a db-protocol edge, and only offered when at least one sibling dependency
+        // actually resolves to a cache.
+        <div style={{ marginTop: 12, borderTop: '1px solid var(--color-node-border)', paddingTop: 10 }}>
+          <div style={{ font: '600 10px var(--font-mono)', color: 'var(--color-text-muted)' }}>▸ CACHE-ASIDE</div>
+          {cacheOptions.length === 0 ? (
+            <div style={{ marginTop: 4, fontSize: 9.5, color: 'var(--color-text-muted)' }}>
+              no sibling cache dependency yet — add one from this blueprint to a cache to enable
+            </div>
+          ) : (
+            <>
+              <label htmlFor="edge-cache-aside-via" style={{ fontSize: 9.5, color: 'var(--color-text-muted)', display: 'block', marginTop: 4 }}>reads through</label>
+              <select
+                id="edge-cache-aside-via" aria-label="cache-aside via" style={{ ...smallBtn, width: '100%', marginTop: 2 }}
+                value={cacheAsideVia ?? ''}
+                onChange={e => onCacheAsideVia(e.target.value === '' ? null : e.target.value)}
+              >
+                <option value="">none — every call hits the db</option>
+                {cacheOptions.map(o => <option key={o.depId} value={o.depId}>{o.label}</option>)}
+              </select>
+              <div style={{ marginTop: 4, fontSize: 9.5, color: 'var(--color-text-muted)' }}>
+                the cache's miss fraction reduces this edge's share of calls
+              </div>
+            </>
+          )}
         </div>
       )}
       {bindable && (

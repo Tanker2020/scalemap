@@ -179,6 +179,8 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
               health={m?.health}
               connLabel={m ? `${Math.round(m.activeConnections).toLocaleString('en-US')} conn · p50 ${m.p50Ms.toFixed(1)}ms` : '—'}
               rps={m?.rps ?? 0}
+              cacheHitRatio={m?.cacheHitRatio}
+              cacheWarming={m?.cacheHitRatio != null && bp?.cacheConfig != null && m.cacheHitRatio < bp.cacheConfig.hitRatio - 0.001}
               selected={selected} hovered={hovered} dimmed={dimmed}
               onSelect={() => props.onSelect({ kind: 'instance', instanceId: chip.instanceId })}
               onHover={v => props.onHoverBlueprint(v ? chip.blueprintId : null)}

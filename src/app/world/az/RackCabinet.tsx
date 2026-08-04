@@ -36,6 +36,10 @@ const LED_COLOR: Record<'success' | 'warning' | 'danger', string> = {
   success: 'var(--color-success)', warning: 'var(--color-warning)', danger: 'var(--color-danger)',
 }
 
+// FEAT-004: the floor's mirror of ServiceChip's live hit-ratio readout — see DatacenterFloor.tsx's
+// cacheByServer comment for why "first cache instance on this server" is representative.
+export interface CacheHitInfo { ratio: number; warming: boolean }
+
 interface RackSlotProps {
   server: Server
   box: IsoBox
@@ -44,6 +48,7 @@ interface RackSlotProps {
   cpuMean: number
   health: HealthState
   accents: readonly string[]   // resident blueprints' signature colors (≤3) — per-slat identity
+  cacheHit: CacheHitInfo | null
   selected: boolean
   isNew: boolean
   animatedLed: boolean
@@ -53,7 +58,7 @@ interface RackSlotProps {
 }
 
 function RackSlot({
-  server, box, yTop, yBottom, cpuMean, health, accents, selected, isNew, animatedLed, reducedMotion, onSelect, onEnter,
+  server, box, yTop, yBottom, cpuMean, health, accents, cacheHit, selected, isNew, animatedLed, reducedMotion, onSelect, onEnter,
 }: RackSlotProps): ReactElement {
   const { handlers, progressRef } = useHoldTap(() => onSelect(server.id), () => onEnter(server.id))
   const { poly: slatPoly, led } = isoSlat(box, yTop, yBottom)
@@ -61,6 +66,7 @@ function RackSlot({
   const ledColor = health === 'down' ? 'var(--color-danger)' : LED_COLOR[color]
   const blinking = lit > 0 && animatedLed && !reducedMotion
   const labelY = box.roofSW.y + (yTop + yBottom) / 2 + ((yBottom - yTop) * 0.24) / 2
+  const cacheTitle = cacheHit ? ` · ⌬ ${Math.round(cacheHit.ratio * 100)}% hit${cacheHit.warming ? ' (warming)' : ''}` : ''
 
   return (
     <g
@@ -73,7 +79,7 @@ function RackSlot({
       onPointerUp={handlers.onPointerUp}
       onPointerLeave={handlers.onPointerLeave}
     >
-      <title>{server.label} · {server.kind} · {health} · {Math.round(cpuMean * 100)}% cpu</title>
+      <title>{server.label} · {server.kind} · {health} · {Math.round(cpuMean * 100)}% cpu{cacheTitle}</title>
       <polygon
         points={slatPoly}
         fill={selected ? 'color-mix(in srgb, var(--color-accent) 22%, #0e1116)' : '#0e1116'}
@@ -96,6 +102,18 @@ function RackSlot({
           fill={c} opacity={0.9}
         />
       ))}
+      {cacheHit && (
+        // Same row as the accent ticks (not a new line — a 1-2U slat has no vertical room to
+        // spare), offset past the ticks' max 3×8px span so the two never overlap.
+        <text
+          data-testid="rack-cache-hit" x={box.roofSW.x + 34} y={labelY + 5} fontSize={6}
+          fill={cacheHit.warming ? 'var(--color-warning)' : 'var(--color-success)'}
+          opacity={cacheHit.warming ? 0.8 : 1}
+          style={{ font: '6px var(--font-mono)', pointerEvents: 'none' }}
+        >
+          ⌬ {Math.round(cacheHit.ratio * 100)}%
+        </text>
+      )}
       <circle
         className={blinking ? 'az-led az-led-blink' : 'az-led'}
         cx={led.x} cy={led.y} r={2}
@@ -117,6 +135,7 @@ export interface RackCabinetProps {
   usedU: number
   batch: MetricsBatch | null
   accentsByServer: ReadonlyMap<ServerId, readonly string[]>   // resident-blueprint colors per server
+  cacheByServer: ReadonlyMap<ServerId, CacheHitInfo>   // FEAT-004 live hit-ratio readout per server
   selectedServerId: ServerId | null
   newServerIds: ReadonlySet<ServerId>
   animatedLedIds: ReadonlySet<ServerId>
@@ -126,7 +145,7 @@ export interface RackCabinetProps {
 }
 
 export function RackCabinet({
-  rack, cell, cols, residents, usedU, batch, accentsByServer, selectedServerId, newServerIds, animatedLedIds, reducedMotion, onSelect, onEnter,
+  rack, cell, cols, residents, usedU, batch, accentsByServer, cacheByServer, selectedServerId, newServerIds, animatedLedIds, reducedMotion, onSelect, onEnter,
 }: RackCabinetProps): ReactElement {
   const heightPx = cabinetHeightPx(usedU)
   const box = isoBox(cell.x, cell.y, cols, heightPx)
@@ -163,6 +182,7 @@ export function RackCabinet({
             cpuMean={meanUtilization(batch?.servers[server.id]?.coreUtilization)}
             health={batch?.servers[server.id]?.health ?? 'healthy'}
             accents={accentsByServer.get(server.id) ?? []}
+            cacheHit={cacheByServer.get(server.id) ?? null}
             selected={selectedServerId === server.id}
             isNew={newServerIds.has(server.id)}
             animatedLed={animatedLedIds.has(server.id)}

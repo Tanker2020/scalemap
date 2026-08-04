@@ -130,6 +130,8 @@ interface WorldStore {
   setDependencyPacketMix: (fromBpId: string, depId: string, mix: PacketMixEntry[]) => void
   /** The edge's inline tier-2 sizes, used only while no packet mix is bound. */
   setDependencyWireSize: (fromBpId: string, depId: string, patch: { reqKb?: number; respKb?: number }) => void
+  /** Binds (or, with null, unbinds) the sibling dependency id this db edge's cache-aside reads through. */
+  setDependencyCacheAsideVia: (fromBpId: string, depId: string, cacheAsideVia: string | null) => void
   setInternetFacing: (bpId: string, port: number, exposed: boolean) => void
   // Connections-editor node layout: store a single dragged node's override (one undo step per
   // drag) or clear every override back to the auto tree-layout ("auto-arrange").
@@ -402,6 +404,16 @@ export const useWorldStore = create<WorldStore>((set, get) => {
           ...('reqKb' in patch ? { reqKb: clamp(patch.reqKb) } : {}),
           ...('respKb' in patch ? { respKb: clamp(patch.respKb) } : {}),
         } : dep),
+      } } }
+    }),
+    setDependencyCacheAsideVia: (fromBpId, depId, cacheAsideVia) => mutate(d => {
+      const bp = d.blueprints[fromBpId]
+      if (!bp) return d
+      return { ...d, blueprints: { ...d.blueprints, [fromBpId]: {
+        ...bp,
+        dependencies: bp.dependencies.map(dep => dep.id === depId
+          ? { ...dep, cacheAsideVia: cacheAsideVia ?? undefined }
+          : dep),
       } } }
     }),
     setInternetFacing: (bpId, port, exposed) => mutate(d => {

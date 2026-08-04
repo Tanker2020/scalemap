@@ -103,6 +103,35 @@ describe('BlueprintModal', () => {
     expect(opened).toBe(true)
   })
 
+  it('cache kind reveals the cache section and writes a cacheConfig; other kinds clear it', () => {
+    const id = seedBlueprint()
+    const { unmount } = render(<BlueprintModal open={true} editingId={id} onClose={() => {}} onOpenConnections={() => {}} />)
+    expect(screen.queryByLabelText('cache hit ratio')).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('kind'), { target: { value: 'cache' } })
+    fireEvent.change(screen.getByLabelText('cache hit ratio'), { target: { value: '0.95' } })
+    fireEvent.change(screen.getByLabelText('cache warmup seconds'), { target: { value: '45' } })
+    fireEvent.change(screen.getByLabelText('cache ttl seconds'), { target: { value: '600' } })
+    fireEvent.click(screen.getByText('Save'))
+    expect(bp(id).cacheConfig).toEqual({ hitRatio: 0.95, warmupSec: 45, ttlSec: 600 })
+    unmount()
+
+    // Switching away from 'cache' clears the config rather than leaving a stale value behind.
+    render(<BlueprintModal open={true} editingId={id} onClose={() => {}} onOpenConnections={() => {}} />)
+    fireEvent.change(screen.getByLabelText('kind'), { target: { value: 'api' } })
+    fireEvent.click(screen.getByText('Save'))
+    expect(bp(id).cacheConfig).toBeUndefined()
+  })
+
+  it('cache hit ratio clamps to [0,1]', () => {
+    const id = seedBlueprint()
+    render(<BlueprintModal open={true} editingId={id} onClose={() => {}} onOpenConnections={() => {}} />)
+    fireEvent.change(screen.getByLabelText('kind'), { target: { value: 'cache' } })
+    fireEvent.change(screen.getByLabelText('cache hit ratio'), { target: { value: '1.5' } })
+    fireEvent.click(screen.getByText('Save'))
+    expect(bp(id).cacheConfig?.hitRatio).toBe(1)
+  })
+
   it('is edit-locked while the simulation runs, but Cancel still works', () => {
     const id = seedBlueprint()
     useSimulationStore.setState({ running: true })

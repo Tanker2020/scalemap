@@ -80,7 +80,16 @@ interface BlueprintDraft {
   volumeName: string
   storageGb: string
   dbEngine: DbEngine
+  cacheHitRatio: string
+  cacheWarmupSec: string
+  cacheTtlSec: string
 }
+
+// Sensible defaults for a freshly-kinded cache blueprint — mirrors the dbConfig storageGb
+// precedent (draftFrom falls back to a fixed default when cacheConfig is absent).
+const DEFAULT_CACHE_HIT_RATIO = 0.9
+const DEFAULT_CACHE_WARMUP_SEC = 30
+const DEFAULT_CACHE_TTL_SEC = 300
 
 const num = (v: string, fallback = 0): number => {
   const n = Number(v)
@@ -88,6 +97,7 @@ const num = (v: string, fallback = 0): number => {
 }
 
 const isDbKind = (kind: BlueprintKind): boolean => kind === 'db-sql' || kind === 'db-nosql'
+const clamp01 = (n: number): number => Math.max(0, Math.min(1, n))
 
 function draftFrom(bp: ServiceBlueprint): BlueprintDraft {
   const port = bp.ports[0]
@@ -107,6 +117,9 @@ function draftFrom(bp: ServiceBlueprint): BlueprintDraft {
     volumeName: bp.volumeName ?? '',
     storageGb: String(bp.dbConfig?.storageGb ?? 100),
     dbEngine: bp.dbConfig?.engine ?? 'sql',
+    cacheHitRatio: String(bp.cacheConfig?.hitRatio ?? DEFAULT_CACHE_HIT_RATIO),
+    cacheWarmupSec: String(bp.cacheConfig?.warmupSec ?? DEFAULT_CACHE_WARMUP_SEC),
+    cacheTtlSec: String(bp.cacheConfig?.ttlSec ?? DEFAULT_CACHE_TTL_SEC),
   }
 }
 
@@ -166,6 +179,13 @@ export function BlueprintModal({ open, editingId, onClose, onOpenConnections }: 
       dbConfig: isDbKind(draft.kind)
         ? { engine: draft.kind === 'db-sql' ? 'sql' : 'nosql', storageGb: Math.max(0, num(draft.storageGb, 100)) }
         : null,
+      cacheConfig: draft.kind === 'cache'
+        ? {
+          hitRatio: clamp01(num(draft.cacheHitRatio, DEFAULT_CACHE_HIT_RATIO)),
+          warmupSec: Math.max(0, num(draft.cacheWarmupSec, DEFAULT_CACHE_WARMUP_SEC)),
+          ttlSec: Math.max(0, num(draft.cacheTtlSec, DEFAULT_CACHE_TTL_SEC)),
+        }
+        : undefined,
     })
     onClose()
   }
@@ -281,6 +301,30 @@ export function BlueprintModal({ open, editingId, onClose, onOpenConnections }: 
                   value={draft.storageGb} onChange={e => set({ storageGb: e.target.value })} />
               </div>
               <Explainer>engine follows the kind — SQL is single-writer, NoSQL fans writes out</Explainer>
+            </>
+          )}
+
+          {draft.kind === 'cache' && (
+            <>
+              <SectionHeader label="▸ CACHE" />
+              <div style={{ display: 'flex', gap: 6, ...rowGap }}>
+                <div style={{ flex: 1 }}>
+                  <label htmlFor="bp-cache-hit" style={rowLabel}>hit ratio (0-1)</label>
+                  <input id="bp-cache-hit" aria-label="cache hit ratio" type="number" min={0} max={1} step={0.01} style={field}
+                    value={draft.cacheHitRatio} onChange={e => set({ cacheHitRatio: e.target.value })} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label htmlFor="bp-cache-warmup" style={rowLabel}>warmup sec</label>
+                  <input id="bp-cache-warmup" aria-label="cache warmup seconds" type="number" min={0} style={field}
+                    value={draft.cacheWarmupSec} onChange={e => set({ cacheWarmupSec: e.target.value })} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label htmlFor="bp-cache-ttl" style={rowLabel}>ttl sec</label>
+                  <input id="bp-cache-ttl" aria-label="cache ttl seconds" type="number" min={0} style={field}
+                    value={draft.cacheTtlSec} onChange={e => set({ cacheTtlSec: e.target.value })} />
+                </div>
+              </div>
+              <Explainer>hit ratio is steady-state, reached gradually over warmup — a cold restart starts at 0% and climbs; ttl sets the ambient miss floor</Explainer>
             </>
           )}
         </fieldset>

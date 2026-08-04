@@ -19,7 +19,7 @@ import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { managedDbEngine, type ManagedCapacityMode, type ManagedPricingCommitment, type ReplicaLocality } from '../../../lib/world/types'
 import {
-  MANAGED_TYPES, PROVIDERS, STORAGE_CAPABLE,
+  MANAGED_TYPES, PROVIDERS, STORAGE_CAPABLE, CACHE_MANAGED_TYPES,
   defaultManagedDraft, draftFromService, draftToConfig,
   applyNodeTypeChange, applyProviderChange, scopeFromKey,
   type ManagedDraft,
@@ -108,6 +108,7 @@ export function ManagedServiceModal({ open, editingId, onClose }: ManagedService
   const engine = managedDbEngine(draft.nodeType)
   const isDb = engine !== null
   const isStorageCapable = STORAGE_CAPABLE.has(draft.nodeType)
+  const isCache = CACHE_MANAGED_TYPES.has(draft.nodeType)
   const instanceClasses = engine ? DB_INSTANCE_CLASSES.filter(c => c.engine === engine) : []
   const selectedClass = getDbInstanceClass(draft.instanceClassId)
   const storageComponent = getServiceSpec(draft.nodeType, draft.provider)?.pricing.find(c => c.kind === 'storageGbMonth')
@@ -334,6 +335,39 @@ export function ManagedServiceModal({ open, editingId, onClose }: ManagedService
                   {selectedTier && <span style={priceSpan}>${selectedTier.storageGbMonth}/GB-month</span>}
                 </div>
               )}
+            </>
+          )}
+
+          {isCache && (
+            <>
+              <SectionHeader label="▸ CACHE" />
+              <div style={{ display: 'flex', gap: 6, ...rowGap }}>
+                <div style={{ flex: 1 }}>
+                  <label htmlFor="ms-cache-hit" style={rowLabel}>hit ratio (0-1)</label>
+                  <input
+                    id="ms-cache-hit" aria-label="cache hit ratio" type="number" min={0} max={1} step={0.01} style={field}
+                    value={draft.cacheHitRatio ?? ''}
+                    onChange={e => setDraft(d => ({ ...d, cacheHitRatio: e.target.value }))}
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label htmlFor="ms-cache-warmup" style={rowLabel}>warmup sec</label>
+                  <input
+                    id="ms-cache-warmup" aria-label="cache warmup seconds" type="number" min={0} style={field}
+                    value={draft.cacheWarmupSec ?? ''}
+                    onChange={e => setDraft(d => ({ ...d, cacheWarmupSec: e.target.value }))}
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label htmlFor="ms-cache-ttl" style={rowLabel}>ttl sec</label>
+                  <input
+                    id="ms-cache-ttl" aria-label="cache ttl seconds" type="number" min={0} style={field}
+                    value={draft.cacheTtlSec ?? ''}
+                    onChange={e => setDraft(d => ({ ...d, cacheTtlSec: e.target.value }))}
+                  />
+                </div>
+              </div>
+              <Explainer>hit ratio is steady-state, reached gradually over warmup — a cold restart starts at 0% and climbs; ttl sets the ambient miss floor</Explainer>
             </>
           )}
 

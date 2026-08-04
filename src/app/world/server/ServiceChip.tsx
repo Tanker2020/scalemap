@@ -22,6 +22,11 @@ export interface ServiceChipProps {
   health?: HealthState
   connLabel?: string           // "1.1k conn · p50 2.1ms" — T4; T3 passes "—"
   rps?: number                 // live admitted rps — T6 sparkbar sample source
+  // FEAT-004: the cache's effective hit ratio this batch (InstanceMetrics.cacheHitRatio) — present
+  // only for a cache-kind instance. `cacheWarming` (effective < the blueprint's steady-state
+  // target) drives the amber "still climbing" treatment vs. the steady teal readout.
+  cacheHitRatio?: number
+  cacheWarming?: boolean
   selected?: boolean
   hovered?: boolean
   dimmed?: boolean
@@ -29,7 +34,7 @@ export interface ServiceChipProps {
   onHover?: (v: boolean) => void
 }
 
-export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy', connLabel = '—', rps = 0, selected, hovered, dimmed, onSelect, onHover }: ServiceChipProps): ReactElement {
+export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy', connLabel = '—', rps = 0, cacheHitRatio, cacheWarming, selected, hovered, dimmed, onSelect, onHover }: ServiceChipProps): ReactElement {
   const reduced = useReducedMotion()
   const [samples, setSamples] = useState<number[]>([])
 
@@ -63,6 +68,18 @@ export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy',
       </div>
       <div style={{ color: '#7CFFE9', marginTop: 2, fontSize: 7 }}>{portsLabel}</div>
       <div style={{ color: 'var(--color-text-secondary)', fontSize: 7 }}>{connLabel}</div>
+      {cacheHitRatio != null && (
+        <div
+          data-testid="cache-hit-readout" data-warming={cacheWarming ? 'true' : 'false'}
+          style={{
+            marginTop: 1, fontSize: 7,
+            color: cacheWarming ? 'var(--color-warning)' : 'var(--color-success)',
+            opacity: cacheWarming ? 0.75 : 1,
+          }}
+        >
+          ⌬ {Math.round(cacheHitRatio * 100)}%
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 1.5, marginTop: 6, height: 9, alignItems: 'flex-end' }}>
         {bars.map((v, i) => {
           const pct = v == null ? 0 : Math.max(SPARK_MIN_HEIGHT_PCT, Math.round((v / maxSample) * 100))

@@ -9,12 +9,22 @@
 // Mirrors the existing `serviceDraft.ts` precedent — pure, no React, no store, node-testable.
 //
 // PURE: no React, no store — node-env testable, same contract as serviceDraft.ts beside it.
-import type { ManagedService } from './types'
+import type { CacheConfig, ManagedService } from './types'
 import { managedDbEngine, MANAGED_DB_NODE_TYPES } from './types'
 import { defaultDbClassId } from '../dbInstanceClasses'
 
 // Types with provisioned storage that drives $/GB-month pricing + the egress free allowance.
 export const STORAGE_CAPABLE = new Set(['objectStorage', 'fileStorage', 'dbSql', 'dbNoSql'])
+
+// Key-value cache types (cloudRegistry.ts's authoritative CLOUD_REGISTRY keys) — the ones a
+// `cacheConfig` (hit ratio / warmup / ttl) is meaningful for. `cdnCache` is deliberately excluded:
+// it's an edge/CDN cache, a different concept from the cache-aside key-value store this feature
+// models (worldEngine/cache.ts's effectiveHitRatio, CacheAsideVia's target).
+export const CACHE_MANAGED_TYPES = new Set(['redis', 'memcached'])
+
+// Sensible defaults for a freshly-typed cache managed service — same values BlueprintModal.tsx
+// uses for a fresh cache blueprint.
+const DEFAULT_CACHE_CONFIG: CacheConfig = { hitRatio: 0.9, warmupSec: 30, ttlSec: 300 }
 
 // Author managed services with CLOUD_REGISTRY keys directly (D12) so Cost v2 prices them without
 // the alias table. Labels stay human-readable.
@@ -67,6 +77,13 @@ export interface ManagedDraft {
   // Non-DB throughput ceiling (meaningful for non-DB types)
   // Inherit-capable field stored as STRING to preserve '' as "use default"
   capacityRps?: string
+
+  // Cache fields (meaningful only when nodeType is in CACHE_MANAGED_TYPES) — same shape as
+  // BlueprintModal.tsx's cache draft fields, strings while editing for the same half-typed-box
+  // reason as everything else in this file.
+  cacheHitRatio?: string
+  cacheWarmupSec?: string
+  cacheTtlSec?: string
 }
 
 /**
@@ -118,6 +135,12 @@ export function defaultManagedDraft(nodeType: string = 'dbSql'): ManagedDraft {
     }
   }
 
+  if (CACHE_MANAGED_TYPES.has(nodeType)) {
+    draft.cacheHitRatio = String(DEFAULT_CACHE_CONFIG.hitRatio)
+    draft.cacheWarmupSec = String(DEFAULT_CACHE_CONFIG.warmupSec)
+    draft.cacheTtlSec = String(DEFAULT_CACHE_CONFIG.ttlSec)
+  }
+
   return draft
 }
 
@@ -151,6 +174,11 @@ export function draftFromService(ms: ManagedService): ManagedDraft {
 
     // Non-DB fields
     capacityRps: ms.capacityRps?.toString() ?? '',
+
+    // Cache fields
+    cacheHitRatio: String(ms.cacheConfig?.hitRatio ?? DEFAULT_CACHE_CONFIG.hitRatio),
+    cacheWarmupSec: String(ms.cacheConfig?.warmupSec ?? DEFAULT_CACHE_CONFIG.warmupSec),
+    cacheTtlSec: String(ms.cacheConfig?.ttlSec ?? DEFAULT_CACHE_CONFIG.ttlSec),
   }
 }
 
@@ -183,6 +211,7 @@ export function draftToConfig(draft: ManagedDraft): Partial<ManagedService> {
   const engine = managedDbEngine(draft.nodeType)
   const isDb = engine !== null
   const isStorageCapable = STORAGE_CAPABLE.has(draft.nodeType)
+  const isCache = CACHE_MANAGED_TYPES.has(draft.nodeType)
 
   // DB-specific fields: always assigned so an UPDATE-path merge (world.store.ts's
   // updateManagedService, which spreads `{ ...existing, ...patch }`) actually clears stale
@@ -205,6 +234,21 @@ export function draftToConfig(draft: ManagedDraft): Partial<ManagedService> {
 
   // Non-DB throughput ceiling: always assigned, same reasoning as above.
   config.capacityRps = !isDb ? parseNumericInheritable(draft.capacityRps, 0) : undefined
+
+  // Cache config: always assigned, same reasoning as above — an explicit undefined clears a
+  // stale cacheConfig when nodeType changes away from redis/memcached. A blank/non-finite box
+  // falls back to the default rather than to 0, but an explicit 0 (e.g. hitRatio) is honored —
+  // same "blank vs zero" distinction BlueprintModal.tsx's `num()` helper makes.
+  const parseOrDefault = (value: string | undefined, fallback: number): number => {
+    if (value === undefined || value.trim() === '') return fallback
+    const n = Number(value)
+    return Number.isFinite(n) ? n : fallback
+  }
+  config.cacheConfig = isCache ? {
+    hitRatio: Math.max(0, Math.min(1, parseOrDefault(draft.cacheHitRatio, DEFAULT_CACHE_CONFIG.hitRatio))),
+    warmupSec: Math.max(0, parseOrDefault(draft.cacheWarmupSec, DEFAULT_CACHE_CONFIG.warmupSec)),
+    ttlSec: Math.max(0, parseOrDefault(draft.cacheTtlSec, DEFAULT_CACHE_CONFIG.ttlSec)),
+  } : undefined
 
   return config
 }
@@ -234,6 +278,10 @@ export function applyNodeTypeChange(draft: ManagedDraft, newNodeType: string): M
     storageTierId: defaults.storageTierId,
     // Re-base non-DB fields
     capacityRps: defaults.capacityRps,
+    // Re-base cache fields
+    cacheHitRatio: defaults.cacheHitRatio,
+    cacheWarmupSec: defaults.cacheWarmupSec,
+    cacheTtlSec: defaults.cacheTtlSec,
   }
 }
 

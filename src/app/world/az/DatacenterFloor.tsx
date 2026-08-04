@@ -250,6 +250,26 @@ export function DatacenterFloor() {
   // AzConfigTab (spec D5) so the floor and the dock never disagree on a server's color ticks.
   const accentsByServer = useMemo(() => serverAccents(doc, compiled), [compiled.instances, doc.blueprints])
 
+  // FEAT-004: the floor's per-server mirror of ServiceChip's live hit-ratio readout — a server can
+  // host at most one cache instance in every fixture this app authors today, so the first cache
+  // instance found is representative; a future multi-cache server would just show the first one.
+  // `warming` mirrors ServerBoard.tsx's own derivation (effective < the blueprint's steady-state
+  // target), reading the SAME InstanceMetrics.cacheHitRatio the chip reads — never re-derived.
+  const cacheByServer = useMemo(() => {
+    const byServer = instancesByServerFor(compiled)
+    const m = new Map<ServerId, { ratio: number; warming: boolean }>()
+    for (const s of azServers) {
+      for (const inst of byServer.get(s.id) ?? []) {
+        const ratio = batch?.instances[inst.id]?.cacheHitRatio
+        if (ratio == null) continue
+        const target = doc.blueprints[inst.blueprintId]?.cacheConfig?.hitRatio
+        m.set(s.id, { ratio, warming: target != null && ratio < target - 0.001 })
+        break
+      }
+    }
+    return m
+  }, [azServers, compiled, batch, doc.blueprints])
+
   // Camera: fit-to-view on mount/plan growth, wheel zoom at the cursor, background drag-pan
   // (post-Polish-3 fix wave — the floor previously rendered fixed-size with no navigation).
   const camera = useFloorCamera(VIEW_W, VIEW_H, `${plan.cols}x${plan.rows}`)
@@ -569,6 +589,7 @@ export function DatacenterFloor() {
                   usedU={rackUsedU(doc, rack.id)}
                   batch={batch}
                   accentsByServer={accentsByServer}
+                  cacheByServer={cacheByServer}
                   selectedServerId={selectedServerId}
                   newServerIds={reducedMotion ? EMPTY_SERVER_ID_SET : newIds}
                   animatedLedIds={animatedLedIds}
@@ -587,6 +608,7 @@ export function DatacenterFloor() {
                   key={server.id} server={server} cell={cell} cols={plan.cols}
                   batch={batch}
                   accents={accentsByServer.get(server.id) ?? []}
+                  cacheHit={cacheByServer.get(server.id) ?? null}
                   selectedServerId={selectedServerId}
                   isNew={newIds.has(server.id) && !reducedMotion}
                   animatedLed={animatedLedIds.has(server.id)}

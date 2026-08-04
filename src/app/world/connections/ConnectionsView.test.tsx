@@ -153,3 +153,89 @@ describe('ConnectionsView — EdgeInspector packet binding', () => {
     expect(screen.queryByText('▸ OUTGOING PACKETS')).toBeNull()
   })
 })
+
+// ─── Cache-aside binding (FEAT-004) ───────────────────────────────────────────────────────────
+describe('ConnectionsView — EdgeInspector cache-aside binding', () => {
+  const st = () => useWorldStore.getState()
+
+  // api -> db (db-protocol edge, no cache dependency yet).
+  function seedDbEdge() {
+    const { apiId, dbId } = seedApiDb()
+    st().updateBlueprint(dbId, { kind: 'db-sql', dbConfig: { engine: 'sql', storageGb: 100 } })
+    const dbDepId = st().connectServices(apiId, { kind: 'blueprint', blueprintId: dbId },
+      { port: 5432, protocol: 'db', autoProvision: true })
+    return { apiId, dbId, dbDepId }
+  }
+
+  // api -> db (db-protocol, the edge under inspection) + api -> cache (a sibling dependency whose
+  // target carries a cacheConfig, the only shape offered as a cache-aside candidate).
+  function seedApiDbCache() {
+    const { apiId, dbId, dbDepId } = seedDbEdge()
+    const cacheId = st().addBlueprint('cache')
+    st().updateBlueprint(cacheId, { kind: 'cache', cacheConfig: { hitRatio: 0.9, warmupSec: 30, ttlSec: 300 } })
+    const cacheDepId = st().connectServices(apiId, { kind: 'blueprint', blueprintId: cacheId },
+      { port: 6379, protocol: 'db', autoProvision: false })
+    return { apiId, dbId, dbDepId, cacheId, cacheDepId }
+  }
+
+  it('only appears on a db-protocol edge', () => {
+    const { apiId, dbId } = seedApiDb()
+    // http-protocol edge → no cache-aside section at all.
+    const httpDepId = st().connectServices(apiId, { kind: 'blueprint', blueprintId: dbId },
+      { port: 8081, protocol: 'http', autoProvision: true })
+    render(<ConnectionsView open onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId(`conn-edge-${httpDepId}`))
+    expect(screen.queryByText('▸ CACHE-ASIDE')).toBeNull()
+  })
+
+  it('offers no options and a hint when no sibling dependency resolves to a cache', () => {
+    const { dbDepId } = seedDbEdge()
+    render(<ConnectionsView open onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId(`conn-edge-${dbDepId}`))
+    expect(screen.getByText('▸ CACHE-ASIDE')).toBeInTheDocument()
+    expect(screen.queryByLabelText('cache-aside via')).toBeNull()
+    expect(screen.getByText(/no sibling cache dependency yet/)).toBeTruthy()
+  })
+
+  it('lists the sibling cache dependency and writes its id into cacheAsideVia on select', () => {
+    const { apiId, dbDepId, cacheId, cacheDepId } = seedApiDbCache()
+    render(<ConnectionsView open onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId(`conn-edge-${dbDepId}`))
+
+    const select = screen.getByLabelText('cache-aside via') as HTMLSelectElement
+    expect(Array.from(select.querySelectorAll('option')).map(o => o.value)).toEqual(['', cacheDepId])
+    fireEvent.change(select, { target: { value: cacheDepId } })
+
+    expect(st().doc.blueprints[apiId].dependencies.find(d => d.id === dbDepId)?.cacheAsideVia).toBe(cacheDepId)
+    void cacheId
+  })
+
+  it('selecting "none" unbinds cacheAsideVia', () => {
+    const { apiId, dbDepId, cacheDepId } = seedApiDbCache()
+    st().setDependencyCacheAsideVia(apiId, dbDepId, cacheDepId)
+    render(<ConnectionsView open onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId(`conn-edge-${dbDepId}`))
+
+    const select = screen.getByLabelText('cache-aside via') as HTMLSelectElement
+    expect(select.value).toBe(cacheDepId)
+    fireEvent.change(select, { target: { value: '' } })
+    expect(st().doc.blueprints[apiId].dependencies.find(d => d.id === dbDepId)?.cacheAsideVia).toBeUndefined()
+  })
+
+  it('a managed-service cache target is also offered as a candidate', () => {
+    const { apiId, dbId } = seedApiDb()
+    st().updateBlueprint(dbId, { kind: 'db-sql', dbConfig: { engine: 'sql', storageGb: 100 } })
+    const dbDepId = st().connectServices(apiId, { kind: 'blueprint', blueprintId: dbId },
+      { port: 5432, protocol: 'db', autoProvision: true })
+    const regionId = Object.keys(st().doc.regions)[0]
+    const msId = st().addManagedService('redis', 'session-cache', { kind: 'region', regionId }, 6379, 'aws',
+      { cacheConfig: { hitRatio: 0.9, warmupSec: 30, ttlSec: 300 } })
+    const managedDepId = st().connectServices(apiId, { kind: 'managed', managedServiceId: msId },
+      { port: 6379, protocol: 'db', autoProvision: false })
+
+    render(<ConnectionsView open onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId(`conn-edge-${dbDepId}`))
+    const select = screen.getByLabelText('cache-aside via') as HTMLSelectElement
+    expect(Array.from(select.querySelectorAll('option')).map(o => o.value)).toContain(managedDepId)
+  })
+})

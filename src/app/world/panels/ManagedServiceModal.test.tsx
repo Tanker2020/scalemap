@@ -275,4 +275,45 @@ describe('ManagedServiceModal', () => {
       storageTierId: nonDefaultTier,
     })
   })
+
+  // FEAT-004: cacheConfig authoring is gated on redis/memcached nodeType, same "meaningful only
+  // for certain nodeTypes" shape as the DB/storage sections above.
+  it('cache section only appears for a redis nodeType', () => {
+    const { unmount: unmountDb } = render(<ManagedServiceModal open={true} editingId={null} onClose={() => {}} />)
+    fireEvent.change(screen.getByLabelText('service type'), { target: { value: 'dbSql' } })
+    expect(screen.queryByText('▸ CACHE')).toBeNull()
+    unmountDb()
+
+    render(<ManagedServiceModal open={true} editingId={null} onClose={() => {}} />)
+    fireEvent.change(screen.getByLabelText('service type'), { target: { value: 'redis' } })
+    expect(screen.getByText('▸ CACHE')).toBeInTheDocument()
+    expect(screen.getByLabelText('cache hit ratio')).toBeInTheDocument()
+  })
+
+  it('redis round-trip: cacheConfig lands in the resulting record; switching away clears it', () => {
+    const { regionId } = seedRegionAz()
+    const { unmount } = render(<ManagedServiceModal open={true} editingId={null} onClose={() => {}} />)
+
+    fireEvent.change(screen.getByLabelText('service type'), { target: { value: 'redis' } })
+    fireEvent.change(screen.getByLabelText('name'), { target: { value: 'session-cache' } })
+    fireEvent.change(screen.getByLabelText('scope'), { target: { value: `region:${regionId}` } })
+    fireEvent.change(screen.getByLabelText('cache hit ratio'), { target: { value: '0.92' } })
+    fireEvent.change(screen.getByLabelText('cache warmup seconds'), { target: { value: '15' } })
+    fireEvent.change(screen.getByLabelText('cache ttl seconds'), { target: { value: '120' } })
+    fireEvent.click(screen.getByText('Create'))
+
+    const services = Object.values(useWorldStore.getState().doc.managedServices)
+    expect(services).toHaveLength(1)
+    const msId = services[0].id
+    expect(services[0]).toMatchObject({
+      nodeType: 'redis',
+      cacheConfig: { hitRatio: 0.92, warmupSec: 15, ttlSec: 120 },
+    })
+    unmount()
+
+    render(<ManagedServiceModal open={true} editingId={msId} onClose={() => {}} />)
+    fireEvent.change(screen.getByLabelText('service type'), { target: { value: 'dbSql' } })
+    fireEvent.click(screen.getByText('Save'))
+    expect(useWorldStore.getState().doc.managedServices[msId].cacheConfig).toBeUndefined()
+  })
 })

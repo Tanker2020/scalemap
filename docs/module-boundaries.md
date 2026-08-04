@@ -5378,3 +5378,47 @@ The following files receive edits from all three features and must be touched in
 ### In-place extensions
 
 - `src/lib/worldEngine/hostScheduler.ts` — gains disk-I/O demand and wait-time functions (FEAT-006, no new file)
+
+### FEAT-004 Task 7 — `cacheConfig`/`cacheAsideVia` authoring + live hit-ratio readout
+
+The terminal UI task for FEAT-004 (nothing downstream consumes new interfaces from it). Every
+addition reads `InstanceMetrics.cacheHitRatio` (Task 4) or writes `ServiceBlueprint.cacheConfig` /
+`ManagedService.cacheConfig` / `BlueprintDependency.cacheAsideVia` (Task 1) — no new engine
+surface.
+
+- `src/app/world/panels/BlueprintModal.tsx` — a `▸ CACHE` section (hit ratio 0-1, warmup sec, ttl
+  sec), visible only when `draft.kind === 'cache'`, follows the same conditional-render shape as
+  the existing `▸ DATABASE` section (`isDbKind`). Inside the modal's existing
+  `<fieldset disabled={running}>`, so it inherits the edit-lock law for free — no new disabling
+  mechanism.
+- `src/lib/world/managedDraft.ts` — new `CACHE_MANAGED_TYPES` export (`redis`/`memcached`;
+  deliberately excludes `cdnCache`, a different edge-cache concept from the cache-aside
+  key-value store this feature models) plus `cacheHitRatio`/`cacheWarmupSec`/`cacheTtlSec` string
+  draft fields threaded through `defaultManagedDraft`/`draftFromService`/`draftToConfig`/
+  `applyNodeTypeChange`, mirroring the existing `provisionedIops`-style "meaningful only for
+  certain nodeTypes" gating (`isCache = CACHE_MANAGED_TYPES.has(draft.nodeType)`).
+- `src/app/world/panels/ManagedServiceModal.tsx` — a `▸ CACHE` section gated on `isCache`, same
+  three fields, same edit-lock inheritance as BlueprintModal's.
+- `src/app/store/world.store.ts` — new `setDependencyCacheAsideVia` action, byte-for-byte the same
+  shape as the existing `setDependencyWriteFraction`/`setDependencyPacketMix`.
+- `src/app/world/connections/ConnectionsView.tsx` — `EdgeInspector` gains a `▸ CACHE-ASIDE`
+  section, rendered only when `edge.protocol === 'db'`. Lists sibling dependencies of the same
+  blueprint whose target (a blueprint or managed service) carries a `cacheConfig`; selecting one
+  writes its dependency id into the inspected edge's `cacheAsideVia`. Not gated on `running` —
+  matches its sibling controls in the same inspector (the write-fraction slider, packet-mix
+  editor) which were never running-gated either; a new field should not invent stricter behavior
+  than its neighbors.
+- `src/app/world/server/ServiceChip.tsx` — new optional `cacheHitRatio`/`cacheWarming` props;
+  renders a `⌬ NN%` readout (amber/lower-opacity while warming, success-green at steady state)
+  driven off the 1 Hz batch the chip already reads (`ServerBoard.tsx` derives `cacheWarming` by
+  comparing the live ratio against the blueprint's steady-state `cacheConfig.hitRatio`).
+- `src/app/world/az/RackCabinet.tsx` / `FreePoolPod.tsx` — the floor-node mirror: a small `⌬ NN%`
+  text badge next to the resident-blueprint accent ticks, plus the same readout folded into the
+  native SVG `<title>` tooltip. `RackCabinet.tsx` exports `CacheHitInfo` (the `{ratio, warming}`
+  shape), consumed by both. `DatacenterFloor.tsx`'s new `cacheByServer` memo resolves the first
+  cache-instance-carrying resident on each server via `instancesByServerFor(compiled)` +
+  `batch.instances[id].cacheHitRatio` — the same InstanceMetrics field the chip reads, never
+  re-derived. Managed-service (cloud redis) floor labels do NOT get a live readout: engine Task 4
+  publishes `cacheHitRatio` only on `InstanceMetrics`, not `ManagedServiceMetrics` — a managed
+  cache's miss fraction still feeds the flow solver, it just has no live metric surfaced to any UI
+  yet (a gap in the engine's publish surface, not this task's scope).

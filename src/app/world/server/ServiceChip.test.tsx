@@ -57,4 +57,23 @@ describe('ServiceChip', () => {
     render(<ServiceChip chip={chip} name="web" color="#5B9CF6" portsLabel=":8080" onSelect={() => {}} onHover={() => {}} />)
     expect(screen.getByText('web').closest('[data-chip]')).toHaveAttribute('data-instance', 'i1')
   })
+
+  // FEAT-004: the cache hit-ratio readout only appears for a cache instance (cacheHitRatio
+  // present), and its warming/steady state is a purely presentational flag from the caller.
+  it('renders no hit-ratio readout when cacheHitRatio is absent (non-cache instance)', () => {
+    render(<ServiceChip chip={chip} name="web" color="#5B9CF6" portsLabel=":8080" onSelect={() => {}} onHover={() => {}} />)
+    expect(screen.queryByTestId('cache-hit-readout')).not.toBeInTheDocument()
+  })
+
+  it('renders the hit-ratio readout as a rounded percentage when cacheHitRatio is present', () => {
+    render(<ServiceChip chip={chip} name="cache" color="#E0A552" portsLabel=":6379" cacheHitRatio={0.873} onSelect={() => {}} onHover={() => {}} />)
+    expect(screen.getByTestId('cache-hit-readout')).toHaveTextContent('⌬ 87%')
+  })
+
+  it('flags the warming state distinctly from steady-state via data-warming', () => {
+    const { rerender } = render(<ServiceChip chip={chip} name="cache" color="#E0A552" portsLabel=":6379" cacheHitRatio={0.2} cacheWarming onSelect={() => {}} onHover={() => {}} />)
+    expect(screen.getByTestId('cache-hit-readout')).toHaveAttribute('data-warming', 'true')
+    rerender(<ServiceChip chip={chip} name="cache" color="#E0A552" portsLabel=":6379" cacheHitRatio={0.9} cacheWarming={false} onSelect={() => {}} onHover={() => {}} />)
+    expect(screen.getByTestId('cache-hit-readout')).toHaveAttribute('data-warming', 'false')
+  })
 })
