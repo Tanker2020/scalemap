@@ -5141,6 +5141,7 @@ ISSUE-004's full engine wiring of `resolvedFrameRps` and ISSUE-006's `statusCode
 remain explicitly deferred follow-ups (primitives implemented and tested; wiring/semantics scoped
 down and documented at the time, not silently dropped).
 
+<<<<<<< HEAD
 ## Fault Injection Wave 1, Task 3 — wiring `down`/`cpu-brownout`/`memory-leak` into `index.ts` (2026-08-01)
 
 ### `src/lib/worldEngine/index.ts` (hub file) — real `setFault`/`setOutage` facade methods
@@ -5351,3 +5352,29 @@ can never be visually asymmetric without the engine agreeing, or vice versa.
     overriding the full `border` shorthand in both.
   Both fixes shipped in a separate commit from this doc update, per the wave's convention of
   keeping incidental bug fixes distinguishable from documentation-only commits in history.
+
+---
+
+## Wave 2 — Stateful Fidelity: module additions (FEAT-004/005/006)
+
+### New modules
+
+| Module | Feature | Purpose |
+|---|---|---|
+| `src/lib/worldEngine/cache.ts` | FEAT-004 | Pure hit-ratio/miss-fraction resolver; no engine imports |
+| `src/lib/worldEngine/replication.ts` | FEAT-005 | Pure lag/backlog/RPO resolver; no engine imports |
+
+### Hub files receiving sequential edits
+
+The following files receive edits from all three features and must be touched in **FEAT-004 → FEAT-005 → FEAT-006 sequence only** (never in parallel to avoid merge conflicts on high-conflict hub files):
+
+- `src/lib/world/types.ts` — new optional doc fields (`CacheConfig`, `DbConfig` extensions, `ServerSpecs` IOPS fields)
+- `src/lib/worldEngine/types.ts` — contract drift (`InstanceMetrics.cacheHitRatio`, `InstanceMetrics.staleReadFraction`, `InstanceMetrics.diskWaitMs`, `ServerMetrics` extensions, `EngineEventKind` additions, `FaultSpec` disk-stall variant, `MetricsBatch.clusters`)
+- `src/lib/worldEngine/index.ts` — runStep instrumentation (cache warmup tracking, replication lag accumulation, disk I/O pressure)
+- `src/lib/worldEngine/metrics.ts` — metric aggregation (cache hit ratio, replication lag per cluster, disk saturation)
+- `src/lib/worldEngine/flows.ts` — capacity model (cache miss fraction effects, replication stale-read gating, disk IOPS saturation)
+- `src/lib/worldEngine/failover.ts` — promotion logic (least-lagged replica selection for FEAT-005)
+
+### In-place extensions
+
+- `src/lib/worldEngine/hostScheduler.ts` — gains disk-I/O demand and wait-time functions (FEAT-006, no new file)
