@@ -5475,3 +5475,51 @@ steady-state live metric.
   `DatacenterFloor.tsx`'s new `lagByServer` memo resolves the first lag-carrying replica resident
   on each server via `instancesByServerFor(compiled)` + `replicaClusterLagSec` — the SAME shared
   resolver `ServerBoard.tsx` calls, never re-derived.
+
+### FEAT-006 Task 22 — `diskIops`/`diskType` authoring + live disk saturation on the hardware platform
+
+The terminal UI task for FEAT-006 (Task 23 is a bench/wave-close check, not a code task). Writes
+`ServerSpecs.diskIops`/`diskType` (Task 17); reads `ServerMetrics.diskIoFraction`'s dual-behavior
+value (Task 20) — no new engine surface. Unlike FEAT-004/005's Task 7/15 (per-blueprint config,
+authored in `BlueprintModal.tsx`), disk specs live on `ServerSpecs` — a per-SERVER hardware field,
+not a per-service one — so the natural authoring home is the server dock's own HARDWARE drawer,
+not a blueprint modal.
+
+- `src/app/world/dock/drawers/HardwareDrawer.tsx` — two new fields appended to the authoring
+  (non-`live`) body, below the RAM knob: a `Disk Type` `<select>` (`auto — unbounded`/`hdd`/`ssd`/
+  `nvme`) and a `Disk IOPS` `<input type="number">`, both using the `AddServiceForm.tsx`-style
+  plain `field` box (`diskField`) rather than the vCPU/RAM range-knob look — disk specs aren't
+  ladder-driven (no catalog preset carries `diskIops`/`diskType` to snap to; every catalog preset
+  in `instanceCatalog.ts` already authors `diskType: 'ssd'` as its baseline), so there's no shared
+  index to walk. Two new handlers, `commitDiskType`/`commitDiskIops`, patch `server.specs` directly
+  via `updateServer` (an empty select value / cleared number input writes the field back to
+  `undefined`, restoring "auto" — the pre-Task-17 unbounded behavior). Both fields gate on
+  `disabled={running}` with the drawer's standard `title="stop the simulation to edit"` (edit-lock
+  law) — matching how the vCPU/RAM knobs are locked, though as with those knobs, while `running`
+  `ServerFaceplate.tsx` normally supplies a non-null `live` prop, which takes the drawer's separate
+  early-return "frozen gauges" branch instead (that branch is unchanged by this task — it has no
+  disk row, since there's no live-frozen visual spec for it; the disabled-select/input rendering
+  is directly exercised by `HardwareDrawer.test.tsx`'s standalone `running` (no `live`) cases,
+  mirroring how the existing vCPU/RAM edit-lock test is written).
+- `src/app/world/server/HardwarePlatform.tsx` — the disk platter's existing "nvme0 · io NN%" line
+  now reads `server.specs.diskType ?? 'nvme0'` instead of a hardcoded label, and gains a new
+  saturation bar directly beneath it (`data-testid="disk-io-track"`/`"disk-io-fill"`): a
+  track+fill div pair in the same visual language as the core cells' fill, width driven by
+  `ServerMetrics.diskIoFraction`, redlining to `var(--color-danger)` once the fraction crosses
+  `DISK_SATURATION_THRESHOLD = 0.9` — deliberately the SAME constant value as
+  `analysis/rules/capacity.ts`'s `IOPS_SATURATION_THRESHOLD` (not imported across the lib/app
+  boundary — each file owns its own literal, matching how `TimelineV2.tsx`'s
+  `DATA_LOSS_DANGER_FALLBACK_SEC` mirrors an analysis-rule threshold above), so the board's redline
+  and the `iops-saturated` analysis finding never disagree about what counts as "saturated." The
+  platter's existing spin animation (`platter-spin`, spin duration ∝ `diskIoFraction`) is
+  unchanged — the new bar is an additional, more literal "how close to the ceiling" readout
+  alongside it, not a replacement.
+- Live smoke test (brief's Step 3: set a DB server to `hdd`, drive write load, watch the bar
+  redline while CPU sits low, switch to `nvme`, watch the bottleneck move off disk) was **not
+  performed** — this task's environment has no running Tauri dev server or browser automation
+  available. Verification instead relied on `npx tsc --noEmit` (clean), the full `npx vitest run`
+  suite (1922 tests, all passing, including 7 new cases: 6 in `HardwareDrawer.test.tsx` covering
+  the disk-type/disk-iops commit paths, clear-to-auto, and the running edit-lock; 3 in
+  `HardwarePlatform.test.tsx` covering the bar's proportional fill, the danger-threshold redline,
+  and the authored-diskType label), and `npm run build` (clean). A follow-up live pass through the
+  running app is recommended before this feature is considered fully verified end-to-end.

@@ -27,6 +27,10 @@ const PLATTER_RING = '#232b38'
 
 const STICK_COUNT = 4
 const QTICK_COUNT = 12
+// Mirrors capacity.ts's `IOPS_SATURATION_THRESHOLD` (the iops-saturated analysis rule) — the
+// bar redlines at the same fraction the rule fires at, so what the board shows and what the
+// analysis tab flags never disagree.
+const DISK_SATURATION_THRESHOLD = 0.9
 // Motion budget (D1, T8 sweep): `hw-coreflicker`/`hw-glitch` were gated on nothing but hot/steal
 // state, so a large dedicated box (up to 32 vCPU — see instanceCatalog.ts's `dedicated-32`)
 // could animate every one of its 32 core cells at once, unbounded. Capped to the top
@@ -234,7 +238,23 @@ export function HardwarePlatform(props: HardwarePlatformProps): ReactElement {
           }} />
           <div style={{ position: 'absolute', left: '50%', top: '50%', width: 8, height: 8, borderRadius: '50%', background: PLATTER_RING, transform: 'translate(-50%,-50%)' }} />
         </div>
-        <div style={{ color: 'var(--color-text-secondary)' }}>nvme0 · io {Math.round(io * 100)}%</div>
+        <div style={{ color: 'var(--color-text-secondary)' }}>
+          {server.specs.diskType ?? 'nvme0'} · io {Math.round(io * 100)}%
+        </div>
+        {/* Disk saturation bar (Task 22, FEAT-006): same visual language as the core-cell fill —
+            a track + fill, redlining to var(--color-danger) once ServerMetrics.diskIoFraction
+            crosses the same threshold the iops-saturated analysis rule fires at. */}
+        <div style={{ width: '100%' }}>
+          <div data-testid="disk-io-track" style={{
+            position: 'relative', width: '100%', height: 5, borderRadius: 3,
+            background: CORE_BG, border: `1px solid ${CORE_BORDER}`, overflow: 'hidden',
+          }}>
+            <div data-testid="disk-io-fill" data-saturated={io >= DISK_SATURATION_THRESHOLD} style={{
+              position: 'absolute', left: 0, top: 0, bottom: 0, width: `${Math.min(100, Math.round(io * 100))}%`,
+              background: io >= DISK_SATURATION_THRESHOLD ? 'var(--color-danger)' : TEAL,
+            }} />
+          </div>
+        </div>
         <div style={{ width: '100%' }}>
           <div style={{ fontSize: 6, color: 'var(--color-text-muted)', display: 'flex', justifyContent: 'space-between' }}>
             <span>io queue</span><span>depth {Math.round(queueDepth)} / {QTICK_COUNT * QUEUE_CONN_PER_TICK}</span>

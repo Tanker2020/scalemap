@@ -68,6 +68,15 @@ const knobInput: CSSProperties = { width: '100%', marginTop: 5, accentColor: 'va
 const knobHint: CSSProperties = { fontSize: 9.5, color: 'var(--color-text-muted)', marginTop: 4 }
 const knobHintStrong: CSSProperties = { color: 'var(--kit-accent)' }
 
+// Disk fields (Task 22, FEAT-006): unlike vCPU/RAM, diskIops/diskType are NOT ladder-driven —
+// there's no preset walk to snap to, so these are plain field inputs (AddServiceForm.tsx's
+// `field` style precedent) rather than range knobs.
+const diskField: CSSProperties = {
+  font: '10px var(--font-mono)', marginTop: 5, background: 'var(--color-node-base)',
+  border: '1px solid var(--color-node-border)', borderRadius: 4,
+  padding: '3px 6px', color: 'var(--color-text-primary)', width: '100%',
+}
+
 const liveRow: CSSProperties = { display: 'flex', justifyContent: 'space-between', fontSize: 10, padding: '3px 0', color: 'var(--color-text-secondary)' }
 const liveRowValue: CSSProperties = { color: 'var(--color-text-primary)', fontVariantNumeric: 'tabular-nums' }
 const frozenKnobWrap: CSSProperties = { ...knobWrap, opacity: 0.55 }
@@ -148,6 +157,18 @@ export function HardwareDrawer({ server, doc, compiled, running, live }: Hardwar
 
   const disabled = running || ladder.length === 0
 
+  // Direct specs patch — no ladder involved, so this bypasses `commit` entirely (unlike vCPU/RAM,
+  // there's no catalog preset carrying diskIops/diskType to snap to).
+  const commitDiskType = (value: string) => {
+    useWorldStore.getState().updateServer(server.id, {
+      specs: { ...server.specs, diskType: value === '' ? undefined : (value as 'hdd' | 'ssd' | 'nvme') },
+    })
+  }
+  const commitDiskIops = (value: string) => {
+    const n = value === '' ? undefined : Math.max(0, Math.round(Number(value)))
+    useWorldStore.getState().updateServer(server.id, { specs: { ...server.specs, diskIops: n } })
+  }
+
   return (
     <div data-testid="hardware-drawer-body">
       <div style={knobWrap}>
@@ -181,6 +202,38 @@ export function HardwareDrawer({ server, doc, compiled, running, live }: Hardwar
         <div style={knobHint} data-testid="ram-hint">
           {ramHintText ? <>→ <b style={knobHintStrong}>{ramHintText}</b></> : '—'}
         </div>
+      </div>
+      <div style={knobWrap}>
+        <div style={knobLabelRow}>
+          <span>Disk Type</span>
+          <span style={knobValue}>{server.specs.diskType ?? 'auto'}</span>
+        </div>
+        <select
+          aria-label="Disk Type" data-testid="disk-type-select" style={diskField}
+          value={server.specs.diskType ?? ''} disabled={running}
+          title={running ? 'stop the simulation to edit' : undefined}
+          onChange={e => commitDiskType(e.target.value)}
+        >
+          <option value="">auto — unbounded</option>
+          <option value="hdd">hdd</option>
+          <option value="ssd">ssd</option>
+          <option value="nvme">nvme</option>
+        </select>
+        <div style={knobHint}>→ sets the IOPS ceiling family disk-saturation modeling uses</div>
+      </div>
+      <div style={knobWrap}>
+        <div style={knobLabelRow}>
+          <span>Disk IOPS</span>
+          <span style={knobValue}>{server.specs.diskIops != null ? server.specs.diskIops.toLocaleString('en-US') : 'auto'}</span>
+        </div>
+        <input
+          type="number" aria-label="Disk IOPS" data-testid="disk-iops-input" style={diskField}
+          min={0} step={100} placeholder="auto"
+          value={server.specs.diskIops ?? ''} disabled={running}
+          title={running ? 'stop the simulation to edit' : undefined}
+          onChange={e => commitDiskIops(e.target.value)}
+        />
+        <div style={knobHint}>→ overrides the {server.specs.diskType ?? 'auto'} default IOPS ceiling</div>
       </div>
     </div>
   )

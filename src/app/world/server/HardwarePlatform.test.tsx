@@ -153,6 +153,33 @@ describe('HardwarePlatform', () => {
     expect(spin.style.animation).toMatch(/^spin /)
   })
 
+  // Task 22 (FEAT-006): disk saturation bar — same track+fill shape as the core cells, redlining
+  // to var(--color-danger) at the SAME threshold (0.9) the iops-saturated analysis rule fires at.
+  it('disk saturation bar fills proportionally to diskIoFraction and stays below the danger threshold', () => {
+    const s = server()
+    render(<HardwarePlatform server={s} metrics={metrics({ diskIoFraction: 0.4 })} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    const fill = screen.getByTestId('disk-io-fill')
+    expect(fill.style.width).toBe('40%')
+    expect(fill).toHaveAttribute('data-saturated', 'false')
+    expect(fill.style.background).not.toBe('var(--color-danger)')
+  })
+
+  it('disk saturation bar redlines to var(--color-danger) once diskIoFraction crosses 0.9', () => {
+    const s = server()
+    render(<HardwarePlatform server={s} metrics={metrics({ diskIoFraction: 0.95 })} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    const fill = screen.getByTestId('disk-io-fill')
+    expect(fill.style.width).toBe('95%')
+    expect(fill).toHaveAttribute('data-saturated', 'true')
+    expect(fill.style.background).toBe('var(--color-danger)')
+  })
+
+  it('shows the authored diskType label in place of the generic "nvme0" placeholder', () => {
+    const s = server()
+    s.specs.diskType = 'hdd'
+    render(<HardwarePlatform server={s} metrics={metrics()} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    expect(screen.getByText(/hdd · io/)).toBeInTheDocument()
+  })
+
   it('queue-depth ticks reflect summed active connections', () => {
     const s = server()
     render(<HardwarePlatform server={s} metrics={metrics()} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} queueDepth={9} />)

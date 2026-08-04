@@ -127,6 +127,80 @@ describe('HardwareDrawer', () => {
   })
 })
 
+// Task 22 (FEAT-006): diskIops/diskType authoring — plain field inputs (not ladder knobs, since
+// disk specs aren't part of the vCPU/RAM preset walk), gated on `running` the same way.
+describe('HardwareDrawer — disk fields', () => {
+  it('reflects the seeded preset\'s diskType (vps-medium ships "ssd") and defaults diskIops to "auto"', () => {
+    const { serverId } = seedServer()
+    const doc = currentDoc()
+    render(<HardwareDrawer server={currentServer(serverId)} doc={doc} compiled={compileWorld(doc)} running={false} />)
+    expect(screen.getByLabelText('Disk Type')).toHaveValue('ssd')
+    expect(screen.getByLabelText('Disk IOPS')).toHaveValue(null)
+  })
+
+  it('renders "auto — unbounded" when the server has no authored diskType', () => {
+    const { serverId } = seedServer()
+    useWorldStore.getState().updateServer(serverId, { specs: { ...currentServer(serverId).specs, diskType: undefined } })
+    const doc = currentDoc()
+    render(<HardwareDrawer server={currentServer(serverId)} doc={doc} compiled={compileWorld(doc)} running={false} />)
+    expect(screen.getByLabelText('Disk Type')).toHaveValue('')
+  })
+
+  it('choosing a disk type commits specs.diskType and leaves other specs untouched', () => {
+    const { serverId } = seedServer()
+    const doc = currentDoc()
+    const before = currentServer(serverId).specs
+    render(<HardwareDrawer server={currentServer(serverId)} doc={doc} compiled={compileWorld(doc)} running={false} />)
+    fireEvent.change(screen.getByLabelText('Disk Type'), { target: { value: 'hdd' } })
+    const after = currentServer(serverId).specs
+    expect(after.diskType).toBe('hdd')
+    expect(after.vcpu).toBe(before.vcpu)
+    expect(after.ramMb).toBe(before.ramMb)
+  })
+
+  it('picking "auto — unbounded" clears diskType back to undefined', () => {
+    const { serverId } = seedServer()
+    useWorldStore.getState().updateServer(serverId, { specs: { ...currentServer(serverId).specs, diskType: 'nvme' } })
+    const doc = currentDoc()
+    render(<HardwareDrawer server={currentServer(serverId)} doc={doc} compiled={compileWorld(doc)} running={false} />)
+    fireEvent.change(screen.getByLabelText('Disk Type'), { target: { value: '' } })
+    expect(currentServer(serverId).specs.diskType).toBeUndefined()
+  })
+
+  it('entering a diskIops value commits it as a rounded number', () => {
+    const { serverId } = seedServer()
+    const doc = currentDoc()
+    render(<HardwareDrawer server={currentServer(serverId)} doc={doc} compiled={compileWorld(doc)} running={false} />)
+    fireEvent.change(screen.getByLabelText('Disk IOPS'), { target: { value: '3000' } })
+    expect(currentServer(serverId).specs.diskIops).toBe(3000)
+  })
+
+  it('clearing the diskIops field commits it back to undefined ("auto")', () => {
+    const { serverId } = seedServer()
+    useWorldStore.getState().updateServer(serverId, { specs: { ...currentServer(serverId).specs, diskIops: 5000 } })
+    const doc = currentDoc()
+    render(<HardwareDrawer server={currentServer(serverId)} doc={doc} compiled={compileWorld(doc)} running={false} />)
+    fireEvent.change(screen.getByLabelText('Disk IOPS'), { target: { value: '' } })
+    expect(currentServer(serverId).specs.diskIops).toBeUndefined()
+  })
+
+  it('disk fields are disabled and titled while running (edit-lock law)', () => {
+    const { serverId } = seedServer()
+    const doc = currentDoc()
+    render(<HardwareDrawer server={currentServer(serverId)} doc={doc} compiled={compileWorld(doc)} running />)
+    // While running, HardwareDrawer takes the `live` early-return path in ServerFaceplate — but
+    // this test exercises HardwareDrawer standalone with `running` true and no `live` supplied
+    // (as HardwareDrawer.test.tsx already does for the vCPU/RAM knobs above), which still renders
+    // the authoring body with disk fields disabled.
+    const diskType = screen.getByLabelText('Disk Type')
+    const diskIops = screen.getByLabelText('Disk IOPS')
+    expect(diskType).toBeDisabled()
+    expect(diskType).toHaveAttribute('title', 'stop the simulation to edit')
+    expect(diskIops).toBeDisabled()
+    expect(diskIops).toHaveAttribute('title', 'stop the simulation to edit')
+  })
+})
+
 // Polish 4 T5 (spec D7): watching posture — the two knobs freeze (opacity 0.55, no draggable
 // `<input>` at all — "thumb hidden"), live rps/ram rows above them, both titled
 // "locked while running".
