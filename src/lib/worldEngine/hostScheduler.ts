@@ -1,7 +1,7 @@
 // Per-server CPU/RAM scheduling: demand vs effective capacity, per-instance weighted fair-share
 // service rates (audit ISSUE-018), OOM victim selection.
 // Spec decision 3, docs/superpowers/specs/2026-07-08-phase2-substrate-engine-design.md.
-import type { Server, InstanceId } from '../world/types'
+import type { Server, InstanceId, BlueprintId, WorldDoc } from '../world/types'
 import type { Rng } from './rng'
 
 export interface InstanceLoad {
@@ -51,6 +51,49 @@ export function poolCheckoutFor(
       ? Math.min(1, (checkoutWaitMs - checkoutTimeoutMs) / checkoutTimeoutMs)
       : 0
   return { checkoutWaitMs, checkoutTimeoutErrorFraction }
+}
+
+// Disk I/O capacity modeling (FEAT-006): base latency per disk type + saturation curve matching poolCheckoutFor.
+const BASE_DISK_MS: Record<'hdd' | 'ssd' | 'nvme', number> = { hdd: 8, ssd: 0.5, nvme: 0.1 }
+const DEFAULT_DISK_IOPS: Record<'hdd' | 'ssd' | 'nvme', number> = { hdd: 150, ssd: 16_000, nvme: 100_000 }
+const MAX_SATURATION_FOR_DISK_WAIT = 0.98
+
+/**
+ * Sums rps * diskIoPerRequest across resident instances. Fetches diskIoPerRequest from each
+ * instance's blueprint via the blueprintByInstance map. Returns the total IOPS demand.
+ * Matches the metrics.ts shape for consistency with published instance metrics.
+ */
+export function diskIoDemandFor(
+  loads: InstanceLoad[],
+  blueprintByInstance: Map<InstanceId, BlueprintId>,
+  doc: WorldDoc,
+): number {
+  let sum = 0
+  for (const load of loads) {
+    const bp = doc.blueprints[blueprintByInstance.get(load.instanceId) ?? '']
+    sum += load.admittedRps * (bp?.workload.diskIoPerRequest ?? 0)
+  }
+  return sum
+}
+
+/**
+ * Disk I/O wait time under saturation, mirroring poolCheckoutFor's base/(1-overshoot) curve.
+ * Returns null when neither diskIops nor diskType is available (unbounded/unmodelled, the regression floor).
+ * At or below saturation (rho <= 1), wait is 0. Above saturation, wait grows via M/M/1-like queueing.
+ * diskIops, if present, overrides any diskType-derived default.
+ */
+export function diskWaitFor(
+  demandIops: number,
+  diskIops: number | undefined,
+  diskType: 'hdd' | 'ssd' | 'nvme' | undefined,
+): number | null {
+  const resolvedCeiling = diskIops ?? (diskType ? DEFAULT_DISK_IOPS[diskType] : undefined)
+  if (resolvedCeiling == null) return null
+  const rho = demandIops / resolvedCeiling
+  if (rho <= 1) return 0
+  const baseMs = diskType ? BASE_DISK_MS[diskType] : BASE_DISK_MS.ssd
+  const overshoot = Math.min(rho - 1, MAX_SATURATION_FOR_DISK_WAIT)
+  return baseMs / (1 - overshoot)
 }
 
 export interface HostStepResult {

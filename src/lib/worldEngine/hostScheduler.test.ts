@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { stepHost, poolCheckoutFor } from './hostScheduler'
+import { stepHost, poolCheckoutFor, diskIoDemandFor, diskWaitFor } from './hostScheduler'
 import type { InstanceLoad } from './hostScheduler'
+import type { WorldDoc } from '../world/types'
 import { sampleLatencyMs } from './latency'
 import { createRng } from './rng'
 import { createServer } from '../world/factories'
@@ -206,5 +207,37 @@ describe('stepHost — pool checkout (audit ISSUE-005)', () => {
     // RAM must be LESS than the naive (unshed) 100 + 0.5*1000 = 600 — some connections timed out
     // and never actually landed, so they must not inflate RAM as if they held one.
     expect(result.ramUsedMb).toBeLessThan(100 + 0.5 * 1000)
+  })
+})
+
+// ─── Disk I/O capacity (FEAT-006) ───────────────────────────
+describe('diskWaitFor', () => {
+  it('returns null when neither diskIops nor diskType is resolvable (unbounded, the regression floor)', () => {
+    expect(diskWaitFor(500, undefined, undefined)).toBeNull()
+  })
+
+  it('returns 0 when demand is at or below the ceiling', () => {
+    expect(diskWaitFor(100, 200, 'ssd')).toBe(0)
+    expect(diskWaitFor(200, 200, 'ssd')).toBe(0)
+  })
+
+  it('matches BASE_DISK_MS / (1 - overshoot) above saturation, to the digit, sharing poolCheckoutFor\'s curve shape', () => {
+    // ssd BASE_DISK_MS = 0.5; demand 300 vs ceiling 200 -> rho = 1.5, overshoot = 0.5
+    const wait = diskWaitFor(300, 200, 'ssd')
+    expect(wait).toBeCloseTo(0.5 / (1 - 0.5), 10) // = 1.0
+  })
+
+  it('derives BASE_DISK_MS from diskType when diskIops is absent but diskType is present', () => {
+    // e.g. diskType 'hdd' alone implies a 150 IOPS default ceiling per the spec's table
+    expect(diskWaitFor(300, undefined, 'hdd')).not.toBeNull()
+  })
+})
+
+describe('diskIoDemandFor', () => {
+  it('sums rps * diskIoPerRequest across resident instances, matching the existing metrics.ts shape', () => {
+    const loads = [{ instanceId: 'i1', admittedRps: 10 } as InstanceLoad, { instanceId: 'i2', admittedRps: 5 } as InstanceLoad]
+    const blueprintByInstance = new Map([['i1', 'bp-db'], ['i2', 'bp-api']])
+    const doc = { blueprints: { 'bp-db': { workload: { diskIoPerRequest: 4 } }, 'bp-api': { workload: { diskIoPerRequest: 0 } } } } as any as WorldDoc
+    expect(diskIoDemandFor(loads, blueprintByInstance, doc)).toBe(40) // 10*4 + 5*0
   })
 })
