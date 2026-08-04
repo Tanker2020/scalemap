@@ -28,8 +28,9 @@ const PLATTER_RING = '#232b38'
 const STICK_COUNT = 4
 const QTICK_COUNT = 12
 // Mirrors capacity.ts's `IOPS_SATURATION_THRESHOLD` (the iops-saturated analysis rule) — the
-// bar redlines at the same fraction the rule fires at, so what the board shows and what the
-// analysis tab flags never disagree.
+// bar redlines at the same fraction the rule fires at, GATED (see hasDiskCeiling below) the same
+// way the rule gates itself, so what the board shows and what the analysis tab flags never
+// disagree.
 const DISK_SATURATION_THRESHOLD = 0.9
 // Motion budget (D1, T8 sweep): `hw-coreflicker`/`hw-glitch` were gated on nothing but hot/steal
 // state, so a large dedicated box (up to 32 vCPU — see instanceCatalog.ts's `dedicated-32`)
@@ -121,6 +122,14 @@ export function HardwarePlatform(props: HardwarePlatformProps): ReactElement {
   const cores = metrics?.coreUtilization ?? new Array(vcpu).fill(0)
   const steal = metrics?.stealFraction ?? 0
   const io = metrics?.diskIoFraction ?? 0
+  // Audit final-review finding: diskIoFraction is DUAL-BEHAVIOR (Task 20) — with neither
+  // diskIops nor diskType authored on this server, it falls back to the legacy
+  // `min(1, diskIo/100)` heuristic, which was never designed to mean "saturated" and trivially
+  // exceeds 0.9 on an ordinary server. Mirrors capacity.ts's `iopsSaturated` rule's OWN gate
+  // (the same fix, applied here) so the board never redlines on a signal the analysis tab has
+  // already learned not to trust.
+  const hasDiskCeiling = server.specs.diskIops != null || server.specs.diskType != null
+  const diskSaturated = hasDiskCeiling && io >= DISK_SATURATION_THRESHOLD
   const cells = coreCells(cores, steal)
   const animatedCoreIndices = new Set(
     cells
@@ -243,15 +252,19 @@ export function HardwarePlatform(props: HardwarePlatformProps): ReactElement {
         </div>
         {/* Disk saturation bar (Task 22, FEAT-006): same visual language as the core-cell fill —
             a track + fill, redlining to var(--color-danger) once ServerMetrics.diskIoFraction
-            crosses the same threshold the iops-saturated analysis rule fires at. */}
+            crosses the same threshold the iops-saturated analysis rule fires at, AND only when
+            this server actually has a resolvable diskIops/diskType ceiling (hasDiskCeiling,
+            audit final-review finding) — without one, diskIoFraction is the legacy diskIo/100
+            heuristic, not a real saturation signal, and the fill stays teal regardless of
+            magnitude so the board and the analysis tab never disagree. */}
         <div style={{ width: '100%' }}>
           <div data-testid="disk-io-track" style={{
             position: 'relative', width: '100%', height: 5, borderRadius: 3,
             background: CORE_BG, border: `1px solid ${CORE_BORDER}`, overflow: 'hidden',
           }}>
-            <div data-testid="disk-io-fill" data-saturated={io >= DISK_SATURATION_THRESHOLD} style={{
+            <div data-testid="disk-io-fill" data-saturated={diskSaturated} style={{
               position: 'absolute', left: 0, top: 0, bottom: 0, width: `${Math.min(100, Math.round(io * 100))}%`,
-              background: io >= DISK_SATURATION_THRESHOLD ? 'var(--color-danger)' : TEAL,
+              background: diskSaturated ? 'var(--color-danger)' : TEAL,
             }} />
           </div>
         </div>

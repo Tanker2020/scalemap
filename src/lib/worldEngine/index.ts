@@ -499,6 +499,16 @@ interface EngineState {
   // computation below so an unconfigured world (the overwhelming common case) pays zero extra
   // cost per step.
   hasAnyReplicas: boolean
+  // Audit final-review finding: start()-time fast-path flag, the SAME hasAnyCache/hasAnyReplicas
+  // precedent — true iff ANY server in the doc has diskIops and/or diskType authored. Task 17 gave
+  // every instanceCatalog.ts preset a default diskType, so an unconfigured/legacy world (no server
+  // ever explicitly overridden) still needs this false to skip the per-step disk demand/wait
+  // computation entirely; FEAT-006 originally shipped without this guard.
+  hasAnyDisk: boolean
+  // start()-time index (audit final-review finding, alongside hasAnyDisk): instance id -> its
+  // blueprint id, built ONCE from the frozen compiled world's instances so the per-server per-step
+  // disk-demand computation never allocates a fresh Map from `resident` every step.
+  blueprintIdByInstance: Map<InstanceId, BlueprintId>
   // Task 10's pure backlog/lag tracker — persistent across ticks, mutated in place by
   // stepReplication.
   replication: ReplicationState
@@ -705,6 +715,13 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
   // delegate to these same functions so there is exactly one implementation either way.
   const doSetFault = (s: EngineState, scope: FaultScope, id: string, spec: FaultSpec | null, simMs: number): void => {
     const affected = instanceIdsForFaultScope(s, scope, id)
+    // Audit final-review N-finding: capture whether the fault being CLEARED was actually a
+    // 'down' fault BEFORE setFaultPure deletes the active entry. faults.ts keeps exactly one
+    // spec per `${scope}:${id}` key, so a clear (spec === null) can be clearing ANY kind —
+    // 'latency-add'/'cpu-brownout'/'memory-leak'/'error-inject'/'disk-stall' just as easily as
+    // 'down'. Only a 'down' fault clearing implies the instance actually restarted; the
+    // cache-warmth reset below must gate on THAT, not merely on "this is a clear operation".
+    const wasDown = spec === null && s.faults.active.get(`${scope}:${id}`)?.kind === 'down'
     for (const e of setFaultPure(s.faults, scope, id, spec, simMs, affected)) emitEvent(e)
     // 'down' (and clearing back to null) routes through the EXISTING failover outage path so
     // behavior stays byte-identical to the pre-FEAT-001 setOutage — faults.ts's own state above
@@ -721,8 +738,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // FEAT-004 (Task 3): clearing a 'down' fault is a restart — the same "fresh cache" moment
       // as an OOM restart above. A 'down' fault being SET (not cleared) does NOT reset warmth: the
       // instance isn't running at all while faulted, so there's nothing to warm/cool; the reset
-      // belongs to the moment it comes back.
-      if (!down) {
+      // belongs to the moment it comes back. Clearing a NON-'down' fault (latency-add,
+      // cpu-brownout, memory-leak, error-inject, disk-stall) is not a restart at all — the
+      // instance kept running the whole time — so it must NOT reset warmth either (audit
+      // final-review finding: this used to fire on ANY clear).
+      if (wasDown) {
         for (const iid of affected) {
           const bp = s.doc.blueprints[s.compiled.instances[iid]?.blueprintId ?? '']
           if (bp?.cacheConfig) {
@@ -1252,35 +1272,45 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // FEAT-001: cpu-brownout composes MULTIPLICATIVELY with the existing VPS steal factor
       // (capacityFraction defaults to 1 — a no-op — when no brownout is active).
       const effectiveVcpu = server.specs.vcpu * (s.vpsFactor.get(server.id) ?? 1) * (brownout?.capacityFraction ?? 1)
-      // FEAT-006 (Task 19): disk I/O demand vs. capacity for this server this step. disk-stall
-      // multiplies the effective diskIops ceiling (mirrors cpu-brownout's effectiveVcpu multiply
-      // above) — capacityFraction=1 when no disk-stall is active, a no-op. diskWaitFor returns
-      // null when the server has neither diskIops nor diskType authored (unmodelled, the
-      // regression floor), else 0 at/under saturation, else a growing queueing-delay term.
-      const blueprintByInstance = new Map(resident.map(i => [i.id, i.blueprintId]))
-      const demandIops = diskIoDemandFor(loads, blueprintByInstance, doc)
-      const stalledIops = server.specs.diskIops != null
-        ? server.specs.diskIops * (diskFault?.iopsFraction ?? 1)
-        : server.specs.diskIops
-      const diskWaitMs = diskWaitFor(demandIops, stalledIops, server.specs.diskType)
-      // FEAT-006 (Task 20): the SAME ceiling resolution diskWaitFor used internally, exposed here
-      // so metrics.ts's ceiling-aware diskIoFraction branch can read the exact ratio that drove
-      // this step's diskWaitMs rather than re-deriving it. undefined ⇒ neither diskIops nor
-      // diskType authored ⇒ the legacy diskIo/100 branch stays in force (regression floor).
-      const diskCeiling = resolveDiskIopsCeiling(stalledIops, server.specs.diskType)
-      const diskIoRatio = diskCeiling != null ? demandIops / Math.max(diskCeiling, 0.0001) : undefined
-      // FEAT-006 (Task 21): disk_saturated, rate-limited per server -- mirrors
-      // replication_lag_high's gate shape (a lastEmittedAtMs map checked before pushing). Only
-      // fires when a ceiling is actually resolvable (diskIoRatio defined); a server with neither
-      // diskIops nor diskType authored has no comparable ratio and never fires, matching
-      // diskIoFraction's own dual-behavior split (Task 20).
-      if (diskIoRatio != null && diskIoRatio > DISK_SATURATION_THRESHOLD) {
-        const last = s.diskSaturatedRateLimit.get(server.id) ?? -Infinity
-        if (simMs - last >= DISK_EVENT_MIN_GAP_MS) {
-          s.diskSaturatedRateLimit.set(server.id, simMs)
-          emit('disk_saturated', 'warning',
-            `${server.label} disk I/O at ${Math.min(1, diskIoRatio) * 100 | 0}% of its IOPS ceiling`,
-            [server.id, ...resident.map(i => i.id)], simMs)
+      // FEAT-006 (Task 19), audit final-review-gated: disk I/O demand vs. capacity for this server
+      // this step. disk-stall multiplies the effective diskIops ceiling (mirrors cpu-brownout's
+      // effectiveVcpu multiply above) — capacityFraction=1 when no disk-stall is active, a no-op.
+      // diskWaitFor returns null when the server has neither diskIops nor diskType authored
+      // (unmodelled, the regression floor), else 0 at/under saturation, else a growing
+      // queueing-delay term. The whole block is gated on s.hasAnyDisk (the hasAnyCache/
+      // hasAnyReplicas fast-path precedent) so a world with NO server anywhere carrying diskIops/
+      // diskType pays zero per-step disk cost — diskWaitFor/diskCeiling/diskIoRatio would all
+      // resolve to null/undefined per-server anyway in that world, this just skips paying for that
+      // computation N servers x every step. blueprintIdByInstance is a start()-time index (not
+      // rebuilt from `resident` every step) — the SAME "build once, read every step" discipline as
+      // downstreamAdj/instancesByServer above.
+      let diskWaitMs: number | null = null
+      let diskIoRatio: number | undefined
+      if (s.hasAnyDisk) {
+        const demandIops = diskIoDemandFor(loads, s.blueprintIdByInstance, doc)
+        const stalledIops = server.specs.diskIops != null
+          ? server.specs.diskIops * (diskFault?.iopsFraction ?? 1)
+          : server.specs.diskIops
+        diskWaitMs = diskWaitFor(demandIops, stalledIops, server.specs.diskType)
+        // FEAT-006 (Task 20): the SAME ceiling resolution diskWaitFor used internally, exposed here
+        // so metrics.ts's ceiling-aware diskIoFraction branch can read the exact ratio that drove
+        // this step's diskWaitMs rather than re-deriving it. undefined ⇒ neither diskIops nor
+        // diskType authored ⇒ the legacy diskIo/100 branch stays in force (regression floor).
+        const diskCeiling = resolveDiskIopsCeiling(stalledIops, server.specs.diskType)
+        diskIoRatio = diskCeiling != null ? demandIops / Math.max(diskCeiling, 0.0001) : undefined
+        // FEAT-006 (Task 21): disk_saturated, rate-limited per server -- mirrors
+        // replication_lag_high's gate shape (a lastEmittedAtMs map checked before pushing). Only
+        // fires when a ceiling is actually resolvable (diskIoRatio defined); a server with neither
+        // diskIops nor diskType authored has no comparable ratio and never fires, matching
+        // diskIoFraction's own dual-behavior split (Task 20).
+        if (diskIoRatio != null && diskIoRatio > DISK_SATURATION_THRESHOLD) {
+          const last = s.diskSaturatedRateLimit.get(server.id) ?? -Infinity
+          if (simMs - last >= DISK_EVENT_MIN_GAP_MS) {
+            s.diskSaturatedRateLimit.set(server.id, simMs)
+            emit('disk_saturated', 'warning',
+              `${server.label} disk I/O at ${Math.min(1, diskIoRatio) * 100 | 0}% of its IOPS ceiling`,
+              [server.id, ...resident.map(i => i.id)], simMs)
+          }
         }
       }
       const host = stepHost(server, loads, effectiveVcpu, s.rng, diskWaitMs, diskIoRatio)
@@ -2217,6 +2247,13 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         dbConfigByCluster: replicationIndexes.dbConfigByCluster,
         semiSyncExtraMsByInstance: replicationIndexes.semiSyncExtraMsByInstance,
         hasAnyReplicas: Object.keys(replicationIndexes.replicasByCluster).length > 0,
+        // Audit final-review finding: hasAnyCache/hasAnyReplicas precedent applied to FEAT-006 —
+        // matches diskWaitFor/resolveDiskIopsCeiling's own diskIops-or-diskType "authored" test, so
+        // a world where every server carries Task 17's default diskType (the now-common case)
+        // correctly counts as configured; only a world with NEITHER authored anywhere pays zero
+        // per-step disk cost.
+        hasAnyDisk: Object.values(doc.servers).some(sv => sv.specs.diskIops != null || sv.specs.diskType != null),
+        blueprintIdByInstance: new Map(Object.values(compiled.instances).map(i => [i.id, i.blueprintId])),
         replication: createReplicationState(),
         prevWriteRpsByCluster: {},
         routing: createRoutingState(), failover: createFailoverState(), faults: createFaultState(),

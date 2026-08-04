@@ -2978,6 +2978,47 @@ describe('FEAT-004 cache hit ratio', () => {
     expect(warmEvents.length).toBe(1)
     sim.engine.stop()
   })
+
+  // Audit final-review finding: doSetFault's cache-warmth-reset block used to gate on `!down`,
+  // which is true for ANY clear (spec === null) regardless of what kind of fault was actually
+  // being cleared — faults.ts keeps exactly one spec per `${scope}:${id}` key, so clearing a
+  // non-'down' fault (cpu-brownout here) on a server hosting a cache instance falsely reset
+  // warmSinceMs and fired cache_cold even though the cache instance never actually restarted.
+  it('clearing a non-down fault (cpu-brownout) on a warm cache server does NOT reset warmth or emit cache_cold', () => {
+    const w = buildCacheProxyWorld({ hitRatio: 0.9, warmupSec: 10, ttlSec: 300 })
+    const sim = drive(w.doc, w.compiled)
+    sim.engine.__test_step(5)   // simMs 500 — settle fully warm (never restarted) before faulting
+    const warmBefore = sim.latest().instances[w.cacheInstanceId].cacheHitRatio
+    expect(warmBefore).toBeCloseTo(0.9, 5)   // fully warm, confirms this is a meaningful baseline
+
+    sim.engine.setFault('server', w.cacheServerId, { kind: 'cpu-brownout', capacityFraction: 0.5 })
+    sim.engine.__test_step(1)
+    sim.engine.setFault('server', w.cacheServerId, null)   // clear the cpu-brownout, NOT a restart
+    sim.engine.__test_step(1)
+
+    const coldEvents = sim.events.filter(e => e.kind === 'cache_cold')
+    expect(coldEvents.length).toBe(0)
+    // If warmSinceMs had been wrongly reset, cacheHitRatio would immediately dip into the
+    // warmupSec ramp instead of staying at the fully-warm authored hitRatio.
+    const warmAfter = sim.latest().instances[w.cacheInstanceId].cacheHitRatio
+    expect(warmAfter).toBeCloseTo(0.9, 5)
+    sim.engine.stop()
+  })
+
+  // Existing behavior (clearing an ACTUAL 'down' fault) must still correctly reset warmth — this
+  // is the regression guard alongside the fix above.
+  it('clearing an actual down fault on a cache server STILL resets warmth and emits cache_cold', () => {
+    const w = buildCacheProxyWorld({ hitRatio: 0.9, warmupSec: 10, ttlSec: 300 })
+    const sim = drive(w.doc, w.compiled)
+    sim.engine.__test_step(5)   // simMs 500
+    sim.engine.setFault('server', w.cacheServerId, { kind: 'down' })
+    sim.engine.__test_step(1)   // simMs 600
+    sim.engine.setFault('server', w.cacheServerId, null)   // restart at simMs 600
+    sim.engine.__test_step(1)   // simMs 700
+    const coldEvents = sim.events.filter(e => e.kind === 'cache_cold')
+    expect(coldEvents.length).toBe(1)
+    sim.engine.stop()
+  })
 })
 
 // ─── FEAT-005 (Task 11): replication lag backlog + stale reads + semi-sync ───────────────────

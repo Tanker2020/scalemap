@@ -173,6 +173,30 @@ describe('HardwarePlatform', () => {
     expect(fill.style.background).toBe('var(--color-danger)')
   })
 
+  // Audit final-review finding: diskIoFraction is dual-behavior (Task 20) — with NEITHER
+  // diskIops nor diskType authored it's the legacy `min(1, diskIo/100)` heuristic, not a real
+  // saturation signal, and trivially exceeds 0.9 on an ordinary server. The board must not
+  // redline on that, mirroring capacity.ts's `iopsSaturated` rule's own gate.
+  it('does NOT redline on a high legacy diskIoFraction when neither diskIops nor diskType is authored', () => {
+    const s = server()
+    delete s.specs.diskType
+    delete s.specs.diskIops
+    render(<HardwarePlatform server={s} metrics={metrics({ diskIoFraction: 0.95 })} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    const fill = screen.getByTestId('disk-io-fill')
+    expect(fill).toHaveAttribute('data-saturated', 'false')
+    expect(fill.style.background).not.toBe('var(--color-danger)')
+  })
+
+  it('DOES redline on a high diskIoFraction when an authored ceiling (diskType) is present', () => {
+    const s = server()
+    s.specs.diskType = 'ssd'
+    delete s.specs.diskIops
+    render(<HardwarePlatform server={s} metrics={metrics({ diskIoFraction: 0.95 })} residentInstances={residents} blueprints={blueprints} hoveredBlueprintId={null} onHoverBlueprint={() => {}} onSelect={() => {}} />)
+    const fill = screen.getByTestId('disk-io-fill')
+    expect(fill).toHaveAttribute('data-saturated', 'true')
+    expect(fill.style.background).toBe('var(--color-danger)')
+  })
+
   it('shows the authored diskType label in place of the generic "nvme0" placeholder', () => {
     const s = server()
     s.specs.diskType = 'hdd'
