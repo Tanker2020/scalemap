@@ -78,7 +78,7 @@ describe('BlueprintModal', () => {
     fireEvent.change(screen.getByLabelText('kind'), { target: { value: 'db-sql' } })
     fireEvent.change(screen.getByLabelText('storage gb'), { target: { value: '250' } })
     fireEvent.click(screen.getByText('Save'))
-    expect(bp(id).dbConfig).toEqual({ engine: 'sql', storageGb: 250 })
+    expect(bp(id).dbConfig).toEqual({ engine: 'sql', storageGb: 250, replicationMode: 'async' })
   })
 
   it('marking it stateful defaults the volume name off the service name', () => {
@@ -130,6 +130,32 @@ describe('BlueprintModal', () => {
     fireEvent.change(screen.getByLabelText('cache hit ratio'), { target: { value: '1.5' } })
     fireEvent.click(screen.getByText('Save'))
     expect(bp(id).cacheConfig?.hitRatio).toBe(1)
+  })
+
+  it('FEAT-005: authors replicationMode/applyRatePerReplica/rpoTargetSec/hotKeyCount on a db kind', () => {
+    const id = seedBlueprint()
+    render(<BlueprintModal open={true} editingId={id} onClose={() => {}} onOpenConnections={() => {}} />)
+    expect(screen.queryByText('semi-sync')).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('kind'), { target: { value: 'db-sql' } })
+    fireEvent.click(screen.getByText('semi-sync'))
+    fireEvent.change(screen.getByLabelText('apply rate per replica'), { target: { value: '500' } })
+    fireEvent.change(screen.getByLabelText('rpo target seconds'), { target: { value: '2' } })
+    fireEvent.change(screen.getByLabelText('hot key count'), { target: { value: '2000' } })
+    fireEvent.click(screen.getByText('Save'))
+
+    expect(bp(id).dbConfig).toEqual({
+      engine: 'sql', storageGb: 100, replicationMode: 'semi-sync',
+      applyRatePerReplica: 500, rpoTargetSec: 2, hotKeyCount: 2000,
+    })
+  })
+
+  it('FEAT-005: leaves applyRatePerReplica/rpoTargetSec/hotKeyCount UNDEFINED when blank rather than writing 0', () => {
+    const id = seedBlueprint()
+    render(<BlueprintModal open={true} editingId={id} onClose={() => {}} onOpenConnections={() => {}} />)
+    fireEvent.change(screen.getByLabelText('kind'), { target: { value: 'db-sql' } })
+    fireEvent.click(screen.getByText('Save'))
+    expect(bp(id).dbConfig).toEqual({ engine: 'sql', storageGb: 100, replicationMode: 'async' })
   })
 
   it('is edit-locked while the simulation runs, but Cancel still works', () => {

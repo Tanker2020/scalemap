@@ -27,6 +27,13 @@ export interface ServiceChipProps {
   // target) drives the amber "still climbing" treatment vs. the steady teal readout.
   cacheHitRatio?: number
   cacheWarming?: boolean
+  // FEAT-005 (Task 15): live replication lag readout — present only for a `role: 'replica'`
+  // instance whose cluster has a resolvable lag this batch (src/lib/world/replicaLag.ts).
+  // `replicaLagOverRpo` mirrors `cacheWarming`'s shape: true when the instance's own blueprint
+  // authored an `rpoTargetSec` that this lag already exceeds, driving the same
+  // steady/attention color split the cache readout uses.
+  replicaLagSec?: number
+  replicaLagOverRpo?: boolean
   selected?: boolean
   hovered?: boolean
   dimmed?: boolean
@@ -34,7 +41,7 @@ export interface ServiceChipProps {
   onHover?: (v: boolean) => void
 }
 
-export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy', connLabel = '—', rps = 0, cacheHitRatio, cacheWarming, selected, hovered, dimmed, onSelect, onHover }: ServiceChipProps): ReactElement {
+export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy', connLabel = '—', rps = 0, cacheHitRatio, cacheWarming, replicaLagSec, replicaLagOverRpo, selected, hovered, dimmed, onSelect, onHover }: ServiceChipProps): ReactElement {
   const reduced = useReducedMotion()
   const [samples, setSamples] = useState<number[]>([])
 
@@ -78,6 +85,17 @@ export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy',
           }}
         >
           ⌬ {Math.round(cacheHitRatio * 100)}%
+        </div>
+      )}
+      {replicaLagSec != null && (
+        <div
+          data-testid="replica-lag-readout" data-over-rpo={replicaLagOverRpo ? 'true' : 'false'}
+          style={{
+            marginTop: 1, fontSize: 7,
+            color: replicaLagOverRpo ? 'var(--color-danger)' : 'var(--color-text-secondary)',
+          }}
+        >
+          ⏎ {replicaLagSec.toFixed(1)}s
         </div>
       )}
       <div style={{ display: 'flex', gap: 1.5, marginTop: 6, height: 9, alignItems: 'flex-end' }}>

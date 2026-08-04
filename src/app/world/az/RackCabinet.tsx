@@ -40,6 +40,10 @@ const LED_COLOR: Record<'success' | 'warning' | 'danger', string> = {
 // cacheByServer comment for why "first cache instance on this server" is representative.
 export interface CacheHitInfo { ratio: number; warming: boolean }
 
+// FEAT-005 (Task 15): the floor's mirror of ServiceChip's live replication-lag readout — same
+// "first resolvable instance on this server" representativeness call as CacheHitInfo above.
+export interface ReplicaLagInfo { lagSec: number; overRpo: boolean }
+
 interface RackSlotProps {
   server: Server
   box: IsoBox
@@ -49,6 +53,7 @@ interface RackSlotProps {
   health: HealthState
   accents: readonly string[]   // resident blueprints' signature colors (≤3) — per-slat identity
   cacheHit: CacheHitInfo | null
+  replicaLag: ReplicaLagInfo | null
   selected: boolean
   isNew: boolean
   animatedLed: boolean
@@ -58,7 +63,7 @@ interface RackSlotProps {
 }
 
 function RackSlot({
-  server, box, yTop, yBottom, cpuMean, health, accents, cacheHit, selected, isNew, animatedLed, reducedMotion, onSelect, onEnter,
+  server, box, yTop, yBottom, cpuMean, health, accents, cacheHit, replicaLag, selected, isNew, animatedLed, reducedMotion, onSelect, onEnter,
 }: RackSlotProps): ReactElement {
   const { handlers, progressRef } = useHoldTap(() => onSelect(server.id), () => onEnter(server.id))
   const { poly: slatPoly, led } = isoSlat(box, yTop, yBottom)
@@ -67,6 +72,7 @@ function RackSlot({
   const blinking = lit > 0 && animatedLed && !reducedMotion
   const labelY = box.roofSW.y + (yTop + yBottom) / 2 + ((yBottom - yTop) * 0.24) / 2
   const cacheTitle = cacheHit ? ` · ⌬ ${Math.round(cacheHit.ratio * 100)}% hit${cacheHit.warming ? ' (warming)' : ''}` : ''
+  const lagTitle = replicaLag ? ` · ⏎ ${replicaLag.lagSec.toFixed(1)}s lag${replicaLag.overRpo ? ' (over RPO)' : ''}` : ''
 
   return (
     <g
@@ -79,7 +85,7 @@ function RackSlot({
       onPointerUp={handlers.onPointerUp}
       onPointerLeave={handlers.onPointerLeave}
     >
-      <title>{server.label} · {server.kind} · {health} · {Math.round(cpuMean * 100)}% cpu{cacheTitle}</title>
+      <title>{server.label} · {server.kind} · {health} · {Math.round(cpuMean * 100)}% cpu{cacheTitle}{lagTitle}</title>
       <polygon
         points={slatPoly}
         fill={selected ? 'color-mix(in srgb, var(--color-accent) 22%, #0e1116)' : '#0e1116'}
@@ -114,6 +120,18 @@ function RackSlot({
           ⌬ {Math.round(cacheHit.ratio * 100)}%
         </text>
       )}
+      {replicaLag && (
+        // Offset past the cache readout's span (rare same-server overlap of a cache instance AND
+        // a db replica) so the two never draw on top of each other; when cache is absent this
+        // just reoccupies the same slot cache would have used.
+        <text
+          data-testid="rack-replica-lag" x={box.roofSW.x + 34 + (cacheHit ? 30 : 0)} y={labelY + 5} fontSize={6}
+          fill={replicaLag.overRpo ? 'var(--color-danger)' : 'var(--color-text-secondary)'}
+          style={{ font: '6px var(--font-mono)', pointerEvents: 'none' }}
+        >
+          ⏎ {replicaLag.lagSec.toFixed(1)}s
+        </text>
+      )}
       <circle
         className={blinking ? 'az-led az-led-blink' : 'az-led'}
         cx={led.x} cy={led.y} r={2}
@@ -136,6 +154,7 @@ export interface RackCabinetProps {
   batch: MetricsBatch | null
   accentsByServer: ReadonlyMap<ServerId, readonly string[]>   // resident-blueprint colors per server
   cacheByServer: ReadonlyMap<ServerId, CacheHitInfo>   // FEAT-004 live hit-ratio readout per server
+  lagByServer: ReadonlyMap<ServerId, ReplicaLagInfo>   // FEAT-005 live replication-lag readout per server
   selectedServerId: ServerId | null
   newServerIds: ReadonlySet<ServerId>
   animatedLedIds: ReadonlySet<ServerId>
@@ -145,7 +164,7 @@ export interface RackCabinetProps {
 }
 
 export function RackCabinet({
-  rack, cell, cols, residents, usedU, batch, accentsByServer, cacheByServer, selectedServerId, newServerIds, animatedLedIds, reducedMotion, onSelect, onEnter,
+  rack, cell, cols, residents, usedU, batch, accentsByServer, cacheByServer, lagByServer, selectedServerId, newServerIds, animatedLedIds, reducedMotion, onSelect, onEnter,
 }: RackCabinetProps): ReactElement {
   const heightPx = cabinetHeightPx(usedU)
   const box = isoBox(cell.x, cell.y, cols, heightPx)
@@ -183,6 +202,7 @@ export function RackCabinet({
             health={batch?.servers[server.id]?.health ?? 'healthy'}
             accents={accentsByServer.get(server.id) ?? []}
             cacheHit={cacheByServer.get(server.id) ?? null}
+            replicaLag={lagByServer.get(server.id) ?? null}
             selected={selectedServerId === server.id}
             isNew={newServerIds.has(server.id)}
             animatedLed={animatedLedIds.has(server.id)}

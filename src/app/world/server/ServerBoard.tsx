@@ -16,6 +16,8 @@ import type { BlueprintId, ServerId } from '../../../lib/world/types'
 import type { BoardSelection } from './selection'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
+import { useCompiledWorld } from '../useCompiledWorld'
+import { replicaClusterLagSec } from '../../../lib/world/replicaLag'
 import { useServerDisplayMetrics } from './useServerDisplayMetrics'
 import { TraceLayer } from './TraceLayer'
 import { NicBlock } from './NicBlock'
@@ -48,6 +50,9 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
   const { serverId, layout, traces } = props
   const doc = useWorldStore(s => s.doc)
   const server = doc.servers[serverId]
+  // FEAT-005 (Task 15): compiled instances give us each chip's `role` (needed to know it's a
+  // replica at all) — display.instances only carries the published metrics, not the role.
+  const compiled = useCompiledWorld()
   // Camera (user request 2026-07-12: "the view within the server needs to be movable — zoom,
   // move around"): the floor's fit/zoom-at-cursor/drag-pan camera, verbatim, with a
   // board-specific interactive exclusion list. Replaces the old fit-only ResizeObserver scale.
@@ -172,6 +177,11 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
           const hovered = props.hoveredBlueprintId !== null && chip.blueprintId === props.hoveredBlueprintId
           const dimmed = props.hoveredBlueprintId !== null && chip.blueprintId !== props.hoveredBlueprintId
           const selected = props.selection?.kind === 'instance' && props.selection.instanceId === chip.instanceId
+          // FEAT-005 (Task 15): the SAME "scrub-correct display batch" the gate's blocked/s
+          // counter above already reads (scrubBatch ?? latestBatch) — a replica's lag readout
+          // must freeze at its scrubbed value too, not keep ticking off the live clock.
+          const inst = compiled.instances[chip.instanceId]
+          const lagSec = inst ? replicaClusterLagSec(inst, compiled, scrubBatch ?? latestBatch ?? null) : null
           return (
             <ServiceChip
               key={chip.instanceId} chip={chip} name={bp?.name ?? '?'} color={bp?.color ?? '#888'}
@@ -181,6 +191,8 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
               rps={m?.rps ?? 0}
               cacheHitRatio={m?.cacheHitRatio}
               cacheWarming={m?.cacheHitRatio != null && bp?.cacheConfig != null && m.cacheHitRatio < bp.cacheConfig.hitRatio - 0.001}
+              replicaLagSec={lagSec ?? undefined}
+              replicaLagOverRpo={lagSec != null && bp?.dbConfig?.rpoTargetSec != null && lagSec > bp.dbConfig.rpoTargetSec}
               selected={selected} hovered={hovered} dimmed={dimmed}
               onSelect={() => props.onSelect({ kind: 'instance', instanceId: chip.instanceId })}
               onHover={v => props.onHoverBlueprint(v ? chip.blueprintId : null)}

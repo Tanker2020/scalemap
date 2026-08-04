@@ -5422,3 +5422,56 @@ surface.
   publishes `cacheHitRatio` only on `InstanceMetrics`, not `ManagedServiceMetrics` — a managed
   cache's miss fraction still feeds the flow solver, it just has no live metric surfaced to any UI
   yet (a gap in the engine's publish surface, not this task's scope).
+
+### FEAT-005 Task 15 — `replicationMode`/`rpoTargetSec` authoring + RPO timeline band + live lag readout
+
+The terminal UI task for FEAT-005 (Task 16 is a bench/wave-close check, not a code task). Reads
+`InstanceMetrics`'s sibling `MetricsBatch.clusters` (Task 12) and the `replica_promoted` event's
+`payload.dataLossWindowSec`/`estimatedLostWrites` (Task 13); writes `DbConfig`'s four Task 9
+fields. Structurally the direct FEAT-005 analog of Task 7 above — same three call sites (blueprint
+drawer, ServiceChip + floor readout), plus a fourth this feature alone needed: the failover
+timeline, since a promotion is a POINT EVENT with a associated backward-looking loss window, not a
+steady-state live metric.
+
+- **New module: `src/lib/world/replicaLag.ts`** — the one place a UI component resolves "what
+  cluster is this replica instance in, and what is that cluster's live lag", exporting
+  `replicaClusterLagSec(inst, compiled, batch): number | null`. Mirrors
+  `worldEngine/index.ts`'s `buildReplicationIndexes` clusterId convention
+  (`` `${primary.blueprintId}|${primary.regionId}` ``, same-region primary preferred else lowest
+  id) verbatim, read-only — this file does not own that convention. The shared resolver exists so
+  `ServerBoard.tsx` and `DatacenterFloor.tsx` (below) can't independently drift on how a replica's
+  cluster is identified, the same divergence risk the "two-call-site invariant" callout in
+  CLAUDE.md warns about for the engine's own Little's-law call sites (this is the read-only UI
+  analog, not that invariant itself — no RAM/scheduling decision rides on it).
+- `src/app/world/panels/BlueprintModal.tsx` — a `▸ replication mode` Segmented toggle
+  (async/semi-sync) plus three numeric fields (apply rate/replica, RPO target sec, hot key count)
+  appended to the existing `▸ DATABASE` section, inside the same `<fieldset disabled={running}>`.
+  `replicationMode` is written explicitly every save (its absent-default `'async'` is meaningful,
+  so the toggle always has a value); the three numeric fields follow the modal's established
+  blank-string-⇒-`undefined` idiom (`cpuShares`/`cpuMsPerKb`'s precedent) so a cleared box doesn't
+  silently write `0` over the engine's own derived/authored defaults.
+- `src/app/world/region/TimelineV2.tsx` — a labelled data-loss band for any `replica_promoted`
+  marker whose event carries `payload.dataLossWindowSec > 0`: a colored strip spanning
+  `[promotion time - dataLossWindowSec, promotion time]` above the lane's health-band line, with a
+  `{seconds}s / ~{estimatedLostWrites} writes lost` text label (`data-testid="tl-loss-band"` /
+  `"tl-loss-label"`). Severity (`var(--color-danger)` vs `var(--color-warning)`) compares the
+  window against the PROMOTED replica's own blueprint's authored `rpoTargetSec` when resolvable
+  (via `compiled.instances[event.affected[0]]`) — the exact quantity the analysis tab's
+  `replication-lag-exceeds-rpo` rule already warns on — falling back to a fixed
+  `DATA_LOSS_DANGER_FALLBACK_SEC = 5` when no target is authored for that cluster.
+- `src/app/world/server/ServiceChip.tsx` — new optional `replicaLagSec`/`replicaLagOverRpo` props;
+  renders a `⏎ N.Ns` readout (danger-red when `replicaLagOverRpo`, secondary-text otherwise),
+  mirroring the cache readout's `cacheHitRatio`/`cacheWarming` shape one-for-one.
+  `ServerBoard.tsx` resolves `replicaLagSec` via `replicaClusterLagSec` (needs `compiled.instances`
+  for the chip's `role`, which `display.instances`'s published metrics alone don't carry — a new
+  `useCompiledWorld()` call, reading the SAME scrub-correct `scrubBatch ?? latestBatch` the gate's
+  blocked/s counter already uses) and derives `replicaLagOverRpo` by comparing it against the
+  instance's blueprint's `dbConfig.rpoTargetSec`.
+- `src/app/world/az/RackCabinet.tsx` / `FreePoolPod.tsx` — the floor-node mirror: a small `⏎ N.Ns`
+  text badge offset past the cache readout's span (the two are independent and could, in a
+  pathological fixture, both be present on the same server), plus the same readout folded into the
+  native SVG `<title>` tooltip. `RackCabinet.tsx` exports `ReplicaLagInfo` (the
+  `{lagSec, overRpo}` shape), consumed by both, alongside the existing `CacheHitInfo`.
+  `DatacenterFloor.tsx`'s new `lagByServer` memo resolves the first lag-carrying replica resident
+  on each server via `instancesByServerFor(compiled)` + `replicaClusterLagSec` — the SAME shared
+  resolver `ServerBoard.tsx` calls, never re-derived.

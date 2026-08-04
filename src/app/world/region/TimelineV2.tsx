@@ -69,6 +69,14 @@ const BAND_BORDER: Record<HealthState, string> = {
 
 const secs = (ms: number) => `${Math.round(ms / 1000)}s`
 
+// FEAT-005 (Task 15): fallback severity threshold for a `replica_promoted` event's data-loss
+// band when the promoted replica's blueprint has no authored `rpoTargetSec` to compare against —
+// picked to match the analysis rule's own framing (`replication-lag-exceeds-rpo`, structural.ts):
+// there, ANY authored target that lag exceeds is already a warning; here, absent an authored
+// target at all, more than this many seconds of unreplicated writes is treated as severe on its
+// own merits (danger) rather than merely notable (warning).
+const DATA_LOSS_DANGER_FALLBACK_SEC = 5
+
 // Real engines routinely fire two markers at the identical simMs in the same lane (verified
 // live: a replica promotion can land on the SAME tick as the manual kill that caused it, well
 // before the AZ's aggregate health check even confirms down). Dead-on-top markers would render
@@ -244,6 +252,48 @@ export function TimelineV2({ regionId }: TimelineV2Props): ReactElement | null {
                   />
                 )
               })}
+              {/* FEAT-005 (Task 15): a `replica_promoted` event carrying Task 13's RPO payload
+                  gets its own labelled data-loss band — a strip spanning [promotion time -
+                  dataLossWindowSec, promotion time], distinct from the health bands below the
+                  lane's center line. Severity compares the window against the PROMOTED replica's
+                  own authored `rpoTargetSec` (the exact quantity the analysis tab's
+                  replication-lag-exceeds-rpo rule already warns on) when resolvable, falling back
+                  to a fixed threshold otherwise — see DATA_LOSS_DANGER_FALLBACK_SEC above. */}
+              {lane.markers
+                .filter(m => m.cls === 'promote' && (m.event.payload?.dataLossWindowSec ?? 0) > 0)
+                .map(m => {
+                  const dataLossSec = m.event.payload!.dataLossWindowSec!
+                  const lostWrites = m.event.payload!.estimatedLostWrites ?? 0
+                  const bandStartMs = m.event.simMs - dataLossSec * 1000
+                  const left = pctFor(bandStartMs)
+                  const width = Math.max(0.4, pctFor(m.event.simMs) - left)
+                  const promotedBlueprintId = compiled.instances[m.event.affected[0] ?? '']?.blueprintId
+                  const rpoTarget = promotedBlueprintId ? doc.blueprints[promotedBlueprintId]?.dbConfig?.rpoTargetSec : undefined
+                  const severe = rpoTarget != null ? dataLossSec > rpoTarget : dataLossSec > DATA_LOSS_DANGER_FALLBACK_SEC
+                  const color = severe ? 'var(--color-danger)' : 'var(--color-warning)'
+                  const labelText = `${dataLossSec.toFixed(1)}s / ~${Math.round(lostWrites)} writes lost`
+                  return (
+                    <div key={`loss-${m.event.id}`} style={{ position: 'absolute', top: 'calc(50% - 22px)', left: `${left}%`, width: `${width}%` }}>
+                      <div
+                        data-testid="tl-loss-band"
+                        data-severity={severe ? 'danger' : 'warning'}
+                        title={`data loss window at promotion: ${labelText}`}
+                        style={{
+                          height: 5, borderRadius: 3, background: color, opacity: 0.85,
+                        }}
+                      />
+                      <div
+                        data-testid="tl-loss-label"
+                        style={{
+                          position: 'absolute', right: 0, bottom: 7, whiteSpace: 'nowrap',
+                          fontSize: 8, color, opacity: 0.9,
+                        }}
+                      >
+                        {labelText}
+                      </div>
+                    </div>
+                  )
+                })}
               {(() => {
                 const pcts = lane.markers.map(m => pctFor(m.event.simMs))
                 const offsets = stackOffsetsPx(pcts)

@@ -15,7 +15,7 @@ import { useHoldTap } from './useHoldTap'
 import { HoldRing } from '../ui/HoldToEnter'
 import type { Server, ServerId } from '../../../lib/world/types'
 import type { MetricsBatch, HealthState } from '../../../lib/worldEngine/types'
-import type { CacheHitInfo } from './RackCabinet'
+import type { CacheHitInfo, ReplicaLagInfo } from './RackCabinet'
 
 export const POD_HEIGHT_PX = 40
 const POD_SCALE = 0.52
@@ -48,6 +48,9 @@ export interface FreePoolPodProps {
   accents: readonly string[]
   /** FEAT-004: this server's live cache hit-ratio readout (first cache instance found), or null. */
   cacheHit: CacheHitInfo | null
+  /** FEAT-005 (Task 15): this server's live replication-lag readout (first replica instance with
+   *  a resolvable cluster lag), or null. */
+  replicaLag: ReplicaLagInfo | null
   selectedServerId: ServerId | null
   isNew: boolean
   animatedLed: boolean
@@ -57,7 +60,7 @@ export interface FreePoolPodProps {
 }
 
 export function FreePoolPod({
-  server, cell, cols, batch, accents, cacheHit, selectedServerId, isNew, animatedLed, reducedMotion, onSelect, onEnter,
+  server, cell, cols, batch, accents, cacheHit, replicaLag, selectedServerId, isNew, animatedLed, reducedMotion, onSelect, onEnter,
 }: FreePoolPodProps): ReactElement {
   const { handlers, progressRef } = useHoldTap(() => onSelect(server.id), () => onEnter(server.id))
   const box = isoBox(cell.x, cell.y, cols, POD_HEIGHT_PX, POD_SCALE)
@@ -85,7 +88,7 @@ export function FreePoolPod({
       onPointerUp={handlers.onPointerUp}
       onPointerLeave={handlers.onPointerLeave}
     >
-      <title>{server.label} · {server.kind} · free pool · {health} · {Math.round(cpuMean * 100)}% cpu{cacheHit ? ` · ⌬ ${Math.round(cacheHit.ratio * 100)}% hit${cacheHit.warming ? ' (warming)' : ''}` : ''}</title>
+      <title>{server.label} · {server.kind} · free pool · {health} · {Math.round(cpuMean * 100)}% cpu{cacheHit ? ` · ⌬ ${Math.round(cacheHit.ratio * 100)}% hit${cacheHit.warming ? ' (warming)' : ''}` : ''}{replicaLag ? ` · ⏎ ${replicaLag.lagSec.toFixed(1)}s lag${replicaLag.overRpo ? ' (over RPO)' : ''}` : ''}</title>
       {/* az-lift: hover raises each pod independently (same treatment cabinets already have). */}
       <g className="az-lift">
         <polygon points={box.side} fill="url(#az-rackside)" stroke="#232b38" />
@@ -119,6 +122,17 @@ export function FreePoolPod({
             style={{ font: '6px var(--font-mono)', pointerEvents: 'none' }}
           >
             ⌬ {Math.round(cacheHit.ratio * 100)}%
+          </text>
+        )}
+        {replicaLag && (
+          // Offset past the cache readout (rare same-pod overlap of a cache instance AND a db
+          // replica) so the two never draw on top of each other — same tiebreak as RackCabinet's.
+          <text
+            data-testid="pod-replica-lag" x={frontMidX - 12 + (cacheHit ? 30 : 0)} y={frontBottomY - 4} fontSize={6}
+            fill={replicaLag.overRpo ? 'var(--color-danger)' : 'var(--color-text-secondary)'}
+            style={{ font: '6px var(--font-mono)', pointerEvents: 'none' }}
+          >
+            ⏎ {replicaLag.lagSec.toFixed(1)}s
           </text>
         )}
         <circle

@@ -22,6 +22,7 @@ import { placeLabels, estimateLabelSize, type LabelSpec, type Rect } from './lab
 import { rackUsedU } from '../../../lib/world/rackModel'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { RackCabinet, cabinetHeightPx } from './RackCabinet'
+import { replicaClusterLagSec } from '../../../lib/world/replicaLag'
 import { FreePoolPod, POD_HEIGHT_PX } from './FreePoolPod'
 import { InspectorV2 } from '../InspectorV2'
 import { ChaosControl, isNonFatalFault, NON_FATAL_FAULT_ACCENT } from '../dock/ChaosControl'
@@ -264,6 +265,25 @@ export function DatacenterFloor() {
         if (ratio == null) continue
         const target = doc.blueprints[inst.blueprintId]?.cacheConfig?.hitRatio
         m.set(s.id, { ratio, warming: target != null && ratio < target - 0.001 })
+        break
+      }
+    }
+    return m
+  }, [azServers, compiled, batch, doc.blueprints])
+
+  // FEAT-005 (Task 15): the floor's per-server mirror of ServiceChip's live replication-lag
+  // readout — same "first resolvable instance is representative" call as cacheByServer above,
+  // via the shared src/lib/world/replicaLag.ts resolver so this view and ServerBoard.tsx can't
+  // disagree on how a replica's cluster (and therefore its lag) is identified.
+  const lagByServer = useMemo(() => {
+    const byServer = instancesByServerFor(compiled)
+    const m = new Map<ServerId, { lagSec: number; overRpo: boolean }>()
+    for (const s of azServers) {
+      for (const inst of byServer.get(s.id) ?? []) {
+        const lagSec = replicaClusterLagSec(inst, compiled, batch)
+        if (lagSec == null) continue
+        const rpoTarget = doc.blueprints[inst.blueprintId]?.dbConfig?.rpoTargetSec
+        m.set(s.id, { lagSec, overRpo: rpoTarget != null && lagSec > rpoTarget })
         break
       }
     }
@@ -590,6 +610,7 @@ export function DatacenterFloor() {
                   batch={batch}
                   accentsByServer={accentsByServer}
                   cacheByServer={cacheByServer}
+                  lagByServer={lagByServer}
                   selectedServerId={selectedServerId}
                   newServerIds={reducedMotion ? EMPTY_SERVER_ID_SET : newIds}
                   animatedLedIds={animatedLedIds}
@@ -609,6 +630,7 @@ export function DatacenterFloor() {
                   batch={batch}
                   accents={accentsByServer.get(server.id) ?? []}
                   cacheHit={cacheByServer.get(server.id) ?? null}
+                  replicaLag={lagByServer.get(server.id) ?? null}
                   selectedServerId={selectedServerId}
                   isNew={newIds.has(server.id) && !reducedMotion}
                   animatedLed={animatedLedIds.has(server.id)}

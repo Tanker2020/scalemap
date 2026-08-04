@@ -14,7 +14,7 @@ import { useEffect, useState, type CSSProperties, type ReactElement } from 'reac
 import { createPortal } from 'react-dom'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
-import type { BlueprintKind, DbEngine, ServiceBlueprint } from '../../../lib/world/types'
+import type { BlueprintKind, DbConfig, DbEngine, ServiceBlueprint } from '../../../lib/world/types'
 import { SectionHeader, Segmented, Explainer } from '../ui/kit'
 
 export interface BlueprintModalProps {
@@ -80,6 +80,15 @@ interface BlueprintDraft {
   volumeName: string
   storageGb: string
   dbEngine: DbEngine
+  // FEAT-005 (Task 15): replication/RPO fields, additive on DbConfig (Task 9). replicationMode
+  // is authored as a two-way Segmented toggle (mirrors visibility's own pattern above); the
+  // three numeric fields follow the SAME "blank -> absent, not 0" idiom as cpuShares/cpuMsPerKb
+  // (submit() below) since their documented absence has its own distinct engine-side default
+  // (async, derived apply rate, no RPO target, 1000 hot keys) that a written 0 would misstate.
+  replicationMode: 'async' | 'semi-sync'
+  applyRatePerReplica: string
+  rpoTargetSec: string
+  hotKeyCount: string
   cacheHitRatio: string
   cacheWarmupSec: string
   cacheTtlSec: string
@@ -117,6 +126,10 @@ function draftFrom(bp: ServiceBlueprint): BlueprintDraft {
     volumeName: bp.volumeName ?? '',
     storageGb: String(bp.dbConfig?.storageGb ?? 100),
     dbEngine: bp.dbConfig?.engine ?? 'sql',
+    replicationMode: bp.dbConfig?.replicationMode ?? 'async',
+    applyRatePerReplica: bp.dbConfig?.applyRatePerReplica == null ? '' : String(bp.dbConfig.applyRatePerReplica),
+    rpoTargetSec: bp.dbConfig?.rpoTargetSec == null ? '' : String(bp.dbConfig.rpoTargetSec),
+    hotKeyCount: bp.dbConfig?.hotKeyCount == null ? '' : String(bp.dbConfig.hotKeyCount),
     cacheHitRatio: String(bp.cacheConfig?.hitRatio ?? DEFAULT_CACHE_HIT_RATIO),
     cacheWarmupSec: String(bp.cacheConfig?.warmupSec ?? DEFAULT_CACHE_WARMUP_SEC),
     cacheTtlSec: String(bp.cacheConfig?.ttlSec ?? DEFAULT_CACHE_TTL_SEC),
@@ -177,7 +190,17 @@ export function BlueprintModal({ open, editingId, onClose, onOpenConnections }: 
       stateful: draft.stateful,
       volumeName: draft.stateful ? (draft.volumeName.trim() || `${draft.name.trim()}-data`) : null,
       dbConfig: isDbKind(draft.kind)
-        ? { engine: draft.kind === 'db-sql' ? 'sql' : 'nosql', storageGb: Math.max(0, num(draft.storageGb, 100)) }
+        ? {
+          engine: draft.kind === 'db-sql' ? 'sql' : 'nosql',
+          storageGb: Math.max(0, num(draft.storageGb, 100)),
+          // async IS the documented absent-default (types.ts: "absent -> 'async'"), so it's
+          // written explicitly here rather than omitted — unlike the three blank-able numeric
+          // fields below, there's no "half-typed toggle" case to protect against.
+          replicationMode: draft.replicationMode,
+          ...(draft.applyRatePerReplica.trim() === '' ? {} : { applyRatePerReplica: Math.max(0, num(draft.applyRatePerReplica)) }),
+          ...(draft.rpoTargetSec.trim() === '' ? {} : { rpoTargetSec: Math.max(0, num(draft.rpoTargetSec)) }),
+          ...(draft.hotKeyCount.trim() === '' ? {} : { hotKeyCount: Math.max(1, Math.round(num(draft.hotKeyCount))) }),
+        } satisfies DbConfig
         : null,
       cacheConfig: draft.kind === 'cache'
         ? {
@@ -301,6 +324,34 @@ export function BlueprintModal({ open, editingId, onClose, onOpenConnections }: 
                   value={draft.storageGb} onChange={e => set({ storageGb: e.target.value })} />
               </div>
               <Explainer>engine follows the kind — SQL is single-writer, NoSQL fans writes out</Explainer>
+
+              <div style={rowGap}>
+                <label style={rowLabel}>replication mode</label>
+                <Segmented
+                  ariaLabel="replication mode" value={draft.replicationMode}
+                  onChange={v => set({ replicationMode: v })}
+                  options={[{ value: 'async', label: 'async' }, { value: 'semi-sync', label: 'semi-sync' }]}
+                />
+              </div>
+              <Explainer>semi-sync makes the primary wait one replica round trip per write — safer, slower; async never waits, so a promotion can lose the tail of unreplicated writes</Explainer>
+              <div style={{ display: 'flex', gap: 6, ...rowGap }}>
+                <div style={{ flex: 1 }}>
+                  <label htmlFor="bp-apply-rate" style={rowLabel}>apply rate / replica</label>
+                  <input id="bp-apply-rate" aria-label="apply rate per replica" type="number" min={0} style={field}
+                    placeholder="derived" value={draft.applyRatePerReplica} onChange={e => set({ applyRatePerReplica: e.target.value })} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label htmlFor="bp-rpo" style={rowLabel}>RPO target sec</label>
+                  <input id="bp-rpo" aria-label="rpo target seconds" type="number" min={0} style={field}
+                    placeholder="none" value={draft.rpoTargetSec} onChange={e => set({ rpoTargetSec: e.target.value })} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label htmlFor="bp-hot-keys" style={rowLabel}>hot key count</label>
+                  <input id="bp-hot-keys" aria-label="hot key count" type="number" min={1} style={field}
+                    placeholder="1000" value={draft.hotKeyCount} onChange={e => set({ hotKeyCount: e.target.value })} />
+                </div>
+              </div>
+              <Explainer>RPO target drives the analysis tab&apos;s replication-lag warning; hot key count is the denominator behind stale-read odds on a lagging replica</Explainer>
             </>
           )}
 

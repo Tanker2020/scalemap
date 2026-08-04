@@ -190,6 +190,61 @@ describe('TimelineV2', () => {
     expect(nowMarker.style.left).toBe('100%')
   })
 
+  // ── FEAT-005 (Task 15): data-loss band for a replica_promoted event carrying Task 13's RPO
+  // payload ──────────────────────────────────────────────────────────────────────────────────
+
+  it('renders a labelled data-loss band for a replica_promoted event with dataLossWindowSec > 0', () => {
+    const { region, azA } = seedTwoAzRegion()
+    const events: EngineEvent[] = [
+      {
+        id: 'promote', simMs: 10_000, kind: 'replica_promoted', severity: 'warning',
+        message: 'promoted', affected: [azA.id],
+        payload: { dataLossWindowSec: 2.4, estimatedLostWrites: 312 },
+      },
+    ]
+    useSimulationStore.setState({ latestBatch: fakeBatch(20_000), events })
+    render(<TimelineV2 regionId={region.id} />)
+    const band = screen.getByTestId('tl-loss-band')
+    expect(band).toBeInTheDocument()
+    expect(screen.getByTestId('tl-loss-label')).toHaveTextContent('2.4s / ~312 writes lost')
+  })
+
+  it('a data-loss window past the fallback threshold renders as danger severity, below it as warning', () => {
+    const { region, azA } = seedTwoAzRegion()
+    const eventsSevere: EngineEvent[] = [
+      {
+        id: 'promote-severe', simMs: 10_000, kind: 'replica_promoted', severity: 'warning',
+        message: 'promoted', affected: [azA.id],
+        payload: { dataLossWindowSec: 9, estimatedLostWrites: 900 },
+      },
+    ]
+    useSimulationStore.setState({ latestBatch: fakeBatch(20_000), events: eventsSevere })
+    const { unmount } = render(<TimelineV2 regionId={region.id} />)
+    expect(screen.getByTestId('tl-loss-band')).toHaveAttribute('data-severity', 'danger')
+    unmount()
+
+    const eventsMild: EngineEvent[] = [
+      {
+        id: 'promote-mild', simMs: 10_000, kind: 'replica_promoted', severity: 'warning',
+        message: 'promoted', affected: [azA.id],
+        payload: { dataLossWindowSec: 1, estimatedLostWrites: 50 },
+      },
+    ]
+    useSimulationStore.setState({ latestBatch: fakeBatch(20_000), events: eventsMild })
+    render(<TimelineV2 regionId={region.id} />)
+    expect(screen.getByTestId('tl-loss-band')).toHaveAttribute('data-severity', 'warning')
+  })
+
+  it('no data-loss band when a replica_promoted event has no payload or a zero-second window', () => {
+    const { region, azA } = seedTwoAzRegion()
+    const events: EngineEvent[] = [
+      { id: 'promote-no-payload', simMs: 10_000, kind: 'replica_promoted', severity: 'warning', message: 'promoted', affected: [azA.id] },
+    ]
+    useSimulationStore.setState({ latestBatch: fakeBatch(20_000), events })
+    render(<TimelineV2 regionId={region.id} />)
+    expect(screen.queryByTestId('tl-loss-band')).not.toBeInTheDocument()
+  })
+
   it('renders the legend and time axis', () => {
     const { region } = seedTwoAzRegion()
     useSimulationStore.setState({ latestBatch: fakeBatch(5000) })

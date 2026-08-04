@@ -76,4 +76,23 @@ describe('ServiceChip', () => {
     rerender(<ServiceChip chip={chip} name="cache" color="#E0A552" portsLabel=":6379" cacheHitRatio={0.9} cacheWarming={false} onSelect={() => {}} onHover={() => {}} />)
     expect(screen.getByTestId('cache-hit-readout')).toHaveAttribute('data-warming', 'false')
   })
+
+  // FEAT-005 (Task 15): the replication-lag readout only appears for a replica instance with a
+  // resolvable cluster lag (replicaLagSec present), same absent/present shape as the cache readout.
+  it('renders no lag readout when replicaLagSec is absent (non-replica instance)', () => {
+    render(<ServiceChip chip={chip} name="db" color="#E0A552" portsLabel=":5432" onSelect={() => {}} onHover={() => {}} />)
+    expect(screen.queryByTestId('replica-lag-readout')).not.toBeInTheDocument()
+  })
+
+  it('renders the lag readout to one decimal place when replicaLagSec is present', () => {
+    render(<ServiceChip chip={chip} name="db-replica" color="#E0A552" portsLabel=":5432" replicaLagSec={1.24} onSelect={() => {}} onHover={() => {}} />)
+    expect(screen.getByTestId('replica-lag-readout')).toHaveTextContent('⏎ 1.2s')
+  })
+
+  it('flags an over-RPO lag distinctly via data-over-rpo', () => {
+    const { rerender } = render(<ServiceChip chip={chip} name="db-replica" color="#E0A552" portsLabel=":5432" replicaLagSec={9} replicaLagOverRpo onSelect={() => {}} onHover={() => {}} />)
+    expect(screen.getByTestId('replica-lag-readout')).toHaveAttribute('data-over-rpo', 'true')
+    rerender(<ServiceChip chip={chip} name="db-replica" color="#E0A552" portsLabel=":5432" replicaLagSec={0.3} replicaLagOverRpo={false} onSelect={() => {}} onHover={() => {}} />)
+    expect(screen.getByTestId('replica-lag-readout')).toHaveAttribute('data-over-rpo', 'false')
+  })
 })
