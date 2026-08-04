@@ -217,6 +217,10 @@ export type DbEngine = 'sql' | 'nosql'
 export interface DbConfig {
   engine: DbEngine
   storageGb: number
+  replicationMode?: 'async' | 'semi-sync'   // absent -> 'async'
+  applyRatePerReplica?: number              // writes/sec a replica can apply; absent -> derived
+  rpoTargetSec?: number                     // authored objective; drives the analysis rule
+  hotKeyCount?: number                      // stale-read model denominator; absent -> 1000
 }
 
 export interface CacheConfig {
