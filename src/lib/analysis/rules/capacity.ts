@@ -262,6 +262,12 @@ const iopsSaturated: AnalysisRule = {
     const out: AnalysisFinding[] = []
     for (const [serverId, insts] of byServer) {
       const server = doc.servers[serverId]; if (!server) continue
+      // Mirror the disk_saturated engine event's gate (worldEngine/index.ts, diskIoRatio): only
+      // treat diskIoFraction as meaningful when a real disk ceiling is resolvable. Without an
+      // authored diskIops/diskType, diskIoFraction falls back to the legacy Math.min(1, diskIo/100)
+      // heuristic (Task 20), which was never designed to mean "saturated" and can trivially exceed
+      // 0.9 on an ordinary unauthored server -- firing this rule there would be a false positive.
+      if (server.specs.diskIops == null && server.specs.diskType == null) continue
       const fraction = lastBatch.servers?.[serverId]?.diskIoFraction
       if (fraction == null || fraction <= IOPS_SATURATION_THRESHOLD) continue
       // Rank resident instances by their blueprint's authored diskIoPerRequest, descending, and
@@ -278,7 +284,7 @@ const iopsSaturated: AnalysisRule = {
       out.push({
         id: `iops-saturated:${serverId}`, ruleId: 'iops-saturated', family: 'capacity', severity: 'warning',
         title: 'Disk IOPS saturated',
-        why: `${server.label}'s disk I/O is at ${Math.round(fraction * 100)}% of its IOPS ceiling${topNames.length ? `; the top contributor${topNames.length > 1 ? 's are' : ' is'} ${topNames.join(', ')}` : ''}.`,
+        why: `${server.label}'s disk I/O is at ${Math.round(fraction * 100)}% of its IOPS ceiling (${Math.round((fraction - 1) * 100)} points of headroom needed)${topNames.length ? `; the top contributor${topNames.length > 1 ? 's are' : ' is'} ${topNames.join(', ')}` : ''}.`,
         fix: `Raise the server's diskIops/diskType (Hardware drawer), move disk-heavy workloads off ${server.label}, or reduce diskIoPerRequest on the contributing blueprints.`,
         affected: [serverId, ...ranked.map(r => r.inst.id)],
       })

@@ -324,10 +324,17 @@ describe('capacity: cache-miss-storm', () => {
 describe('capacity: iops-saturated', () => {
   // Two disk-heavy instances (different diskIoPerRequest) resident on one server, so the
   // ranked-contributors naming in the finding's `why` has something real to sort.
-  function buildIopsSaturatedFixture(opts: { diskIoFraction: number }) {
+  function buildIopsSaturatedFixture(opts: { diskIoFraction: number; withDiskCeiling?: boolean }) {
     const s = scenario()
     const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
     const srv = s.server(az.id)
+    // The rule now gates on a resolvable disk ceiling (mirrors disk_saturated's diskIoRatio
+    // gate in worldEngine/index.ts) -- authored by default so the existing firing tests below
+    // still exercise the real "saturated" path; the no-ceiling regression test overrides this.
+    // The default server preset already authors diskType: 'ssd', so the no-ceiling regression
+    // test must explicitly clear both fields, not just skip setting diskIops.
+    if (opts.withDiskCeiling !== false) srv.specs.diskIops = 3000
+    else { srv.specs.diskIops = undefined; srv.specs.diskType = undefined }
     const db = s.blueprint('db', 0)
     db.workload.diskIoPerRequest = 20
     const worker = s.blueprint('worker', 1)
@@ -373,5 +380,16 @@ describe('capacity: iops-saturated', () => {
   it('silent with a null batch', () => {
     const ctx = buildIopsSaturatedFixture({ diskIoFraction: 0.95 })
     expect(ids(runAnalysis(ctx.doc, ctx.compiled, null), 'iops-saturated')).toHaveLength(0)
+  })
+
+  // Review finding (post-f43df83): diskIoFraction is dual-behavior (Task 20) -- without an
+  // authored diskIops/diskType, it's the legacy Math.min(1, diskIo/100) heuristic, not a real
+  // saturation ratio, and can trivially exceed 0.9 on an ordinary unauthored server. The rule
+  // must not fire in that case, mirroring disk_saturated's diskIoRatio != null event gate.
+  it('does not fire when no diskIops/diskType is authored, even with diskIoFraction > 0.9', () => {
+    const ctx = buildIopsSaturatedFixture({ diskIoFraction: 0.95, withDiskCeiling: false })
+    expect(ctx.doc.servers[ctx.serverId].specs.diskIops).toBeUndefined()
+    expect(ctx.doc.servers[ctx.serverId].specs.diskType).toBeUndefined()
+    expect(ids(runAnalysis(ctx.doc, ctx.compiled, ctx.lastBatch), 'iops-saturated')).toHaveLength(0)
   })
 })
