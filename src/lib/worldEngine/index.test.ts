@@ -13,6 +13,7 @@ import type { WorldDoc, CacheConfig } from '../world/types'
 import type { MetricsBatch, EngineEvent, FramePayload } from './types'
 import { populationDemandRps } from './demand'
 import { createRng } from './rng'
+import { effectiveHitRatio } from './cache'
 
 // A public-facing entry blueprint: the facade routes client demand only to blueprints that
 // expose a 'public' port (documented entry rule).
@@ -2913,6 +2914,50 @@ describe('FEAT-004 cache hit ratio', () => {
     sim.stepFor(90)   // ride out warmupSec (60s from the clear) plus settling margin
     const recoveredDbRps = sim.latest().instances[w.dbInstanceId].rps
     expect(recoveredDbRps / steadyDbRps).toBeLessThan(1.3)
+    sim.engine.stop()
+  })
+
+  it('a freshly-started cache is fully warm (published cacheHitRatio equals the authored hitRatio) with no restart', () => {
+    // Task 3's convention: EngineState.warmSinceMs starts as an empty Map, and cache.ts's
+    // effectiveHitRatio treats an absent entry as "already warm" — so an instance that has never
+    // restarted publishes its full authored hitRatio from step 1, regardless of warmupSec.
+    const w = buildCacheProxyWorld({ hitRatio: 0.8, warmupSec: 20, ttlSec: 300 })
+    const sim = drive(w.doc, w.compiled)
+    for (let i = 0; i < 5; i++) sim.stepFor(1)   // mid-warmup by wall-clock, but never restarted
+    const published = sim.latest().instances[w.cacheInstanceId].cacheHitRatio
+    expect(published).toBeCloseTo(0.8, 5)
+    sim.engine.stop()
+  })
+
+  it('DIVERGENCE GUARD: published cacheHitRatio equals cache.ts effectiveHitRatio computed independently from the SAME restart timestamp', () => {
+    const cfg: CacheConfig = { hitRatio: 0.8, warmupSec: 20, ttlSec: 300 }
+    const w = buildCacheProxyWorld(cfg)
+    const sim = drive(w.doc, w.compiled)
+    sim.stepFor(60)   // settle at full warmth before restarting; drive()'s clock is a plain
+    // 100ms-accumulator (engineClock.ts) with no leftover carry across whole-second stepFor
+    // calls, so clock.simMs here is exactly 60,000 — the published batches themselves lag this
+    // by up to 999ms (1 Hz cadence, first boundary at simMs=100 per index.ts's `lastBatchMs:
+    // -1000` seed), which is why this test tracks the restart timestamp itself rather than
+    // reading it back off a published batch.
+    const restartSimMs = 60_000
+    // Force a restart: 'down' then clear, with ZERO stepping between the two calls — both
+    // api.setFault calls apply at the SAME state.clock.simMs (index.ts's api.setFault reads
+    // `state.clock.simMs` synchronously), which is exactly `restartSimMs` above and exactly the
+    // warmSinceMs value index.ts's doSetFault writes into EngineState.warmSinceMs on the clearing
+    // call (the `!down` branch, ~index.ts:668).
+    sim.engine.setFault('server', w.cacheServerId, { kind: 'down' })
+    sim.engine.setFault('server', w.cacheServerId, null)   // restart -> warmSinceMs = restartSimMs
+    sim.stepFor(5)   // mid-warmup (5s of a 20s warmupSec ramp) — NOT yet steady/fully warm
+    const b = sim.latest()
+    const published = b.instances[w.cacheInstanceId].cacheHitRatio
+    // Recompute independently via the SAME pure function Task 2 exposed (cache.ts's
+    // effectiveHitRatio), fed the SAME restart timestamp the engine itself used and the SAME
+    // published batch's own simMs (whatever that batch's actual 1 Hz cadence landed on).
+    const expected = effectiveHitRatio(cfg, restartSimMs, b.simMs)
+    expect(published).toBeDefined()
+    expect(published).toBeCloseTo(expected, 5)
+    // And it must genuinely be mid-ramp, not accidentally already fully warm (a vacuous pass).
+    expect(published as number).toBeLessThan(cfg.hitRatio - 0.01)
     sim.engine.stop()
   })
 })

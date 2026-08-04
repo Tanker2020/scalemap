@@ -12,6 +12,7 @@ import { activeConnections as activeConnectionsOf, KEEP_ALIVE_PROFILE, type Conn
 import { managedDbCeilings } from './flows'
 import { managedCapacityRps, managedLatencyMs, MANAGED_P99_OVER_P50 } from '../managedCapacity'
 import { managedDbEngine } from '../world/types'
+import { effectiveHitRatio } from './cache'
 import type { ManagedDbRuntime } from '../managedDbRuntime'
 import type { TopicRuntime } from './broker'
 import type { HostStepResult } from './hostScheduler'
@@ -266,6 +267,13 @@ export function buildBatch(
   // solver actually routed writes to this step. Optional: absent ⇒ InstanceMetrics.effectiveRole
   // stays undefined and every existing direct-buildBatch caller/test is unchanged by omission.
   roleOf?: (id: InstanceId) => PlacementRole,
+  // FEAT-004: the SAME warm-tracking map the engine's runStep reads via `cacheAsideIndexByDepId`
+  // to build `cacheMissFractionByInstance` for the flow solver (worldEngine/index.ts's
+  // `EngineState.warmSinceMs`) — never re-derived here, so a cache's published hit ratio can
+  // never disagree with the miss fraction the solver actually applied this step. Optional:
+  // absent ⇒ cacheHitRatio stays unpublished for every instance, so every existing direct-
+  // buildBatch caller/test is unchanged by omission.
+  warmSinceMs?: Map<string, number>,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
   const servers: Record<ServerId, ServerMetrics> = {}
@@ -344,6 +352,12 @@ export function buildBatch(
     // FEAT-001: fold in the same leak accumulator the enforcement side (worldEngine/index.ts's
     // InstanceLoad.ramBaseMb) already reads — 0 when absent/no leak, byte-identical to pre-FEAT-001.
     const rawRamMb = workload.ramBaseMb + workload.ramPerConnMb * effectiveConnections + (leakAccumMb?.get(inst.id) ?? 0)
+    // FEAT-004: published only for a cache instance (blueprint carries cacheConfig), from the
+    // SAME warmSinceMs map + effectiveHitRatio the flow solver used to derive this step's miss
+    // fraction — see the warmSinceMs param doc above for the divergence-guard rationale.
+    const cacheHitRatio = bp?.cacheConfig
+      ? effectiveHitRatio(bp.cacheConfig, warmSinceMs?.get(inst.id), simMs)
+      : undefined
     instances[inst.id] = {
       instanceId: inst.id,
       rps,
@@ -357,6 +371,7 @@ export function buildBatch(
       health: starved?.has(inst.id) && baseHealth === 'healthy' ? 'degraded' : baseHealth,
       ...(checkoutWaitMs != null ? { checkoutWaitMs } : {}),
       ...(roleOf ? { effectiveRole: roleOf(inst.id) } : {}),
+      ...(cacheHitRatio !== undefined ? { cacheHitRatio } : {}),
     }
   }
 

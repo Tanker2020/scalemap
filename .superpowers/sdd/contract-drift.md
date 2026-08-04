@@ -92,3 +92,26 @@ each reading `state.clock.simMs` — which, mid-replay of a multi-step frame bat
 batch's LAST step's time, not the step actually being applied. The public `WorldEngineApi`
 facade methods (`setFault`/`setPartition`/`healPartition`) are unaffected — UI-driven calls are
 never backdated, so they still read `state.clock.simMs` at the call site).
+
+## 2026-08-03 — Task 4: `InstanceMetrics.cacheHitRatio` (FEAT-004)
+
+Added `cacheHitRatio?: number` to `InstanceMetrics` (additive-optional, `worldEngine/types.ts`) —
+published only for an instance whose blueprint carries a `CacheConfig`. Computed in `metrics.ts`'s
+`buildBatch` by calling `cache.ts`'s `effectiveHitRatio(bp.cacheConfig, warmSinceMs?.get(inst.id),
+simMs)` — the SAME pure function and, critically, the SAME `warmSinceMs` map (`EngineState.
+warmSinceMs`, Task 3) that `index.ts`'s `runStep` already reads via `cacheAsideIndexByDepId` to
+build `cacheMissFractionByInstance` for the flow solver each step. `buildBatch` gained a new
+trailing optional parameter, `warmSinceMs?: Map<string, number>`, following the same
+additive-by-omission pattern as `roleOf`/`leakAccumMb`/etc. — every existing direct-`buildBatch`
+caller/test is unaffected, and `cacheHitRatio` stays unpublished whenever the map is omitted. The
+sole engine call site (`index.ts`, the 1 Hz batch build inside `runStep`) now passes `s.
+warmSinceMs` as that trailing argument.
+
+No signature break — this is a pure additive contract change. The divergence-guard discipline
+here mirrors `activeConnections`/`ramMb`/`effectiveRole` above: a cache's published hit ratio can
+never disagree with the miss fraction the flow solver actually applied that same step, because
+both read the identical `warmSinceMs` entry through the identical `cache.ts` formula. Covered by
+`index.test.ts`'s `FEAT-004 cache hit ratio` describe block, including a `DIVERGENCE GUARD` test
+that restarts a cache mid-run and independently recomputes the expected mid-warmup ratio via
+`effectiveHitRatio` fed the same restart timestamp the engine itself used, asserting equality with
+the published value.

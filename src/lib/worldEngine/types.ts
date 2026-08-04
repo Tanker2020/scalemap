@@ -58,6 +58,13 @@ export interface InstanceMetrics {
   // Absent ⇒ callers fall back to the compiled role, so every existing direct-`buildBatch`
   // caller/test is unchanged by omission.
   effectiveRole?: PlacementRole
+  // Additive-optional (contract-drift, FEAT-004): the cache's effective hit ratio this batch —
+  // `cache.ts`'s `effectiveHitRatio(cfg, warmSinceMs, simMs)`, called with the SAME
+  // `state.warmSinceMs` map the flow solver reads via `cacheAsideIndexByDepId` at runStep, never
+  // a re-derived inline formula (the two-call-site "no enforcement/display divergence" discipline
+  // this file already applies to activeConnections/ramMb). Present ONLY for instances whose
+  // blueprint carries a `CacheConfig` — absent for every other instance.
+  cacheHitRatio?: number
 }
 
 export interface ServerMetrics {
