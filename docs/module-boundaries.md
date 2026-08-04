@@ -5531,3 +5531,32 @@ not a blueprint modal.
   `HardwarePlatform.test.tsx` covering the bar's proportional fill, the danger-threshold redline,
   and the authored-diskType label), and `npm run build` (clean). A follow-up live pass through the
   running app is recommended before this feature is considered fully verified end-to-end.
+
+---
+
+## Wave 3 — Elasticity: module additions (FEAT-007/008)
+
+### New modules
+
+| Module | Feature | Purpose |
+|---|---|---|
+| `src/lib/worldEngine/autoscale.ts` | FEAT-008 | Pure, dependency-free autoscaling resolver (`AutoscaleState`, `runningSetResolver`, `evaluatePolicy`, no engine imports). Computes running/parked instance membership for each autoscaled placement, consumed by `index.ts` to coordinate placement envelope and instance lifecycle transitions. |
+
+### Hub files receiving sequential edits
+
+The following files receive edits from both features and must be touched in **FEAT-007 → FEAT-008 sequence only** (never in parallel to avoid merge conflicts on high-conflict hub files):
+
+- `src/lib/world/types.ts` — new optional doc fields (`coldStartMs`/`warmCapacityFraction` on `WorkloadProfile`, `autoscale` on `Placement`)
+- `src/lib/world/compileWorld.ts` — compile-time validation and envelope expansion (FEAT-008, scale-count envelope)
+- `src/lib/worldEngine/types.ts` — contract drift (instance warmth/capacity metrics, autoscaling state in `EngineEvent`)
+- `src/lib/worldEngine/index.ts` — runStep instrumentation (cold-start warmth tracking, autoscale state advancement)
+- `src/lib/worldEngine/hostScheduler.ts` — gains `warmthOf` resolver (FEAT-007, no new file), plus autoscale load gating (FEAT-008)
+- `src/lib/worldEngine/flows.ts` — capacity model (apply latency/capacity factors from warmth, exclude parked instances)
+- `src/lib/worldEngine/metrics.ts` — metric aggregation (publish warmth, instance running state, placement scaling state)
+- `src/lib/worldEngine/routingRuntime.ts` — routing/LB gating (exclude parked instances from target selection)
+- `src/lib/worldEngine/failover.ts` — promotion logic (exclude parked instances from replica promotion)
+- `src/lib/costModelV2.ts` — cost model (apportion by running-instance share, account for cold-start overhead)
+
+### In-place extensions
+
+- `src/lib/worldEngine/hostScheduler.ts` — gains `warmthOf` resolver (FEAT-007, no new file): `warmthOf(instance, currentMs)` → `0..1`, consumed by `flows.ts` to apply warmth-dependent latency/capacity factors, and by `hostScheduler` itself to gate cold-start degradation in the water-fill scheduler.
