@@ -31,7 +31,7 @@ import { effectiveOverlayMultiplier, type DemandOverlayEntry } from './rampMath'
 import {
   createRoutingState, resolveRegion, runHealthChecks, distributeToTargets, type RoutingState,
 } from './routingRuntime'
-import { stepHost, diskIoDemandFor, diskWaitFor, type InstanceLoad, type HostStepResult } from './hostScheduler'
+import { stepHost, diskIoDemandFor, diskWaitFor, resolveDiskIopsCeiling, type InstanceLoad, type HostStepResult } from './hostScheduler'
 import { createVpsState, stepVps, type VpsState } from './vpsModel'
 import { createNicState, addNicBytes, settleNic, NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES, type NicState } from './networkRuntime'
 import { sampleSizeMultiplier } from './latency'
@@ -1258,7 +1258,13 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         ? server.specs.diskIops * (diskFault?.iopsFraction ?? 1)
         : server.specs.diskIops
       const diskWaitMs = diskWaitFor(demandIops, stalledIops, server.specs.diskType)
-      const host = stepHost(server, loads, effectiveVcpu, s.rng, diskWaitMs)
+      // FEAT-006 (Task 20): the SAME ceiling resolution diskWaitFor used internally, exposed here
+      // so metrics.ts's ceiling-aware diskIoFraction branch can read the exact ratio that drove
+      // this step's diskWaitMs rather than re-deriving it. undefined ⇒ neither diskIops nor
+      // diskType authored ⇒ the legacy diskIo/100 branch stays in force (regression floor).
+      const diskCeiling = resolveDiskIopsCeiling(stalledIops, server.specs.diskType)
+      const diskIoRatio = diskCeiling != null ? demandIops / Math.max(diskCeiling, 0.0001) : undefined
+      const host = stepHost(server, loads, effectiveVcpu, s.rng, diskWaitMs, diskIoRatio)
       hostResults[server.id] = host
       // Fold the NIC's ABSOLUTE line-rate ceiling into each instance's capacity (audit
       // ISSUE-002 × ISSUE-013 × ISSUE-009): bandwidth is split across resident instances by the

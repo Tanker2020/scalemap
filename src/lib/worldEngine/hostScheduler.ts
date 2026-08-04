@@ -77,6 +77,21 @@ export function diskIoDemandFor(
 }
 
 /**
+ * Resolves the effective disk-IOPS ceiling from an authored diskIops override and/or diskType
+ * default. Returns undefined when NEITHER is authored — "unbounded/unmodelled", the SAME
+ * regression-floor condition diskWaitFor below uses to return null. Exported so callers that need
+ * the ceiling itself (Task 20's metrics.ts diskIoFraction dual-behavior — the ratio it publishes
+ * must be computed from this SAME resolution, never a re-derived one) don't have to duplicate the
+ * `diskIops ?? (diskType ? DEFAULT_DISK_IOPS[diskType] : undefined)` fallback inline.
+ */
+export function resolveDiskIopsCeiling(
+  diskIops: number | undefined,
+  diskType: 'hdd' | 'ssd' | 'nvme' | undefined,
+): number | undefined {
+  return diskIops ?? (diskType ? DEFAULT_DISK_IOPS[diskType] : undefined)
+}
+
+/**
  * Disk I/O wait time under saturation, mirroring poolCheckoutFor's base/(1-overshoot) curve.
  * Returns null when neither diskIops nor diskType is available (unbounded/unmodelled, the regression floor).
  * At or below saturation (rho <= 1), wait is 0. Above saturation, wait grows via M/M/1-like queueing.
@@ -87,7 +102,7 @@ export function diskWaitFor(
   diskIops: number | undefined,
   diskType: 'hdd' | 'ssd' | 'nvme' | undefined,
 ): number | null {
-  const resolvedCeiling = diskIops ?? (diskType ? DEFAULT_DISK_IOPS[diskType] : undefined)
+  const resolvedCeiling = resolveDiskIopsCeiling(diskIops, diskType)
   if (resolvedCeiling == null) return null
   const rho = demandIops / resolvedCeiling
   if (rho <= 1) return 0
@@ -118,6 +133,14 @@ export interface HostStepResult {
   // checkoutByInstance. Additive-optional: absent when the caller passed no diskWaitMs (undefined/
   // null/0), the regression floor for a server with neither diskIops nor diskType authored.
   diskWaitMsByInstance?: Record<InstanceId, number>
+  // Disk I/O demand/ceiling ratio (FEAT-006, Task 20) — one value per SERVER, the SAME
+  // demandIops/resolveDiskIopsCeiling(...) ratio index.ts computed to call diskWaitFor this step.
+  // Threaded through here (rather than recomputed in metrics.ts) so the published
+  // ServerMetrics.diskIoFraction ceiling-aware branch can never disagree with the ratio that
+  // actually drove this step's diskWaitMs. Present only when the server has diskIops and/or
+  // diskType authored (a resolvable ceiling) — absent is the regression floor (legacy
+  // diskIo/100 branch stays in force).
+  diskIoRatio?: number
 }
 
 // Weighted water-fill of `totalCores` across instances, capped per instance at its wanted cores
@@ -169,6 +192,12 @@ export function stepHost(
   effectiveVcpu: number,
   rng: Rng,
   diskWaitMs?: number | null,
+  // FEAT-006 (Task 20): the SAME demandIops/ceiling ratio the caller (index.ts) resolved to
+  // compute diskWaitMs above — threaded straight into the result rather than recomputed, so
+  // metrics.ts's ceiling-aware diskIoFraction branch can never disagree with the ratio that
+  // actually drove this step's disk wait. Additive-optional: absent ⇒ HostStepResult.diskIoRatio
+  // stays undefined, the regression floor.
+  diskIoRatio?: number | null,
 ): HostStepResult {
   const demandCores = loads.reduce((sum, l) => sum + (l.admittedRps * l.cpuMsPerRequest) / 1000, 0)
   const safeEffectiveVcpu = Math.max(effectiveVcpu, 0.0001)
@@ -259,5 +288,6 @@ export function stepHost(
   return {
     cpuPressure, coreUtilization, latencyMultiplier, admittedScale, serviceRateByInstance,
     ramUsedMb, oomVictim, checkoutByInstance, diskWaitMsByInstance,
+    ...(diskIoRatio != null ? { diskIoRatio } : {}),
   }
 }

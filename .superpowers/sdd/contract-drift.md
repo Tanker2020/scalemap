@@ -313,3 +313,55 @@ Additive-only contract changes:
   (added `'disk-stall'` case to `faultSpecFor()` with a stub `iopsFraction` parameter) — both minimal
   stubs to satisfy the type checker, not full implementations. The actual disk-stall fault injection
   and IOPS throttling will be wired in downstream tasks.
+
+## 2026-08-04 — Task 20: `diskIoFraction` dual behavior + `InstanceMetrics.diskWaitMs` + managed `provisionedIops` ceiling (FEAT-006)
+
+Additive-only contract changes:
+
+- `InstanceMetrics` (`src/lib/worldEngine/types.ts`) gained `diskWaitMs?: number` — the mean
+  per-step disk-queueing wait, ms, published straight from `HostStepResult.diskWaitMsByInstance`
+  (Task 19's per-server value, broadcast to every resident instance) — never re-derived. Present
+  only for an instance resident on a server with a resolvable disk ceiling that is at/over
+  saturation this step; absent otherwise, including for every server with neither `diskIops` nor
+  `diskType` authored (the pre-Task-20/-19 regression floor).
+- `HostStepResult` (`src/lib/worldEngine/hostScheduler.ts`) gained `diskIoRatio?: number` — one
+  value per server, the SAME `demandIops / resolveDiskIopsCeiling(diskIops, diskType)` ratio
+  `index.ts`'s step loop already resolves to call `diskWaitFor` this step, threaded through
+  `stepHost`'s new optional 6th parameter (`diskIoRatio?: number | null`, mirroring how
+  `diskWaitMs` itself is already threaded as the 5th) so `metrics.ts` never recomputes it
+  independently. `hostScheduler.ts` also gained a new exported pure helper,
+  `resolveDiskIopsCeiling(diskIops, diskType)` — the `diskIops ?? (diskType ?
+  DEFAULT_DISK_IOPS[diskType] : undefined)` fallback `diskWaitFor` already had inline, extracted
+  so both `diskWaitFor` and `index.ts`'s new `diskIoRatio` computation share exactly one
+  resolution (no duplicated ceiling logic that could drift).
+- `ServerMetrics.diskIoFraction` (`src/lib/worldEngine/types.ts`, unchanged field signature —
+  still `number`) is now DUAL-BEHAVIOR in `metrics.ts`'s server loop, intentional per the brief:
+  a server with neither `diskIops` nor `diskType` authored has no resolvable ceiling
+  (`host?.diskIoRatio` is `undefined`) and stays on the EXACT legacy `Math.min(1, diskIo / 100)`
+  norm — byte-identical to pre-FEAT-006 for every existing world, confirmed by a dedicated
+  regression-floor test that independently recomputes the legacy formula from the same published
+  rps/workload inputs and asserts exact (`toBeCloseTo(..., 10)`) equality. A server WITH a
+  resolvable ceiling instead publishes `Math.min(1, host.diskIoRatio)`, sourced from the SAME
+  ratio `index.ts` computed to drive this step's `diskWaitFor` call — never a second/independent
+  computation.
+- `ManagedService.provisionedIops` (`src/lib/world/types.ts`, field signature unchanged — still
+  `number | undefined`) changed MEANING: previously documented as "cost-model input only (the
+  sim's capacity model stays instance-class-driven)"; as of this task it is ALSO a real third
+  saturation axis in `src/lib/managedDbRuntime.ts`'s `managedDbRuntimeFor`. A managed DB's
+  `saturation` is now `Math.max(writeUtilization, readUtilization, iopsUtilization)` where
+  `iopsUtilization = totalRps / (provisionedIops * burst)` when `provisionedIops` is authored
+  (0 otherwise — cannot raise the max above what write/read already produced, so an absent
+  `provisionedIops` is byte-identical to the pre-Task-20 two-axis formula, confirmed by a
+  dedicated test). The demand side is a documented approximation (1 op ~= 1 IOPS against
+  `totalRps`, since — unlike a self-hosted server's `workload.diskIoPerRequest` — no managed-DB
+  node carries a per-request IOPS cost field); `provisionedIops` is scaled by the SAME serverless
+  `burst` multiplier the write/read ceilings already use, composed into the ONE existing
+  saturation formula rather than a second curve. This is a REAL BEHAVIOR CHANGE for any existing
+  world that already authored `provisionedIops` expecting it to be cost-only — its managed DB's
+  saturation/latency/connections readouts can now be affected. `costModelV2.ts`'s own reads of
+  `provisionedIops` (billing) are untouched; only `managedDbRuntimeFor`'s capacity math changed.
+
+`npx tsc --noEmit` clean. Full suite: 151 files / 1905 tests passing (`index.test.ts`'s
+`FEAT-006 Task 19` describe block gained 4 new `it`s for the `diskIoFraction` dual behavior +
+`diskWaitMs` publish; a new `FEAT-006 Task 20: managed provisionedIops ceiling` describe block,
+2/2).

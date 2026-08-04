@@ -3408,4 +3408,139 @@ describe('FEAT-006 Task 19: disk I/O wait latency + RAM threading', () => {
     expect(after - before).toBeGreaterThan(2)
     st.engine.stop()
   })
+
+  // ─── FEAT-006 Task 20: diskIoFraction dual behavior ─────────────────────────────────────────
+  it('a server with no ceiling authored keeps diskIoFraction === legacy diskIo/100 norm (regression floor)', () => {
+    const w = buildDiskBoundDbWorld({ diskIoPerRequest: 5 })   // no diskIops/diskType authored
+    const st = run(w)
+    for (let i = 0; i < 10; i++) st.engine.__test_step(1)
+    const b = st.latest()
+    const server = b.servers[w.dbServerId]
+    // Recompute the exact legacy formula independently from the same published rps/workload
+    // inputs — proof the unmodelled-disk branch is byte-identical to pre-Task-20, not just close.
+    const diskIo = server.ramByInstance.reduce((sum, r) => {
+      const inst = b.instances[r.instanceId]
+      return sum + (inst?.rps ?? 0) * 5   // diskIoPerRequest authored above
+    }, 0)
+    expect(server.diskIoFraction).toBeCloseTo(Math.min(1, diskIo / 100), 10)
+    st.engine.stop()
+  })
+
+  it('a server with a resolvable ceiling publishes min(1, demandIops/ceiling) instead of the legacy norm', () => {
+    const w = buildDiskBoundDbWorld({ diskIops: 200, diskType: 'hdd', diskIoPerRequest: 20 })
+    const st = run(w)
+    for (let i = 0; i < 20; i++) st.engine.__test_step(1)
+    const b = st.latest()
+    const server = b.servers[w.dbServerId]
+    // Demand (rps * 20 io/req) is driven well past the 200-iops ceiling by the fixture's traffic,
+    // so the ceiling-aware branch pins at the Math.min(1, ...) cap -- the legacy diskIo/100 norm
+    // would ALSO read 1 here at this rps, so what actually distinguishes the branches is that this
+    // value is sourced from host.diskIoRatio (proven by the low-demand case below, and by the
+    // REGRESSION FLOOR test above pinning the OTHER branch byte-identical).
+    expect(server.diskIoFraction).toBeLessThanOrEqual(1)
+    expect(server.diskIoFraction).toBeGreaterThan(0)
+    st.engine.stop()
+  })
+
+  it('the ceiling-aware branch reads the SAME ratio that drove diskWaitMs, not the legacy diskIo/100 formula', () => {
+    // Low demand relative to a generous ceiling: diskIo/100 (legacy) and demandIops/ceiling
+    // (ceiling-aware) diverge sharply at this scale, so which branch is live is unambiguous.
+    // diskIoPerRequest 1, nvme ceiling 100,000: at ~40rps demand ~= 40 iops -> ratio ~= 0.0004,
+    // while the legacy diskIo/100 norm at the SAME 40 io/s would read ~= 0.4 -- two orders of
+    // magnitude apart.
+    const w = buildDiskBoundDbWorld({ diskIops: 100_000, diskType: 'nvme', diskIoPerRequest: 1 })
+    const st = run(w)
+    for (let i = 0; i < 10; i++) st.engine.__test_step(1)
+    const b = st.latest()
+    const server = b.servers[w.dbServerId]
+    expect(server.diskIoFraction).toBeLessThan(0.05)
+    st.engine.stop()
+  })
+
+  it('publishes InstanceMetrics.diskWaitMs from the same per-server value threaded into latency', () => {
+    const w = buildDiskBoundDbWorld({ diskIops: 200, diskType: 'hdd', diskIoPerRequest: 20 })
+    const st = run(w)
+    for (let i = 0; i < 20; i++) st.engine.__test_step(1)
+    const b = st.latest()
+    expect(b.instances[w.dbInstanceId].diskWaitMs).toBeGreaterThan(0)
+    st.engine.stop()
+  })
+})
+
+// ─── FEAT-006 Task 20: ManagedService.provisionedIops as a real saturation ceiling ────────────
+describe('FEAT-006 Task 20: managed provisionedIops ceiling', () => {
+  function buildManagedDbWorld(opts: { provisionedIops: number }) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+    const managedId = 'ms-db'
+    doc.managedServices[managedId] = {
+      id: managedId, label: 'orders-db', nodeType: 'dbSql',
+      scope: { kind: 'region', regionId: r.id }, provider: 'generic', port: 5432,
+      instanceClassId: 'sql.small', replicaCount: 0, multiAz: false, storageGb: 100,
+      provisionedIops: opts.provisionedIops,
+    }
+    const web = publicBlueprint('web', 0)
+    web.dependencies = [
+      { id: 'd-db', target: { kind: 'managed', managedServiceId: managedId }, port: 5432, protocol: 'db', packetTemplateId: null },
+    ]
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id)
+    doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 300
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc), managedId }
+  }
+
+  const run = (w: ReturnType<typeof buildManagedDbWorld>) => drive(w.doc, w.compiled)
+
+  it('raising provisionedIops on a managed DB lowers its published saturation', () => {
+    const low = buildManagedDbWorld({ provisionedIops: 100 })
+    const high = buildManagedDbWorld({ provisionedIops: 5000 })
+    const stLow = run(low); const stHigh = run(high)
+    for (let i = 0; i < 15; i++) { stLow.engine.__test_step(1); stHigh.engine.__test_step(1) }
+    const lowSat = stLow.latest().managedServices?.[low.managedId]?.saturation
+    const highSat = stHigh.latest().managedServices?.[high.managedId]?.saturation
+    expect(lowSat).toBeGreaterThan(0)
+    expect(highSat).toBeLessThan(lowSat!)
+    stLow.engine.stop(); stHigh.engine.stop()
+  })
+
+  it('an absent provisionedIops is unaffected -- byte-identical to the pre-Task-20 saturation formula', () => {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+    doc.managedServices['ms-db'] = {
+      id: 'ms-db', label: 'orders-db', nodeType: 'dbSql',
+      scope: { kind: 'region', regionId: r.id }, provider: 'generic', port: 5432,
+      instanceClassId: 'sql.small', replicaCount: 0, multiAz: false, storageGb: 100,
+      // no provisionedIops authored
+    }
+    const web = publicBlueprint('web', 0)
+    web.dependencies = [
+      { id: 'd-db', target: { kind: 'managed', managedServiceId: 'ms-db' }, port: 5432, protocol: 'db', packetTemplateId: null },
+    ]
+    doc.blueprints[web.id] = web
+    const pl = createPlacement(web.id, server.id)
+    doc.placements[pl.id] = pl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 300
+    doc.populations[pop.id] = pop
+    const compiled = compileWorld(doc)
+    const st = drive(doc, compiled)
+    for (let i = 0; i < 15; i++) st.engine.__test_step(1)
+    const sat = st.latest().managedServices?.['ms-db']?.saturation
+    // 300 rps all-reads against sql.small's 2500 read ceiling ~= 0.12 -- unaffected by any IOPS term.
+    expect(sat).toBeCloseTo(300 / 2500, 1)
+    st.engine.stop()
+  })
 })

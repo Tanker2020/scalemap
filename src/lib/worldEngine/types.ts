@@ -74,6 +74,14 @@ export interface InstanceMetrics {
   // row this window (a replica under nonzero write load/lag) — absent for a primary, an untagged
   // replica (zero lag/writeRps), or any world with no replicas at all.
   staleReadFraction?: number
+  // Additive-optional (contract-drift, FEAT-006/Task 20): mean disk I/O queueing wait, ms — the
+  // SAME per-server `HostStepResult.diskWaitMsByInstance` value Task 19 already threaded into
+  // this instance's composed latency/RAM via `extraLatencyMsByServer`, published here as-is
+  // (never re-derived) purely as a display readout of how much of p50Ms/activeConnections is
+  // disk-wait-driven. Present only for an instance resident on a server with a resolvable disk
+  // ceiling (diskIops and/or diskType authored) that is CURRENTLY at/over saturation this step —
+  // absent otherwise (unmodelled disk, or a modelled disk with no wait this step).
+  diskWaitMs?: number
 }
 
 export interface ServerMetrics {

@@ -383,6 +383,10 @@ export function buildBatch(
     // any more than it inflates the RAM the scheduler enforces/OOM-kills on.
     const checkout = state.lastHost[inst.serverId]?.checkoutByInstance?.[inst.id]
     const checkoutWaitMs = checkout?.checkoutWaitMs
+    // FEAT-006 (Task 20): the SAME per-server diskWaitMsByInstance value Task 19 threaded into
+    // this instance's composed latency/RAM via extraLatencyMsByServer — published as-is, never
+    // re-derived, so this display readout can never disagree with what actually drove p50Ms.
+    const diskWaitMs = state.lastHost[inst.serverId]?.diskWaitMsByInstance?.[inst.id]
     const effectiveConnections = checkout ? activeConnections * (1 - checkout.checkoutTimeoutErrorFraction) : activeConnections
     // FEAT-001: fold in the same leak accumulator the enforcement side (worldEngine/index.ts's
     // InstanceLoad.ramBaseMb) already reads — 0 when absent/no leak, byte-identical to pre-FEAT-001.
@@ -416,6 +420,7 @@ export function buildBatch(
       ...(roleOf ? { effectiveRole: roleOf(inst.id) } : {}),
       ...(cacheHitRatio !== undefined ? { cacheHitRatio } : {}),
       ...(staleReadFraction !== undefined ? { staleReadFraction } : {}),
+      ...(diskWaitMs != null ? { diskWaitMs } : {}),
     }
   }
 
@@ -432,6 +437,16 @@ export function buildBatch(
       const w = doc.blueprints[i.blueprintId]?.workload
       return sum + (instances[i.id]?.rps ?? 0) * (w?.diskIoPerRequest ?? 0)
     }, 0)
+    // FEAT-006 (Task 20): dual behavior. A server with neither diskIops nor diskType authored has
+    // no resolvable ceiling — host?.diskIoRatio is undefined — and stays on the EXACT legacy
+    // diskIo/100 norm (the regression floor: byte-identical to pre-FEAT-006 for every existing
+    // world). A server WITH a resolvable ceiling instead publishes min(1, demandIops/ceiling),
+    // sourced from the SAME ratio index.ts computed to drive this step's diskWaitFor call
+    // (HostStepResult.diskIoRatio, Task 19/20's threading) — never re-derived here, so this
+    // gauge can never disagree with the wait that actually fed p50Ms/activeConnections.
+    const diskIoFraction = host?.diskIoRatio != null
+      ? Math.min(1, host.diskIoRatio)
+      : Math.min(1, diskIo / 100)   // documented norm: 100 io-units/sec = saturated
     servers[server.id] = {
       serverId: server.id,
       coreUtilization: host?.coreUtilization ?? Array.from({ length: server.specs.vcpu }, () => 0),
@@ -444,7 +459,7 @@ export function buildBatch(
       ramTotalMb: server.specs.ramMb,
       nicInMbps: ema(state, `s:${server.id}:nicIn`, (sw.inBytes * 8) / 1e6),
       nicOutMbps: ema(state, `s:${server.id}:nicOut`, (sw.outBytes * 8) / 1e6),
-      diskIoFraction: Math.min(1, diskIo / 100),   // documented norm: 100 io-units/sec = saturated
+      diskIoFraction,
       health: state.lastHealth(server.id),
     }
   }

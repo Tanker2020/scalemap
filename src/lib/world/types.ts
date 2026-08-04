@@ -315,8 +315,11 @@ export interface ManagedService {
   queryTimeoutMs?: number          // queries slower than this error out; absent ⇒ no timeout
   // Provisioned storage IOPS (audit ISSUE-059), meaningful for DB nodes. Additive/optional:
   // absent ⇒ the baseline allowance (costModelV2's DB_IOPS_FREE) and no extra charge — gp3-style
-  // pricing bills only IOPS provisioned ABOVE the baseline. Cost-model input only (the sim's
-  // capacity model stays instance-class-driven).
+  // pricing bills only IOPS provisioned ABOVE the baseline. Originally a cost-model input only;
+  // as of FEAT-006/Task 20 it is ALSO a real third saturation axis in managedDbRuntime.ts's
+  // managedDbRuntimeFor (1 op ~= 1 IOPS approximation against this ceiling, composed into the
+  // SAME max()-of-axes saturation formula the write/read rps ceilings already use) — absent
+  // stays exactly the pre-Task-20, instance-class-only capacity model.
   provisionedIops?: number
   capacityMode?: ManagedCapacityMode  // provisioned (fixed class ceiling) vs serverless (bursts, per-request price)
   pricing?: ManagedPricingCommitment  // reserved commitments discount the provisioned hourly

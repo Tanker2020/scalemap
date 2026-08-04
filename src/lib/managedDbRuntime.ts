@@ -102,11 +102,23 @@ export function managedDbRuntimeFor(
   const ceilingRefusedRps =
     Math.max(0, offeredWrite - writeCeiling) + Math.max(0, offeredRead - readCeiling)
 
+  // Provisioned storage IOPS (FEAT-006, Task 20) as a THIRD, independent binding axis: a DB can
+  // be write/read-rps-fine and still be disk-bound. No per-request IOPS cost is authored for a
+  // managed DB (unlike a self-hosted server's workload.diskIoPerRequest), so this approximates
+  // demand as 1 op ~= 1 IOPS — every offered request (read or write) costs one disk operation —
+  // against `provisionedIops` scaled by the SAME serverless burst multiplier the write/read
+  // ceilings already use. Absent `provisionedIops` ⇒ iopsUtilization stays 0, which cannot raise
+  // max() above what write/read already produce — the exact pre-Task-20 saturation for every
+  // existing world (the regression floor).
+  const iopsCeiling = ms.provisionedIops != null ? ms.provisionedIops * burst : undefined
+  const iopsUtilization = iopsCeiling != null && iopsCeiling > 0 ? totalRps / iopsCeiling : 0
+
   // Saturation is the BINDING axis, not the blend: a DB pinned on writes is saturated even with
   // idle read capacity, and it is the pinned axis that drives the queue.
   const saturation = Math.max(
     writeCeiling > 0 ? offeredWrite / writeCeiling : 0,
     readCeiling > 0 ? offeredRead / readCeiling : 0,
+    iopsUtilization,
   )
 
   // Base latency blends the two operation costs by mix, then locality taxes only the read share.
