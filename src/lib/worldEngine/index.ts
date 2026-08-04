@@ -31,7 +31,7 @@ import { effectiveOverlayMultiplier, type DemandOverlayEntry } from './rampMath'
 import {
   createRoutingState, resolveRegion, runHealthChecks, distributeToTargets, type RoutingState,
 } from './routingRuntime'
-import { stepHost, type InstanceLoad, type HostStepResult } from './hostScheduler'
+import { stepHost, diskIoDemandFor, diskWaitFor, type InstanceLoad, type HostStepResult } from './hostScheduler'
 import { createVpsState, stepVps, type VpsState } from './vpsModel'
 import { createNicState, addNicBytes, settleNic, NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES, type NicState } from './networkRuntime'
 import { sampleSizeMultiplier } from './latency'
@@ -1182,6 +1182,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       let leak: Extract<FaultSpec, { kind: 'memory-leak' }> | undefined
       let latencyFault: Extract<FaultSpec, { kind: 'latency-add' }> | undefined
       let errorInject: Extract<FaultSpec, { kind: 'error-inject' }> | undefined
+      let diskFault: Extract<FaultSpec, { kind: 'disk-stall' }> | undefined
       if (anyFaultsActive) {
         const faultAzId = s.azOfServer.get(server.id)
         const faultRegionId = faultAzId ? s.regionOfAz.get(faultAzId) : undefined
@@ -1196,6 +1197,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
           (f): f is Extract<FaultSpec, { kind: 'latency-add' }> => f.kind === 'latency-add')
         errorInject = activeFaults.find(
           (f): f is Extract<FaultSpec, { kind: 'error-inject' }> => f.kind === 'error-inject')
+        // FEAT-006 (Task 19): disk-stall multiplies effective diskIops, the same composition
+        // discipline cpu-brownout already uses for effectiveVcpu below (multiply, not replace).
+        diskFault = activeFaults.find(
+          (f): f is Extract<FaultSpec, { kind: 'disk-stall' }> => f.kind === 'disk-stall')
         if (errorInject) faultErrorFractionByServer[server.id] = errorInject.errorFraction
         const activeLeak = leak
         if (activeLeak) {
@@ -1242,7 +1247,18 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // FEAT-001: cpu-brownout composes MULTIPLICATIVELY with the existing VPS steal factor
       // (capacityFraction defaults to 1 — a no-op — when no brownout is active).
       const effectiveVcpu = server.specs.vcpu * (s.vpsFactor.get(server.id) ?? 1) * (brownout?.capacityFraction ?? 1)
-      const host = stepHost(server, loads, effectiveVcpu, s.rng)
+      // FEAT-006 (Task 19): disk I/O demand vs. capacity for this server this step. disk-stall
+      // multiplies the effective diskIops ceiling (mirrors cpu-brownout's effectiveVcpu multiply
+      // above) — capacityFraction=1 when no disk-stall is active, a no-op. diskWaitFor returns
+      // null when the server has neither diskIops nor diskType authored (unmodelled, the
+      // regression floor), else 0 at/under saturation, else a growing queueing-delay term.
+      const blueprintByInstance = new Map(resident.map(i => [i.id, i.blueprintId]))
+      const demandIops = diskIoDemandFor(loads, blueprintByInstance, doc)
+      const stalledIops = server.specs.diskIops != null
+        ? server.specs.diskIops * (diskFault?.iopsFraction ?? 1)
+        : server.specs.diskIops
+      const diskWaitMs = diskWaitFor(demandIops, stalledIops, server.specs.diskType)
+      const host = stepHost(server, loads, effectiveVcpu, s.rng, diskWaitMs)
       hostResults[server.id] = host
       // Fold the NIC's ABSOLUTE line-rate ceiling into each instance's capacity (audit
       // ISSUE-002 × ISSUE-013 × ISSUE-009): bandwidth is split across resident instances by the
@@ -1277,7 +1293,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       latencyMultiplierByServer[server.id] = host.latencyMultiplier
       const queuedMs = s.nicQueuedLatencyMs.get(server.id) ?? 0
       const faultMs = latencyFault?.ms ?? 0
-      if (queuedMs + faultMs > 0) extraLatencyMsByServer[server.id] = queuedMs + faultMs
+      // FEAT-006 (Task 19): disk wait composes ADDITIVELY with NIC-queue and latency-fault ms,
+      // the same "must ADD not assign" discipline FEAT-001 established for extraLatencyMsByServer
+      // — this is the single mechanism that reaches BOTH Little's-law call sites (the host
+      // scheduler's next-step InstanceLoad.activeConnections via prevFlows, and metrics.ts's
+      // published activeConnections via the same flows-solved latency samples).
+      const diskMs = diskWaitMs ?? 0
+      const totalExtraMs = queuedMs + faultMs + diskMs
+      if (totalExtraMs > 0) extraLatencyMsByServer[server.id] = totalExtraMs
       let nic = s.nics.get(server.id)
       if (!nic) {
         nic = createNicState()

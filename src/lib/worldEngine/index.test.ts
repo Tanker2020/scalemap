@@ -3293,3 +3293,119 @@ describe('FEAT-005 Task 14: replication_lag_high + stale_read_served events', ()
     sim.engine.stop()
   })
 })
+
+// ─── FEAT-006 Task 19: diskWaitMs threaded into latency + both RAM call sites ─────────────────
+describe('FEAT-006 Task 19: disk I/O wait latency + RAM threading', () => {
+  // 1 region / 1 AZ / 2 servers: web (entry) on one, db (disk-heavy dependency) on the other, so
+  // the db server's disk config is isolated from the web server's CPU/RAM.
+  function buildDiskBoundDbWorld(opts: {
+    diskIops?: number
+    diskType?: 'hdd' | 'ssd' | 'nvme'
+    diskIoPerRequest: number
+  }) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const webServer = createServer(az.id, getPreset('dedicated-8')!)
+    const dbServer = createServer(az.id, getPreset('dedicated-8')!)
+    dbServer.specs = { ...dbServer.specs, diskIops: opts.diskIops, diskType: opts.diskType }
+    doc.servers[webServer.id] = webServer
+    doc.servers[dbServer.id] = dbServer
+    const web = publicBlueprint('web', 0)
+    const db = createBlueprint('db', 1)
+    web.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 8080, protocol: 'db', packetTemplateId: null }]
+    db.workload = { cpuMsPerRequest: 1, ramBaseMb: 100, ramPerConnMb: 0.1, diskIoPerRequest: opts.diskIoPerRequest }
+    Object.assign(doc.blueprints, { [web.id]: web, [db.id]: db })
+    const webPl = createPlacement(web.id, webServer.id); doc.placements[webPl.id] = webPl
+    const dbPl = createPlacement(db.id, dbServer.id); doc.placements[dbPl.id] = dbPl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 200
+    doc.populations[pop.id] = pop
+    return {
+      doc, compiled: compileWorld(doc),
+      dbServerId: dbServer.id, dbInstanceId: instanceId(dbPl.id, 0),
+    }
+  }
+
+  const run = (w: ReturnType<typeof buildDiskBoundDbWorld>) => drive(w.doc, w.compiled)
+
+  it('REGRESSION FLOOR: a server with neither diskIops nor diskType is byte-identical for a fixed seed', () => {
+    const w = buildDiskBoundDbWorld({ diskIoPerRequest: 5 })
+    const a = run(w)
+    for (let i = 0; i < 20; i++) a.engine.__test_step(1)
+    const b = run(w)
+    for (let i = 0; i < 20; i++) b.engine.__test_step(1)
+    expect(a.latest()).toEqual(b.latest())
+    a.engine.stop(); b.engine.stop()
+  })
+
+  // NOTE (deviation from the brief's illustrative snippet): the brief's own Step 2 comment
+  // acknowledges `diskIoFraction` "stays on the legacy diskIo/100 branch" until Task 20 rewrites
+  // metrics.ts — this task is explicitly scoped to NOT touch metrics.ts. So these tests assert on
+  // p50Ms/activeConnections (which DO flow through extraLatencyMsByServer -> flows.ts -> both
+  // Little's-law call sites, wired by this task) rather than diskIoFraction, which would not
+  // actually distinguish a wired vs. unwired diskWaitMs implementation at this point in the plan.
+  it('a disk-bound DB (high diskIoPerRequest, low diskIops) pays large added latency while CPU stays moderate', () => {
+    const w = buildDiskBoundDbWorld({ diskIops: 200, diskType: 'hdd', diskIoPerRequest: 20 })
+    const st = run(w)
+    for (let i = 0; i < 20; i++) st.engine.__test_step(1)
+    const b = st.latest()
+    const server = b.servers[w.dbServerId]
+    // hdd base 8ms / (1 - 0.98 capped overshoot) = 400ms of added disk wait once demand exceeds
+    // the 200-iops ceiling several times over (20 io/req x rps well past 10) -- far more than the
+    // 1ms authored cpuMsPerRequest could ever produce on its own.
+    expect(b.instances[w.dbInstanceId].p50Ms).toBeGreaterThan(50)
+    expect(Math.max(...server.coreUtilization)).toBeLessThan(0.6)
+    st.engine.stop()
+  })
+
+  // Little's law lives in exactly two places (host scheduler RAM/OOM enforcement + published
+  // InstanceMetrics). diskWaitMs must extend BOTH the same way the checkout-pool wait and
+  // latency-add fault already do, or the RAM the scheduler enforces would silently diverge from
+  // the RAM the user is shown.
+  it('DIVERGENCE GUARD: disk-driven RAM agrees between scheduler and metrics, and is elevated by disk wait', () => {
+    const bound = buildDiskBoundDbWorld({ diskIops: 200, diskType: 'hdd', diskIoPerRequest: 20 })
+    const unbound = buildDiskBoundDbWorld({ diskIoPerRequest: 20 })   // same demand, disk unmodelled
+    const stBound = run(bound)
+    for (let i = 0; i < 20; i++) stBound.engine.__test_step(1)
+    const stUnbound = run(unbound)
+    for (let i = 0; i < 20; i++) stUnbound.engine.__test_step(1)
+    const b = stBound.latest()
+    const u = stUnbound.latest()
+
+    const schedulerRam = b.servers[bound.dbServerId].ramUsedMb
+    const metricsRam = b.servers[bound.dbServerId].ramByInstance.reduce((sum, r) => sum + r.ramMb, 0)
+    expect(schedulerRam).toBeGreaterThan(0)
+    expect(metricsRam).toBeGreaterThan(0)
+    expect(schedulerRam / metricsRam).toBeGreaterThan(0.5)
+    expect(schedulerRam / metricsRam).toBeLessThan(2)
+
+    // The disk-bound server's connections must genuinely be held longer (elevated RAM) than the
+    // identical-demand unbound server -- proof diskWaitMs is reaching Little's law, not just that
+    // the two sides of the divergence guard trivially agree on an unchanged number.
+    expect(b.instances[bound.dbInstanceId].activeConnections)
+      .toBeGreaterThan(u.instances[unbound.dbInstanceId].activeConnections * 2)
+
+    stBound.engine.stop(); stUnbound.engine.stop()
+  })
+
+  it('disk-stall at iopsFraction 0.1 drives an unsaturated server into large added disk-wait latency', () => {
+    const w = buildDiskBoundDbWorld({ diskIops: 1000, diskType: 'nvme', diskIoPerRequest: 5 })
+    const st = run(w)
+    for (let i = 0; i < 10; i++) st.engine.__test_step(1)
+    const before = st.latest().instances[w.dbInstanceId].p50Ms
+    st.engine.setFault('server', w.dbServerId, { kind: 'disk-stall', iopsFraction: 0.1 })
+    // The published p50Ms is an EMA over a multi-batch reservoir (audit ISSUE-041) — it takes a
+    // few 1 Hz publish windows past the fault for the added disk-wait ms to dominate the mixed
+    // pre/post-fault reservoir, not just one.
+    for (let i = 0; i < 40; i++) st.engine.__test_step(1)
+    const after = st.latest().instances[w.dbInstanceId].p50Ms
+    // Pre-fault: demandIops (~rps x 5) sits at/under the 1000-iops ceiling -> wait ~= 0.
+    // Post-fault: the SAME demand against a 10%-effective 100-iops ceiling is deep in saturation
+    // (rho >> 1.98, the overshoot cap) -> a flat ~5ms nvme-base disk wait regardless of exact rps.
+    expect(after - before).toBeGreaterThan(2)
+    st.engine.stop()
+  })
+})

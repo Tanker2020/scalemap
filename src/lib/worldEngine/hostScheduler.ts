@@ -112,6 +112,12 @@ export interface HostStepResult {
   // authored maxConnections. Additive-optional: absent entirely on a hand-built HostStepResult
   // (existing test fixtures), and an absent per-instance key ⇒ no pool modeling for that instance.
   checkoutByInstance?: Record<InstanceId, { checkoutWaitMs: number; checkoutTimeoutErrorFraction: number }>
+  // Disk I/O wait (FEAT-006, Task 19) — one value per SERVER (diskWaitFor has no per-instance
+  // notion of "whose IOPS", it's a shared disk resource), broadcast to every resident instance's
+  // entry so callers keyed by instanceId (metrics.ts, Task 20) can read it uniformly alongside
+  // checkoutByInstance. Additive-optional: absent when the caller passed no diskWaitMs (undefined/
+  // null/0), the regression floor for a server with neither diskIops nor diskType authored.
+  diskWaitMsByInstance?: Record<InstanceId, number>
 }
 
 // Weighted water-fill of `totalCores` across instances, capped per instance at its wanted cores
@@ -157,7 +163,13 @@ function waterfill(
   return alloc
 }
 
-export function stepHost(server: Server, loads: InstanceLoad[], effectiveVcpu: number, rng: Rng): HostStepResult {
+export function stepHost(
+  server: Server,
+  loads: InstanceLoad[],
+  effectiveVcpu: number,
+  rng: Rng,
+  diskWaitMs?: number | null,
+): HostStepResult {
   const demandCores = loads.reduce((sum, l) => sum + (l.admittedRps * l.cpuMsPerRequest) / 1000, 0)
   const safeEffectiveVcpu = Math.max(effectiveVcpu, 0.0001)
   const cpuPressure = demandCores / safeEffectiveVcpu
@@ -230,8 +242,22 @@ export function stepHost(server: Server, loads: InstanceLoad[], effectiveVcpu: n
     oomVictim = rng.pick(tied).instanceId
   }
 
+  // Disk I/O wait (FEAT-006, Task 19): a single per-server value, broadcast to every resident
+  // instance's entry — mirrors checkoutByInstance's per-instance keying so downstream readers
+  // (metrics.ts's state.lastHost, Task 20) can look this up uniformly by instanceId. Not folded
+  // into the RAM loop above: diskWaitMs already reaches Little's law (and therefore both RAM call
+  // sites) additively via extraLatencyMsByServer -> flows.ts -> the SAME totalLatencyMs both the
+  // scheduler's InstanceLoad.activeConnections (next step, one-step-lagged like every other
+  // extraLatencyMsByServer term) and metrics.ts's published activeConnections already read —
+  // recomputing an ad hoc RAM adjustment here would double-count it against a formula that already
+  // owns this exact composition.
+  const diskWaitMsByInstance: HostStepResult['diskWaitMsByInstance'] =
+    diskWaitMs != null && diskWaitMs > 0
+      ? Object.fromEntries(loads.map(l => [l.instanceId, diskWaitMs]))
+      : undefined
+
   return {
     cpuPressure, coreUtilization, latencyMultiplier, admittedScale, serviceRateByInstance,
-    ramUsedMb, oomVictim, checkoutByInstance,
+    ramUsedMb, oomVictim, checkoutByInstance, diskWaitMsByInstance,
   }
 }
