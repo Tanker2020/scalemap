@@ -115,3 +115,36 @@ both read the identical `warmSinceMs` entry through the identical `cache.ts` for
 that restarts a cache mid-run and independently recomputes the expected mid-warmup ratio via
 `effectiveHitRatio` fed the same restart timestamp the engine itself used, asserting equality with
 the published value.
+
+## 2026-08-03 — Task 5: `cache_cold`/`cache_warm` `EngineEventKind` (FEAT-004)
+
+Added two new `EngineEventKind` variants (additive-only, `worldEngine/types.ts`, appended after
+`'scenario_step_applied'`):
+
+- `cache_cold` — emitted at the exact two sites Task 3 already writes `EngineState.warmSinceMs`
+  for a cache-configured instance: the OOM-restart-completion block in `runStep` ("── 0. OOM
+  restart timers ──") and `doSetFault`'s `!down` (fault-clear-back-to-running) branch. Both sites
+  now also clear the new `EngineState.warmEmitted: Set<string>` guard for that instance id, so the
+  next warm-cycle's `cache_warm` can fire again.
+- `cache_warm` — emitted from the SAME per-step loop that already reads `s.warmSinceMs` to build
+  `cacheMissFractionByInstance` for the flow solver (`runStep`, the `hasAnyCache` block) — no
+  second loop over instances was added, per the task brief's explicit constraint. Fires exactly
+  once per cold cycle, the first step `simMs - warmSinceMs >= cfg.warmupSec * 1000` (i.e. the step
+  `effectiveHitRatio` first reaches `cfg.hitRatio` again), guarded by the new `warmEmitted` Set so
+  it does not re-fire every subsequent step while the cache stays warm. Wired for both shapes:
+  blueprint-level caches (keyed by instance id) and managed-service caches (keyed by
+  `managed:${id}`) — though in practice a managed cache's `warmSinceMs` entry is never written
+  (Task 3's documented scope cut: `ManagedService` has no restart concept today), so the managed
+  branch is inert until that changes.
+
+Both are pure additions to the frozen `EngineEventKind` union — no signature break. One incidental
+fix surfaced by `tsc --noEmit`: `src/lib/aiChat/eventCausality.ts`'s `decodeAffected` has an
+exhaustive `switch (kind)` with no `default`, so it required a new case for the two kinds
+(`{ primaryId: affected[0] ?? '', secondaryId: null }`, matching the pattern used for other
+single-entity info-severity events like `fault_injected`). No other exhaustive switch over
+`EngineEventKind` exists in the app — `EventsTab.tsx` renders `e.kind` generically as text, so it
+needed no change (confirmed by inspection before assuming otherwise, per the task brief).
+
+Covered by `index.test.ts`'s `FEAT-004 cache hit ratio` describe block, a new test asserting
+`cache_cold` fires exactly once on a `down`→clear restart cycle and `cache_warm` fires exactly
+once after stepping well past `warmSinceMs + warmupSec * 1000`.

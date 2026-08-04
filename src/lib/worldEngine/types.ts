@@ -214,6 +214,12 @@ export type EngineEventKind =
   | 'chain_cycle_cut'            // BFS cycle guard stopped re-queueing into an ancestor instance
   | 'partition_started' | 'partition_healed'   // FEAT-002 network partition added/removed
   | 'scenario_step_applied'      // FEAT-003 scenario timeline: a step's action fired at its atMs
+  | 'cache_cold'                 // FEAT-004 (Task 5): a cache-configured instance just restarted
+                                  // (OOM restart, or a 'down' fault clearing) — warmSinceMs was
+                                  // just (re)written, so effectiveHitRatio starts ramping from 0
+  | 'cache_warm'                 // FEAT-004 (Task 5): fires exactly once per cold cycle, the step
+                                  // effectiveHitRatio first reaches cfg.hitRatio again (simMs -
+                                  // warmSinceMs >= cfg.warmupSec * 1000)
 
 export interface EngineEvent {
   id: string

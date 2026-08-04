@@ -61,6 +61,9 @@ export function decodeAffected(
       return { primaryId: affected[0] ?? '', secondaryId: affected[1] || null }
     case 'scenario_step_applied':
       return { primaryId: affected[0] ?? '', secondaryId: affected[1] || null }
+    case 'cache_cold':
+    case 'cache_warm':
+      return { primaryId: affected[0] ?? '', secondaryId: null }
   }
 }
 

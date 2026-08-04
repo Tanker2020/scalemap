@@ -2960,4 +2960,22 @@ describe('FEAT-004 cache hit ratio', () => {
     expect(published as number).toBeLessThan(cfg.hitRatio - 0.01)
     sim.engine.stop()
   })
+
+  it('emits cache_cold on restart and cache_warm once warmupSec has elapsed', () => {
+    // index.ts's __test_step(n) advances n x state.stepMs (100ms each, DEFAULT_STEP_MS) — so
+    // "past warmupSec=10s" needs >100 steps, not a literal step count of 10.
+    const w = buildCacheProxyWorld({ hitRatio: 0.9, warmupSec: 10, ttlSec: 300 })
+    const sim = drive(w.doc, w.compiled)
+    sim.engine.__test_step(5)   // simMs 500 — settle before restarting
+    sim.engine.setFault('server', w.cacheServerId, { kind: 'down' })
+    sim.engine.__test_step(1)   // simMs 600
+    sim.engine.setFault('server', w.cacheServerId, null)   // restart at simMs 600 -> warmSinceMs = 600
+    sim.engine.__test_step(1)   // simMs 700 — cache_cold fires on the restart step (600), already emitted
+    const coldEvents = sim.events.filter(e => e.kind === 'cache_cold')
+    expect(coldEvents.length).toBe(1)
+    sim.engine.__test_step(110)   // simMs 11,800 — well past warmSinceMs(600) + warmupSec(10s)=10,600
+    const warmEvents = sim.events.filter(e => e.kind === 'cache_warm')
+    expect(warmEvents.length).toBe(1)
+    sim.engine.stop()
+  })
 })

@@ -444,6 +444,12 @@ interface EngineState {
   // A managed cache is never written here (ManagedService has no restart concept today — Step 4's
   // documented, deliberate scope cut) so it reads as permanently warm.
   warmSinceMs: Map<string, number>
+  // FEAT-004 (Task 5): "already emitted cache_warm for the CURRENT cold cycle" guard, keyed by
+  // the same identity as warmSinceMs (instance id, or `managed:${id}`). A key is added the step
+  // effectiveHitRatio first reaches cfg.hitRatio again (so cache_warm fires exactly once per cold
+  // cycle, not every step it stays warm) and removed whenever warmSinceMs is rewritten for a NEW
+  // cold cycle (the restart/fault-clear sites) — so the next restart can fire cache_warm again.
+  warmEmitted: Set<string>
   // start()-time fast-path flag (Task 3): true iff ANY blueprint or managed service in the doc
   // carries a cacheConfig. Guards the per-step cacheMissFractionByInstance build in runStep so an
   // unconfigured world (the overwhelming common case) pays zero extra cost per step.
@@ -665,7 +671,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       if (!down) {
         for (const iid of affected) {
           const bp = s.doc.blueprints[s.compiled.instances[iid]?.blueprintId ?? '']
-          if (bp?.cacheConfig) s.warmSinceMs.set(iid, simMs)
+          if (bp?.cacheConfig) {
+            s.warmSinceMs.set(iid, simMs)
+            s.warmEmitted.delete(iid)
+            emit('cache_cold', 'info', `instance ${iid} restarted with a cold cache`, [iid], simMs)
+          }
         }
       }
     }
@@ -757,7 +767,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         // FEAT-004 (Task 3): a restarted process gets a fresh, cold cache — same "fresh heap"
         // moment as the leakAccumMb reset above, mirrored here for warmth.
         const restartedBp = doc.blueprints[compiled.instances[iid]?.blueprintId ?? '']
-        if (restartedBp?.cacheConfig) s.warmSinceMs.set(iid, simMs)
+        if (restartedBp?.cacheConfig) {
+          s.warmSinceMs.set(iid, simMs)
+          s.warmEmitted.delete(iid)
+          emit('cache_cold', 'info', `instance ${iid} restarted with a cold cache`, [iid], simMs)
+        }
         emit('instance_restarted', 'info', `instance ${iid} restarted`, [iid], simMs)
       }
     }
@@ -1298,12 +1312,25 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         if (!bp?.cacheConfig) continue
         cacheMissFractionByInstance[inst.id] =
           effectiveMissFraction(bp.cacheConfig, s.warmSinceMs.get(inst.id), simMs, stepSec)
+        // FEAT-004 (Task 5): fires exactly once per cold cycle, the step warmth first reaches 1
+        // (effectiveHitRatio === cfg.hitRatio) — warmEmitted is the "already fired" guard, reset
+        // at the two restart/fault-clear sites above whenever a NEW cold cycle begins.
+        const warmSince = s.warmSinceMs.get(inst.id)
+        if (warmSince !== undefined && !s.warmEmitted.has(inst.id) && simMs - warmSince >= bp.cacheConfig.warmupSec * 1000) {
+          s.warmEmitted.add(inst.id)
+          emit('cache_warm', 'info', `instance ${inst.id} cache is fully warm`, [inst.id], simMs)
+        }
       }
       for (const ms of Object.values(doc.managedServices)) {
         if (!ms.cacheConfig) continue
         const warmKey = `managed:${ms.id}`
         cacheMissFractionByInstance[warmKey] =
           effectiveMissFraction(ms.cacheConfig, s.warmSinceMs.get(warmKey), simMs, stepSec)
+        const warmSince = s.warmSinceMs.get(warmKey)
+        if (warmSince !== undefined && !s.warmEmitted.has(warmKey) && simMs - warmSince >= ms.cacheConfig.warmupSec * 1000) {
+          s.warmEmitted.add(warmKey)
+          emit('cache_warm', 'info', `managed cache ${ms.id} is fully warm`, [ms.id], simMs)
+        }
       }
     }
     const { flows, totals, depthExceededInstanceIds, cycleCutEdges } = solveFlows({
@@ -1959,6 +1986,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         // hasAnyCache is computed once so an unconfigured world's runStep never touches the cache
         // path at all.
         warmSinceMs: new Map(),
+        // FEAT-004 (Task 5): no cold cycle in flight at start(), so nothing to guard yet.
+        warmEmitted: new Set(),
         hasAnyCache: Object.values(doc.blueprints).some(bp => bp.cacheConfig != null)
           || Object.values(doc.managedServices).some(ms => ms.cacheConfig != null),
         cacheAsideIndexByDepId: buildCacheAsideIndex(doc, compiled),
