@@ -1334,7 +1334,24 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
           }
         }
       }
-      const host = stepHost(server, loads, effectiveVcpu, s.rng, diskWaitMs, diskIoRatio)
+      // FEAT-007 (Task 4): blend Task 2's raw 0..1 warmthOf() ramp with the workload's
+      // warmCapacityFraction (the floor capacity at t=0) so stepHost's water-fill sees the
+      // ACTUAL capacity fraction, not the raw ramp — e.g. warmCapacityFraction 0.3 + raw 0.5 at
+      // the ramp's midpoint blends to 0.65, not 0.5. Fast-pathed on s.warmingUntil.size (the same
+      // "empty map ⇒ undefined, skip the per-server Object.fromEntries" discipline hasAnyDisk/
+      // hasAnyCache use elsewhere) so a world with no warming instance anywhere pays zero cost
+      // here and stepHost sees `undefined` (its own regression floor).
+      const warmthByInstance: Record<InstanceId, number> | undefined = s.warmingUntil.size === 0
+        ? undefined
+        : Object.fromEntries(
+            resident.map(inst => {
+              const bp = doc.blueprints[inst.blueprintId]
+              const floor = bp?.workload.warmCapacityFraction ?? 0.3
+              const raw = warmthOf(inst.id, s.warmingUntil, simMs)
+              return [inst.id, floor + (1 - floor) * raw]
+            }),
+          )
+      const host = stepHost(server, loads, effectiveVcpu, s.rng, diskWaitMs, diskIoRatio, warmthByInstance)
       hostResults[server.id] = host
       // Fold the NIC's ABSOLUTE line-rate ceiling into each instance's capacity (audit
       // ISSUE-002 × ISSUE-013 × ISSUE-009): bandwidth is split across resident instances by the

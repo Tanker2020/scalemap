@@ -219,6 +219,11 @@ export function stepHost(
   // actually drove this step's disk wait. Additive-optional: absent ⇒ HostStepResult.diskIoRatio
   // stays undefined, the regression floor.
   diskIoRatio?: number | null,
+  // FEAT-007 (Task 4): per-instance capacity multiplier (0..1) while an instance is warming up
+  // from a restart (Task 2's warmthOf, blended with the workload's warmCapacityFraction by the
+  // caller). Absent/no entry ⇒ 1 for every instance — the regression floor, byte-identical to
+  // pre-FEAT-007 behavior.
+  warmthByInstance?: Record<string, number>,
 ): HostStepResult {
   const demandCores = loads.reduce((sum, l) => sum + (l.admittedRps * l.cpuMsPerRequest) / 1000, 0)
   const safeEffectiveVcpu = Math.max(effectiveVcpu, 0.0001)
@@ -233,18 +238,34 @@ export function stepHost(
   // makes the split work-conserving when demand is skewed. The max() can transiently grant more
   // than effectiveVcpu in sum — a deliberate, bounded overcommit that models a real scheduler's
   // instant reallocation, chosen over strict conservation to keep both properties.
+  //
+  // FEAT-007 (Task 4): a warming instance's usable capacity is additionally capped at
+  // warmth × its normal (unthrottled) fair share of the host — both the water-fill CAP fed into
+  // `wants` and the floor guarantee above are scaled by warmth for that instance only. Scaling
+  // only the CAP/floor (not the water-fill weight itself) is what makes the released surplus
+  // flow to the OTHER, uncapped claimants through the waterfill()'s existing "capped instance
+  // releases its unclaimed remainder to survivors" loop — no separate redistribution logic
+  // needed. Scaling the weight instead would have been a no-op here: with a single active
+  // claimant the water-fill/floor ratio is always 1 regardless of weight, so a lone restarted
+  // instance would never actually be throttled. warmth defaults to 1 for every instance (and the
+  // multiply is skipped entirely when warmth is exactly 1), so a world with no warming instance
+  // anywhere reproduces the pre-FEAT-007 numbers exactly.
   const serviceRateByInstance: Record<InstanceId, number> = {}
   if (loads.length > 0) {
     const totalWeight = loads.reduce((s, l) => s + Math.max(0, l.cpuShares ?? 1), 0) || loads.length
-    const wants = loads.map(l => ({
-      instanceId: l.instanceId,
-      weight: Math.max(0, l.cpuShares ?? 1),
-      capCores: ((l.admittedRps + (l.backlogRps ?? 0)) * l.cpuMsPerRequest) / 1000,
-    }))
+    const wants = loads.map(l => {
+      const weight = Math.max(0, l.cpuShares ?? 1)
+      const demandCapCores = ((l.admittedRps + (l.backlogRps ?? 0)) * l.cpuMsPerRequest) / 1000
+      const warmth = warmthByInstance?.[l.instanceId] ?? 1
+      const fairShareCores = (safeEffectiveVcpu * weight) / totalWeight
+      const capCores = warmth < 1 ? Math.min(demandCapCores, warmth * fairShareCores) : demandCapCores
+      return { instanceId: l.instanceId, weight, capCores }
+    })
     const filled = waterfill(wants, safeEffectiveVcpu)
     for (const l of loads) {
       const weight = Math.max(0, l.cpuShares ?? 1)
-      const floorCores = (safeEffectiveVcpu * weight) / totalWeight
+      const warmth = warmthByInstance?.[l.instanceId] ?? 1
+      const floorCores = ((safeEffectiveVcpu * weight) / totalWeight) * warmth
       const cores = Math.max(floorCores, filled.get(l.instanceId) ?? 0)
       serviceRateByInstance[l.instanceId] = (cores * 1000) / Math.max(0.0001, l.cpuMsPerRequest)
     }

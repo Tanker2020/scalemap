@@ -150,6 +150,77 @@ describe('stepHost — serviceRateByInstance (ISSUE-018)', () => {
   })
 })
 
+// FEAT-007 (Task 4): a warming instance's water-fill share is capped at warmth × its normal fair
+// share, with the released surplus flowing to uncapped siblings through the SAME work-conserving
+// water-fill surplus loop ISSUE-018's tests above exercise -- no separate redistribution path.
+describe('stepHost — cold-start capacity throttle (FEAT-007 Task 4)', () => {
+  it('warmth=1 (or no entry) reproduces the exact pre-FEAT-007 numbers -- the regression floor', () => {
+    const server = testServer(4, 8192)
+    const rng = createRng(5)
+    const noWarmth = stepHost(server, [
+      load({ instanceId: 'i1', cpuMsPerRequest: 10, admittedRps: 1000 }),
+    ], 4, rng)
+    const rng2 = createRng(5)
+    const explicitlyWarm = stepHost(server, [
+      load({ instanceId: 'i1', cpuMsPerRequest: 10, admittedRps: 1000 }),
+    ], 4, rng2, undefined, undefined, { i1: 1 })
+    expect(explicitlyWarm.serviceRateByInstance['i1']).toBe(noWarmth.serviceRateByInstance['i1'])
+    expect(noWarmth.serviceRateByInstance['i1']).toBeCloseTo(400, 3)   // 4 cores @ 10ms/req = 400 rps
+  })
+
+  it('a lone saturated instance is throttled to warmth × its fair share (a lone claimant otherwise always reads 100%)', () => {
+    const server = testServer(4, 8192)
+    const rng = createRng(5)
+    // 4 effective vCPU @ 10ms/req = 400 rps ceiling if fully warm; demand (1000 rps) saturates it.
+    const at30pct = stepHost(server, [
+      load({ instanceId: 'i1', cpuMsPerRequest: 10, admittedRps: 1000 }),
+    ], 4, rng, undefined, undefined, { i1: 0.3 })
+    expect(at30pct.serviceRateByInstance['i1']).toBeCloseTo(120, 3)   // 400 * 0.3
+
+    const rng2 = createRng(5)
+    const at65pct = stepHost(server, [
+      load({ instanceId: 'i1', cpuMsPerRequest: 10, admittedRps: 1000 }),
+    ], 4, rng2, undefined, undefined, { i1: 0.65 })
+    expect(at65pct.serviceRateByInstance['i1']).toBeCloseTo(260, 3)   // 400 * 0.65
+  })
+
+  it('REDISTRIBUTION: capacity withheld from a warming instance flows to its saturated warm sibling, work-conserving', () => {
+    const server = testServer(4, 8192)
+    const rng = createRng(5)
+    // Both instances demand far beyond their 2-core-each fair share -- fully saturated.
+    const result = stepHost(server, [
+      load({ instanceId: 'cold', cpuMsPerRequest: 10, admittedRps: 1000 }),
+      load({ instanceId: 'warm', cpuMsPerRequest: 10, admittedRps: 1000 }),
+    ], 4, rng, undefined, undefined, { cold: 0.3 })   // 'warm' absent from the map -> warmth 1
+    const cold = result.serviceRateByInstance['cold']
+    const warm = result.serviceRateByInstance['warm']
+    // cold's fair share is 2 of 4 cores (200 rps); throttled to 0.3 of THAT -> 60 rps.
+    expect(cold).toBeCloseTo(60, 3)
+    // The 1.4 cores cold left on the table flow to warm via the water-fill surplus loop -- warm
+    // absorbs its own 2-core fair share PLUS all of cold's unclaimed remainder.
+    expect(warm).toBeCloseTo(340, 3)
+    // Work-conserving: the host's total granted capacity is unchanged by the throttle -- only the
+    // SPLIT shifts, exactly like the pre-existing "idle sibling's unused share flows to the busy
+    // instance" case above.
+    expect(cold + warm).toBeCloseTo(400, 3)
+  })
+
+  it('a warming instance still keeps its throttled floor even when its own demand is lower', () => {
+    const server = testServer(4, 8192)
+    const rng = createRng(5)
+    // cold's raw demand (0.5 cores = 50 rps) is under its throttled floor (0.3 * 2-core fair share
+    // = 0.6 cores = 60 rps) -- the SAME "floor guarantees a recovering instance can serve from
+    // cold" guarantee ISSUE-018's "idle sibling" test exercises above, just scaled down by warmth
+    // rather than removed by it, so a low-demand warming instance is never pinned below its own
+    // (throttled) fair share.
+    const result = stepHost(server, [
+      load({ instanceId: 'cold', cpuMsPerRequest: 10, admittedRps: 50 }),
+      load({ instanceId: 'warm', cpuMsPerRequest: 10, admittedRps: 1000 }),
+    ], 4, rng, undefined, undefined, { cold: 0.3 })
+    expect(result.serviceRateByInstance['cold']).toBeCloseTo(60, 3)
+  })
+})
+
 // ─── Self-hosted connection pool (audit ISSUE-005) ───────────────────────────
 describe('poolCheckoutFor', () => {
   it('returns null when maxConnections is absent (not capacity-modelled, the pre-issue behavior)', () => {

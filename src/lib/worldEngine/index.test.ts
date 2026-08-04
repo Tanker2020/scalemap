@@ -3652,3 +3652,134 @@ describe('FEAT-006 Task 21: disk_saturated event', () => {
     sim.engine.stop()
   })
 })
+
+describe('FEAT-007 Task 4: cold-start capacity throttle', () => {
+  // One server hosting a public "cold" blueprint (whose workload carries coldStartMs/
+  // warmCapacityFraction), plus optionally a same-server "warm" sibling blueprint that never
+  // restarts. Both blueprints saturate the dedicated-8 host (8 vCPU @ 5ms/req = 1600 rps ceiling
+  // per instance if it had the WHOLE host) under a heavily-oversubscribed population. Normal RAM
+  // usage stays well under the cold instance's 300 MB container limit -- OOM is triggered
+  // on-demand by a BRIEF memory-leak fault (cleared immediately after it fires) rather than by a
+  // permanently-overshooting workload, so the instance restarts exactly ONCE and its ramp can be
+  // observed cleanly instead of re-OOMing every few seconds under the same saturating load.
+  //
+  // The container memLimitMb is scoped to the COLD placement only, so a 'server'-scope
+  // memory-leak fault (which accumulates at the SAME rate on every resident instance) only ever
+  // pushes the COLD instance over its limit -- the warm sibling (no container limit, well under
+  // the roomy server-level ramMb) is never touched. This is what gives the redistribution test
+  // genuine asymmetry despite both instances sharing one host's CPU pool: a 'server'-scope 'down'
+  // fault would instead restart EVERY resident instance identically
+  // (instanceIdsForFaultScope's 'server' branch), never desynchronizing them.
+  function singleServerTwoInstances(opts: {
+    coldStartMs: number
+    warmCapacityFraction: number
+    siblingCount?: number
+  }) {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    server.specs.ramMb = 100_000   // roomy -- host-level OOM is not this fixture's trigger
+    doc.servers[server.id] = server
+
+    const coldBp = publicBlueprint('cold', 0)
+    coldBp.workload = {
+      // ramPerConnMb deliberately tiny: under deep oversubscription, admitted connections/backlog
+      // can grow very large, and this fixture must NOT let connection-driven RAM growth cross the
+      // container limit on its own (that would re-OOM the instance repeatedly on the ambient
+      // saturating load -- the well-documented "Mechanism A" oscillating OOM-kill cycle -- rather
+      // than restarting exactly once). The ONLY intended trigger is triggerOneShotOom's brief
+      // memory-leak fault below.
+      cpuMsPerRequest: 5, ramBaseMb: 64, ramPerConnMb: 0.01, diskIoPerRequest: 0,
+      coldStartMs: opts.coldStartMs, warmCapacityFraction: opts.warmCapacityFraction,
+    }
+    doc.blueprints[coldBp.id] = coldBp
+    const coldPl = createPlacement(coldBp.id, server.id)
+    coldPl.runtime = {
+      type: 'container', stackName: 'app', networkNames: [], portMappings: [],
+      cpuLimit: null, memLimitMb: 300,
+    }
+    doc.placements[coldPl.id] = coldPl
+    const coldInstanceId = instanceId(coldPl.id, 0)
+
+    let siblingInstanceId: string | null = null
+    if (opts.siblingCount) {
+      const warmBp = publicBlueprint('warm', 1)
+      warmBp.workload = { cpuMsPerRequest: 5, ramBaseMb: 64, ramPerConnMb: 0.01, diskIoPerRequest: 0 }
+      doc.blueprints[warmBp.id] = warmBp
+      const warmPl = createPlacement(warmBp.id, server.id)
+      warmPl.count = opts.siblingCount
+      doc.placements[warmPl.id] = warmPl
+      siblingInstanceId = instanceId(warmPl.id, 0)
+    }
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 2500   // saturating (~1.6x the 1600 rps solo ceiling) without runaway backlog
+    doc.populations[pop.id] = pop
+
+    return { doc, serverId: server.id, instanceId: coldInstanceId, siblingInstanceId }
+  }
+
+  // Fires a brief memory-leak fault to push the cold instance's RAM over its 300 MB container
+  // limit exactly once, then clears the fault -- a non-'down' clear, so it does NOT itself reset
+  // warmth (only a 'down'-fault clear or an OOM restart does, per index.ts's doSetFault/oomVictim
+  // wiring). Leaves the OOM restart itself (and the coldStartMs ramp it starts) as the ONLY
+  // warmth-affecting event in the run.
+  function triggerOneShotOom(sim: ReturnType<typeof drive>, serverId: string, instanceId: string) {
+    sim.engine.setFault('server', serverId, { kind: 'memory-leak', mbPerMinute: 6000 })   // 100 MB/s
+    sim.stepFor(3)   // base 64 + ~300 MB of leak comfortably crosses the 300 MB container limit
+    expect(sim.events.some(e => e.kind === 'oom_kill' && e.affected.includes(instanceId))).toBe(true)
+    sim.engine.setFault('server', serverId, null)
+  }
+
+  it('COLD START: a restarted instance ramps rps up monotonically toward its pre-OOM baseline', () => {
+    const f = singleServerTwoInstances({ coldStartMs: 30_000, warmCapacityFraction: 0.3 })
+    const compiled = compileWorld(f.doc)
+    const sim = drive(f.doc, compiled)
+    sim.stepFor(3)
+    const baseline = sim.latest().instances[f.instanceId].rps
+    triggerOneShotOom(sim, f.serverId, f.instanceId)
+    for (let i = 0; i < 6; i++) sim.stepFor(1)   // > 5s OOM restart delay
+    expect(sim.events.some(e => e.kind === 'instance_restarted' && e.affected.includes(f.instanceId))).toBe(true)
+    sim.stepFor(1)
+    const justAfterRestart = sim.latest().instances[f.instanceId].rps
+    for (let i = 0; i < 9; i++) sim.stepFor(1)   // ~10s into the 30s ramp
+    const midRamp = sim.latest().instances[f.instanceId].rps
+    for (let i = 0; i < 25; i++) sim.stepFor(1)   // well past the 30s ramp -- fully warm again
+    const fullyWarm = sim.latest().instances[f.instanceId].rps
+    // Asserts the RAMP SHAPE the capacity throttle produces -- strictly increasing across three
+    // widely-spaced samples, and a substantial (not marginal) recovery by the time warmth has
+    // long since reached 1 -- rather than exact percentages at fixed offsets: the 1 Hz
+    // EMA-published rps (alpha=0.3) smooths the underlying step-level throttle, and the deep
+    // backlog built up while heavily throttled takes its own time to drain on top of that, so
+    // "fullyWarm" converges toward (not instantly onto) the pre-OOM baseline. hostScheduler.
+    // test.ts's own describe block asserts the exact underlying core-allocation fractions
+    // (0.3 / 0.65 / 1.0) directly against stepHost, without either of those confounds.
+    expect(midRamp).toBeGreaterThan(justAfterRestart)
+    expect(fullyWarm).toBeGreaterThan(midRamp)
+    expect(fullyWarm).toBeGreaterThan(justAfterRestart * 2)
+    expect(fullyWarm).toBeGreaterThan(baseline * 0.5)
+    sim.engine.stop()
+  })
+
+  it('COLD START REDISTRIBUTION: capacity withheld from a cold instance goes to warm siblings, total host throughput does not fully drop', () => {
+    const f = singleServerTwoInstances({ coldStartMs: 30_000, warmCapacityFraction: 0.3, siblingCount: 1 })
+    const compiled = compileWorld(f.doc)
+    const sim = drive(f.doc, compiled)
+    sim.stepFor(5)
+    const totalBefore = Object.values(sim.latest().instances).reduce((s, i: any) => s + i.rps, 0)
+    triggerOneShotOom(sim, f.serverId, f.instanceId)
+    expect(sim.events.some(e => e.kind === 'oom_kill' && e.affected.includes(f.siblingInstanceId!))).toBe(false)
+    for (let i = 0; i < 6; i++) sim.stepFor(1)   // > 5s OOM restart delay -- instance_restarted fires, warming begins
+    expect(sim.events.some(e => e.kind === 'instance_restarted' && e.affected.includes(f.instanceId))).toBe(true)
+    sim.stepFor(1)
+    const totalAfterRestart = Object.values(sim.latest().instances).reduce((s, i: any) => s + i.rps, 0)
+    // The withheld share of the cold instance's capacity should be largely absorbed by its warm
+    // sibling via the water-fill's work-conserving surplus redistribution, so total host
+    // throughput drops by much less than a naive "lose the cold instance's whole share" would.
+    expect(totalAfterRestart / totalBefore).toBeGreaterThan(0.75)
+    sim.engine.stop()
+  })
+})
