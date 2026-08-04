@@ -193,7 +193,58 @@ const faultInjected: AnalysisRule = {
   },
 }
 
+// FEAT-004: a cold cache pushes its miss traffic straight through to whatever it fronts — that's
+// only an efficiency footnote until the downstream is ALSO running hot, at which point the
+// storm compounds into overload. Fires when the cache is materially cold (<50% of its
+// configured hitRatio) AND its downstream dependency's host is already >80% mean CPU — the same
+// mean-coreUtilization signal `burstableSustainedLoad` reads, just a fixed overload threshold
+// instead of a preset credit baseline (there's no "credit" concept for a plain overload check).
+const CACHE_COLD_FRACTION = 0.5
+const DOWNSTREAM_OVERLOAD_THRESHOLD = 0.8
+
+const cacheMissStorm: AnalysisRule = {
+  id: 'cache-miss-storm', family: 'capacity',
+  run: ({ doc, compiled, lastBatch }) => {
+    if (!lastBatch) return []
+    const out: AnalysisFinding[] = []
+    for (const inst of Object.values(compiled.instances)) {
+      const bp = doc.blueprints[inst.blueprintId]
+      if (!bp?.cacheConfig) continue
+      const observed = lastBatch.instances?.[inst.id]?.cacheHitRatio
+      if (observed == null || observed >= bp.cacheConfig.hitRatio * CACHE_COLD_FRACTION) continue
+      // Downstream: the cache's OWN blueprint.dependencies point at what it fronts (the
+      // cache-aside proxy shape — api -> cache -> db, see worldEngine/index.test.ts's
+      // buildCacheProxyWorld). Only a blueprint target has a server/coreUtilization signal to
+      // check here; a managed-service target is a black box with no such signal in this file.
+      let downstreamInstId: string | undefined
+      let downstreamName: string | undefined
+      for (const depDef of bp.dependencies) {
+        if (depDef.target.kind !== 'blueprint') continue
+        for (const downInst of Object.values(compiled.instances)) {
+          if (downInst.blueprintId !== depDef.target.blueprintId) continue
+          const util = lastBatch.servers[downInst.serverId]?.coreUtilization
+          if (!util || util.length === 0) continue
+          const mean = util.reduce((a, b) => a + b, 0) / util.length
+          if (mean > DOWNSTREAM_OVERLOAD_THRESHOLD) {
+            downstreamInstId = downInst.id
+            downstreamName = doc.blueprints[downInst.blueprintId]?.name
+          }
+        }
+      }
+      if (!downstreamInstId) continue
+      out.push({
+        id: `cache-miss-storm:${inst.id}`, ruleId: 'cache-miss-storm', family: 'capacity', severity: 'warning',
+        title: 'Cold cache overloading its downstream',
+        why: `${bp.name} is only ${Math.round(observed * 100)}% warm (target ${Math.round(bp.cacheConfig.hitRatio * 100)}%); ${downstreamName ?? 'its downstream dependency'} is absorbing the excess miss traffic and is already over ${Math.round(DOWNSTREAM_OVERLOAD_THRESHOLD * 100)}% CPU.`,
+        fix: `Raise the cache's warmup/hit-ratio config, or scale ${downstreamName ?? 'the downstream dependency'} (Blueprints / Placements panel).`,
+        affected: [inst.id, downstreamInstId],
+      })
+    }
+    return out
+  },
+}
+
 export const capacityRules: AnalysisRule[] = [
   ramOversubscribed, burstableSustainedLoad, oceanCrossingPopulation, ttlOutlivesDetection,
-  consumerLagBehindProducer, faultInjected,
+  consumerLagBehindProducer, faultInjected, cacheMissStorm,
 ]

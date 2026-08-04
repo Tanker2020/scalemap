@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { scenario } from '../__fixtures__/worlds'
+import { scenario, dep } from '../__fixtures__/worlds'
 import { runAnalysis } from '../runAnalysis'
 import { greatCircleKm } from '../../world/regionGeo'
 import { compileWorld } from '../../world/compileWorld'
@@ -264,5 +264,57 @@ describe('capacity: fault-injected', () => {
     expect(ids(runAnalysis(s.doc, s.compile(), zero), 'fault-injected')).toHaveLength(0)
     const undef = { servers: {}, instances: {} } as unknown as MetricsBatch
     expect(ids(runAnalysis(s.doc, s.compile(), undef), 'fault-injected')).toHaveLength(0)
+  })
+})
+
+// FEAT-004 Task 6: a cold cache pushes its miss traffic through to whatever it fronts — flag it
+// only once that downstream is ALSO running hot (over 80% mean CPU), same signal
+// burstable-sustained-load already reads off lastBatch.servers[id].coreUtilization.
+describe('capacity: cache-miss-storm', () => {
+  // cache -> db, cache-aside proxy shape (mirrors worldEngine/index.test.ts's buildCacheProxyWorld).
+  function buildCacheMissStormFixture(opts: {
+    configuredHitRatio: number; observedHitRatio: number; downstreamUtilization: number
+  }) {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const cacheServer = s.server(az.id); const dbServer = s.server(az.id)
+    const db = s.blueprint('db', 1)
+    const cache = s.blueprint('cache', 0)
+    cache.kind = 'cache'
+    cache.cacheConfig = { hitRatio: opts.configuredHitRatio, warmupSec: 30, ttlSec: 60 }
+    cache.dependencies = [dep('d-db', db.id, 'db')]
+    s.placement(db.id, dbServer.id)
+    s.placement(cache.id, cacheServer.id)
+    const compiled = s.compile()
+    const cacheInstId = Object.values(compiled.instances).find(i => i.blueprintId === cache.id)!.id
+    const dbInstId = Object.values(compiled.instances).find(i => i.blueprintId === db.id)!.id
+    const batch = {
+      servers: { [dbServer.id]: { coreUtilization: [opts.downstreamUtilization, opts.downstreamUtilization] } },
+      instances: { [cacheInstId]: { cacheHitRatio: opts.observedHitRatio } },
+    } as unknown as MetricsBatch
+    return { doc: s.doc, compiled, lastBatch: batch, cacheInstId, dbInstId }
+  }
+
+  it('fires when a cache is <50% of its configured hit ratio and its downstream is >80% capacity', () => {
+    const ctx = buildCacheMissStormFixture({ configuredHitRatio: 0.9, observedHitRatio: 0.3, downstreamUtilization: 0.85 })
+    const f = ids(runAnalysis(ctx.doc, ctx.compiled, ctx.lastBatch), 'cache-miss-storm')
+    expect(f).toHaveLength(1)
+    expect(f[0].severity).toBe('warning')
+    expect(f[0].affected).toEqual([ctx.cacheInstId, ctx.dbInstId])
+  })
+
+  it('does not fire when the cache is warm', () => {
+    const ctx = buildCacheMissStormFixture({ configuredHitRatio: 0.9, observedHitRatio: 0.88, downstreamUtilization: 0.85 })
+    expect(ids(runAnalysis(ctx.doc, ctx.compiled, ctx.lastBatch), 'cache-miss-storm')).toHaveLength(0)
+  })
+
+  it('does not fire when the cache is cold but the downstream has headroom', () => {
+    const ctx = buildCacheMissStormFixture({ configuredHitRatio: 0.9, observedHitRatio: 0.3, downstreamUtilization: 0.5 })
+    expect(ids(runAnalysis(ctx.doc, ctx.compiled, ctx.lastBatch), 'cache-miss-storm')).toHaveLength(0)
+  })
+
+  it('silent with a null batch', () => {
+    const ctx = buildCacheMissStormFixture({ configuredHitRatio: 0.9, observedHitRatio: 0.3, downstreamUtilization: 0.85 })
+    expect(ids(runAnalysis(ctx.doc, ctx.compiled, null), 'cache-miss-storm')).toHaveLength(0)
   })
 })
