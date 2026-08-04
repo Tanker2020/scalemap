@@ -199,6 +199,8 @@ export interface BlueprintDependency {
   // the only sensible value and preserves the pre-Phase-3 even fan-out exactly. Optional +
   // normalized-on-load, like the other additive fields, until Phase 5's format cutover.
   writeFraction?: number
+  // dependency id of the sibling cache edge on the same blueprint; when set, this edge's share is reduced by that cache's miss fraction
+  cacheAsideVia?: string
 }
 
 // What a service IS, as opposed to what it costs to run. Drives which authoring form the user
@@ -217,6 +219,12 @@ export interface DbConfig {
   storageGb: number
 }
 
+export interface CacheConfig {
+  hitRatio: number       // 0..1 steady-state hit ratio
+  warmupSec: number      // seconds from cold (0%) to steady-state hitRatio
+  ttlSec: number         // entry lifetime; drives the ambient miss floor
+}
+
 export interface ServiceBlueprint {
   id: BlueprintId
   name: string
@@ -228,6 +236,7 @@ export interface ServiceBlueprint {
   stateful: boolean
   volumeName: string | null   // required when stateful
   dbConfig: DbConfig | null   // non-null iff kind is db-*
+  cacheConfig?: CacheConfig   // cache configuration for this service
   // Non-null ⇒ this blueprint is OWNED by an appliance box of that kind and was created with it;
   // the authoring UI refuses to place other services on such a box, and refuses to place this
   // blueprint on a general-purpose host. null ⇒ a free-standing service.
@@ -307,6 +316,7 @@ export interface ManagedService {
   pricing?: ManagedPricingCommitment  // reserved commitments discount the provisioned hourly
   replicaLocality?: ReplicaLocality   // read-replica placement ⇒ read-latency + egress tier
   promotionTier?: number           // failover promotion order across replicas (lower promotes first)
+  cacheConfig?: CacheConfig        // cache configuration for this managed service
 }
 
 // Fixed class ceiling that throttles over, vs an on-demand ceiling that bursts and prices
