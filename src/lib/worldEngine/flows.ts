@@ -10,7 +10,7 @@
 //   depth cap 8; cycles guarded per request chain (parent-pointer chain walk, ISSUE-074)
 import type {
   CompiledWorld, WorldDoc, CompiledPath, InstanceId, ServerId, HopClass,
-  ServiceBlueprint, ManagedService, ManagedServiceId, PlacementRole,
+  ServiceBlueprint, ManagedService, ManagedServiceId, PlacementRole, CacheConfig,
 } from '../world/types'
 import { managedDbEngine } from '../world/types'
 import { managedCapacityRps } from '../managedCapacity'
@@ -304,6 +304,21 @@ export interface FlowInput {
   // `delayMs` adds additively to the hop's composed latency for whatever share actually transits.
   // Optional: absent ⇒ unchanged behavior, so existing callers/tests are unaffected.
   impairmentMemo?: Map<string, { blocked: boolean; lossFraction: number; delayMs: number }>
+  // FEAT-004 (Task 3): cache economics. Keyed by "cache identity" — a service instance id (a
+  // cache-kind instance whose OWN blueprint carries cacheConfig — the "proxy" shape: api -> cache
+  // -> db, and the cache's OWN dependency share to db is reduced) or `managed:${managedServiceId}`
+  // (a managed cache reached via a sibling dependency's cacheAsideVia — the "cache-aside" shape).
+  // Built once per step by the engine (index.ts) from Task 2's effectiveMissFraction, guarded by
+  // hasAnyCache. Optional: absent ⇒ no reduction anywhere, so existing callers/tests (and every
+  // world with no cacheConfig authored) are unaffected — the regression floor.
+  cacheMissFractionByInstance?: Record<string, number>
+  // FEAT-004 (Task 3, Step 6): dependencyId → the resolved cache-aside sibling's cacheConfig +
+  // warm-key, built once at start() (index.ts's buildCacheAsideIndex) from every dependency whose
+  // cacheAsideVia points at a sibling cache edge on the same blueprint. A dependency absent from
+  // this map has no cache-aside multiplier applied (either it has no cacheAsideVia, or the sibling
+  // didn't resolve to a configured cache). Optional: absent ⇒ unaffected, same regression-floor
+  // shape as impairmentMemo/cacheMissFractionByInstance above.
+  cacheAsideIndexByDepId?: Map<string, { cacheConfig: CacheConfig; warmKey: string }>
   rng: Rng
 }
 
@@ -683,16 +698,32 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
       }
       const candidates = byDep?.get(dep.id)
       if (!candidates || candidates.length === 0) continue   // dangling dep: compile emitted nothing
-      // Call-per-request: the dependency sees the FULL admitted rps. For a non-DB target this is
-      // an even split across ALL compiled targets (blocked ones included — the caller can't see
-      // the misconfig); for a DB target it partitions into writes→primary / reads→replicas.
+      // FEAT-004 (Task 3): cache economics. Exactly one of two shapes ever applies to a given
+      // dependency (a blueprint's own cacheConfig marks it AS a cache proxy — every one of ITS
+      // dependencies is behind the cache; a dependency's own cacheAsideVia marks IT specifically as
+      // the cache-aside fallback edge) — never both, so this is a plain if/else, not compounding.
+      let cacheMissFraction = 1
+      if (bp.cacheConfig) {
+        // Proxy shape: this whole instance IS the cache (api -> cache -> db) — every dependency
+        // fired from it (here, the call to db) only sees the share that missed.
+        cacheMissFraction = input.cacheMissFractionByInstance?.[item.instanceId] ?? 1
+      } else if (dep.cacheAsideVia) {
+        // Cache-aside shape: THIS dependency is the fallback edge (e.g. api -> db, cacheAsideVia
+        // the sibling api -> cache edge) — reduced by the sibling cache's own miss fraction.
+        const aside = input.cacheAsideIndexByDepId?.get(dep.id)
+        if (aside) cacheMissFraction = input.cacheMissFractionByInstance?.[aside.warmKey] ?? 1
+      }
+      // Call-per-request: the dependency sees the FULL admitted rps (less whatever the cache
+      // absorbed above). For a non-DB target this is an even split across ALL compiled targets
+      // (blocked ones included — the caller can't see the misconfig); for a DB target it
+      // partitions into writes→primary / reads→replicas.
       const targetBp = dep.target.kind === 'blueprint' ? doc.blueprints[dep.target.blueprintId] : undefined
       // A bound db packet mix DERIVES the write fraction from its query types and is the single
       // source of truth when present — identical fallback chain to the managed-service branch
       // below, so primary/replica ROUTING and managed-DB capacity can never disagree about the
       // split, and neither can disagree with what EdgeInspector displays (audit ISSUE-001).
       const depWriteFraction = input.depBytesById?.[dep.id]?.writeFraction ?? dep.writeFraction ?? 0
-      const shares = splitDependencyShares(admitted, candidates, roleOf, targetBp, depWriteFraction, healthWeightOf)
+      const shares = splitDependencyShares(admitted * cacheMissFraction, candidates, roleOf, targetBp, depWriteFraction, healthWeightOf)
 
       for (let ci = 0; ci < candidates.length; ci++) {
         const path = candidates[ci]

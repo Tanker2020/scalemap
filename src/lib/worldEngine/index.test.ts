@@ -9,7 +9,7 @@ import { compileWorld, instanceId } from '../world/compileWorld'
 import { addRoute, routeIdOf, updateRoute, addPacket } from '../nodeConfig'
 import type { HttpTemplate, ConnectionType } from '../nodeConfig'
 import { computeWorldCost } from '../costModelV2'
-import type { WorldDoc } from '../world/types'
+import type { WorldDoc, CacheConfig } from '../world/types'
 import type { MetricsBatch, EngineEvent, FramePayload } from './types'
 import { populationDemandRps } from './demand'
 import { createRng } from './rng'
@@ -2812,5 +2812,107 @@ describe('FEAT-003 scenario timeline (Task 18)', () => {
     }).not.toThrow()
     engine.stop()
     expect(events.filter(e => e.kind === 'scenario_step_applied')).toHaveLength(2)
+  })
+})
+
+// ─── FEAT-004: cache hit ratio wired into the flow solver ───────────────────
+// 1 region / 1 AZ / 3 servers: api[entry] -> cache -> db, the "cache instance itself has
+// dependencies" proxy shape from the spec. cache's blueprint carries cacheConfig; api and db do
+// not. Single instance per tier keeps splitDependencyShares' fan-out trivial (share = admitted).
+function buildCacheProxyWorld(cfg: CacheConfig) {
+  const doc = createWorld()
+  doc.routing.policy = 'geo'
+  const r = createRegion('us-east-1')
+  const az = createAz(r.id, 'us-east-1a')
+  doc.regions[r.id] = r
+  doc.azs[az.id] = az
+  const sApi = createServer(az.id, getPreset('dedicated-8')!)
+  const sCache = createServer(az.id, getPreset('dedicated-8')!)
+  const sDb = createServer(az.id, getPreset('dedicated-8')!)
+  Object.assign(doc.servers, { [sApi.id]: sApi, [sCache.id]: sCache, [sDb.id]: sDb })
+
+  const api = publicBlueprint('api', 0)
+  const cache = createBlueprint('cache', 1)
+  const db = createBlueprint('db', 2)
+  cache.kind = 'cache'
+  cache.cacheConfig = cfg
+  api.dependencies = [{ id: 'd-cache', target: { kind: 'blueprint', blueprintId: cache.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+  cache.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+  Object.assign(doc.blueprints, { [api.id]: api, [cache.id]: cache, [db.id]: db })
+
+  const plApi = createPlacement(api.id, sApi.id); doc.placements[plApi.id] = plApi
+  const plCache = createPlacement(cache.id, sCache.id); doc.placements[plCache.id] = plCache
+  const plDb = createPlacement(db.id, sDb.id); doc.placements[plDb.id] = plDb
+
+  const pop = createPopulation('nyc', 40.7, -74.0)
+  pop.peakRps = 200
+  doc.populations[pop.id] = pop
+
+  const compiled = compileWorld(doc)
+  return {
+    doc,
+    compiled,
+    apiInstanceId: instanceId(plApi.id, 0),
+    cacheInstanceId: instanceId(plCache.id, 0),
+    dbInstanceId: instanceId(plDb.id, 0),
+    cacheServerId: sCache.id,
+  }
+}
+
+describe('FEAT-004 cache hit ratio', () => {
+  it('REGRESSION FLOOR: a world with no cacheConfig produces byte-identical output to pre-FEAT-004 for a fixed seed', () => {
+    // Neither blueprint nor any dependency in e2eFixture sets cacheConfig/cacheAsideVia.
+    const f = e2eFixture()
+    const a = drive(f.doc, f.compiled)
+    a.stepFor(5)
+    const batchA = a.latest()
+    a.engine.stop()
+
+    const b = drive(f.doc, f.compiled)
+    b.stepFor(5)
+    const batchB = b.latest()
+    b.engine.stop()
+
+    expect(batchA).toEqual(batchB)
+    // No instance should ever carry a defined cacheHitRatio when no blueprint configures caching
+    // (Task 4 adds this field to InstanceMetrics; it stays undefined here).
+    for (const im of Object.values(batchA.instances)) {
+      expect((im as any).cacheHitRatio).toBeUndefined()
+    }
+  })
+
+  it('CACHE ECONOMICS: api -> cache -> db at hitRatio 0.9 sends ~10% of cache traffic to db', () => {
+    const w = buildCacheProxyWorld({ hitRatio: 0.9, warmupSec: 0, ttlSec: 300 })
+    const sim = drive(w.doc, w.compiled)
+    sim.stepFor(20)   // reach steady state
+    const b = sim.latest()
+    const cacheRps = b.instances[w.cacheInstanceId].rps
+    const dbRps = b.instances[w.dbInstanceId].rps
+    expect(dbRps / cacheRps).toBeGreaterThan(0.08)
+    expect(dbRps / cacheRps).toBeLessThan(0.12)
+    sim.engine.stop()
+  })
+
+  it('THUNDERING HERD: restarting a warm cache spikes downstream db well above steady state, then decays', () => {
+    const w = buildCacheProxyWorld({ hitRatio: 0.95, warmupSec: 60, ttlSec: 300 })
+    const sim = drive(w.doc, w.compiled)
+    sim.stepFor(60)   // every cache starts warm at start() (the regression floor) — this just
+                       // lets Poisson noise settle before sampling steady state.
+    const steadyDbRps = sim.latest().instances[w.dbInstanceId].rps
+    sim.engine.setFault('server', w.cacheServerId, { kind: 'down' })
+    sim.stepFor(1)
+    sim.engine.setFault('server', w.cacheServerId, null)   // clear -> restart, warmSinceMs resets
+    // The brief outage also trips api->cache's circuit breaker (unrelated to this feature —
+    // pre-existing breaker behavior), which independently throttles ALL cache traffic for ~15s
+    // before it self-heals; that has to fully resolve before the cold-cache miss-rate effect this
+    // test is about becomes observable in dbRps at all. 30s clears both the breaker's own recovery
+    // AND lands well inside the cold ramp (warmupSec=60), where missFraction is still near its max.
+    sim.stepFor(30)
+    const justAfterRestartDbRps = sim.latest().instances[w.dbInstanceId].rps
+    expect(justAfterRestartDbRps / steadyDbRps).toBeGreaterThan(5)
+    sim.stepFor(90)   // ride out warmupSec (60s from the clear) plus settling margin
+    const recoveredDbRps = sim.latest().instances[w.dbInstanceId].rps
+    expect(recoveredDbRps / steadyDbRps).toBeLessThan(1.3)
+    sim.engine.stop()
   })
 })

@@ -11,8 +11,9 @@ import { MAX_GLOBE_ARCS } from './types'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
   ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole, BlueprintDependency,
-  ScenarioAction, ScenarioStep,
+  ScenarioAction, ScenarioStep, CacheConfig,
 } from '../world/types'
+import { effectiveMissFraction } from './cache'
 import { managedDbEngine } from '../world/types'
 import { routeMatchesPattern, listRoutes } from '../nodeConfig'
 import { pickPacketByIndex, resolveWireSize, routeIngressBytes, buildPickTable, resolveMixProtocol, type WireSize, type PickTable } from '../packetResolve'
@@ -434,6 +435,26 @@ interface EngineState {
   instanceHealth: Map<InstanceId, HealthState>
   oomRestartAt: Map<InstanceId, number>
   refusedRateLimit: Map<string, number>
+  // FEAT-004 (Task 3): cache warm-since bookkeeping, keyed by the cache instance id, or
+  // `managed:${managedServiceId}` for a managed cache target. A key ABSENT from this map means
+  // "already warm" (Task 2's cache.ts contract: warmSinceMs === undefined ⇒ effectiveHitRatio ===
+  // cfg.hitRatio) — every cache starts warm at start(), the regression floor. A key is (re)written
+  // with the current simMs whenever the instance restarts cold: an OOM-restart or a 'down' fault
+  // clearing back to running, mirroring how s.faults.leakAccumMb resets on the same two triggers.
+  // A managed cache is never written here (ManagedService has no restart concept today — Step 4's
+  // documented, deliberate scope cut) so it reads as permanently warm.
+  warmSinceMs: Map<string, number>
+  // start()-time fast-path flag (Task 3): true iff ANY blueprint or managed service in the doc
+  // carries a cacheConfig. Guards the per-step cacheMissFractionByInstance build in runStep so an
+  // unconfigured world (the overwhelming common case) pays zero extra cost per step.
+  hasAnyCache: boolean
+  // start()-time index (Task 3, Step 6): for a dependency `dep` whose OWN cacheAsideVia points at
+  // a sibling cache-edge on the same blueprint, cacheAsideIndexByDepId.get(dep.id) resolves that
+  // sibling's target cacheConfig + the warm-key to read its missFraction from
+  // cacheMissFractionByInstance — built once here so flows.ts's per-step dependency loop never
+  // re-walks bp.dependencies.find(...) per row per step (the same "build once at start(), read
+  // every step" discipline as downstreamAdj/crossRegionOrphanReplicaIds above).
+  cacheAsideIndexByDepId: Map<string, { cacheConfig: CacheConfig; warmKey: string }>
   // Audit ISSUE-010: "already reported this run" — a chain that's over-depth or a cycle that's cut
   // every single step would otherwise spam one event per instance/edge per step; these fire once
   // per run instead (a state TRANSITION, not a steady-state condition), mirroring how other steady-
@@ -637,6 +658,16 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       if (scope === 'az') {
         for (const e of applyAzOutageToManaged(s.failover, s.doc, id, down, simMs)) emitEvent(e)
       }
+      // FEAT-004 (Task 3): clearing a 'down' fault is a restart — the same "fresh cache" moment
+      // as an OOM restart above. A 'down' fault being SET (not cleared) does NOT reset warmth: the
+      // instance isn't running at all while faulted, so there's nothing to warm/cool; the reset
+      // belongs to the moment it comes back.
+      if (!down) {
+        for (const iid of affected) {
+          const bp = s.doc.blueprints[s.compiled.instances[iid]?.blueprintId ?? '']
+          if (bp?.cacheConfig) s.warmSinceMs.set(iid, simMs)
+        }
+      }
     }
   }
   const doSetPartition = (s: EngineState, fault: PartitionFault, simMs: number): void => {
@@ -723,6 +754,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
       if (simMs >= restartAt) {
         s.oomRestartAt.delete(iid)
         s.instanceHealth.set(iid, 'healthy')
+        // FEAT-004 (Task 3): a restarted process gets a fresh, cold cache — same "fresh heap"
+        // moment as the leakAccumMb reset above, mirrored here for warmth.
+        const restartedBp = doc.blueprints[compiled.instances[iid]?.blueprintId ?? '']
+        if (restartedBp?.cacheConfig) s.warmSinceMs.set(iid, simMs)
         emit('instance_restarted', 'info', `instance ${iid} restarted`, [iid], simMs)
       }
     }
@@ -1250,9 +1285,34 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
     // matching the anyFaultsActive short-circuit discipline above. NOT consumed inside flows.ts
     // yet — a later task wires actual blocking/loss/delay behavior off this map.
     const impairmentMemo = buildImpairmentMemo(compiled, doc, s.faults.partitions, s.regionOfAz)
+    // FEAT-004 (Task 3): per-cache-identity miss fraction, keyed by instance id (a service whose
+    // own blueprint carries cacheConfig — the "proxy" shape) or `managed:${id}` (a managed cache
+    // target reached via cacheAsideVia — the "cache-aside" shape). Skipped entirely when the world
+    // has no cache configured anywhere (the common case), so an unconfigured world's runStep does
+    // zero extra work.
+    let cacheMissFractionByInstance: Record<string, number> | undefined
+    if (s.hasAnyCache) {
+      cacheMissFractionByInstance = {}
+      for (const inst of Object.values(compiled.instances)) {
+        const bp = doc.blueprints[inst.blueprintId]
+        if (!bp?.cacheConfig) continue
+        cacheMissFractionByInstance[inst.id] =
+          effectiveMissFraction(bp.cacheConfig, s.warmSinceMs.get(inst.id), simMs, stepSec)
+      }
+      for (const ms of Object.values(doc.managedServices)) {
+        if (!ms.cacheConfig) continue
+        const warmKey = `managed:${ms.id}`
+        cacheMissFractionByInstance[warmKey] =
+          effectiveMissFraction(ms.cacheConfig, s.warmSinceMs.get(warmKey), simMs, stepSec)
+      }
+    }
     const { flows, totals, depthExceededInstanceIds, cycleCutEdges } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       extraLatencyMsByServer,
+      // FEAT-004 (Task 3): cache economics multiplier — see cacheMissFractionByInstance's own
+      // comment just above and flows.ts's dependency loop for how it's applied.
+      cacheMissFractionByInstance,
+      cacheAsideIndexByDepId: s.cacheAsideIndexByDepId,
       // FEAT-001 (Task 5): active error-inject faults, resolved once per server above.
       faultErrorFractionByServer,
       // Queue model (audit ISSUE-013): fair-share service rates + the persistent queue map
@@ -1895,6 +1955,13 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & { __test_
         roleResolver: null, roleResolverKey: '',
         downstreamAdj: buildDownstreamAdj(compiled),
         crossRegionOrphanReplicaIds: buildCrossRegionOrphanReplicaIds(compiled),
+        // FEAT-004 (Task 3): every cache starts warm (empty map — the regression floor), and
+        // hasAnyCache is computed once so an unconfigured world's runStep never touches the cache
+        // path at all.
+        warmSinceMs: new Map(),
+        hasAnyCache: Object.values(doc.blueprints).some(bp => bp.cacheConfig != null)
+          || Object.values(doc.managedServices).some(ms => ms.cacheConfig != null),
+        cacheAsideIndexByDepId: buildCacheAsideIndex(doc, compiled),
         routing: createRoutingState(), failover: createFailoverState(), faults: createFaultState(),
         // FEAT-003: steps sorted once by atMs (a stable sort — ScenarioStep carries no secondary
         // ordering key, so authored array order breaks ties among same-atMs steps), cursor at 0.
@@ -1988,6 +2055,46 @@ function buildDownstreamAdj(compiled: CompiledWorld): Map<InstanceId, InstanceId
     else adj.set(p.fromInstanceId, [p.to.instanceId])
   }
   return adj
+}
+
+// FEAT-004 (Task 3, Step 6): for every dependency `dep` carrying a `cacheAsideVia` pointing at a
+// sibling dependency on the SAME blueprint, resolve that sibling's target cacheConfig + warm-key
+// ONCE at start(). A service-blueprint target resolves its warm-key to the first compiled instance
+// of that blueprint (today's topologies place a cache-aside sibling as a single instance; a
+// multi-instance cache-aside target would need a per-caller resolution this index structurally
+// can't offer, same limitation the brief calls out for this shape). A managed target's warm-key is
+// `managed:${managedServiceId}` — managed caches never restart cold (Step 4's scope cut), so their
+// warmSinceMs entry is permanently absent and effectiveMissFraction reads as always-warm.
+function buildCacheAsideIndex(
+  doc: WorldDoc,
+  compiled: CompiledWorld,
+): Map<string, { cacheConfig: CacheConfig; warmKey: string }> {
+  const index = new Map<string, { cacheConfig: CacheConfig; warmKey: string }>()
+  let firstInstanceByBlueprint: Map<BlueprintId, InstanceId> | null = null
+  for (const bp of Object.values(doc.blueprints)) {
+    for (const dep of bp.dependencies) {
+      if (!dep.cacheAsideVia) continue
+      const sibling = bp.dependencies.find(d => d.id === dep.cacheAsideVia)
+      if (!sibling) continue
+      if (sibling.target.kind === 'blueprint') {
+        const targetBp = doc.blueprints[sibling.target.blueprintId]
+        if (!targetBp?.cacheConfig) continue
+        if (!firstInstanceByBlueprint) {
+          firstInstanceByBlueprint = new Map()
+          for (const inst of Object.values(compiled.instances)) {
+            if (!firstInstanceByBlueprint.has(inst.blueprintId)) firstInstanceByBlueprint.set(inst.blueprintId, inst.id)
+          }
+        }
+        const warmKey = firstInstanceByBlueprint.get(sibling.target.blueprintId)
+        if (warmKey) index.set(dep.id, { cacheConfig: targetBp.cacheConfig, warmKey })
+      } else {
+        const ms = doc.managedServices[sibling.target.managedServiceId]
+        if (!ms?.cacheConfig) continue
+        index.set(dep.id, { cacheConfig: ms.cacheConfig, warmKey: `managed:${ms.id}` })
+      }
+    }
+  }
+  return index
 }
 
 // Audit final-review C1/I4: every replica with NO same-region authored primary sibling, but WITH
