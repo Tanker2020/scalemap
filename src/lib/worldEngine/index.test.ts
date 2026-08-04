@@ -3544,3 +3544,59 @@ describe('FEAT-006 Task 20: managed provisionedIops ceiling', () => {
     st.engine.stop()
   })
 })
+
+// ─── FEAT-006 Task 21: disk_saturated event ────────────────────────────────────────────────────
+describe('FEAT-006 Task 21: disk_saturated event', () => {
+  // Same 1-region/1-AZ/2-server (web entry + disk-heavy db) shape as Task 19/20's
+  // buildDiskBoundDbWorld -- duplicated locally since that helper is scoped inside the Task 19
+  // describe block.
+  function buildDiskBoundDbWorld(opts: {
+    diskIops?: number
+    diskType?: 'hdd' | 'ssd' | 'nvme'
+    diskIoPerRequest: number
+  }) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const webServer = createServer(az.id, getPreset('dedicated-8')!)
+    const dbServer = createServer(az.id, getPreset('dedicated-8')!)
+    dbServer.specs = { ...dbServer.specs, diskIops: opts.diskIops, diskType: opts.diskType }
+    doc.servers[webServer.id] = webServer
+    doc.servers[dbServer.id] = dbServer
+    const web = publicBlueprint('web', 0)
+    const db = createBlueprint('db', 1)
+    web.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 8080, protocol: 'db', packetTemplateId: null }]
+    db.workload = { cpuMsPerRequest: 1, ramBaseMb: 100, ramPerConnMb: 0.1, diskIoPerRequest: opts.diskIoPerRequest }
+    Object.assign(doc.blueprints, { [web.id]: web, [db.id]: db })
+    const webPl = createPlacement(web.id, webServer.id); doc.placements[webPl.id] = webPl
+    const dbPl = createPlacement(db.id, dbServer.id); doc.placements[dbPl.id] = dbPl
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 200
+    doc.populations[pop.id] = pop
+    return {
+      doc, compiled: compileWorld(doc),
+      dbServerId: dbServer.id, dbInstanceId: instanceId(dbPl.id, 0),
+    }
+  }
+
+  it('emits rate-limited disk_saturated above 90% sustained', () => {
+    const w = buildDiskBoundDbWorld({ diskIops: 200, diskType: 'hdd', diskIoPerRequest: 20 })
+    const sim = drive(w.doc, w.compiled)
+    for (let i = 0; i < 30; i++) sim.engine.__test_step(1)
+    const events = sim.events.filter(e => e.kind === 'disk_saturated')
+    expect(events.length).toBeGreaterThan(0)
+    expect(events.length).toBeLessThan(10)   // rate-limited, not one per step
+    expect(events.every(e => e.affected.includes(w.dbServerId))).toBe(true)
+    sim.engine.stop()
+  })
+
+  it('does not fire disk_saturated for a server with no resolvable ceiling authored', () => {
+    const w = buildDiskBoundDbWorld({ diskIoPerRequest: 20 })   // no diskIops/diskType authored
+    const sim = drive(w.doc, w.compiled)
+    for (let i = 0; i < 30; i++) sim.engine.__test_step(1)
+    expect(sim.events.filter(e => e.kind === 'disk_saturated')).toHaveLength(0)
+    sim.engine.stop()
+  })
+})

@@ -251,6 +251,12 @@ export type EngineEventKind =
   | 'stale_read_served'          // FEAT-005 (Task 14): a replica served a read with a nonzero
                                   // staleReadFraction, rate-limited the same way (once per replica
                                   // instance per window, not once per step)
+  | 'disk_saturated'             // FEAT-006 (Task 21): a server's ceiling-aware diskIoRatio (the
+                                  // SAME ratio driving diskWaitMs/diskIoFraction, Tasks 19/20) has
+                                  // exceeded 90%, rate-limited per server (once per
+                                  // DISK_EVENT_MIN_GAP_MS window, not once per step). Never fires
+                                  // for a server with no resolvable ceiling (diskIoRatio undefined
+                                  // -- the legacy diskIo/100 branch has no comparable ratio).
 
 export interface EngineEvent {
   id: string

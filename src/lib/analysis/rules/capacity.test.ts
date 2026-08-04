@@ -318,3 +318,60 @@ describe('capacity: cache-miss-storm', () => {
     expect(ids(runAnalysis(ctx.doc, ctx.compiled, null), 'cache-miss-storm')).toHaveLength(0)
   })
 })
+
+// FEAT-006 Task 21: mirrors ram-oversubscribed's shape -- reads the published (dual-behavior,
+// Task 20) diskIoFraction off the latest batch's servers[id], no rolling window.
+describe('capacity: iops-saturated', () => {
+  // Two disk-heavy instances (different diskIoPerRequest) resident on one server, so the
+  // ranked-contributors naming in the finding's `why` has something real to sort.
+  function buildIopsSaturatedFixture(opts: { diskIoFraction: number }) {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const srv = s.server(az.id)
+    const db = s.blueprint('db', 0)
+    db.workload.diskIoPerRequest = 20
+    const worker = s.blueprint('worker', 1)
+    worker.workload.diskIoPerRequest = 5
+    s.placement(db.id, srv.id)
+    s.placement(worker.id, srv.id)
+    const compiled = s.compile()
+    const dbInstId = Object.values(compiled.instances).find(i => i.blueprintId === db.id)!.id
+    const workerInstId = Object.values(compiled.instances).find(i => i.blueprintId === worker.id)!.id
+    const batch = {
+      servers: { [srv.id]: { diskIoFraction: opts.diskIoFraction } },
+      instances: {},
+    } as unknown as MetricsBatch
+    return { doc: s.doc, compiled, lastBatch: batch, serverId: srv.id, dbInstId, workerInstId }
+  }
+
+  it('fires above 90% sustained and names the top diskIoPerRequest contributor', () => {
+    const ctx = buildIopsSaturatedFixture({ diskIoFraction: 0.95 })
+    const f = ids(runAnalysis(ctx.doc, ctx.compiled, ctx.lastBatch), 'iops-saturated')
+    expect(f).toHaveLength(1)
+    expect(f[0].severity).toBe('warning')
+    expect(f[0].why).toMatch(/95%/)
+    expect(f[0].why).toMatch(/20 io\/req/)   // the higher diskIoPerRequest contributor named first
+    expect(f[0].affected[0]).toBe(ctx.serverId)
+    expect(f[0].affected).toContain(ctx.dbInstId)
+    expect(f[0].affected).toContain(ctx.workerInstId)
+  })
+
+  it('ranks contributors with the highest diskIoPerRequest first', () => {
+    const ctx = buildIopsSaturatedFixture({ diskIoFraction: 0.95 })
+    const f = ids(runAnalysis(ctx.doc, ctx.compiled, ctx.lastBatch), 'iops-saturated')
+    const dbIdx = f[0].affected.indexOf(ctx.dbInstId)
+    const workerIdx = f[0].affected.indexOf(ctx.workerInstId)
+    expect(dbIdx).toBeGreaterThan(0)
+    expect(workerIdx).toBeGreaterThan(dbIdx)
+  })
+
+  it('does not fire at or under 90%', () => {
+    const ctx = buildIopsSaturatedFixture({ diskIoFraction: 0.9 })
+    expect(ids(runAnalysis(ctx.doc, ctx.compiled, ctx.lastBatch), 'iops-saturated')).toHaveLength(0)
+  })
+
+  it('silent with a null batch', () => {
+    const ctx = buildIopsSaturatedFixture({ diskIoFraction: 0.95 })
+    expect(ids(runAnalysis(ctx.doc, ctx.compiled, null), 'iops-saturated')).toHaveLength(0)
+  })
+})

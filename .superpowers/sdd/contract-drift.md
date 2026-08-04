@@ -365,3 +365,45 @@ Additive-only contract changes:
 `FEAT-006 Task 19` describe block gained 4 new `it`s for the `diskIoFraction` dual behavior +
 `diskWaitMs` publish; a new `FEAT-006 Task 20: managed provisionedIops ceiling` describe block,
 2/2).
+
+## 2026-08-04 — Task 21: `disk_saturated` `EngineEventKind` + `iops-saturated` analysis rule (FEAT-006)
+
+`worldEngine/types.ts`'s `EngineEventKind` gained one additive entry: `'disk_saturated'` — emitted
+in `index.ts`'s per-server step loop (the same loop that resolves `diskIoRatio`, Task 20's
+ceiling-aware ratio) whenever `diskIoRatio > DISK_SATURATION_THRESHOLD` (0.9). Only fires for a
+server with a resolvable disk ceiling (`diskIoRatio` defined) — a server with neither `diskIops`
+nor `diskType` authored has no comparable ratio and never fires, matching `diskIoFraction`'s own
+dual-behavior split. `severity: 'warning'`, `affected: [serverId, ...residentInstanceIds]`.
+Rate-limited to at most one emission per server per `DISK_EVENT_MIN_GAP_MS` (1000ms, a new sibling
+constant next to `REPLICATION_EVENT_MIN_GAP_MS`), using the EXACT SAME `Map<serverId,
+lastEmittedAtSimMs>` gate mechanism as `replication_lag_high`/`connection_refused`
+(`EngineState.diskSaturatedRateLimit`, initialized empty in `start()`'s `EngineState` literal).
+
+**Incidental fix required for `tsc --noEmit` to stay clean** (same fallout every prior
+`EngineEventKind` widening has hit): `aiChat/eventCausality.ts`'s `decodeAffected` exhaustive
+`switch (kind: EngineEventKind)` needed a new `case 'disk_saturated'`, added mirroring
+`replication_lag_high`'s two-id shape (`{ primaryId: affected[0] ?? '', secondaryId: affected[1] ||
+null }`) since `affected` carries a server id followed by resident instance ids.
+
+`src/lib/analysis/rules/capacity.ts` gained a new rule, `iopsSaturated` (id `iops-saturated`,
+family `capacity`, module-private — not exported, matching every other rule in this file; reached
+only through `runAnalysis`/`capacityRules`). Mirrors `ramOversubscribed`'s shape: groups
+`compiled.instances` by `serverId`, reads `lastBatch.servers?.[serverId]?.diskIoFraction` (Task
+20's dual-behavior published fraction — no re-derivation), fires when `> 0.9`. No rolling window:
+like `ramOversubscribed`/`burstableSustainedLoad`, checks only the latest batch snapshot, since
+there's no time-windowed accumulation convention elsewhere in this file to match and
+`diskIoFraction` is itself a per-step ratio. Names the server and ranks its resident instances by
+their blueprint's authored `workload.diskIoPerRequest` descending in the finding's `why` (top 3),
+`affected` lists the server id first followed by every disk-contributing instance in the same
+ranked order. Appended to `capacityRules`.
+
+One additional defensive fix surfaced by the full suite (not `tsc`): `structural.test.ts`'s
+existing fixtures construct partial `MetricsBatch` stubs that omit the top-level `servers` key
+entirely (not just a missing entry for one server id) — `lastBatch.servers[serverId]` threw
+`TypeError: Cannot read properties of undefined` for those. Changed to `lastBatch.servers?.[serverId]`,
+matching the optional-chaining discipline every other rule in this file already uses when reading
+off `lastBatch`.
+
+`npx tsc --noEmit` clean. Full suite: 151 files / 1911 tests passing (`index.test.ts`'s new
+`FEAT-006 Task 21: disk_saturated event` describe block, 2/2; `capacity.test.ts`'s new
+`capacity: iops-saturated` describe block, 4/4).

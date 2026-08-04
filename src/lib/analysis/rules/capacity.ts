@@ -244,7 +244,50 @@ const cacheMissStorm: AnalysisRule = {
   },
 }
 
+// FEAT-006 (Task 21): mirrors ramOversubscribed's shape -- iterate resident instances per server,
+// fire off the published (dual-behavior, Task 20) diskIoFraction from the latest batch. No rolling
+// window: like ramOversubscribed/burstableSustainedLoad, this checks the latest batch snapshot
+// only, not a time-windowed average -- there's no time-series accumulation elsewhere in this file
+// to match, and diskIoFraction is itself a per-step ratio, not a windowed mean.
+const IOPS_SATURATION_THRESHOLD = 0.9
+
+const iopsSaturated: AnalysisRule = {
+  id: 'iops-saturated', family: 'capacity',
+  run: ({ doc, compiled, lastBatch }) => {
+    if (!lastBatch) return []
+    const byServer = new Map<string, ServiceInstance[]>()
+    for (const inst of Object.values(compiled.instances)) {
+      const a = byServer.get(inst.serverId) ?? []; a.push(inst); byServer.set(inst.serverId, a)
+    }
+    const out: AnalysisFinding[] = []
+    for (const [serverId, insts] of byServer) {
+      const server = doc.servers[serverId]; if (!server) continue
+      const fraction = lastBatch.servers?.[serverId]?.diskIoFraction
+      if (fraction == null || fraction <= IOPS_SATURATION_THRESHOLD) continue
+      // Rank resident instances by their blueprint's authored diskIoPerRequest, descending, and
+      // name the top contributors -- the same "which instance is actually driving this" framing
+      // cache-miss-storm/consumer-lag-behind-producer use for their affected-entity naming.
+      const ranked = insts
+        .map(inst => ({ inst, diskIoPerRequest: doc.blueprints[inst.blueprintId]?.workload.diskIoPerRequest ?? 0 }))
+        .sort((a, b) => b.diskIoPerRequest - a.diskIoPerRequest)
+        .filter(r => r.diskIoPerRequest > 0)
+      const topNames = ranked.slice(0, 3).map(r => {
+        const bp = doc.blueprints[r.inst.blueprintId]
+        return `${bp?.name ?? r.inst.blueprintId} (${r.diskIoPerRequest} io/req)`
+      })
+      out.push({
+        id: `iops-saturated:${serverId}`, ruleId: 'iops-saturated', family: 'capacity', severity: 'warning',
+        title: 'Disk IOPS saturated',
+        why: `${server.label}'s disk I/O is at ${Math.round(fraction * 100)}% of its IOPS ceiling${topNames.length ? `; the top contributor${topNames.length > 1 ? 's are' : ' is'} ${topNames.join(', ')}` : ''}.`,
+        fix: `Raise the server's diskIops/diskType (Hardware drawer), move disk-heavy workloads off ${server.label}, or reduce diskIoPerRequest on the contributing blueprints.`,
+        affected: [serverId, ...ranked.map(r => r.inst.id)],
+      })
+    }
+    return out
+  },
+}
+
 export const capacityRules: AnalysisRule[] = [
   ramOversubscribed, burstableSustainedLoad, oceanCrossingPopulation, ttlOutlivesDetection,
-  consumerLagBehindProducer, faultInjected, cacheMissStorm,
+  consumerLagBehindProducer, faultInjected, cacheMissStorm, iopsSaturated,
 ]

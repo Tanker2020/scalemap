@@ -73,6 +73,8 @@ export { MAX_GLOBE_ARCS }
 const MAX_SERVER_PARTICLES = 50              // server render cap (contracts: server ≤ 50 traces)
 const REFUSED_EVENT_MIN_GAP_MS = 1000        // ≤1 connection_refused per pathKey per second
 const REPLICATION_EVENT_MIN_GAP_MS = 1000    // ≤1 replication_lag_high/stale_read_served per key per second (FEAT-005, Task 14)
+const DISK_EVENT_MIN_GAP_MS = 1000           // ≤1 disk_saturated per server per second (FEAT-006, Task 21)
+const DISK_SATURATION_THRESHOLD = 0.9        // matches iops-saturated's analysis-rule threshold
 const MIN_HEALTH_SIGNAL_RPS = 0.5            // below this offered rps, errorRate carries no signal
 const DEGRADE_THRESHOLD_MS = 4               // spec decision 9 / Global Constraints
 const DEGRADE_WINDOW_STEPS = 30              // 3s of 100ms steps
@@ -446,6 +448,9 @@ interface EngineState {
   // by replica instanceId for stale_read_served.
   replicationLagRateLimit: Map<string, number>
   staleReadRateLimit: Map<string, number>
+  // FEAT-006 (Task 21): rate-limit gate for disk_saturated, mirroring the same shape -- a
+  // last-emitted-at simMs per serverId, checked against DISK_EVENT_MIN_GAP_MS before pushing.
+  diskSaturatedRateLimit: Map<string, number>
   // FEAT-004 (Task 3): cache warm-since bookkeeping, keyed by the cache instance id, or
   // `managed:${managedServiceId}` for a managed cache target. A key ABSENT from this map means
   // "already warm" (Task 2's cache.ts contract: warmSinceMs === undefined ⇒ effectiveHitRatio ===
@@ -1264,6 +1269,20 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // diskType authored ⇒ the legacy diskIo/100 branch stays in force (regression floor).
       const diskCeiling = resolveDiskIopsCeiling(stalledIops, server.specs.diskType)
       const diskIoRatio = diskCeiling != null ? demandIops / Math.max(diskCeiling, 0.0001) : undefined
+      // FEAT-006 (Task 21): disk_saturated, rate-limited per server -- mirrors
+      // replication_lag_high's gate shape (a lastEmittedAtMs map checked before pushing). Only
+      // fires when a ceiling is actually resolvable (diskIoRatio defined); a server with neither
+      // diskIops nor diskType authored has no comparable ratio and never fires, matching
+      // diskIoFraction's own dual-behavior split (Task 20).
+      if (diskIoRatio != null && diskIoRatio > DISK_SATURATION_THRESHOLD) {
+        const last = s.diskSaturatedRateLimit.get(server.id) ?? -Infinity
+        if (simMs - last >= DISK_EVENT_MIN_GAP_MS) {
+          s.diskSaturatedRateLimit.set(server.id, simMs)
+          emit('disk_saturated', 'warning',
+            `${server.label} disk I/O at ${Math.min(1, diskIoRatio) * 100 | 0}% of its IOPS ceiling`,
+            [server.id, ...resident.map(i => i.id)], simMs)
+        }
+      }
       const host = stepHost(server, loads, effectiveVcpu, s.rng, diskWaitMs, diskIoRatio)
       hostResults[server.id] = host
       // Fold the NIC's ABSOLUTE line-rate ceiling into each instance's capacity (audit
@@ -2218,6 +2237,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         popPrevRegion: new Map(),
         checkFailedPrev: new Map(), probePrev: new Map(), instanceHealth: new Map(), oomRestartAt: new Map(), refusedRateLimit: new Map(),
         replicationLagRateLimit: new Map(), staleReadRateLimit: new Map(),
+        diskSaturatedRateLimit: new Map(),
         depthExceededReported: new Set(), cycleCutReported: new Set(),
         idSeq: 0, lastBatchMs: -1000, stepCosts: [], degraded: false, rafId: null, lastFrameMs: null,
         renderers: new Map(), rendererSeq: 0,
