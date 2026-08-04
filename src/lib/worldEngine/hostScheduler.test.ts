@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { stepHost, poolCheckoutFor, diskIoDemandFor, diskWaitFor } from './hostScheduler'
+import { stepHost, poolCheckoutFor, diskIoDemandFor, diskWaitFor, warmthOf } from './hostScheduler'
 import type { InstanceLoad } from './hostScheduler'
 import type { WorldDoc } from '../world/types'
 import { sampleLatencyMs } from './latency'
@@ -239,5 +239,32 @@ describe('diskIoDemandFor', () => {
     const blueprintByInstance = new Map([['i1', 'bp-db'], ['i2', 'bp-api']])
     const doc = { blueprints: { 'bp-db': { workload: { diskIoPerRequest: 4 } }, 'bp-api': { workload: { diskIoPerRequest: 0 } } } } as any as WorldDoc
     expect(diskIoDemandFor(loads, blueprintByInstance, doc)).toBe(40) // 10*4 + 5*0
+  })
+})
+
+describe('warmthOf', () => {
+  it('is 1 (fully warm) when the instance has no warming entry (the regression floor)', () => {
+    expect(warmthOf('inst-a', new Map(), 10_000)).toBe(1)
+  })
+
+  it('is 0 at the instant warming starts', () => {
+    const m = new Map([['inst-a', { startedMs: 5_000, coldStartMs: 30_000 }]])
+    expect(warmthOf('inst-a', m, 5_000)).toBe(0)
+  })
+
+  it('ramps linearly to 1 over coldStartMs', () => {
+    const m = new Map([['inst-a', { startedMs: 0, coldStartMs: 30_000 }]])
+    expect(warmthOf('inst-a', m, 15_000)).toBeCloseTo(0.5, 5)
+    expect(warmthOf('inst-a', m, 30_000)).toBeCloseTo(1, 5)
+  })
+
+  it('clamps at 1 past coldStartMs (never overshoots)', () => {
+    const m = new Map([['inst-a', { startedMs: 0, coldStartMs: 30_000 }]])
+    expect(warmthOf('inst-a', m, 60_000)).toBe(1)
+  })
+
+  it('treats coldStartMs <= 0 as instantly warm', () => {
+    const m = new Map([['inst-a', { startedMs: 0, coldStartMs: 0 }]])
+    expect(warmthOf('inst-a', m, 0)).toBe(1)
   })
 })

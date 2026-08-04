@@ -4,6 +4,27 @@
 import type { Server, InstanceId, BlueprintId, WorldDoc } from '../world/types'
 import type { Rng } from './rng'
 
+export interface WarmingEntry {
+  startedMs: number
+  coldStartMs: number
+}
+
+function clamp01(x: number): number {
+  return Math.max(0, Math.min(1, x))
+}
+
+/** 0 (just started/restarted) -> 1 (fully warm). Absent from the map = already warm (the regression floor). */
+export function warmthOf(
+  instanceId: string,
+  warmingUntil: Map<string, WarmingEntry>,
+  simMs: number,
+): number {
+  const entry = warmingUntil.get(instanceId)
+  if (!entry) return 1
+  if (entry.coldStartMs <= 0) return 1
+  return clamp01((simMs - entry.startedMs) / entry.coldStartMs)
+}
+
 export interface InstanceLoad {
   instanceId: InstanceId
   cpuMsPerRequest: number
