@@ -33,7 +33,32 @@ describe('draftWorkload', () => {
   // Advanced shows these same numbers, so every field the engine reads must be populated.
   it('produces a complete WorkloadProfile', () => {
     expect(Object.keys(draftWorkload('api', 'medium', 'small')).sort())
-      .toEqual(['cpuMsPerRequest', 'diskIoPerRequest', 'ramBaseMb', 'ramPerConnMb'])
+      .toEqual([
+        'cpuMsPerRequest',
+        'diskIoPerRequest',
+        'coldStartMs',
+        'ramBaseMb',
+        'ramPerConnMb',
+        'warmCapacityFraction',
+      ].sort())
+  })
+})
+
+describe('draftWorkload cold-start defaults', () => {
+  // 'db-sql'/'db-nosql' aren't HostableKind (they're appliance-only, see HOSTABLE_KINDS above),
+  // so this uses a heavy/large cache preset to stand in for the "db-flavored heavy workload" the
+  // brief describes — coldStartMs is driven purely by the cost preset, not by kind.
+  it('gives a heavy workload a visibly longer cold start than a light worker', () => {
+    const heavy = draftWorkload('cache', 'heavy', 'large')
+    const worker = draftWorkload('worker', 'light', 'small')
+    expect(heavy.coldStartMs).toBeGreaterThan(worker.coldStartMs!)
+    expect(worker.coldStartMs).toBeGreaterThan(0)
+  })
+
+  it('always sets warmCapacityFraction between 0 and 1', () => {
+    const w = draftWorkload('api', 'medium', 'medium')
+    expect(w.warmCapacityFraction).toBeGreaterThan(0)
+    expect(w.warmCapacityFraction).toBeLessThanOrEqual(1)
   })
 })
 

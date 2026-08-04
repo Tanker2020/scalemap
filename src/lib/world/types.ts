@@ -175,6 +175,11 @@ export interface WorkloadProfile {
   // Absent ⇒ no timeout — a saturated pool queues checkouts forever rather than erroring them,
   // mirroring ManagedService.queryTimeoutMs's own "absent ⇒ no timeout" convention.
   checkoutTimeoutMs?: number
+  // Instance cold start (FEAT-007). Absent ⇒ 0, instant readiness — today's exact behavior.
+  coldStartMs?: number
+  // Capacity available at t=0 as a fraction of rated capacity, ramping to 1 as the instance warms
+  // up. Absent ⇒ 0.3.
+  warmCapacityFraction?: number
 }
 
 export type DependencyTarget =

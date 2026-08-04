@@ -29,6 +29,16 @@ export type MemoryPreset = 'small' | 'medium' | 'large'
 // real work per request (rendering, serialization of a big payload, a fan-out of calls).
 export const COST_MS: Record<CostPreset, number> = { light: 2, medium: 8, heavy: 25 }
 
+// Cold-start time (FEAT-007): how long a freshly-started instance takes to reach full rated
+// capacity. Scales with the cost preset on the same reasoning as COST_MS itself — a heavier
+// workload (more to warm up: JIT/caches/connection pools/query planning) takes longer to become
+// fully productive than a thin proxy.
+export const COLD_START_MS: Record<CostPreset, number> = { light: 2_000, medium: 8_000, heavy: 30_000 }
+
+// Capacity available at t=0 as a fraction of rated capacity, ramping to 1 as the instance warms
+// up. One flat default across all presets — see hostScheduler.ts's warmthOf (Task 2) for the ramp.
+export const WARM_CAPACITY_FRACTION = 0.3
+
 // Base footprint plus per-connection growth. Both move together: a service that holds more state
 // per connection generally holds a bigger baseline too.
 export const MEMORY_MB: Record<MemoryPreset, { base: number; perConn: number }> = {
@@ -61,6 +71,8 @@ export function draftWorkload(_kind: HostableKind, cost: CostPreset, memory: Mem
     // Disk IO stays at zero by default for every hostable kind — none of api/worker/cache is
     // inherently disk-bound (that is what the DB appliance is for). Advanced can raise it.
     diskIoPerRequest: 0,
+    coldStartMs: COLD_START_MS[cost],
+    warmCapacityFraction: WARM_CAPACITY_FRACTION,
   }
 }
 
