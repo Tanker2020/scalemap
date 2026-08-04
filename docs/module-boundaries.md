@@ -5361,7 +5361,7 @@ can never be visually asymmetric without the engine agreeing, or vice versa.
 
 | Module | Feature | Purpose |
 |---|---|---|
-| `src/lib/worldEngine/cache.ts` | FEAT-004 | Pure hit-ratio/miss-fraction resolver; no engine imports |
+| `src/lib/worldEngine/cache.ts` | FEAT-004 | Pure, dependency-free hit-ratio/miss-fraction resolver (`effectiveHitRatio`/`effectiveMissFraction` functions, accounting for cache warmth ramp). Exports two functions consumed by exactly two call sites: (1) `flows.ts`'s dependency loop (line ~713), which reads `input.cacheAsideIndexByDepId?.get(dep.id)` to resolve a dependency's cache-aside sibling's config and warm-key, then applies the sibling's miss fraction to reduce the dependency's admitted rps; (2) `metrics.ts`'s per-instance loop (line ~212), which reads `s.warmSinceMs.get(inst.id)` to compute a cache instance's observed hit ratio for publication in the 1 Hz batch. Introduced: `CacheConfig` type (in `world/types.ts`, Task 1), optional `cacheConfig?: CacheConfig` on `ServiceBlueprint` and `ManagedService` (Task 1), optional `cacheAsideVia?: string` on `BlueprintDependency` (Task 1), and optional `cacheHitRatio?: number` on `InstanceMetrics` (Task 4, published per-step). Start-time indexes (built once, read many per-step): `EngineState.hasAnyCache` (boolean guard, Task 3), `EngineState.warmSinceMs` (cache cold-cycle track, Task 5), `EngineState.cacheAsideIndexByDepId` (dependency→sibling cache mapping, Task 3 Step 6 — prevents O(deps) re-walk in flows.ts per-step dependency loop). |
 | `src/lib/worldEngine/replication.ts` | FEAT-005 | Pure lag/backlog/RPO resolver; no engine imports |
 
 ### Hub files receiving sequential edits
