@@ -31,7 +31,7 @@ import { effectiveOverlayMultiplier, type DemandOverlayEntry } from './rampMath'
 import {
   createRoutingState, resolveRegion, runHealthChecks, distributeToTargets, type RoutingState,
 } from './routingRuntime'
-import { stepHost, diskIoDemandFor, diskWaitFor, resolveDiskIopsCeiling, type InstanceLoad, type HostStepResult } from './hostScheduler'
+import { stepHost, diskIoDemandFor, diskWaitFor, resolveDiskIopsCeiling, warmthOf, type InstanceLoad, type HostStepResult, type WarmingEntry } from './hostScheduler'
 import { createVpsState, stepVps, type VpsState } from './vpsModel'
 import { createNicState, addNicBytes, settleNic, NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES, type NicState } from './networkRuntime'
 import { sampleSizeMultiplier } from './latency'
@@ -466,6 +466,12 @@ interface EngineState {
   // cycle, not every step it stays warm) and removed whenever warmSinceMs is rewritten for a NEW
   // cold cycle (the restart/fault-clear sites) — so the next restart can fire cache_warm again.
   warmEmitted: Set<string>
+  // FEAT-007 (Task 3): instance id -> cold-start ramp state, populated on OOM restart and on a
+  // 'down'-fault clear (mirroring warmSinceMs's own two trigger sites), and deleted once
+  // warmthOf() reaches 1 (leak prevention — see the cleanup pass near section 0 of runStep). A
+  // key ABSENT from this map means "already warm" (warmthOf's own contract) — every instance
+  // starts warm at start(), the regression floor.
+  warmingUntil: Map<InstanceId, WarmingEntry>
   // start()-time fast-path flag (Task 3): true iff ANY blueprint or managed service in the doc
   // carries a cacheConfig. Guards the per-step cacheMissFractionByInstance build in runStep so an
   // unconfigured world (the overwhelming common case) pays zero extra cost per step.
@@ -750,6 +756,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
             s.warmEmitted.delete(iid)
             emit('cache_cold', 'info', `instance ${iid} restarted with a cold cache`, [iid], simMs)
           }
+          // FEAT-007 (Task 3): coming back from a 'down' fault is a restart, the same "fresh
+          // process" moment as the cache-warmth reset above — ramp back up from cold.
+          const coldStartMs = bp?.workload.coldStartMs ?? 0
+          if (coldStartMs > 0) {
+            s.warmingUntil.set(iid, { startedMs: simMs, coldStartMs })
+          }
         }
       }
     }
@@ -848,6 +860,15 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         }
         emit('instance_restarted', 'info', `instance ${iid} restarted`, [iid], simMs)
       }
+    }
+
+    // ── 0b. FEAT-007: warm-up cleanup — drop entries that have reached full warmth ──
+    // Placed early (before the capacity/latency sections below read s.warmingUntil) so an
+    // instance that finishes warming THIS exact step is already seen as warm by every downstream
+    // consumer this same step, mirroring how oomRestartAt is cleared before host scheduling reads
+    // it above.
+    for (const [iid] of [...s.warmingUntil]) {
+      if (warmthOf(iid, s.warmingUntil, simMs) >= 1) s.warmingUntil.delete(iid)
     }
 
     // ── Demand backpressure — Mechanism B (audit ISSUE-008) ──
@@ -1369,6 +1390,13 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         // FEAT-001: a restarted process gets a fresh heap — any accumulated leak resets with it.
         s.faults.leakAccumMb.delete(host.oomVictim)
         emit('oom_kill', 'critical', `${host.oomVictim} OOM-killed on ${server.label}`, [host.oomVictim, server.id], simMs)
+        // FEAT-007 (Task 3): a restarted process ramps back up from cold, mirroring the
+        // leakAccumMb/cache-warmth resets above.
+        const victimBp = doc.blueprints[s.blueprintIdByInstance.get(host.oomVictim) ?? '']
+        const coldStartMs = victimBp?.workload.coldStartMs ?? 0
+        if (coldStartMs > 0) {
+          s.warmingUntil.set(host.oomVictim, { startedMs: simMs, coldStartMs })
+        }
       }
 
       const vpsState = s.vpsStates.get(server.id) ?? null
@@ -2237,6 +2265,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         warmSinceMs: new Map(),
         // FEAT-004 (Task 5): no cold cycle in flight at start(), so nothing to guard yet.
         warmEmitted: new Set(),
+        // FEAT-007 (Task 3): every instance starts warm (empty map — the regression floor).
+        warmingUntil: new Map(),
         hasAnyCache: Object.values(doc.blueprints).some(bp => bp.cacheConfig != null)
           || Object.values(doc.managedServices).some(ms => ms.cacheConfig != null),
         cacheAsideIndexByDepId: buildCacheAsideIndex(doc, compiled),

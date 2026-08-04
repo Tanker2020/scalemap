@@ -1321,6 +1321,17 @@ describe('packet-driven internal hops', () => {
     expect(simB.latest()).toEqual(simA.latest())
   })
 
+  it('REGRESSION FLOOR: a world with no coldStartMs produces byte-identical output for a fixed seed', () => {
+    const f = crossAzPair()
+    const compiled = compileWorld(f.doc)
+    const simA = drive(f.doc, compiled); simA.stepFor(30)
+    const simB = drive(f.doc, compiled); simB.stepFor(30)
+    expect(simB.latest()).toEqual(simA.latest())
+    for (const im of Object.values(simA.latest().instances)) {
+      expect((im as any).warmth).toBeUndefined()
+    }
+  })
+
   it('a bound mix stays deterministic — same seed, identical batches, even with sigma > 0', () => {
     const f = crossAzPair()
     bindFatPacket(f.doc, { sizeVariance: 0.8 })
