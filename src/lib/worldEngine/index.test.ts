@@ -3123,3 +3123,73 @@ describe('FEAT-005 Task 11: replication lag wiring', () => {
     sim.engine.stop()
   })
 })
+
+// ─── FEAT-005 (Task 12): publish MetricsBatch.clusters + InstanceMetrics.staleReadFraction ───
+describe('FEAT-005 Task 12: publish cluster lag + staleReadFraction', () => {
+  // Same-region, primary + replica, an api dependency with a HALF write share (so reads route to
+  // the replica too, tagging its downstream rows with staleReadFraction) and applyRatePerReplica
+  // pinned low so backlog — and therefore lag and stale reads — is guaranteed to accumulate.
+  function buildReplicaWorld(opts: { primaryRegion: string; replicaRegion: string; writeLoad: number }) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const region = createRegion(opts.primaryRegion)
+    const azA = createAz(region.id, `${opts.primaryRegion}-a`)
+    const azB = createAz(region.id, `${opts.primaryRegion}-b`)
+    doc.regions[region.id] = region
+    doc.azs[azA.id] = azA; doc.azs[azB.id] = azB
+    const sA = createServer(azA.id, getPreset('dedicated-8')!)
+    const sB = createServer(azB.id, getPreset('dedicated-8')!)
+    doc.servers[sA.id] = sA; doc.servers[sB.id] = sB
+
+    const api = publicBlueprint('api', 0)
+    const db = createBlueprint('db', 1)
+    db.kind = 'db-sql'
+    db.dbConfig = { engine: 'sql', storageGb: 50, applyRatePerReplica: 1 }
+    doc.blueprints[api.id] = api; doc.blueprints[db.id] = db
+    api.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 8080, protocol: 'db', packetTemplateId: null, writeFraction: 0.5 }]
+
+    const apiPl = createPlacement(api.id, sA.id)
+    const primaryPl = createPlacement(db.id, sA.id)
+    const replicaPl = createPlacement(db.id, sB.id); replicaPl.role = 'replica'
+    doc.placements[apiPl.id] = apiPl
+    doc.placements[primaryPl.id] = primaryPl
+    doc.placements[replicaPl.id] = replicaPl
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = opts.writeLoad
+    doc.populations[pop.id] = pop
+
+    const compiled = compileWorld(doc)
+    return {
+      doc, compiled,
+      clusterId: `${db.id}|${region.id}`,
+      replicaInstanceId: instanceId(replicaPl.id, 0),
+    }
+  }
+
+  it('DIVERGENCE GUARD: published cluster lagSec equals the value stepReplication computed', () => {
+    const w = buildReplicaWorld({ primaryRegion: 'us-east', replicaRegion: 'us-east', writeLoad: 500 })
+    const sim = drive(w.doc, w.compiled)
+    // Single-100ms-tick loop, stopping the INSTANT enough batches have published (rather than a
+    // fixed stepFor(N) count): under the engine's perf-watch degrade path (spec decision 9), a
+    // stepMs swap mid-run can leave stepFor's fixed tick count landing partway between two 1 Hz
+    // batch boundaries — comparing "the latest batch" against a __test_replicationLagSec read
+    // taken AFTER that drift would be comparing two different instants, a test artifact, not a
+    // real divergence. Breaking right after the tick that appended a batch guarantees zero
+    // intervening steps between what got published and what the accessor reads next.
+    const TARGET_BATCHES = 8
+    for (let i = 0; i < 400 && sim.batches.length < TARGET_BATCHES; i++) sim.engine.__test_step(1)
+    expect(sim.batches.length).toBeGreaterThanOrEqual(TARGET_BATCHES)
+    const b = sim.latest()
+    const publishedLag = b.clusters?.[w.clusterId]?.lagSec
+    const publishedStale = b.instances[w.replicaInstanceId].staleReadFraction
+    // The published lag must equal the SAME value the engine's own test accessor reads off
+    // state.replication.lagSecByInstance — the divergence guard this task exists to enforce.
+    const directLag = sim.engine.__test_replicationLagSec(w.replicaInstanceId)
+    expect(publishedLag).toBe(directLag)
+    expect(publishedLag).toBeGreaterThan(0.005) // above the same-AZ floor under load
+    expect(publishedStale).toBeGreaterThan(0)
+    expect(publishedStale).toBeLessThanOrEqual(1)
+    sim.engine.stop()
+  })
+})

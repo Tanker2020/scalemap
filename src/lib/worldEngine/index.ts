@@ -1777,7 +1777,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // roleOf (FEAT-002/Wave-1 Task 13 fix): the SAME memoized effective-role resolver built
       // above (§6, promoKey-memoized) for flow routing — publishing it lets split-brain-risk see
       // a LIVE partition-induced promotion, not just the static authored role.
-      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance, s.faults.leakAccumMb, s.faults.active.size, roleOf, s.warmSinceMs)
+      // replicasByCluster/s.replication.lagSecByInstance (FEAT-005, Task 12): the SAME static
+      // topology + live lag map the step loop above already reads to build
+      // staleReadFractionByReplica for THIS step's solveFlows call — publishing MetricsBatch.
+      // clusters from them (never re-derived) is the divergence guard this file's other additive
+      // fields already apply.
+      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance, s.faults.leakAccumMb, s.faults.active.size, roleOf, s.warmSinceMs, s.replicasByCluster, s.replication.lagSecByInstance)
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
       s.tracer.sample(flows, compiled, doc, simMs, entryId => populationsForEntry(entryId), managedDbRt)

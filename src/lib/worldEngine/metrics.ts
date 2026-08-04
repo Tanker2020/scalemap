@@ -17,6 +17,7 @@ import type { ManagedDbRuntime } from '../managedDbRuntime'
 import type { TopicRuntime } from './broker'
 import type { HostStepResult } from './hostScheduler'
 import type { NicState } from './networkRuntime'
+import type { ReplicaRef } from './replication'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, ManagedServiceId,
   ServiceInstance, PlacementRole,
@@ -77,6 +78,14 @@ export interface MetricsState {
   // window ÷ droppedSteps = mean dropped rps, EMA'd into AzMetrics.droppedRps at buildBatch.
   droppedWindow: Map<AzId, number>
   droppedSteps: number
+  // FEAT-005 (Task 12): rps-weighted accumulator for InstanceMetrics.staleReadFraction, keyed by
+  // the TARGET (replica) instance id — built from the SAME per-row `staleReadFraction` `flows.ts`
+  // attached to a DownstreamFlow row (never re-derived from raw lag/writeRps here). Every caller's
+  // row landing on the same replica in the same step carries the identical per-instance scalar
+  // (FlowInput.staleReadFractionByReplica is per-target, not per-caller), so the rps-weighted mean
+  // over the window is just that scalar's own time-weighted average — a straightforward EMA input,
+  // not a second computation of the fraction itself.
+  staleReadWindow: Map<InstanceId, { fracRpsSum: number; rpsSum: number }>
   // Last few batches' latency samples per instance (audit ISSUE-041) — the percentile reservoir.
   latencyHistory: Map<InstanceId, number[][]>
   // EMA-published values, keyed per entity. Missing key = first window seeds directly.
@@ -100,6 +109,7 @@ export function createMetricsState(): MetricsState {
     latencyHistory: new Map(),
     droppedWindow: new Map(),
     droppedSteps: 0,
+    staleReadWindow: new Map(),
     published: new Map(),
     lastHost: {},
     lastVps: {},
@@ -154,6 +164,20 @@ export function accumulateStep(
     w.latencies.push(f.totalLatencyMs ?? f.serviceLatencyMs)
     w.selfLatencySum += f.serviceLatencyMs
     for (const row of f.downstream) {
+      // FEAT-005 (Task 12): rps-weighted stale-read accumulation, keyed by the TARGET replica
+      // instance — see staleReadWindow's own doc comment. row.staleReadFraction is only ever
+      // attached (truthy) when it landed on an effective-role 'replica' instance under nonzero
+      // write load/lag (flows.ts's addDownstream), so its mere presence is the "is a replica read"
+      // signal — no separate role lookup needed here.
+      if (row.toInstanceId && row.staleReadFraction) {
+        let sw = state.staleReadWindow.get(row.toInstanceId)
+        if (!sw) {
+          sw = { fracRpsSum: 0, rpsSum: 0 }
+          state.staleReadWindow.set(row.toInstanceId, sw)
+        }
+        sw.fracRpsSum += row.staleReadFraction * row.rps
+        sw.rpsSum += row.rps
+      }
       if (!row.toManagedServiceId) continue
       // A blocked managed row is a refusal — EXCEPT a Phase 5.4 timeout row, which reached the
       // service and failed there. Untagged blocked rows stay refusals (pre-5.4 behavior).
@@ -274,6 +298,17 @@ export function buildBatch(
   // absent ⇒ cacheHitRatio stays unpublished for every instance, so every existing direct-
   // buildBatch caller/test is unchanged by omission.
   warmSinceMs?: Map<string, number>,
+  // FEAT-005 (Task 12): the SAME static replica topology `index.ts`'s step loop already built at
+  // start() (`buildReplicationIndexes`'s `replicasByCluster`) — read here only to GROUP
+  // `replicationLagByInstance` by cluster id for MetricsBatch.clusters, never to recompute lag.
+  // Optional: absent ⇒ `clusters` stays `{}`, so every existing direct-buildBatch caller/test is
+  // unchanged by omission.
+  replicasByCluster?: Record<string, ReplicaRef[]>,
+  // FEAT-005 (Task 12): the SAME `state.replication.lagSecByInstance` map `index.ts`'s step loop
+  // reads to build `staleReadFractionByReplica` for THIS step's solveFlows call — never re-derived
+  // here, so a cluster's published lagSec can never disagree with the lag the engine actually used
+  // to compute this step's stale-read fractions. Optional: absent ⇒ clusters stays `{}`.
+  replicationLagByInstance?: Map<InstanceId, number>,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
   const servers: Record<ServerId, ServerMetrics> = {}
@@ -358,6 +393,14 @@ export function buildBatch(
     const cacheHitRatio = bp?.cacheConfig
       ? effectiveHitRatio(bp.cacheConfig, warmSinceMs?.get(inst.id), simMs)
       : undefined
+    // FEAT-005 (Task 12): rps-weighted mean of the SAME per-row staleReadFraction flows.ts attached
+    // this window — see staleReadWindow's own doc comment for why this is aggregation, not
+    // re-derivation. EMA'd like every other published gauge; absent when this instance received no
+    // tagged stale row this window (not a replica, or zero write load/lag this whole window).
+    const staleWin = state.staleReadWindow.get(inst.id)
+    const staleReadFraction = staleWin && staleWin.rpsSum > 0
+      ? ema(state, `i:${inst.id}:stale`, staleWin.fracRpsSum / staleWin.rpsSum)
+      : undefined
     instances[inst.id] = {
       instanceId: inst.id,
       rps,
@@ -372,6 +415,7 @@ export function buildBatch(
       ...(checkoutWaitMs != null ? { checkoutWaitMs } : {}),
       ...(roleOf ? { effectiveRole: roleOf(inst.id) } : {}),
       ...(cacheHitRatio !== undefined ? { cacheHitRatio } : {}),
+      ...(staleReadFraction !== undefined ? { staleReadFraction } : {}),
     }
   }
 
@@ -538,12 +582,30 @@ export function buildBatch(
     }
   }
 
+  // ── Clusters (FEAT-005) ──
+  // Grouped from replicasByCluster's keys (the SAME static topology index.ts's step loop built at
+  // start()), reading lag off replicationLagByInstance — never recomputed. A cluster with several
+  // replicas publishes the MAX lag across them, the RPO-relevant worst case (see MetricsBatch.
+  // clusters' own doc comment in types.ts for why max, not mean).
+  const clusters: Record<string, { lagSec: number }> = {}
+  if (replicasByCluster && replicationLagByInstance) {
+    for (const [clusterId, replicas] of Object.entries(replicasByCluster)) {
+      let maxLag = 0
+      for (const r of replicas) {
+        const lag = replicationLagByInstance.get(r.id) ?? 0
+        if (lag > maxLag) maxLag = lag
+      }
+      clusters[clusterId] = { lagSec: maxLag }
+    }
+  }
+
   // Reset windows for the next second.
   state.window.clear()
   state.serverWindow.clear()
   state.managedWindow.clear()
   state.droppedWindow.clear()
   state.droppedSteps = 0
+  state.staleReadWindow.clear()
 
-  return { simMs, instances, servers, azs, regions, world, managedServices, topics, activeFaultCount: activeFaultCount ?? 0 }
+  return { simMs, instances, servers, azs, regions, world, managedServices, topics, activeFaultCount: activeFaultCount ?? 0, clusters }
 }

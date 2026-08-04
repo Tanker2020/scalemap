@@ -65,6 +65,15 @@ export interface InstanceMetrics {
   // this file already applies to activeConnections/ramMb). Present ONLY for instances whose
   // blueprint carries a `CacheConfig` — absent for every other instance.
   cacheHitRatio?: number
+  // Additive-optional (contract-drift, FEAT-005): the fraction of THIS instance's admitted reads
+  // this batch that served stale data — published from the SAME per-row `staleReadFraction` value
+  // `flows.ts` attached to a DownstreamFlow row landing on an effective-role 'replica' instance
+  // (replication.ts's `staleReadFraction()`, called once in `index.ts`'s step loop), rps-weighted
+  // across every caller's row landing on this instance this window, never re-derived from raw
+  // lag/writeRps inputs here. Present ONLY for an instance that received at least one tagged stale
+  // row this window (a replica under nonzero write load/lag) — absent for a primary, an untagged
+  // replica (zero lag/writeRps), or any world with no replicas at all.
+  staleReadFraction?: number
 }
 
 export interface ServerMetrics {
@@ -186,6 +195,14 @@ export interface MetricsBatch {
   // size`) active when this batch was built — lets the analysis engine explain observed degradation
   // as intentional rather than architectural. See contract-drift.md §Task 7.
   activeFaultCount?: number
+  // Additive-optional (frozen-contract rule, FEAT-005): current replication lag per db cluster
+  // (keyed the SAME way `replicasByCluster`/`writeRpsByCluster` are — `${primaryBlueprintId}|
+  // ${primaryRegionId}`, index.ts's `buildReplicationIndexes`). A cluster with multiple replicas
+  // publishes the MAX lag across them — the RPO-relevant worst case if a promotion had to pick
+  // among them right now, not an average that would understate it. buildBatch always populates it
+  // (as `{}`) for a world with any replica-role db instance; absent/omitted on an older/test-built
+  // batch or a world with no replicas at all — read as `batch.clusters?.[clusterId]?.lagSec ?? 0`.
+  clusters?: Record<string, { lagSec: number }>
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────

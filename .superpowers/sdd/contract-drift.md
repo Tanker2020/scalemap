@@ -148,3 +148,51 @@ needed no change (confirmed by inspection before assuming otherwise, per the tas
 Covered by `index.test.ts`'s `FEAT-004 cache hit ratio` describe block, a new test asserting
 `cache_cold` fires exactly once on a `down`→clear restart cycle and `cache_warm` fires exactly
 once after stepping well past `warmSinceMs + warmupSec * 1000`.
+
+## 2026-08-03 — Task 12: `MetricsBatch.clusters` + `InstanceMetrics.staleReadFraction` (FEAT-005)
+
+Two additive-optional fields on the frozen `worldEngine/types.ts` contract:
+
+- `InstanceMetrics.staleReadFraction?: number` — the fraction of an instance's admitted reads this
+  batch that served stale data. Sourced from the SAME per-row `staleReadFraction` value `flows.ts`
+  (Task 11) attaches to a `DownstreamFlow` row when it lands on an effective-role 'replica'
+  instance (itself sourced from `replication.ts`'s `staleReadFraction()`, called once per step in
+  `index.ts`). `metrics.ts`'s `accumulateStep` now also scans every flow's downstream rows for a
+  `toInstanceId` + truthy `staleReadFraction`, accumulating an rps-weighted sum into a new
+  `MetricsState.staleReadWindow: Map<InstanceId, {fracRpsSum; rpsSum}>` keyed by the TARGET
+  (replica) instance — since every caller's row landing on the same replica in the same step
+  carries the identical per-instance scalar, this is a straightforward time-weighted mean of that
+  scalar over the window, EMA'd like every other published gauge, never a second computation of
+  the fraction itself. Present only for an instance that received ≥1 tagged stale row this window;
+  absent for a primary or an untagged (zero lag/writeRps) replica.
+- `MetricsBatch.clusters?: Record<string, {lagSec: number}>` — current replication lag per db
+  cluster, keyed the SAME way `replicasByCluster`/`writeRpsByCluster` already are
+  (`${primaryBlueprintId}|${primaryRegionId}`). Built in a new `buildBatch` `// ── Clusters ──`
+  block from two new optional params — `replicasByCluster` (the SAME static topology
+  `index.ts`'s `buildReplicationIndexes` built at `start()`) and `replicationLagByInstance` (the
+  SAME `state.replication.lagSecByInstance` map the step loop reads to build
+  `staleReadFractionByReplica` for that step's `solveFlows` call) — grouping the latter by the
+  former's keys, never re-deriving lag. A cluster with multiple replicas publishes the MAX lag
+  across them (the RPO-relevant worst case a promotion would face right now, not an average that
+  understates it). `buildBatch` always populates `clusters` (as `{}` when the two new params are
+  absent or the world has no replicas), matching the `topics`/`managedServices` "always populate"
+  convention.
+
+Both wired through `index.ts`'s single `buildBatch(...)` call site by appending
+`s.replicasByCluster, s.replication.lagSecByInstance` as two new trailing positional args — no
+existing positional arg shifted.
+
+Covered by `index.test.ts`'s new `FEAT-005 Task 12: publish cluster lag + staleReadFraction`
+describe block, a `DIVERGENCE GUARD` test that drives a primary+replica world with half-write-share
+traffic and a deliberately low `applyRatePerReplica` (so backlog, lag, and stale reads all
+accumulate well above their floors), then asserts the published `MetricsBatch.clusters[...].lagSec`
+is `===` (not merely close to) the value `__test_replicationLagSec` reads directly off
+`state.replication.lagSecByInstance`, and that `InstanceMetrics.staleReadFraction` on the replica
+is `(0, 1]`. The test steps one 100 ms tick at a time and stops the INSTANT enough batches have
+published, rather than a fixed `stepFor(N)` tick count — under the engine's perf-watch degrade path
+(spec decision 9, `DEGRADE_THRESHOLD_MS`/`DEGRADED_STEP_MS`), a mid-run `stepMs` swap can leave a
+fixed tick count landing partway between two 1 Hz batch boundaries, so comparing "the latest
+batch" against a `__test_replicationLagSec` read taken after that drift would be comparing two
+different instants — a test-timing artifact, not a real divergence. Breaking the loop the instant
+`sim.batches.length` grows guarantees zero steps ran between what got published and what the
+accessor reads next, regardless of whether the engine degraded mid-test.
