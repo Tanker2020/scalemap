@@ -352,7 +352,34 @@ const splitBrainRisk: AnalysisRule = {
   },
 }
 
+// FEAT-005 (Task 14): mirrors splitBrainRisk's shape — a cluster-scoped structural finding read
+// off lastBatch.clusters (Task 12's published per-cluster replication lag) against the primary
+// blueprint's authored DbConfig.rpoTargetSec (Task 9). clusterId is `${primaryBlueprintId}|
+// ${primaryRegionId}` (index.ts's buildReplicationIndexes convention); no lastBatch, or no
+// authored target for the cluster's blueprint, means silent (no finding).
+const replicationLagExceedsRpo: AnalysisRule = {
+  id: 'replication-lag-exceeds-rpo', family: 'structural',
+  run: ({ doc, lastBatch }) => {
+    if (!lastBatch?.clusters) return []
+    const out: AnalysisFinding[] = []
+    for (const [clusterId, cluster] of Object.entries(lastBatch.clusters)) {
+      const [blueprintId] = clusterId.split('|')
+      const bp = doc.blueprints[blueprintId]
+      const target = bp?.dbConfig?.rpoTargetSec
+      if (target == null || cluster.lagSec <= target) continue
+      out.push({
+        id: `replication-lag-exceeds-rpo:${clusterId}`, ruleId: 'replication-lag-exceeds-rpo', family: 'structural', severity: 'warning',
+        title: 'Replication lag exceeds RPO target',
+        why: `${bp?.name ?? blueprintId} replication lag (${cluster.lagSec.toFixed(1)}s) exceeds its authored RPO target (${target}s) — a promotion right now could lose more data than the target permits.`,
+        fix: `Raise applyRatePerReplica or lower the write load on ${bp?.name ?? blueprintId}, or relax its RPO target (Connections panel).`,
+        affected: [blueprintId],
+      })
+    }
+    return out
+  },
+}
+
 export const structuralRules: AnalysisRule[] = [
   singleAzRegion, noFailoverRegion, replicasColocated, dependencyCycle, deepSyncChain, unusedManagedService,
-  danglingDependencyNoTargets, splitBrainRisk,
+  danglingDependencyNoTargets, splitBrainRisk, replicationLagExceedsRpo,
 ]

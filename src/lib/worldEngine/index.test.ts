@@ -3193,3 +3193,103 @@ describe('FEAT-005 Task 12: publish cluster lag + staleReadFraction', () => {
     sim.engine.stop()
   })
 })
+
+// ─── FEAT-005 (Task 14): replication_lag_high / stale_read_served events ──────────────────────
+describe('FEAT-005 Task 14: replication_lag_high + stale_read_served events', () => {
+  // Same shape as Task 12's buildReplicaWorld, plus an authored rpoTargetSec so lag can be
+  // compared against a target, and applyRatePerReplica pinned low so backlog (and therefore lag
+  // and stale reads) is guaranteed to accumulate quickly.
+  function buildReplicaWorld(opts: { primaryRegion: string; replicaRegion: string; writeLoad: number; rpoTargetSec: number }) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const region = createRegion(opts.primaryRegion)
+    const azA = createAz(region.id, `${opts.primaryRegion}-a`)
+    const azB = createAz(region.id, `${opts.primaryRegion}-b`)
+    doc.regions[region.id] = region
+    doc.azs[azA.id] = azA; doc.azs[azB.id] = azB
+    const sA = createServer(azA.id, getPreset('dedicated-8')!)
+    const sB = createServer(azB.id, getPreset('dedicated-8')!)
+    doc.servers[sA.id] = sA; doc.servers[sB.id] = sB
+
+    const api = publicBlueprint('api', 0)
+    const db = createBlueprint('db', 1)
+    db.kind = 'db-sql'
+    db.dbConfig = { engine: 'sql', storageGb: 50, applyRatePerReplica: 1, rpoTargetSec: opts.rpoTargetSec }
+    doc.blueprints[api.id] = api; doc.blueprints[db.id] = db
+    api.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 8080, protocol: 'db', packetTemplateId: null, writeFraction: 0.5 }]
+
+    const apiPl = createPlacement(api.id, sA.id)
+    const primaryPl = createPlacement(db.id, sA.id)
+    const replicaPl = createPlacement(db.id, sB.id); replicaPl.role = 'replica'
+    doc.placements[apiPl.id] = apiPl
+    doc.placements[primaryPl.id] = primaryPl
+    doc.placements[replicaPl.id] = replicaPl
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = opts.writeLoad
+    doc.populations[pop.id] = pop
+
+    const compiled = compileWorld(doc)
+    return { doc, compiled, replicaInstanceId: instanceId(replicaPl.id, 0) }
+  }
+
+  it('emits rate-limited replication_lag_high when sustained lag exceeds rpoTargetSec', () => {
+    const w = buildReplicaWorld({ primaryRegion: 'us-east', replicaRegion: 'us-east', writeLoad: 1000, rpoTargetSec: 1 })
+    const sim = drive(w.doc, w.compiled)
+    // First let backlog/lag build past rpoTargetSec (a few seconds of 100ms steps), THEN take a
+    // fresh events-length checkpoint and drive 30 more 100ms ticks (3 simulated seconds) — the
+    // window the rate-limit test actually cares about, mirroring the task brief's
+    // `st.engine.__test_step(1)` x 30 shape exactly (100ms ticks, not 1s jumps).
+    for (let i = 0; i < 50; i++) sim.engine.__test_step(1)
+    const before = sim.events.filter(e => e.kind === 'replication_lag_high').length
+    for (let i = 0; i < 30; i++) sim.engine.__test_step(1)
+    const lagEvents = sim.events.filter(e => e.kind === 'replication_lag_high')
+    expect(lagEvents.length).toBeGreaterThan(before)
+    // rate-limited to ~1/sec: 30 x 100ms = 3 simulated seconds, so well under one per 100ms step.
+    expect(lagEvents.length - before).toBeLessThan(10)
+    sim.engine.stop()
+  })
+
+  it('does not emit replication_lag_high when no rpoTargetSec is authored', () => {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const region = createRegion('us-east-1')
+    const azA = createAz(region.id, 'us-east-1a'); const azB = createAz(region.id, 'us-east-1b')
+    doc.regions[region.id] = region; doc.azs[azA.id] = azA; doc.azs[azB.id] = azB
+    const sA = createServer(azA.id, getPreset('dedicated-8')!)
+    const sB = createServer(azB.id, getPreset('dedicated-8')!)
+    doc.servers[sA.id] = sA; doc.servers[sB.id] = sB
+    const api = publicBlueprint('api', 0)
+    const db = createBlueprint('db', 1)
+    db.kind = 'db-sql'
+    db.dbConfig = { engine: 'sql', storageGb: 50, applyRatePerReplica: 1 }   // no rpoTargetSec
+    doc.blueprints[api.id] = api; doc.blueprints[db.id] = db
+    api.dependencies = [{ id: 'd-db', target: { kind: 'blueprint', blueprintId: db.id }, port: 8080, protocol: 'db', packetTemplateId: null, writeFraction: 0.5 }]
+    const apiPl = createPlacement(api.id, sA.id)
+    doc.placements[apiPl.id] = apiPl
+    const primaryPl = createPlacement(db.id, sA.id)
+    const replicaPl = createPlacement(db.id, sB.id); replicaPl.role = 'replica'
+    doc.placements[primaryPl.id] = primaryPl
+    doc.placements[replicaPl.id] = replicaPl
+    const pop = createPopulation('nyc', 40.7, -74.0); pop.peakRps = 1000
+    doc.populations[pop.id] = pop
+    const compiled = compileWorld(doc)
+    const sim = drive(doc, compiled)
+    for (let i = 0; i < 80; i++) sim.engine.__test_step(1)
+    expect(sim.events.filter(e => e.kind === 'replication_lag_high')).toHaveLength(0)
+    sim.engine.stop()
+  })
+
+  it('emits rate-limited stale_read_served once a replica accumulates lag under write load', () => {
+    const w = buildReplicaWorld({ primaryRegion: 'us-east', replicaRegion: 'us-east', writeLoad: 1000, rpoTargetSec: 1 })
+    const sim = drive(w.doc, w.compiled)
+    for (let i = 0; i < 50; i++) sim.engine.__test_step(1)
+    const before = sim.events.filter(e => e.kind === 'stale_read_served').length
+    for (let i = 0; i < 30; i++) sim.engine.__test_step(1)
+    const staleEvents = sim.events.filter(e => e.kind === 'stale_read_served')
+    expect(staleEvents.length).toBeGreaterThan(before)
+    expect(staleEvents.length - before).toBeLessThan(10)   // rate-limited to ~1/sec over 3 simulated seconds
+    expect(staleEvents.every(e => e.affected.includes(w.replicaInstanceId))).toBe(true)
+    sim.engine.stop()
+  })
+})

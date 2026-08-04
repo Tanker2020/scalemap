@@ -72,6 +72,7 @@ const MAX_AZ_PARTICLES = 400                 // az render cap (contracts "≤ cu
 export { MAX_GLOBE_ARCS }
 const MAX_SERVER_PARTICLES = 50              // server render cap (contracts: server ≤ 50 traces)
 const REFUSED_EVENT_MIN_GAP_MS = 1000        // ≤1 connection_refused per pathKey per second
+const REPLICATION_EVENT_MIN_GAP_MS = 1000    // ≤1 replication_lag_high/stale_read_served per key per second (FEAT-005, Task 14)
 const MIN_HEALTH_SIGNAL_RPS = 0.5            // below this offered rps, errorRate carries no signal
 const DEGRADE_THRESHOLD_MS = 4               // spec decision 9 / Global Constraints
 const DEGRADE_WINDOW_STEPS = 30              // 3s of 100ms steps
@@ -439,6 +440,12 @@ interface EngineState {
   instanceHealth: Map<InstanceId, HealthState>
   oomRestartAt: Map<InstanceId, number>
   refusedRateLimit: Map<string, number>
+  // FEAT-005 (Task 14): rate-limit gates for the two new replication events, mirroring
+  // refusedRateLimit's exact shape — a last-emitted-at simMs per key, checked against
+  // REPLICATION_EVENT_MIN_GAP_MS before pushing. Keyed by clusterId for replication_lag_high,
+  // by replica instanceId for stale_read_served.
+  replicationLagRateLimit: Map<string, number>
+  staleReadRateLimit: Map<string, number>
   // FEAT-004 (Task 3): cache warm-since bookkeeping, keyed by the cache instance id, or
   // `managed:${managedServiceId}` for a managed cache target. A key ABSENT from this map means
   // "already warm" (Task 2's cache.ts contract: warmSinceMs === undefined ⇒ effectiveHitRatio ===
@@ -1463,6 +1470,40 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         }
       }
 
+      // FEAT-005 (Task 14): replication_lag_high, rate-limited per cluster — mirrors the
+      // connection_refused gate below (refusedRateLimit's exact shape, a lastEmittedAtMs map
+      // checked before pushing). Checked once per cluster per step against the primary blueprint's
+      // authored DbConfig.rpoTargetSec; a cluster with no authored target (rpoTargetSec == null)
+      // never fires.
+      for (const [clusterId, replicas] of Object.entries(s.replicasByCluster)) {
+        const rpoTargetSec = s.dbConfigByCluster.get(clusterId)?.rpoTargetSec
+        if (rpoTargetSec == null) continue
+        const worstLagSec = Math.max(0, ...replicas.map(r => s.replication.lagSecByInstance.get(r.id) ?? 0))
+        if (worstLagSec <= rpoTargetSec) continue
+        const last = s.replicationLagRateLimit.get(clusterId) ?? -Infinity
+        if (simMs - last < REPLICATION_EVENT_MIN_GAP_MS) continue
+        s.replicationLagRateLimit.set(clusterId, simMs)
+        const [primaryBlueprintId] = clusterId.split('|')
+        const bpName = doc.blueprints[primaryBlueprintId]?.name ?? primaryBlueprintId
+        emit('replication_lag_high', 'warning',
+          `${bpName} replication lag (${worstLagSec.toFixed(1)}s) exceeds its RPO target (${rpoTargetSec}s)`,
+          replicas.map(r => r.id), simMs)
+      }
+      // FEAT-005 (Task 14): stale_read_served, rate-limited per replica instance — gated on
+      // staleReadFractionByReplica (this step's one-step-lagged reading, computed above before
+      // solveFlows) being nonzero, so it never fires for a replica currently caught up.
+      if (staleReadFractionByReplica) {
+        for (const [replicaId, fraction] of Object.entries(staleReadFractionByReplica)) {
+          if (fraction <= 0) continue
+          const last = s.staleReadRateLimit.get(replicaId) ?? -Infinity
+          if (simMs - last < REPLICATION_EVENT_MIN_GAP_MS) continue
+          s.staleReadRateLimit.set(replicaId, simMs)
+          emit('stale_read_served', 'info',
+            `${replicaId} served a stale read (${(fraction * 100).toFixed(1)}% stale-read probability)`,
+            [replicaId], simMs)
+        }
+      }
+
       s.prevWriteRpsByCluster = writeRpsByCluster
     }
 
@@ -2147,6 +2188,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         lastRoutingSnapshot: { populationRoutes: [] }, popRegion: new Map(), pendingFailover: new Map(),
         popPrevRegion: new Map(),
         checkFailedPrev: new Map(), probePrev: new Map(), instanceHealth: new Map(), oomRestartAt: new Map(), refusedRateLimit: new Map(),
+        replicationLagRateLimit: new Map(), staleReadRateLimit: new Map(),
         depthExceededReported: new Set(), cycleCutReported: new Set(),
         idSeq: 0, lastBatchMs: -1000, stepCosts: [], degraded: false, rafId: null, lastFrameMs: null,
         renderers: new Map(), rendererSeq: 0,

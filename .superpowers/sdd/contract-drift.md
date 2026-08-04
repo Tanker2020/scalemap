@@ -242,3 +242,55 @@ sort key is actually load-bearing rather than coincidentally passing.
 Full suite after the change: `npx tsc --noEmit` clean; `npx vitest run` — 150 files / 1870 tests
 passing (including `index.test.ts`'s 109 tests, all failover/promotion/split-brain-related ones
 unchanged).
+
+## 2026-08-04 — Task 14: `replication_lag_high`/`stale_read_served` events + `replication-lag-exceeds-rpo` rule (FEAT-005)
+
+`worldEngine/types.ts`'s `EngineEventKind` gained two additive entries:
+
+- `'replication_lag_high'` — emitted in `index.ts`'s `runStep`, once per cluster per step where
+  the cluster's worst-case replica lag (`Math.max` across `s.replicasByCluster[clusterId]` reads of
+  `s.replication.lagSecByInstance`) exceeds the primary blueprint's authored
+  `DbConfig.rpoTargetSec` (`s.dbConfigByCluster.get(clusterId)?.rpoTargetSec`). A cluster with no
+  authored target never fires (`rpoTargetSec == null` short-circuits). `severity: 'warning'`,
+  `affected` is every replica instance id in the cluster.
+- `'stale_read_served'` — emitted once per replica instance per step where that step's
+  `staleReadFractionByReplica[replicaId]` (Task 11's one-step-lagged reading, already computed
+  earlier in `runStep` ahead of `solveFlows`) is `> 0`. `severity: 'info'`, `affected: [replicaId]`.
+
+Both are rate-limited to at most one emission per key per `REPLICATION_EVENT_MIN_GAP_MS` (1000ms,
+a new sibling constant next to `REFUSED_EVENT_MIN_GAP_MS`), using the EXACT SAME mechanism as the
+existing `connection_refused` gate: a `Map<key, lastEmittedAtSimMs>` on `EngineState`
+(`replicationLagRateLimit` keyed by `clusterId`, `staleReadRateLimit` keyed by replica instance
+id), checked with `simMs - last < REPLICATION_EVENT_MIN_GAP_MS` before pushing. Both maps are
+initialized empty in `start()`'s `EngineState` literal, mirroring `refusedRateLimit`'s init.
+Emission runs inside the existing `if (s.hasAnyReplicas)` block, right after the semi-sync lag
+override and before `s.prevWriteRpsByCluster` is rewritten for the next step — so an unconfigured
+world (no replicas) pays zero extra per-step cost, the same discipline as every other FEAT-005
+per-step block in this function.
+
+**Incidental fix required for `tsc --noEmit` to stay clean:** `aiChat/eventCausality.ts`'s
+`decodeAffected` has an exhaustive `switch (kind: EngineEventKind)` with no `default` case: adding
+the two new `EngineEventKind` members without a corresponding `case` made TS2366 fire ("Function
+lacks ending return statement"). Added `case 'replication_lag_high'` (mirrors `chain_cycle_cut`'s
+`{ primaryId: affected[0] ?? '', secondaryId: affected[1] || null }` shape — a cluster's
+`affected` list has multiple replica ids, so a second one is meaningful) and
+`case 'stale_read_served'` (mirrors `cache_cold`/`cache_warm`'s single-id shape — `affected` is
+always exactly `[replicaId]`) to the switch. This file wasn't in the task brief's file list; it
+was a compile-time consequence of widening `EngineEventKind`, not a planned change, but any
+addition to that enum requires touching every exhaustive switch over it — noting here in case a
+future task widens `EngineEventKind` again and hits the same switch.
+
+`src/lib/analysis/rules/structural.ts` gained a new rule, `replicationLagExceedsRpo` (id
+`replication-lag-exceeds-rpo`, family `structural`, NOT exported — mirrors `splitBrainRisk`'s own
+module-private convention; both are reached only through `runAnalysis`/`structuralRules`). Reads
+`lastBatch.clusters` (Task 12's publish) against `doc.blueprints[blueprintId].dbConfig.rpoTargetSec`
+(clusterId parsed as `${blueprintId}|${regionId}`, matching `index.ts`'s
+`buildReplicationIndexes` convention). Silent when `lastBatch` is null, `lastBatch.clusters` is
+absent, the blueprint has no `dbConfig.rpoTargetSec`, or `cluster.lagSec <= target`. Fields match
+the file's REAL `AnalysisFinding` shape (`ruleId`/`title`/`why`/`fix`/`affected`, not the brief's
+placeholder `rule`/`message`/`affectedEntities`) — confirmed against `analysis/types.ts` and
+`splitBrainRisk`'s actual implementation before writing it. Appended to `structuralRules`.
+
+Full suite after the change: `npx tsc --noEmit` clean; `npx vitest run` — 150 files / 1876 tests
+passing (`index.test.ts`'s new `FEAT-005 Task 14` describe block: 3/3; `structural.test.ts`'s new
+`replication-lag-exceeds-rpo` describe block: 3/3).

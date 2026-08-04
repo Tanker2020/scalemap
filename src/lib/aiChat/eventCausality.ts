@@ -64,6 +64,10 @@ export function decodeAffected(
     case 'cache_cold':
     case 'cache_warm':
       return { primaryId: affected[0] ?? '', secondaryId: null }
+    case 'replication_lag_high':
+      return { primaryId: affected[0] ?? '', secondaryId: affected[1] || null }
+    case 'stale_read_served':
+      return { primaryId: affected[0] ?? '', secondaryId: null }
   }
 }
 

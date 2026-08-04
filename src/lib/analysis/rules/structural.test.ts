@@ -404,6 +404,54 @@ describe('structural: split-brain-risk', () => {
   })
 })
 
+// FEAT-005 (Task 14): replication-lag-exceeds-rpo — reads lastBatch.clusters (Task 12) against
+// the primary blueprint's authored DbConfig.rpoTargetSec (Task 9). clusterId convention is
+// `${primaryBlueprintId}|${primaryRegionId}` (index.ts's buildReplicationIndexes).
+describe('structural: replication-lag-exceeds-rpo', () => {
+  it('fires above the authored target and clears below it', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const a1 = s.az(r.id, 'us-east-1a'); const a2 = s.az(r.id, 'us-east-1b')
+    const db = s.blueprint('db'); db.stateful = true
+    db.dbConfig = { engine: 'sql', storageGb: 50, rpoTargetSec: 2 }
+    s.placement(db.id, s.server(a1.id).id)   // authored primary
+    const rep = s.placement(db.id, s.server(a2.id).id); rep.role = 'replica'
+    const compiled = s.compile()
+    const clusterId = `${db.id}|${r.id}`
+
+    const overBatch = { clusters: { [clusterId]: { lagSec: 5 } } } as unknown as MetricsBatch
+    const over = ids(runAnalysis(s.doc, compiled, overBatch), 'replication-lag-exceeds-rpo')
+    expect(over).toHaveLength(1)
+    expect(over[0].severity).toBe('warning')
+    expect(over[0].affected).toEqual([db.id])
+
+    const underBatch = { clusters: { [clusterId]: { lagSec: 1 } } } as unknown as MetricsBatch
+    expect(ids(runAnalysis(s.doc, compiled, underBatch), 'replication-lag-exceeds-rpo')).toHaveLength(0)
+  })
+
+  it('is silent when the blueprint has no authored rpoTargetSec', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const a1 = s.az(r.id, 'us-east-1a'); const a2 = s.az(r.id, 'us-east-1b')
+    const db = s.blueprint('db'); db.stateful = true
+    db.dbConfig = { engine: 'sql', storageGb: 50 }   // no rpoTargetSec authored
+    s.placement(db.id, s.server(a1.id).id)
+    const rep = s.placement(db.id, s.server(a2.id).id); rep.role = 'replica'
+    const compiled = s.compile()
+    const clusterId = `${db.id}|${r.id}`
+    const batch = { clusters: { [clusterId]: { lagSec: 999 } } } as unknown as MetricsBatch
+    expect(ids(runAnalysis(s.doc, compiled, batch), 'replication-lag-exceeds-rpo')).toHaveLength(0)
+  })
+
+  it('is silent with no lastBatch at all', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const a1 = s.az(r.id, 'us-east-1a'); const a2 = s.az(r.id, 'us-east-1b')
+    const db = s.blueprint('db'); db.stateful = true
+    db.dbConfig = { engine: 'sql', storageGb: 50, rpoTargetSec: 2 }
+    s.placement(db.id, s.server(a1.id).id)
+    const rep = s.placement(db.id, s.server(a2.id).id); rep.role = 'replica'
+    expect(ids(run(s), 'replication-lag-exceeds-rpo')).toHaveLength(0)
+  })
+})
+
 describe('runAnalysis ordering + id stability', () => {
   it('orders by severity then family', () => {
     const s = scenario()

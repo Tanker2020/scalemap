@@ -237,6 +237,12 @@ export type EngineEventKind =
   | 'cache_warm'                 // FEAT-004 (Task 5): fires exactly once per cold cycle, the step
                                   // effectiveHitRatio first reaches cfg.hitRatio again (simMs -
                                   // warmSinceMs >= cfg.warmupSec * 1000)
+  | 'replication_lag_high'       // FEAT-005 (Task 14): a cluster's replication lag exceeds its
+                                  // authored DbConfig.rpoTargetSec, rate-limited (once per cluster
+                                  // per REFUSED_EVENT_MIN_GAP_MS-style window, not once per step)
+  | 'stale_read_served'          // FEAT-005 (Task 14): a replica served a read with a nonzero
+                                  // staleReadFraction, rate-limited the same way (once per replica
+                                  // instance per window, not once per step)
 
 export interface EngineEvent {
   id: string
