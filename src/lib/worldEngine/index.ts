@@ -1646,7 +1646,23 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     // health hysteresis' 5s recovery lock has already debounced the primary's recovery.
     for (const e of failbackPromotions(s.failover, compiled, doc, healthOfInstance, simMs)) emitEvent(e)
     const downInstances = Object.values(compiled.instances).filter(i => healthOfInstance(i.id) === 'down').map(i => i.id)
-    for (const e of promoteReplicas(s.failover, compiled, doc, downInstances, simMs, healthOfInstance)) emitEvent(e)
+    // FEAT-005 (Task 13): per-instance write-rps for the RPO payload — approximated by giving
+    // every replica in a cluster that cluster's TOTAL resolved write rps this step
+    // (writeRpsByCluster, threaded straight out of solveFlows above), since Task 11's design
+    // already treats a cluster's write stream as shared rather than partitioned per replica.
+    // Built alongside s.replicasByCluster in one pass, not as a second computation.
+    let writeRpsByReplicaInstance: Map<InstanceId, number> | undefined
+    if (s.hasAnyReplicas) {
+      writeRpsByReplicaInstance = new Map()
+      for (const [clusterId, replicas] of Object.entries(s.replicasByCluster)) {
+        const writeRps = writeRpsByCluster[clusterId] ?? 0
+        for (const r of replicas) writeRpsByReplicaInstance.set(r.id, writeRps)
+      }
+    }
+    for (const e of promoteReplicas(
+      s.failover, compiled, doc, downInstances, simMs, healthOfInstance,
+      s.replication.lagSecByInstance, writeRpsByReplicaInstance,
+    )) emitEvent(e)
 
     // FEAT-002 Task 12: cross-region split-brain. promoteReplicas (failover.ts) only ever picks a
     // sibling replica in the SAME region as the down primary (spec decision 7's same-region HA

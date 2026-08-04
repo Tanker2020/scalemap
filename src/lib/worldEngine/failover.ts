@@ -347,6 +347,16 @@ const HEALTH_RANK: Record<HealthState, number> = { healthy: 0, degraded: 1, down
 // primary resolves 'replica' after failover (no duplicate emit), while a failed PROMOTED primary
 // resolves 'primary' — so a second failure in the cluster re-promotes a surviving replica,
 // clearing the stale promotion.
+//
+// FEAT-005 (Task 13): among equally-healthy candidates, prefer the LEAST-LAGGED replica — the
+// real-world reason an operator would pick one healthy replica over another (fewer writes to
+// lose). `lagByInstance`/`writeRpsByReplica` are both additive-optional trailing params: an
+// omitted `lagByInstance` makes every candidate's lag read `?? 0`, collapsing the new
+// three-key sort back to today's exact HEALTH_RANK-then-id tiebreak byte-for-byte, so every
+// pre-existing caller/test that doesn't pass lag data is unaffected. When lag data IS supplied,
+// the chosen replica's lag (and, if writeRpsByReplica is also supplied, lag × write-rps) is
+// stamped onto the emitted event's `payload` as the promotion's RPO — the data-loss window and
+// estimated lost writes an operator sees at the moment of failover.
 export function promoteReplicas(
   state: FailoverState,
   compiled: CompiledWorld,
@@ -354,6 +364,8 @@ export function promoteReplicas(
   downInstanceIds: InstanceId[],
   simMs: number,
   healthOf?: (id: InstanceId) => HealthState,
+  lagByInstance?: Map<InstanceId, number>,
+  writeRpsByReplica?: Map<InstanceId, number>,
 ): EngineEvent[] {
   const events: EngineEvent[] = []
   const downSet = new Set(downInstanceIds)
@@ -372,9 +384,12 @@ export function promoteReplicas(
     )
 
     const health = (i: ServiceInstance): HealthState => healthOf?.(i.id) ?? 'healthy'
+    const lagOf = (i: ServiceInstance): number => lagByInstance?.get(i.id) ?? 0
     const chosen = siblingReplicas
       .filter(i => !downSet.has(i.id) && health(i) !== 'down')
-      .sort((a, b) => (HEALTH_RANK[health(a)] - HEALTH_RANK[health(b)]) || a.id.localeCompare(b.id))[0]
+      .sort((a, b) =>
+        (HEALTH_RANK[health(a)] - HEALTH_RANK[health(b)]) || (lagOf(a) - lagOf(b)) || a.id.localeCompare(b.id),
+      )[0]
     if (!chosen) continue
 
     // Re-promotion: the down effective primary may itself be a promoted replica — drop its stale
@@ -382,6 +397,7 @@ export function promoteReplicas(
     state.promotedAt.delete(primary.placementId)
     state.promotedAt.set(chosen.placementId, simMs)
     const bpName = doc.blueprints[primary.blueprintId]?.name ?? primary.blueprintId
+    const dataLossWindowSec = lagByInstance?.get(chosen.id)
     events.push({
       id: `promote-${chosen.id}-${simMs}`,
       simMs,
@@ -389,6 +405,9 @@ export function promoteReplicas(
       severity: 'warning',
       message: `${bpName} replica ${chosen.id} promoted to primary after ${downId} failed`,
       affected: [chosen.id, downId],
+      ...(dataLossWindowSec !== undefined
+        ? { payload: { dataLossWindowSec, estimatedLostWrites: dataLossWindowSec * (writeRpsByReplica?.get(chosen.id) ?? 0) } }
+        : {}),
     })
   }
 

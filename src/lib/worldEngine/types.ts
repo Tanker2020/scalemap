@@ -246,6 +246,15 @@ export interface EngineEvent {
   message: string
   // Entity ids at any scope (instanceId/serverId/azId/regionId/populationId).
   affected: string[]
+  // FEAT-005 (Task 13): RPO-at-promotion payload, additive-optional. Populated only on a
+  // `replica_promoted` event emitted by failover.ts's `promoteReplicas` when the caller supplied
+  // per-instance replication lag (and, for estimatedLostWrites, write rps) — absent when either
+  // input wasn't available (e.g. the managed-DB auto-recovery promotion path, which has no
+  // per-replica lag model, or an existing caller/test that omits the new optional params).
+  payload?: {
+    dataLossWindowSec?: number
+    estimatedLostWrites?: number
+  }
 }
 
 // ─── Render attachment (headless engine; views subscribe per scope) ─────────

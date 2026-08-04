@@ -196,3 +196,49 @@ batch" against a `__test_replicationLagSec` read taken after that drift would be
 different instants — a test-timing artifact, not a real divergence. Breaking the loop the instant
 `sim.batches.length` grows guarantees zero steps ran between what got published and what the
 accessor reads next, regardless of whether the engine degraded mid-test.
+
+## 2026-08-03 — Task 13: `promoteReplicas` least-lagged tiebreak + `EngineEvent.payload` (FEAT-005)
+
+`failover.ts`'s `promoteReplicas(state, compiled, doc, downInstanceIds, simMs, healthOf?)` gained
+two additive-optional trailing params: `lagByInstance?: Map<InstanceId, number>` and
+`writeRpsByReplica?: Map<InstanceId, number>`. The candidate sort among sibling replicas changed
+from `HEALTH_RANK` then id to `HEALTH_RANK` then ascending lag (`lagByInstance?.get(id) ?? 0`)
+then id — omitting `lagByInstance` makes every candidate's lag read `0`, which collapses the sort
+back to byte-identical `HEALTH_RANK`-then-id behavior, so every pre-existing call site (the
+managed-DB auto-recovery path, and every existing test that doesn't pass the new params) is
+unaffected by omission.
+
+Added `EngineEvent.payload?: { dataLossWindowSec?: number; estimatedLostWrites?: number }`
+(additive-optional, `worldEngine/types.ts`). `promoteReplicas` stamps it onto the `replica_promoted`
+event ONLY when `lagByInstance` is supplied — `dataLossWindowSec` is the CHOSEN replica's lag,
+`estimatedLostWrites = dataLossWindowSec * (writeRpsByReplica?.get(chosenId) ?? 0)`. When
+`lagByInstance` is omitted the event carries no `payload` key at all (not `{dataLossWindowSec: 0,
+...}`), so a pre-existing event-shape assertion (`toMatchObject`, no `payload` in the expected
+object) is unaffected either way.
+
+`index.ts`'s sole `promoteReplicas` call site (inside `runStep`'s failover section) now passes
+`s.replication.lagSecByInstance` and a new `writeRpsByReplicaInstance` map built in the same block:
+every replica in a cluster is given that cluster's TOTAL `writeRpsByCluster[clusterId]` (threaded
+straight out of that step's `solveFlows` result) rather than a per-replica split — Task 11's design
+already treats a cluster's write stream as shared, not partitioned per replica, so this reuses that
+existing convention rather than inventing a new one. Guarded by `s.hasAnyReplicas` (undefined when
+the world has no replicas, matching the sibling `staleReadFractionByReplica`/
+`semiSyncExtraMsByInstance` guards already in the same function).
+
+**Re-baseline discipline** (per the wave's own closing-notes flag on this task): ran
+`failover.test.ts`'s full pre-existing suite before and after the change. Baseline: 29/29 passing
+(captured via `git stash` on this task's uncommitted edits, run, then `git stash pop`). Post-change:
+32/32 passing (29 pre-existing + 3 new). The two pre-existing tests that select among multiple
+healthy candidates —
+"prefers a healthier replica over the lexically-first one" and "re-promotes a second replica when
+the promoted one later fails" — both call `promoteReplicas` WITHOUT the new `lagByInstance` param,
+so their asserted promoted-replica identity is unchanged (confirmed by the post-change run, not
+merely assumed): with no lag map, every candidate's lag defaults to 0, and the tie is broken by id
+exactly as before. No pre-existing assertion's outcome moved. The two new tests
+("selects the least-lagged healthy replica" and the RPO payload test) construct their own fixtures
+with an explicit `lagByInstance` map that deliberately defeats the id tiebreak, to prove the new
+sort key is actually load-bearing rather than coincidentally passing.
+
+Full suite after the change: `npx tsc --noEmit` clean; `npx vitest run` — 150 files / 1870 tests
+passing (including `index.test.ts`'s 109 tests, all failover/promotion/split-brain-related ones
+unchanged).

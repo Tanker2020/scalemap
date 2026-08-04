@@ -216,6 +216,43 @@ describe('promoteReplicas', () => {
     expect(events).toEqual([])
     expect(state.promotedAt.size).toBe(1)
   })
+
+  // FEAT-005 (Task 13): among equally-healthy candidates, the least-lagged replica wins — today's
+  // health-only sort is indifferent between two healthy replicas and falls back to the id
+  // tiebreak, which this test's fixture deliberately defeats (the lexically-LATER replica has the
+  // lower lag) to prove the sort key actually changed.
+  it('promoteReplicas selects the least-lagged healthy replica, not merely the first healthy one', () => {
+    const f = twoReplicaFixture()
+    const [first, second] = f.replicaInsts   // id-tiebreak would normally pick `first`
+    const state = createFailoverState()
+    const lagByInstance = new Map([[first, 3], [second, 0.5]])
+    const events = promoteReplicas(state, f.compiled, f.doc, [f.primaryInst], 1000, undefined, lagByInstance)
+    expect(events).toHaveLength(1)
+    expect(state.promotedAt.has(f.placementOf(second))).toBe(true)
+    expect(state.promotedAt.has(f.placementOf(first))).toBe(false)
+  })
+
+  // FEAT-005 (Task 13): the RPO payload — dataLossWindowSec is the CHOSEN replica's lag,
+  // estimatedLostWrites = lagSec * writeRps, both only stamped when the caller supplies the maps.
+  it('RPO: replica_promoted event carries dataLossWindowSec matching the promoted replica lag, and estimatedLostWrites = lagSec * writeRps', () => {
+    const f = replicaFixture()
+    const state = createFailoverState()
+    const lagByInstance = new Map([[f.replicaInst, 2]])
+    const writeRpsByReplica = new Map([[f.replicaInst, 150]])
+    const events = promoteReplicas(state, f.compiled, f.doc, [f.primaryInst], 1000, undefined, lagByInstance, writeRpsByReplica)
+    const ev = events.find(e => e.kind === 'replica_promoted')!
+    expect(ev.payload?.dataLossWindowSec).toBeCloseTo(2, 5)
+    expect(ev.payload?.estimatedLostWrites).toBeCloseTo(300, 5)
+  })
+
+  // Omitting the new params entirely (today's existing call shape) must produce no payload at all.
+  it('omits the RPO payload when lag data is not supplied (pre-FEAT-005 callers unaffected)', () => {
+    const f = replicaFixture()
+    const state = createFailoverState()
+    const events = promoteReplicas(state, f.compiled, f.doc, [f.primaryInst], 1000)
+    const ev = events.find(e => e.kind === 'replica_promoted')!
+    expect(ev.payload).toBeUndefined()
+  })
 })
 
 describe('probeInstant', () => {
