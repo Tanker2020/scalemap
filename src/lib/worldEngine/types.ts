@@ -319,7 +319,7 @@ export type DetachFn = () => void
 
 // ─── Fault injection (FEAT-001) ──────────────────────────────────────────────
 
-export type FaultKind = 'down' | 'latency-add' | 'cpu-brownout' | 'memory-leak' | 'error-inject'
+export type FaultKind = 'down' | 'latency-add' | 'cpu-brownout' | 'memory-leak' | 'error-inject' | 'disk-stall'
 
 export type FaultSpec =
   | { kind: 'down' }
@@ -327,6 +327,7 @@ export type FaultSpec =
   | { kind: 'cpu-brownout'; capacityFraction: number }
   | { kind: 'memory-leak'; mbPerMinute: number }
   | { kind: 'error-inject'; errorFraction: number }
+  | { kind: 'disk-stall'; iopsFraction: number }
 
 export type FaultScope = 'server' | 'az' | 'region' | 'managed'
 

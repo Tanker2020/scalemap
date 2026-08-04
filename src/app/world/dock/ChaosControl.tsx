@@ -50,6 +50,7 @@ const FAULT_LABELS: Record<NonDownKind, string> = {
   'cpu-brownout': 'CPU brownout',
   'memory-leak': 'memory leak',
   'error-inject': 'inject errors',
+  'disk-stall': 'disk stall',
 }
 
 const FAULT_PARAM: Record<NonDownKind, { unit: string; min: number; max: number; default: number; step: number }> = {
@@ -57,6 +58,7 @@ const FAULT_PARAM: Record<NonDownKind, { unit: string; min: number; max: number;
   'cpu-brownout': { unit: 'capacity frac', min: 0, max: 1, default: 0.5, step: 0.05 },
   'memory-leak': { unit: 'MB/min', min: 0, max: 2000, default: 60, step: 10 },
   'error-inject': { unit: 'error frac', min: 0, max: 1, default: 0.1, step: 0.05 },
+  'disk-stall': { unit: 'IOPS frac', min: 0, max: 1, default: 0.5, step: 0.05 },
 }
 
 function specFor(kind: NonDownKind, value: number): FaultSpec {
@@ -65,6 +67,7 @@ function specFor(kind: NonDownKind, value: number): FaultSpec {
     case 'cpu-brownout': return { kind, capacityFraction: value }
     case 'memory-leak': return { kind, mbPerMinute: value }
     case 'error-inject': return { kind, errorFraction: value }
+    case 'disk-stall': return { kind, iopsFraction: value }
   }
 }
 

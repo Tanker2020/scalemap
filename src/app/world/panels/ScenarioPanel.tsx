@@ -77,13 +77,14 @@ function describeAction(action: ScenarioAction, doc: WorldDoc): string {
   }
 }
 
-function faultSpecFor(kind: FaultKind, latencyMs: number, capacityFraction: number, mbPerMinute: number, errorFraction: number): FaultSpec {
+function faultSpecFor(kind: FaultKind, latencyMs: number, capacityFraction: number, mbPerMinute: number, errorFraction: number, iopsFraction: number = 0.5): FaultSpec {
   switch (kind) {
     case 'down': return { kind: 'down' }
     case 'latency-add': return { kind: 'latency-add', ms: latencyMs }
     case 'cpu-brownout': return { kind: 'cpu-brownout', capacityFraction }
     case 'memory-leak': return { kind: 'memory-leak', mbPerMinute }
     case 'error-inject': return { kind: 'error-inject', errorFraction }
+    case 'disk-stall': return { kind: 'disk-stall', iopsFraction }
   }
 }
 

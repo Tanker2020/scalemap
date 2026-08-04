@@ -294,3 +294,22 @@ placeholder `rule`/`message`/`affectedEntities`) — confirmed against `analysis
 Full suite after the change: `npx tsc --noEmit` clean; `npx vitest run` — 150 files / 1876 tests
 passing (`index.test.ts`'s new `FEAT-005 Task 14` describe block: 3/3; `structural.test.ts`'s new
 `replication-lag-exceeds-rpo` describe block: 3/3).
+
+## 2026-08-04 — Task 17: `ServerSpecs` IOPS fields + `disk-stall` fault variant (FEAT-006)
+
+Additive-only contract changes:
+
+- `ServerSpecs` (in `src/lib/world/types.ts`) gained two optional fields: `diskIops?: number` and
+  `diskType?: 'hdd' | 'ssd' | 'nvme'` — no signature break on `compileWorld()` or any consumer.
+  Every server preset in `src/lib/world/instanceCatalog.ts` assigned a sensible default `diskType`:
+  VPS/dedicated compute instances default to `'ssd'`, database presets (DB-SQL/DB-NoSQL kinds)
+  default to `'nvme'` (better I/O performance for data-serving workloads).
+- `FaultKind` (in `src/lib/worldEngine/types.ts`) gained `'disk-stall'` as a sixth variant.
+- `FaultSpec` union (in `src/lib/worldEngine/types.ts`) gained a sixth variant:
+  `{ kind: 'disk-stall'; iopsFraction: number }` — no signature break on `setFault()`. The new
+  variant is consumed by Tasks 18–20 (hostScheduler functions and engine wiring).
+- Incidental UI updates to `src/app/world/dock/ChaosControl.tsx` (added `'disk-stall'` entries to
+  `FAULT_LABELS`/`FAULT_PARAM` and a case in `specFor()`) and `src/app/world/panels/ScenarioPanel.tsx`
+  (added `'disk-stall'` case to `faultSpecFor()` with a stub `iopsFraction` parameter) — both minimal
+  stubs to satisfy the type checker, not full implementations. The actual disk-stall fault injection
+  and IOPS throttling will be wired in downstream tasks.

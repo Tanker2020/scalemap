@@ -87,6 +87,8 @@ export interface ServerSpecs {
   ramMb: number
   diskGb: number
   nicMbps: number
+  diskIops?: number
+  diskType?: 'hdd' | 'ssd' | 'nvme'
 }
 
 export type FirewallSource = 'any' | 'internal' | string  // string = CIDR, e.g. '10.0.0.0/8'
