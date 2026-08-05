@@ -524,7 +524,7 @@ export interface CompileFinding {
   // ONLY place this field has semantics) and the actual simulated behavior (bytes, connection
   // hold, WAL amplification — all derived from the mix) can silently show two different stories.
   kind: 'blocked-path' | 'stateful-without-volume' | 'missing-volume' | 'protocol-mismatch'
-    | 'autoscale-invalid-range' | 'autoscale-count-out-of-range'
+    | 'autoscale-invalid-range' | 'autoscale-count-out-of-range' | 'autoscale-invalid-target-cpu'
   message: string
   affected: string[]   // entity ids (instance/server/blueprint/placement ids)
 }

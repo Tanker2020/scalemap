@@ -115,7 +115,7 @@ export function AutoscaleControl({ placement, running }: AutoscaleControlProps):
         <div style={panelStyle} data-testid="autoscale-fields">
           {numberField('min count', placement.autoscale.minCount, v => tune({ minCount: Math.max(1, v) }), { min: 1, step: 1 })}
           {numberField('max count', placement.autoscale.maxCount, v => tune({ maxCount: Math.max(placement.autoscale!.minCount, v) }), { min: 1, step: 1 })}
-          {numberField('target cpu %', placement.autoscale.targetCpuPercent, v => tune({ targetCpuPercent: v }), { min: 1, max: 100, step: 5 })}
+          {numberField('target cpu %', placement.autoscale.targetCpuPercent, v => tune({ targetCpuPercent: Math.max(1, v) }), { min: 1, max: 100, step: 5 })}
           {numberField('scale-up cooldown (s)', placement.autoscale.scaleUpCooldownSec, v => tune({ scaleUpCooldownSec: Math.max(0, v) }), { min: 0, step: 10 })}
           {numberField('scale-down cooldown (s)', placement.autoscale.scaleDownCooldownSec, v => tune({ scaleDownCooldownSec: Math.max(0, v) }), { min: 0, step: 10 })}
           {numberField('scale step (optional)', placement.autoscale.scaleStep ?? 0, v => tune({ scaleStep: v > 0 ? v : undefined }), { min: 0, step: 1 })}

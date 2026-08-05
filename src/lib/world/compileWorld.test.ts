@@ -126,7 +126,7 @@ describe('compileWorld — autoscale envelope expansion (FEAT-008)', () => {
     expect(found[0].affected).toContain(pl.id)
   })
 
-  it('does not fire either autoscale finding for a valid range and in-range count', () => {
+  it('does not fire any autoscale finding for a valid range, in-range count, and positive targetCpuPercent', () => {
     const { doc, bp, server } = tinyWorld()
     const pl = createPlacement(bp.id, server.id)
     pl.count = 4
@@ -134,7 +134,37 @@ describe('compileWorld — autoscale envelope expansion (FEAT-008)', () => {
     doc.placements[pl.id] = pl
 
     const compiled = compileWorld(doc)
-    expect(compiled.findings.some(f => f.kind === 'autoscale-invalid-range' || f.kind === 'autoscale-count-out-of-range')).toBe(false)
+    expect(compiled.findings.some(f =>
+      f.kind === 'autoscale-invalid-range' || f.kind === 'autoscale-count-out-of-range'
+      || f.kind === 'autoscale-invalid-target-cpu')).toBe(false)
+  })
+
+  // Wave 3 final review (Minor #8): targetCpuPercent had no validation while minCount/maxCount
+  // did -- a 0 (or negative) target makes evaluatePolicy's ratio blow up toward +Infinity on any
+  // load, instantly clamping the placement to maxCount.
+  it('emits an error finding when targetCpuPercent is 0', () => {
+    const { doc, bp, server } = tinyWorld()
+    const pl = createPlacement(bp.id, server.id)
+    pl.count = 2
+    pl.autoscale = { minCount: 2, maxCount: 8, targetCpuPercent: 0, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300 }
+    doc.placements[pl.id] = pl
+
+    const compiled = compileWorld(doc)
+    const found = compiled.findings.filter(f => f.kind === 'autoscale-invalid-target-cpu')
+    expect(found).toHaveLength(1)
+    expect(found[0].severity).toBe('error')
+    expect(found[0].affected).toContain(pl.id)
+  })
+
+  it('emits an error finding when targetCpuPercent is negative', () => {
+    const { doc, bp, server } = tinyWorld()
+    const pl = createPlacement(bp.id, server.id)
+    pl.count = 2
+    pl.autoscale = { minCount: 2, maxCount: 8, targetCpuPercent: -10, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300 }
+    doc.placements[pl.id] = pl
+
+    const compiled = compileWorld(doc)
+    expect(compiled.findings.filter(f => f.kind === 'autoscale-invalid-target-cpu')).toHaveLength(1)
   })
 })
 

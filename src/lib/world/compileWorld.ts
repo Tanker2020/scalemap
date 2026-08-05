@@ -61,6 +61,21 @@ export function compileWorld(doc: WorldDoc): CompiledWorld {
         affected: [pl.id],
       })
     }
+    // Wave 3 final review (Minor #8): evaluatePolicy (worldEngine/autoscale.ts) computes
+    // `ratio = observedCpuPercent / targetCpuPercent` every step -- a targetCpuPercent of 0 (or
+    // negative) sends that ratio toward +Infinity on any load at all, instantly clamping to
+    // maxCount. Not a crash (evaluatePolicy's own clamp() still bounds the result), but a
+    // nonsensical operator experience with the one authored autoscale field that otherwise has no
+    // guard, unlike minCount/maxCount above.
+    if (pl.autoscale.targetCpuPercent <= 0) {
+      findings.push({
+        id: `finding-autoscale-invalid-target-cpu-${pl.id}`,
+        severity: 'error',
+        kind: 'autoscale-invalid-target-cpu',
+        message: `Placement ${pl.id}'s autoscale targetCpuPercent (${pl.autoscale.targetCpuPercent}) must be greater than 0`,
+        affected: [pl.id],
+      })
+    }
   }
 
   // Audit ISSUE-027: index instances by blueprint ONCE so each dependency resolves against only
