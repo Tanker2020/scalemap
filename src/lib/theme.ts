@@ -18,6 +18,9 @@ export interface ColorTokens {
   onAccent: string   // text/icon color for content rendered ON a saturated accent/danger/warning chip
   price: string      // dedicated money-value color (Polish 3 D2) — distinct from success so cost
                       // figures don't read as a status/health signal
+  meterTrack: string // subtle recessed track background for an in-chip progress/meter fill
+                      // (Wave 3 FEAT-007 Task 8's warmth-readout bar) — distinct from `surface`
+                      // so a track can sit on a dark gradient card in either theme
 }
 
 export const DARK_COLORS: ColorTokens = {
@@ -39,6 +42,7 @@ export const DARK_COLORS: ColorTokens = {
   accent: '#4A9EFF',
   onAccent: '#FFFFFF',   // white always reads on these saturated chip backgrounds in both themes
   price: '#6EE7B7',
+  meterTrack: '#1A212C',
 }
 
 export const LIGHT_COLORS: ColorTokens = {
@@ -62,6 +66,7 @@ export const LIGHT_COLORS: ColorTokens = {
   accent: '#3F6DAC',      // matches compute category's light-mode foreground (see CATEGORY_COLORS)
   onAccent: '#FFFFFF',    // white always reads on these saturated chip backgrounds in both themes
   price: '#047857',       // 6.4:1 on white — normal-text AA
+  meterTrack: '#E1E7F0',  // matches nodeBorder's light-mode "quiet recessed" tone
 }
 
 export const CATEGORY_COLORS = {

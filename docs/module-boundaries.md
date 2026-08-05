@@ -5597,7 +5597,7 @@ on nothing.
   batch's value, it just never animates the move), the same gate the chip's hover-lift transition
   already uses. `ServerBoard.tsx` passes `warmth={m?.warmth}` straight from the display batch —
   no new store/hook, same call site as `cacheHitRatio`/`replicaLagSec`.
-- `src/app/world/az/RackCabinet.tsx` / `FreePoolPod.tsx` — the floor-node mirror: a `⚡ NN%` text
+- `src/app/world/az/RackCabinet.tsx` / `FreePoolPod.tsx` — the floor-node mirror: a `● NN%` text
   badge offset past any cache/lag readouts already occupying that row (same tiebreak
   `ReplicaLagInfo`'s offset uses against `CacheHitInfo`), folded into the native SVG `<title>`
   tooltip, and — the distinct part FEAT-004/005's readouts didn't need — a warming-specific LED

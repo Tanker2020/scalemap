@@ -108,7 +108,7 @@ export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy',
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 6.5, color: 'var(--color-warning)' }}>
             <span>warming</span><span>{Math.round(warmth * 100)}%</span>
           </div>
-          <div style={{ position: 'relative', width: '100%', height: 3, borderRadius: 2, marginTop: 1, background: '#1a212c', overflow: 'hidden' }}>
+          <div style={{ position: 'relative', width: '100%', height: 3, borderRadius: 2, marginTop: 1, background: 'var(--color-meter-track)', overflow: 'hidden' }}>
             {/* Static partial fill at the current warmth value under reduced motion (no CSS
                 transition) — Step 2's motion budget: the fill still moves as new metrics batches
                 arrive (each render simply jumps to the new width), it just never animates the

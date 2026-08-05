@@ -82,7 +82,7 @@ function RackSlot({
   const labelY = box.roofSW.y + (yTop + yBottom) / 2 + ((yBottom - yTop) * 0.24) / 2
   const cacheTitle = cacheHit ? ` · ⌬ ${Math.round(cacheHit.ratio * 100)}% hit${cacheHit.warming ? ' (warming)' : ''}` : ''
   const lagTitle = replicaLag ? ` · ⏎ ${replicaLag.lagSec.toFixed(1)}s lag${replicaLag.overRpo ? ' (over RPO)' : ''}` : ''
-  const warmthTitle = warmth != null ? ` · ⚡ ${Math.round(warmth * 100)}% warm` : ''
+  const warmthTitle = warmth != null ? ` · ● ${Math.round(warmth * 100)}% warm` : ''
   const readoutOffset = (cacheHit ? 30 : 0) + (replicaLag ? 30 : 0)
 
   return (
@@ -151,7 +151,7 @@ function RackSlot({
           fill="var(--color-warning)"
           style={{ font: '6px var(--font-mono)', pointerEvents: 'none' }}
         >
-          ⚡ {Math.round(warmth * 100)}%
+          ● {Math.round(warmth * 100)}%
         </text>
       )}
       <circle

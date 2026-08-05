@@ -96,7 +96,7 @@ export function FreePoolPod({
       onPointerUp={handlers.onPointerUp}
       onPointerLeave={handlers.onPointerLeave}
     >
-      <title>{server.label} · {server.kind} · free pool · {health} · {Math.round(cpuMean * 100)}% cpu{cacheHit ? ` · ⌬ ${Math.round(cacheHit.ratio * 100)}% hit${cacheHit.warming ? ' (warming)' : ''}` : ''}{replicaLag ? ` · ⏎ ${replicaLag.lagSec.toFixed(1)}s lag${replicaLag.overRpo ? ' (over RPO)' : ''}` : ''}{warmth != null ? ` · ⚡ ${Math.round(warmth * 100)}% warm` : ''}</title>
+      <title>{server.label} · {server.kind} · free pool · {health} · {Math.round(cpuMean * 100)}% cpu{cacheHit ? ` · ⌬ ${Math.round(cacheHit.ratio * 100)}% hit${cacheHit.warming ? ' (warming)' : ''}` : ''}{replicaLag ? ` · ⏎ ${replicaLag.lagSec.toFixed(1)}s lag${replicaLag.overRpo ? ' (over RPO)' : ''}` : ''}{warmth != null ? ` · ● ${Math.round(warmth * 100)}% warm` : ''}</title>
       {/* az-lift: hover raises each pod independently (same treatment cabinets already have). */}
       <g className="az-lift">
         <polygon points={box.side} fill="url(#az-rackside)" stroke="#232b38" />
@@ -151,7 +151,7 @@ export function FreePoolPod({
             fill="var(--color-warning)"
             style={{ font: '6px var(--font-mono)', pointerEvents: 'none' }}
           >
-            ⚡ {Math.round(warmth * 100)}%
+            ● {Math.round(warmth * 100)}%
           </text>
         )}
         <circle
