@@ -2560,6 +2560,32 @@ describe('FEAT-002 Task 12: directional health / split-brain', () => {
     sim.engine.stop()
   })
 
+  // Review fix (Task 19 second pass): this cross-region orphan self-promotion block scans
+  // s.crossRegionOrphanReplicaIds, built once at start() over compileWorld's full maxCount
+  // ENVELOPE for an autoscaled placement (Task 11) — exactly the same "possible" superset
+  // promoteReplicas' own siblingReplicas scan had before its FEAT-008 fix. A parked replica here
+  // has no CPU/RAM (Task 13), no traffic (Task 14) and publishes no metrics (Task 16); it must
+  // never win this self-promotion path either.
+  it('never self-promotes a PARKED cross-region orphan replica, even when its region is isolated', () => {
+    const f = crossRegionReplicaFixture()
+    // Autoscale the replica's placement with minCount 0 — it starts fully parked (desiredCount
+    // seeds at minCount, runningSetResolver's indexInPlacement < desired test excludes index 0)
+    // and never receives any traffic (it's a db replica, not a client-facing entry point) so
+    // nothing ever drives it to scale out.
+    const replicaPl = Object.values(f.doc.placements).find(p => p.role === 'replica')!
+    replicaPl.autoscale = { minCount: 0, maxCount: 1, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300 }
+    const compiled = compileWorld(f.doc)
+
+    const sim = drive(f.doc, compiled)
+    sim.stepFor(2)
+    sim.engine.setPartition!({ from: { kind: 'region', id: f.regionA }, to: { kind: 'region', id: f.regionB }, mode: 'drop', symmetric: false })
+    sim.stepFor(60)
+
+    const promotions = sim.events.filter(e => e.kind === 'replica_promoted' && e.affected.includes(f.replicaIid))
+    expect(promotions).toHaveLength(0)
+    sim.engine.stop()
+  })
+
   it('healing the partition restores reachability and fails the isolated replica back', () => {
     const f = crossRegionReplicaFixture()
     const sim = drive(f.doc, f.compiled)

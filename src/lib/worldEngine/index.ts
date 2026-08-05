@@ -2068,6 +2068,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       for (const instId of s.crossRegionOrphanReplicaIds) {
         const inst = compiled.instances[instId]
         if (!inst) continue   // defensive: instance ids are stable for a run, but guard anyway
+        // Review fix (Task 19 second pass): crossRegionOrphanReplicaIds is built once at start()
+        // over the FULL maxCount envelope (Task 11), so a parked autoscale-envelope sibling can
+        // appear here exactly like promoteReplicas' siblingReplicas did before its own FEAT-008
+        // fix (see the isRunning param above). Mirror that guard here: a parked orphan replica
+        // must never self-promote.
+        if (!s.runningSet(instId)) continue
         const crossRegionPrimaries = Object.values(compiled.instances).filter(
           p => p.role === 'primary' && p.blueprintId === inst.blueprintId && p.regionId !== inst.regionId,
         )
