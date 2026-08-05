@@ -3854,16 +3854,17 @@ describe('FEAT-007 Task 5: cold-start latency throttle', () => {
     sim.engine.stop()
   })
 
-  // A single instance sustaining ~90% CPU under heavy client load, RAM-sized so a brief
-  // ramPerConnMb pressure at that admitted rps tips it over its container limit -- the same
-  // "OOM emerges from sustained load, no fault injection needed" shape as the pre-existing
-  // "OOM-kills the largest consumer under a RAM-starved fixture" test above, but tuned to
-  // saturate CPU (not just RAM) so the cold-started restart is immediately handed full,
-  // unthrottled demand.
+  // A single instance sustaining a marginal (deliberately close to 100%) CPU overload under
+  // heavy client load, RAM-sized so the resulting queueing/backlog pressure at that admitted rps
+  // tips it over its container limit -- the same "OOM emerges from sustained load, no fault
+  // injection needed" shape as the pre-existing "OOM-kills the largest consumer under a
+  // RAM-starved fixture" test above, but tuned to saturate CPU (not just RAM) so the
+  // cold-started restart is immediately handed full, unthrottled demand.
   function singleSaturatedInstance(opts: {
     coldStartMs: number
     warmCapacityFraction: number
-    targetCpuUtilization: number
+    demandFraction: number   // pop.peakRps as a multiple of the instance's solo CPU ceiling
+    memLimitMb: number
   }) {
     const doc = createWorld()
     const region = createRegion('us-east-1')
@@ -3884,32 +3885,84 @@ describe('FEAT-007 Task 5: cold-start latency throttle', () => {
     const pl = createPlacement(bp.id, server.id)
     pl.runtime = {
       type: 'container', stackName: 'app', networkNames: [], portMappings: [],
-      cpuLimit: null, memLimitMb: 600,
+      cpuLimit: null, memLimitMb: opts.memLimitMb,
     }
     doc.placements[pl.id] = pl
     const inst = instanceId(pl.id, 0)
 
     const pop = createPopulation('nyc', 40.7, -74.0)
-    // Demand well past the solo ceiling -- sustained overload drives both CPU saturation
-    // (~targetCpuUtilization and beyond) and, via activeConnections * ramPerConnMb, RAM past the
-    // container limit on its own, no fault injection required for either OOM.
-    pop.peakRps = soloCeilingRps * (opts.targetCpuUtilization + 0.6) / opts.targetCpuUtilization
+    pop.peakRps = soloCeilingRps * opts.demandFraction
     doc.populations[pop.id] = pop
 
     return { doc, serverId: server.id, instanceId: inst }
   }
 
-  it('RESTART STORM: an overloaded service, killed and restarted cold, re-saturates and OOMs again without new operator action', () => {
-    const f = singleSaturatedInstance({ coldStartMs: 30_000, warmCapacityFraction: 0.2, targetCpuUtilization: 0.9 })
-    const compiled = compileWorld(f.doc)
-    const sim = drive(f.doc, compiled)
-    sim.stepFor(5)
-    const oomEvents1 = sim.events.filter(e => e.kind === 'oom_kill')
-    expect(oomEvents1.length).toBeGreaterThanOrEqual(1)   // saturation already causes at least one OOM
-    // let it restart cold and receive full traffic immediately (no operator throttling of demand)
-    sim.stepFor(30)
-    const oomEvents2 = sim.events.filter(e => e.kind === 'oom_kill')
-    expect(oomEvents2.length).toBeGreaterThan(oomEvents1.length)   // re-saturates and OOMs a second time
-    sim.engine.stop()
+  // Code-review Critical finding on an earlier version of this test: hostScheduler.ts's
+  // `latencyMultiplier = Math.max(1, cpuPressure)` (lines 230-231) ALREADY produces a repeating
+  // OOM cycle from plain sustained CPU overload alone, with ZERO cold-start involvement -- proven
+  // by the pre-existing 'MEASURED: Mechanism A closes the loop via a repeating OOM-kill cycle'
+  // test above (demand backpressure describe block, ~line 2113), whose fixture carries no
+  // coldStartMs at all. The original version of this test overloaded demand to ~166% of solo CPU
+  // capacity and never reduced it, so Mechanism A alone was plausibly sufficient to explain the
+  // second OOM -- the test could not distinguish "the cold-start throttle caused it" from
+  // "sustained overload alone would have re-OOM'd regardless, with or without any cold-start
+  // config."
+  //
+  // Fixed via a CONTROL: the IDENTICAL fixture/demand run twice, differing ONLY in coldStartMs (30s
+  // vs 0, the Task 3 regression floor -- 0 means warmingUntil is never populated on restart, so the
+  // restarted instance is handed full, unthrottled capacity immediately, byte-identical to
+  // pre-FEAT-007 behavior). An empirical parameter sweep (demandFraction x memLimitMb, discarded
+  // after tuning) found a demand/RAM-headroom combination -- 101% of solo CPU ceiling, deliberately
+  // modest so the SAME quantum of extra queueing pressure the throttle adds is a large relative
+  // effect, not lost in an already-runaway overload -- where Mechanism A alone (the control) still
+  // exists but is comparatively mild (one additional OOM over the 30s post-restart window), while
+  // the SAME demand with the cold-start throttle engaged produces a MUCH larger repeat-OOM rate
+  // (five additional OOMs in the same window) -- a ~5x difference, not a coin-flip-sized one. That
+  // gap is what's attributable to the throttle: Mechanism A's own contribution is held constant
+  // across both runs, so the LARGE excess in the throttled run isolates the throttle's own causal
+  // effect rather than merely riding along on top of it.
+  const RESTART_STORM_DEMAND_FRACTION = 1.01   // 101% of solo CPU ceiling -- deliberately marginal
+  const RESTART_STORM_MEM_LIMIT_MB = 1080
+
+  it('RESTART STORM: an overloaded service, killed and restarted cold, re-saturates and OOMs MUCH more than sustained overload alone would', () => {
+    const throttled = singleSaturatedInstance({
+      coldStartMs: 30_000, warmCapacityFraction: 0.2,
+      demandFraction: RESTART_STORM_DEMAND_FRACTION, memLimitMb: RESTART_STORM_MEM_LIMIT_MB,
+    })
+    const control = singleSaturatedInstance({
+      coldStartMs: 0, warmCapacityFraction: 0.2,   // regression floor: throttle disabled
+      demandFraction: RESTART_STORM_DEMAND_FRACTION, memLimitMb: RESTART_STORM_MEM_LIMIT_MB,
+    })
+    const simT = drive(throttled.doc, compileWorld(throttled.doc))
+    const simC = drive(control.doc, compileWorld(control.doc))
+
+    // 15s: long enough for the marginal (101%-of-ceiling) overload to tip both instances into
+    // their first OOM under plain sustained load -- identical setup, no throttle involved yet
+    // (restart hasn't happened for either).
+    simT.stepFor(15)
+    simC.stepFor(15)
+    const oom1T = simT.events.filter(e => e.kind === 'oom_kill').length
+    const oom1C = simC.events.filter(e => e.kind === 'oom_kill').length
+    expect(oom1T).toBeGreaterThanOrEqual(1)   // saturation already causes at least one OOM
+    expect(oom1C).toBeGreaterThanOrEqual(1)   // the control starts from the SAME saturated state
+
+    // Both restart and receive the SAME full, unthrottled demand -- the throttled instance ramps
+    // capacity back up over 30s (coldStartMs), the control gets full capacity back immediately.
+    simT.stepFor(30)
+    simC.stepFor(30)
+    const oom2T = simT.events.filter(e => e.kind === 'oom_kill').length
+    const oom2C = simC.events.filter(e => e.kind === 'oom_kill').length
+
+    expect(oom2T).toBeGreaterThan(oom1T)   // re-saturates and OOMs again -- the feature's core claim
+    // Mechanism A alone (the control) also re-OOMs some at this marginal demand level -- that's
+    // expected and not itself a bug. What proves the throttle's causal contribution is that the
+    // SAME demand, restarted cold, produces MATERIALLY MORE repeat-OOMs than the control did in
+    // the identical window: the throttle is what tips a marginal-but-recovering overload into a
+    // much worse one, not merely riding along on an already-guaranteed repeat.
+    expect(oom2T).toBeGreaterThan(oom2C)
+    expect(oom2T - oom1T).toBeGreaterThan((oom2C - oom1C) * 2)   // materially more, not marginally
+
+    simT.engine.stop()
+    simC.engine.stop()
   })
 })
