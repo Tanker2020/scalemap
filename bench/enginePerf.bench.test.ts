@@ -24,8 +24,33 @@ import type { WorldDoc } from '../src/lib/world/types'
 
 const REGIONS = 6, AZS_PER_REGION = 3, SERVERS_PER_AZ = 12, INSTANCES_PER_SERVER = 9
 const BACKEND_TIERS = 4
-// 216 servers (6 x 3 x 12) x 9 "web" (bp0) instances/server = 1,944, + 4 single-instance backend
-// tiers = 1,948 total — lands the fixture in the sanity-checked (1800, 2000] range below.
+// FEAT-008 (Wave 3 close, Task 22): the very first server (r=0/a=0/s=0) carries an AUTOSCALED bp0
+// placement instead of a static one, so this bench measures the real cost of compileWorld's
+// maxCount envelope expansion (an autoscaled placement compiles to its FULL maxCount, not its
+// authored/minCount — see compileWorld.ts), not an artificially small minCount-only world. Its
+// maxCount (15) is 5x its minCount (3) — a genuine "several times" envelope, per the spec's own
+// "note that maxCount envelopes make compiled larger, so bench with a realistic envelope"
+// warning. 215 static servers x 9 + 1 autoscaled server's 15-instance envelope = 1,950 "web" (bp0)
+// instances, + 4 single-instance backend tiers = 1,954 total — lands the fixture in the
+// sanity-checked (1800, 2000] range below (other placements' counts were NOT reduced to
+// compensate; the autoscaled placement's extra 6 instances over the previous all-static 1,944 +
+// 4 = 1,948 total still fit comfortably inside the band).
+//
+// Task 22 (Wave 3 close) verification note: adding this one autoscaled placement to the fixture
+// exposed a real, since-fixed cost — routingHealthOfInstance (index.ts) and the observedCpu
+// collection pass in the per-server host-scheduling loop were both O(whole compiled fleet) any
+// time ANY placement anywhere carried an autoscale policy, not O(the autoscaled envelope), so
+// enabling autoscale at ~2,000-instance scale cost an extra ~4-5ms/step regardless of how small
+// the actual autoscaled placement was. Fixed by precomputing autoscaledPlacementIds/
+// autoscaledInstanceIds once at start() and gating both call sites on Set membership instead of
+// the single hasAnyAutoscale boolean. Compare this file's measured median against a same-machine,
+// same-moment run of a build with no `autoscale` authored anywhere (e.g. `git stash` this file's
+// changes) rather than against the ~3.9ms figure in the comment below in isolation — that absolute
+// number drifts with ambient machine load (observed 3.9-7.5ms across otherwise-identical runs in
+// this session), but the AUTOSCALE-attributable delta measured that way stayed under ~0.5ms/step
+// after the fix (vs. ~4-5ms/step before it), matching the "hasAnyAutoscale fast path" budget this
+// bench exists to guard.
+const AUTOSCALE_MIN_COUNT = 3, AUTOSCALE_MAX_COUNT = 15
 
 function buildSyntheticWorld(): WorldDoc {
   const doc = createWorld()
@@ -51,9 +76,20 @@ function buildSyntheticWorld(): WorldDoc {
       for (let s = 0; s < SERVERS_PER_AZ; s++) {
         const server = createServer(az.id, getPreset('vps-medium')!)
         doc.servers[server.id] = server
-        if (!firstServerId) firstServerId = server.id
+        const isFirstServer = !firstServerId
+        if (isFirstServer) firstServerId = server.id
         const pl = createPlacement(blueprints[0].id, server.id)
-        pl.count = INSTANCES_PER_SERVER
+        if (isFirstServer) {
+          // The one autoscaled placement (see AUTOSCALE_MIN_COUNT/AUTOSCALE_MAX_COUNT above) —
+          // authored count sits at minCount; compileWorld is what expands it to maxCount.
+          pl.count = AUTOSCALE_MIN_COUNT
+          pl.autoscale = {
+            minCount: AUTOSCALE_MIN_COUNT, maxCount: AUTOSCALE_MAX_COUNT, targetCpuPercent: 60,
+            scaleUpCooldownSec: 30, scaleDownCooldownSec: 300,
+          }
+        } else {
+          pl.count = INSTANCES_PER_SERVER
+        }
         doc.placements[pl.id] = pl
       }
     }

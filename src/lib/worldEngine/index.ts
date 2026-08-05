@@ -569,6 +569,29 @@ interface EngineState {
   // per-step control-loop scan entirely for the overwhelming common case (no autoscaling
   // authored anywhere).
   hasAnyAutoscale: boolean
+  // Task 22 (Wave 3 close, perf fix): the set of placement ids that actually carry an authored
+  // `autoscale` policy, precomputed once at start() alongside hasAnyAutoscale. Scopes the
+  // per-instance CPU-utilization pass below (section 4/5's per-server loop) to ONLY the instances
+  // that belong to an autoscaled placement, instead of every resident instance on every server —
+  // the bench-measured cost of that pass turned out to be proportional to the WHOLE compiled
+  // fleet (~2,000 instances/step) rather than to the (usually much smaller) autoscaled envelope,
+  // because it iterated every server's `loads` unconditionally once hasAnyAutoscale was true at
+  // all. At a realistic ~2,000-instance/1-autoscaled-placement bench world this cost ~4-5ms/step
+  // extra (median step ~8.6ms, over the 8ms CI-fail line) purely from populating a ~2,000-key
+  // dictionary-mode `cpuUtilByInstance` object every 100ms tick, even though only the one
+  // autoscaled placement's ~15-instance envelope ever reads from it.
+  autoscaledPlacementIds: Set<PlacementId>
+  // Companion to autoscaledPlacementIds, at instance granularity (every compiled instance id
+  // belonging to an autoscaled placement's maxCount envelope) — lets routingHealthOfInstance
+  // (below) skip the s.runningSet/drainUntilByInstance lookups entirely for the common case of an
+  // instance that could NEVER be parked or draining (only an autoscaled placement's envelope ever
+  // populates desiredCount below its max or drainUntilByInstance at all), instead of relying on
+  // runningSetResolver's own internal fast path -- which still costs a compiled.instances lookup
+  // + a Map.get PER CALL, multiplied by every routing candidate check per step. At bench scale
+  // (~2,000 instances, one small autoscaled placement) this landed the routing-eligibility check
+  // back near its pre-FEAT-008 cost for the ~99% of instances that were never eligible to be
+  // parked in the first place.
+  autoscaledInstanceIds: Set<InstanceId>
   // Task 10's pure backlog/lag tracker — persistent across ticks, mutated in place by
   // stepReplication.
   replication: ReplicationState
@@ -679,7 +702,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     // untouched -- runningSet/draining has no bearing on whether an instance IS healthy, only on
     // whether it's currently eligible to receive NEW work.
     const routingHealthOfInstance = (iid: InstanceId): HealthState =>
-      (!s.runningSet(iid) || s.drainUntilByInstance.has(iid)) ? 'down' : healthOfInstance(iid)
+      (s.autoscaledInstanceIds.has(iid) && (!s.runningSet(iid) || s.drainUntilByInstance.has(iid)))
+        ? 'down' : healthOfInstance(iid)
     for (const { routeId, rps } of routeDemands) {
       if (rps <= 0) continue
       const path = routeId != null ? s.routePathById.get(routeId) : null
@@ -1504,9 +1528,13 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // proportionally smaller ceiling, not the server's full core count. Only running (loads
       // already excludes parked) instances contribute -- there is nothing to read for a parked
       // one anyway. Gated on hasAnyAutoscale so an unconfigured world skips this per-instance pass
-      // entirely.
+      // entirely, and further scoped to autoscaledPlacementIds (Task 22 perf fix) so a world where
+      // only a SMALL fraction of a large fleet is actually autoscaled doesn't pay a per-step cost
+      // proportional to the WHOLE fleet -- only the evaluatePolicy call site below ever reads
+      // cpuUtilByInstance, and it only ever looks up ids belonging to an autoscaled placement.
       if (s.hasAnyAutoscale) {
         for (const l of loads) {
+          if (!s.autoscaledPlacementIds.has(compiled.instances[l.instanceId]?.placementId ?? '')) continue
           const vcpuShare = effectiveVcpu * (Math.max(0, l.cpuShares ?? 1) / totalShares)
           const cpuCoresUsed = (l.admittedRps * l.cpuMsPerRequest) / 1000
           cpuUtilByInstance[l.instanceId] = vcpuShare > 0 ? cpuCoresUsed / vcpuShare : 0
@@ -2513,6 +2541,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // ONE seeded source for the determinism guarantee to hold. Absent a scenario, behavior is
       // byte-identical to pre-feature.
       const effectiveSeed = doc.scenario?.seed ?? seed
+      // Task 22 perf fix: computed once here (not inline in the state literal below) so both
+      // autoscaledPlacementIds and autoscaledInstanceIds can share it without filtering
+      // doc.placements twice.
+      const autoscaledPlacementIdsAtStart = new Set(
+        Object.values(doc.placements).filter(pl => pl.autoscale != null).map(pl => pl.id),
+      )
       state = {
         running: true, seed: effectiveSeed, rng: createRng(effectiveSeed), clock: createClock(DEFAULT_STEP_MS), stepMs: DEFAULT_STEP_MS,
         timeScale: 1, doc, compiled, callbacks, entryBlueprintIds: new Set(entryBlueprints(doc)),
@@ -2571,7 +2605,13 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         runningSetKey: '',
         // Task 15: empty at start() -- nothing is draining until the first scale-in decision.
         drainUntilByInstance: new Map(),
-        hasAnyAutoscale: Object.values(doc.placements).some(pl => pl.autoscale != null),
+        hasAnyAutoscale: autoscaledPlacementIdsAtStart.size > 0,
+        autoscaledPlacementIds: autoscaledPlacementIdsAtStart,
+        autoscaledInstanceIds: new Set(
+          Object.values(compiled.instances)
+            .filter(inst => autoscaledPlacementIdsAtStart.has(inst.placementId))
+            .map(inst => inst.id),
+        ),
         replication: createReplicationState(),
         prevWriteRpsByCluster: {},
         routing: createRoutingState(), failover: createFailoverState(), faults: createFaultState(),

@@ -4376,3 +4376,212 @@ describe('FEAT-008 Task 13: wire AutoscaleState into the engine loop', () => {
     simB.engine.stop()
   })
 })
+
+describe('FEAT-008/FEAT-007 Task 22: wave-close integration tests', () => {
+  // One region/AZ/server, one public autoscaled placement, same shape as Task 13's
+  // autoscaledPlacementWorld above (re-derived locally per this file's established convention of
+  // scoping fixture factories to their describe block rather than sharing one across every FEAT-008
+  // block). pop.diurnal is 'custom' with a hand-authored curve (FEAT-003) instead of 'flat': eight
+  // 15s segments over the engine's compressed 120s "day" (demand.ts's DAY_MS) alternate a near-zero
+  // trough and a saturating peak, producing a genuine triangle wave whose demand crosses back and
+  // forth across any reasonable targetCpuPercent every ~15s — not a single step change, and not the
+  // synthetic "manually flip peakRps mid-test" pattern several earlier tests in this file use
+  // (AUTOSCALE DRAIN, etc), since the asymmetry test below needs the SAME oscillating fixture run
+  // twice back-to-back for 120s unattended.
+  function oscillatingLoadAutoscaledWorld(policy: {
+    minCount: number; maxCount: number; targetCpuPercent: number
+    scaleUpCooldownSec: number; scaleDownCooldownSec: number
+  }) {
+    const doc = createWorld()
+    doc.routing.policy = 'latency'
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+
+    const blueprint = publicBlueprint('web', 0)
+    doc.blueprints[blueprint.id] = blueprint
+
+    const pl = createPlacement(blueprint.id, server.id)
+    pl.count = policy.minCount
+    pl.autoscale = { ...policy }
+    doc.placements[pl.id] = pl
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    // 900 peak rps x a 3x multiplier x 5ms/req (factories.ts's default cpuMsPerRequest) on a
+    // dedicated-8 (8 vCPU) instance = ~1.7k cpuCoresUsed-equivalent -- comfortably saturating past
+    // any targetCpuPercent at the trough of the fleet, and the 0.05x multiplier trough is ~2.5%
+    // CPU -- comfortably under it. Amplitude is intentionally generous (not a near-threshold
+    // fixture) so the effect under test (cooldown asymmetry) dominates over Poisson/burst noise.
+    pop.peakRps = 900
+    pop.diurnal = 'custom'
+    pop.curve = [
+      { atFraction: 0, multiplier: 0.05 },
+      { atFraction: 0.125, multiplier: 3 },
+      { atFraction: 0.25, multiplier: 0.05 },
+      { atFraction: 0.375, multiplier: 3 },
+      { atFraction: 0.5, multiplier: 0.05 },
+      { atFraction: 0.625, multiplier: 3 },
+      { atFraction: 0.75, multiplier: 0.05 },
+      { atFraction: 0.875, multiplier: 3 },
+      { atFraction: 1, multiplier: 0.05 },
+    ]
+    doc.populations[pop.id] = pop
+    return { doc }
+  }
+
+  // Proves scaleDownCooldownSec is a real, independent knob (not decorative / not silently
+  // aliased to scaleUpCooldownSec) — under IDENTICAL oscillating demand and an IDENTICAL
+  // scaleUpCooldownSec, only scaleDownCooldownSec differs between the two runs. A tight
+  // scale-down cooldown (20s) lets the placement track the trough every ~30s cycle; a loose one
+  // (300s, longer than the whole 120s test) locks scale_in out almost entirely for the run's
+  // duration, so it can only ever accrue the scale_out events both runs share. If cooldown gating
+  // were broken (e.g. both directions sharing one timer, or scaleDownCooldownSec ignored
+  // entirely), tightCount and looseCount would come out equal.
+  it('AUTOSCALE ASYMMETRY: a shorter scaleDownCooldownSec produces more scale events under oscillating load than a longer one', () => {
+    const tightPolicy = { minCount: 1, maxCount: 6, targetCpuPercent: 50, scaleUpCooldownSec: 10, scaleDownCooldownSec: 20 }
+    const loosePolicy = { minCount: 1, maxCount: 6, targetCpuPercent: 50, scaleUpCooldownSec: 10, scaleDownCooldownSec: 300 }
+    const runWith = (policy: typeof tightPolicy) => {
+      const f = oscillatingLoadAutoscaledWorld(policy) // demand alternates high/low every ~15s
+      const compiled = compileWorld(f.doc)
+      const sim = drive(f.doc, compiled)
+      sim.stepFor(120)
+      const count = sim.events.filter(e => e.kind === 'scale_in' || e.kind === 'scale_out').length
+      sim.engine.stop()
+      return count
+    }
+    const tightCount = runWith(tightPolicy)
+    const looseCount = runWith(loosePolicy)
+    expect(tightCount).toBeGreaterThan(looseCount)
+    // Negative control: the two runs must actually have DIFFERED in scale-out participation too
+    // (both directions active in principle), otherwise a "tightCount > looseCount" reading could
+    // be trivially explained by the loose run never scaling at all (e.g. a broken fixture where
+    // demand never crosses target), rather than by the cooldown asymmetry under test.
+    expect(looseCount).toBeGreaterThan(0)
+  })
+
+  // Local factory (distinct from Task 13's describe-scoped one of the same name above) so this
+  // describe block's fixtures stay self-contained per this file's convention — adds an optional
+  // coldStartMs/warmCapacityFraction on the blueprint's workload, FEAT-007's hookup point
+  // (index.ts reads bp.workload.coldStartMs at the scale-out call site).
+  function autoscaledPlacementWorld(policy: {
+    minCount: number; maxCount: number; targetCpuPercent: number
+    scaleUpCooldownSec: number; scaleDownCooldownSec: number; coldStartMs: number
+  }) {
+    const doc = createWorld()
+    doc.routing.policy = 'latency'
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+
+    const blueprint = publicBlueprint('web', 0)
+    if (policy.coldStartMs > 0) {
+      blueprint.workload.coldStartMs = policy.coldStartMs
+      blueprint.workload.warmCapacityFraction = 0.2
+    }
+    doc.blueprints[blueprint.id] = blueprint
+
+    const pl = createPlacement(blueprint.id, server.id)
+    pl.count = policy.minCount
+    pl.autoscale = {
+      minCount: policy.minCount, maxCount: policy.maxCount, targetCpuPercent: policy.targetCpuPercent,
+      scaleUpCooldownSec: policy.scaleUpCooldownSec, scaleDownCooldownSec: policy.scaleDownCooldownSec,
+    }
+    doc.placements[pl.id] = pl
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 5   // small: keeps the placement at minCount until the spike below
+    doc.populations[pop.id] = pop
+
+    const instanceIdsForPlacement = Array.from({ length: policy.maxCount }, (_, i) => instanceId(pl.id, i))
+    return { doc, placementId: pl.id, instanceIdsForPlacement }
+  }
+
+  // FEAT-007 x FEAT-008 interaction: a scale-out event mints new instances that start cold
+  // (index.ts's Task 6 hookup), so a demand spike that triggers autoscaling should NOT recover p99
+  // the moment scale_out fires -- the new capacity is still ramping through coldStartMs.
+  //
+  // The metric MUST be fleet-wide (the worst/max p99Ms across every currently-running instance of
+  // the placement), not one arbitrarily chosen instance's own p99 -- this fixture's whole envelope
+  // lives on ONE server (a Placement has exactly one serverId; see autoscaledPlacementWorld), so
+  // stepHost's water-fill CPU scheduler shares that one server's fixed core budget across every
+  // RESIDENT instance. A cold/degraded sibling's reduced water-fill weight means it draws LESS of
+  // the shared budget, which paradoxically leaves the placement's already-warm original instance
+  // WITH MORE headroom than it would have if every sibling were fully warm and competing for an
+  // equal share -- so index 0's own p99 alone (measured first, and confirmed empirically) actually
+  // reads BETTER in the cold run than the warm one, exactly backwards from the effect this test is
+  // supposed to catch. Aggregating to the fleet's worst p99 fixes that: it directly reflects what a
+  // real caller round-robined across every running instance would experience, and the cold run's
+  // still-ramping siblings (empirically ~2000ms p99 while under 15% warmth) dominate that max.
+  //
+  // The straightforward assertion (fleet p99 stays elevated 10s after the spike) is on its own NOT
+  // a discriminating test: a permanently-saturated fleet would show the exact same "hasn't
+  // recovered" reading whether or not cold start is wired up at all. The negative control below
+  // (coldStartMs=0, otherwise byte-identical fixture/spike) is what makes this a real red/green
+  // test: with cold start genuinely gating capacity, the instant-warm control's new instances
+  // contribute at full capacity from the start, so its fleet-wide p99 is meaningfully BETTER than
+  // the cold run's by +10s -- if the coldStartMs wiring silently no-op'd, both runs would converge
+  // to the same fleet-wide p99 and this comparison would fail to discriminate.
+  it('AUTOSCALE + COLD START INTERACTION: a scale-out event does not reduce fleet-wide p99 for ~coldStartMs, and the autoscaler may over-provision in the interim', () => {
+    const runWith = (coldStartMs: number) => {
+      const f = autoscaledPlacementWorld({
+        minCount: 1, maxCount: 6, targetCpuPercent: 50, scaleUpCooldownSec: 5, scaleDownCooldownSec: 300, coldStartMs,
+      })
+      const compiled = compileWorld(f.doc)
+      const sim = drive(f.doc, compiled)
+      const popId = Object.keys(f.doc.populations)[0]
+      const pop = f.doc.populations[popId]
+      const fleetP99 = () => {
+        const vals = f.instanceIdsForPlacement
+          .map(id => (sim.latest().instances as any)[id]?.p99Ms as number | undefined)
+          .filter((v): v is number => typeof v === 'number')
+        return Math.max(...vals)
+      }
+
+      // evaluatePolicy's scale-DOWN cooldown gate (autoscale.ts) is unarmed until a placement's
+      // FIRST-EVER scale-in decision has fired (lastScaleDownAt starts at -Infinity, so nothing
+      // gates it) -- meaning the very first scale-out in this placement's life would otherwise be
+      // undone one evaluation step (100ms) later by the ordinary post-scale-out dip in fleet-mean
+      // observedCpuPercent (the freshly-added instance's rps hasn't caught up to its round-robin
+      // share yet), regardless of scaleDownCooldownSec=300 above and regardless of coldStartMs.
+      // Pre-arm that free pass with a throwaway blip BEFORE the real, measured spike below, so the
+      // real spike's scale-out is actually held for the full measurement window by the (now
+      // properly armed) 300s cooldown -- otherwise both runs would trivially revert to 1 instance
+      // within a step or two and this test would measure round-robin-settling noise, not
+      // coldStartMs.
+      pop.peakRps = 1400
+      sim.stepFor(1)
+      pop.peakRps = 5
+      sim.stepFor(2) // let the throwaway instance drain (INSTANCE_DRAIN_MS=2000ms) and CPU settle
+
+      const realSpikeStartMs = sim.latest().simMs
+      pop.peakRps = 1400 // the real, measured spike -- forces scale-out under a 50% CPU target
+      sim.stepFor(1)
+      const p99AtSpike = fleetP99()
+      sim.stepFor(10) // well within coldStartMs=60s, after the real scale_out has fired and held
+      const p99At10s = fleetP99()
+      const eventsAfterRealSpike = sim.events.filter(e => e.simMs >= realSpikeStartMs)
+      const scaledOut = eventsAfterRealSpike.some(e => e.kind === 'scale_out')
+      const scaledIn = eventsAfterRealSpike.some(e => e.kind === 'scale_in')
+      sim.engine.stop()
+      return { p99AtSpike, p99At10s, scaledOut, scaledIn }
+    }
+
+    const cold = runWith(60_000)
+    expect(cold.scaledOut).toBe(true)
+    // The real scale-out must have HELD (not reverted) for the pre-arming above to have done its
+    // job -- otherwise the assertions below would be measuring a 1-instance fleet in both runs.
+    expect(cold.scaledIn).toBe(false)
+    expect(cold.p99At10s).toBeGreaterThan(cold.p99AtSpike * 0.7) // has NOT meaningfully recovered
+
+    const warm = runWith(0) // negative control: instant-warm, otherwise identical
+    expect(warm.scaledOut).toBe(true)
+    expect(warm.scaledIn).toBe(false)
+    expect(warm.p99At10s).toBeLessThan(cold.p99At10s) // instant capacity recovers meaningfully more
+  })
+})

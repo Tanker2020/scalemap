@@ -5541,7 +5541,7 @@ not a blueprint modal.
 | Module | Feature | Purpose |
 |---|---|---|
 | FEAT-007 in-place extensions | FEAT-007 | Instance cold-start warmth tracking and capacity throttling: pure `warmthOf(instance, currentMs)` resolver in `hostScheduler.ts` (0..1, linearly ramping from `coldStartMs` to `warmCapacityFraction`), consumed by `index.ts` to build the capacity-throttle input for `hostScheduler.ts`'s water-fill scheduler and to apply the latency-throttle multiplier to `effectiveCpuMsByInstance` before the flow solver reads it, and by `metrics.ts` to publish `InstanceMetrics.warmth`. New optional `WorkloadProfile` fields `coldStartMs?`/`warmCapacityFraction?` (Task 1, doc model) and `InstanceMetrics.warmth?` (Task 6, published 1 Hz). Two new `EngineEventKind` variants `'instance_warming'`/`'instance_warm'` (Task 7, added to `types.ts` and `aiChat/eventCausality.ts`) emit once per cold/warm transition. UI layer (Task 8) authors `coldStartMs` via `EditServiceForm.tsx` and renders live warm-up readout as a chip fill bar (`ServiceChip.tsx`) and floor LED/badge (`RackCabinet.tsx`/`FreePoolPod.tsx`). Spec budget: zero cost when no instances are warming (`warmingUntil.size === 0` fast path), < 0.05ms per warming instance per step. |
-| `src/lib/worldEngine/autoscale.ts` | FEAT-008 | Pure, dependency-free autoscaling resolver (`AutoscaleState`, `runningSetResolver`, `evaluatePolicy`, no engine imports). Computes running/parked instance membership for each autoscaled placement, consumed by `index.ts` to coordinate placement envelope and instance lifecycle transitions. |
+| `src/lib/worldEngine/autoscale.ts` | FEAT-008 | Pure, dependency-free autoscaling resolver — no engine imports, only `world/types.ts`. Exports: `createAutoscaleState(doc)` (seeds `AutoscaleState.desiredCount` to `minCount` for every autoscaled placement, `count` for every static one — every placement gets an entry, autoscaled or not); `runningSetResolver(compiled, desiredCount, drainUntilByInstance?)` → `(instanceId) => boolean`, mirroring `failover.ts`'s `effectiveRoleResolver` closure shape (an instance is running iff `indexInPlacement < desired` OR it's mid-drain); `evaluatePolicy(placement, observedCpuPercent, state, simMs)` → `{ next, scaled: 'out' \| 'in' \| null }`, the asymmetric-cooldown HPA-style control loop (`scaleUpCooldownSec`/`scaleDownCooldownSec` gate independently; ⚠ a placement's FIRST-EVER scale-DOWN decision is never cooldown-gated — `lastScaleDownAt` starts at `-Infinity` — see Task 22 below); `beginInstanceDrain`/`clearInstanceDrain`/`instanceDrainFactor`/`INSTANCE_DRAIN_MS` (2000ms), an instance-keyed clone of `failover.ts`'s AZ-keyed drain pattern for scale-in's grace window. Consumed by `index.ts`'s two call sites: (1) the host-scheduling `InstanceLoad` filter (`resident.filter(i => s.runningSet(i.id))`, Task 13) excludes parked instances from CPU/RAM entirely, and (2) `routingHealthOfInstance` (Task 14) excludes parked + draining instances from LB target selection by reporting `'down'` for eligibility purposes only (never affects `healthOfInstance`'s own health signal — see "The running/possible split" below). `metrics.ts` publishes `runningByPlacement`/`recentScaleEventCount` off the same `s.autoscale.desiredCount`/`s.scaleEventHistory` state (Task 16/20), never re-derived. |
 
 ### Hub files receiving sequential edits
 
@@ -5601,6 +5601,32 @@ separately; this is what made the four Task 19 bugs possible. The current runnin
 
 The full file-by-file classification of every `compiled.instances` reader in the codebase is
 `.superpowers/sdd/2026-08-04-wave3-elasticity/task-19-report.md`.
+
+### Compile-time envelope + cost apportionment
+
+`src/lib/world/compileWorld.ts:27` is the one line that decides envelope size:
+`const envelopeCount = pl.autoscale ? pl.autoscale.maxCount : pl.count` — the sole place
+`compiled.instances` cardinality is allowed to diverge from `pl.count` (see "The running/possible
+split" above). Every downstream consumer of `compiled.instances` inherits this envelope
+automatically; nothing else in the compile step needs to special-case autoscaled placements.
+
+`src/lib/costModelV2.ts`'s `computeWorldCost` (Task 18) bills a server's flat hourly rate in full
+(pre-FEAT-008 behavior, unchanged) UNLESS at least one resident placement authors `autoscale`, in
+which case the charge is apportioned by running-instance share across ALL of that server's
+resident placements (static ones included): `billedFraction = runningWeight / maxWeight`, where
+`maxWeight` sums each placement's envelope (`autoscale.maxCount` or plain `count`) and
+`runningWeight` sums its live running count (`runningByPlacement[pl.id]`, falling back to
+`pl.count` both pre-run and for a static placement — `runningByPlacement` only exists once a
+`MetricsBatch` has published). `runningByPlacement` itself lives on `MetricsBatch` (Task 16), one
+level above the `WorldMetrics` slice `computeWorldCost` historically took, so its `world` param
+was widened via intersection (`WorldMetrics & { runningByPlacement?: ... }`) rather than moved
+onto `WorldMetrics` itself (a frozen, additive-only contract — see `contract-drift.md`'s FEAT-008
+heading) — every pre-existing `WorldMetrics`-shaped caller stays structurally assignable
+unchanged. Task 21 threaded this through to every real UI call site that displays a cost figure
+(`CostTab.tsx`, `RegionView.tsx`, `panels/TopologyPanel.tsx`, `dock/scopeData.ts`'s `scopedCost`
++ its four callers) — see that task's write-up above for the exact list; a caller that still
+passes bare `WorldMetrics` (no `runningByPlacement`) silently gets the pre-FEAT-008 full-envelope
+billing, never a crash.
 
 ### In-place extensions
 
@@ -5752,3 +5778,91 @@ The terminal UI task for FEAT-008. Consumes `AutoscalePolicy` (Task 10), `Metric
   for whoever picks it up next (`PartitionsSection.tsx`'s own comments already document this bug
   class recurring in this codebase). Full run: `npx tsc --noEmit`, `npx vitest run src --exclude
   "**/.claude/**"` (152 files / 1999 tests), and `npm run build` all green.
+
+### Task 22 — Wave 3 close: integration tests, realistic bench envelope, perf fix
+
+The wave-close task: two cross-feature integration tests in `src/lib/worldEngine/index.test.ts`
+(new `describe('FEAT-008/FEAT-007 Task 22: wave-close integration tests')` block), a bench world
+change in `bench/enginePerf.bench.test.ts`, and a real perf regression this task's own bench edit
+exposed and fixed in `src/lib/worldEngine/index.ts`.
+
+**`AUTOSCALE ASYMMETRY`** — proves `scaleDownCooldownSec` is a real, independently-gated knob (not
+decorative, not aliased to `scaleUpCooldownSec`). A local `oscillatingLoadAutoscaledWorld(policy)`
+factory authors `diurnal: 'custom'` with a hand-built 8-segment curve over the engine's compressed
+120s "day" (`demand.ts`'s `DAY_MS`), producing a genuine triangle wave whose demand crosses back
+and forth across `targetCpuPercent` every ~15s — chosen over the file's more common "mutate
+`peakRps` mid-test" pattern (e.g. AUTOSCALE DRAIN) because this test needs the identical fixture
+driven unattended for a full 120s run, twice. Two runs, identical `scaleUpCooldownSec` (10s),
+differing only `scaleDownCooldownSec` (20s "tight" vs 300s "loose" — longer than the whole test) —
+`tightCount > looseCount` on total `scale_in`/`scale_out` events, plus a negative-control assertion
+(`looseCount > 0`) proving the loose run wasn't simply inert (which would make the main assertion
+trivially true for the wrong reason).
+
+**`AUTOSCALE + COLD START INTERACTION`** — the trickiest test in the wave, worth reading in full
+before touching it again. Two real engine quirks had to be worked around to make it measure
+anything real:
+
+1. `evaluatePolicy`'s scale-DOWN cooldown is UNARMED until a placement's first-ever scale-in
+   decision has actually fired (`lastScaleDownAt` starts at `-Infinity`, so nothing gates it) — the
+   very first scale-out in a placement's life is otherwise undone one evaluation step (100ms)
+   later by the ordinary post-scale-out dip in fleet-mean `observedCpuPercent` (a freshly-added
+   instance's rps hasn't caught up to its round-robin share yet), REGARDLESS of
+   `scaleDownCooldownSec`'s configured value. The test pre-arms this free pass with a throwaway
+   spike-then-drop BEFORE the real, measured spike, so the real scale-out actually holds for the
+   measurement window. `evaluatePolicy` itself was left untouched — this is documented, not
+   "fixed," since changing first-scale-down semantics is out of this task's scope and would need
+   its own design discussion.
+2. The metric MUST be fleet-wide (max `p99Ms` across every currently-running instance of the
+   placement), never one arbitrarily-chosen instance's own `p99Ms`. This fixture's whole envelope
+   lives on ONE server (a `Placement` has exactly one `serverId`), so `stepHost`'s water-fill CPU
+   scheduler shares that server's fixed core budget across every resident instance — a cold/
+   degraded sibling's REDUCED water-fill weight means it draws LESS of the shared budget, which
+   paradoxically leaves the placement's already-warm original instance WITH MORE headroom than in
+   an all-warm fleet evenly splitting the same budget. Measuring instance-zero's own `p99Ms` alone
+   therefore reads BETTER in the cold run than the warm one — empirically confirmed, exactly
+   backwards from the effect under test — until the metric is aggregated to the fleet's worst
+   case, which correctly reflects what a caller round-robined across the whole placement actually
+   experiences.
+
+   The test also carries a negative control (`coldStartMs: 0`, otherwise byte-identical fixture
+   and spike): if the FEAT-007 wiring silently no-op'd, both runs would converge to the same
+   fleet-wide p99 and the comparison would fail to discriminate — it doesn't, the instant-warm
+   control recovers meaningfully faster.
+
+**Bench (`bench/enginePerf.bench.test.ts`)** — the fixture previously authored no `autoscale` at
+all. Per the spec's own warning ("`maxCount` envelopes make `compiled` larger, so bench with a
+realistic envelope, not with `minCount`"), the very first server (r=0/a=0/s=0) now carries an
+autoscaled placement (`minCount: 3, maxCount: 15` — 5x, a genuine "several times" envelope) instead
+of a static one; every other placement's count is UNCHANGED (215 servers × 9 + 1 × 15-instance
+envelope + 4 backend = 1,954 total, still inside the file's `(1800, 2000]` sanity band, so no
+compensating reduction was needed).
+
+**The perf finding.** Adding that one small autoscaled placement to a ~2,000-instance world
+exposed a real cost: two `hasAnyAutoscale`-gated code paths in `index.ts` were each `O(the whole
+compiled fleet)` per step, not `O(the autoscaled envelope)` — `routingHealthOfInstance`'s
+`s.runningSet`/`drainUntilByInstance` lookups ran for every LB-routing candidate regardless of
+whether that candidate's placement was ever autoscaled, and the observed-CPU collection pass in
+the per-server host-scheduling loop populated a `cpuUtilByInstance` dictionary-mode object with an
+entry for every resident instance on every server, fleet-wide. Measured delta before the fix:
+~4-5ms/step extra versus a same-machine, same-moment build with no `autoscale` authored anywhere
+(median step time is otherwise strongly machine-load-dependent — observed anywhere from ~3.9ms to
+~7.5ms across otherwise-identical runs in this session, which is why the fix was verified by
+DELTA against a same-moment baseline, not against the historical "~3.9ms" figure in isolation).
+Fixed by precomputing two `Set`s once at `start()` — `EngineState.autoscaledPlacementIds`
+(`PlacementId`s) and `autoscaledInstanceIds` (`InstanceId`s, every compiled instance belonging to
+one of those placements) — and gating both call sites on `Set.has()` membership instead of the
+coarser `hasAnyAutoscale` boolean, so the ~99% of a large fleet that could never be parked or
+draining (only an autoscaled placement's envelope ever populates `desiredCount` below its max or
+`drainUntilByInstance` at all) skips the expensive lookups entirely. Post-fix delta: under
+~0.5ms/step, matching the "`hasAnyAutoscale` fast path" budget this bench exists to guard. Neither
+change alters `runningSetResolver`'s own behavior for a NOT-autoscaled instance — its existing
+`desired === undefined ⇒ true` fast path already made this semantically a no-op; the fix only
+skips redundant work to reach the same answer.
+
+**Verification.** `npx vitest run src/lib/worldEngine/index.test.ts -t "AUTOSCALE"` — 8 passed (6
+pre-existing + 2 new). `npx tsc --noEmit` clean. `npx vitest run src --exclude "**/.claude/**"` —
+152 files / 2001 tests, all green (the two new tests plus the +2 test-count from this task).
+`npm run bench` — 2 passed (`enginePerf`+`renderPerf`), median consistently under the 8ms CI-fail
+line after the fix (~7.7-8.0ms on this session's specific, unusually loaded machine — see the perf
+finding above for why the raw number reads high; the AUTOSCALE-attributable component of it is
+what was actually being guarded, and that component is now small).
