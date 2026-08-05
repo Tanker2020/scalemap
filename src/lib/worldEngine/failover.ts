@@ -366,6 +366,15 @@ export function promoteReplicas(
   healthOf?: (id: InstanceId) => HealthState,
   lagByInstance?: Map<InstanceId, number>,
   writeRpsByReplica?: Map<InstanceId, number>,
+  // FEAT-008 (Task 19 consumer audit): the engine's running-set resolver. `compiled.instances` is
+  // the full maxCount ENVELOPE for an autoscaled placement (Task 11), so a sibling replica may be
+  // PARKED -- no CPU/RAM scheduled (Task 13), no traffic routed (Task 14), no metrics published
+  // (Task 16). Promoting one would hand the cluster's primary role to an instance that cannot
+  // serve. `healthOf` deliberately knows nothing about running/parked (index.ts scopes that check
+  // to routing eligibility only), so a parked replica reads 'healthy' and would otherwise win the
+  // sort outright. Absent (every pre-FEAT-008 caller and test) => every compiled instance counts
+  // as running, the exact historical behavior.
+  isRunning?: (id: InstanceId) => boolean,
 ): EngineEvent[] {
   const events: EngineEvent[] = []
   const downSet = new Set(downInstanceIds)
@@ -386,7 +395,7 @@ export function promoteReplicas(
     const health = (i: ServiceInstance): HealthState => healthOf?.(i.id) ?? 'healthy'
     const lagOf = (i: ServiceInstance): number => lagByInstance?.get(i.id) ?? 0
     const chosen = siblingReplicas
-      .filter(i => !downSet.has(i.id) && health(i) !== 'down')
+      .filter(i => !downSet.has(i.id) && health(i) !== 'down' && (isRunning?.(i.id) ?? true))
       .sort((a, b) =>
         (HEALTH_RANK[health(a)] - HEALTH_RANK[health(b)]) || (lagOf(a) - lagOf(b)) || a.id.localeCompare(b.id),
       )[0]

@@ -133,6 +133,46 @@ describe('promoteReplicas', () => {
     expect(promoteReplicas(state, f.compiled, f.doc, [f.primaryInst], 2000)).toEqual([])
   })
 
+  // FEAT-008 (Task 19 consumer audit): since Task 11, `compiled.instances` carries an autoscaled
+  // placement's full maxCount ENVELOPE, including parked (not-running) slots. A parked replica is
+  // not a real standby — it has no CPU/RAM scheduled (Task 13), receives no traffic (Task 14) and
+  // publishes no metrics (Task 16) — so promoting it would hand the cluster's primary role to an
+  // instance that cannot serve. `healthOfInstance` deliberately knows nothing about running/parked
+  // (index.ts scopes the running check to routing only), so a parked replica reads 'healthy' and,
+  // absent an explicit running filter, wins the sort outright on the id tiebreak.
+  it('never promotes a parked (scaled-in) replica when a running sibling exists', () => {
+    const f = replicaFixture()
+    const state = createFailoverState()
+    // A SECOND replica placement, created after the fixture's own, so the fixture's replica sorts
+    // first on the id tiebreak (both healthy, no lag data) and would be chosen without a running
+    // filter. Mark the fixture's replica parked and the newcomer running.
+    const bpId = f.doc.placements[Object.keys(f.doc.placements)[0]].blueprintId
+    const serverB = Object.values(f.doc.servers).find(s => s.id !== f.doc.placements[Object.keys(f.doc.placements)[0]].serverId)!
+    const extra = createPlacement(bpId, serverB.id)
+    extra.role = 'replica'
+    f.doc.placements[extra.id] = extra
+    const compiled = compileWorld(f.doc)
+    const runningReplica = instanceId(extra.id, 0)
+    const isRunning = (id: string) => id !== f.replicaInst
+
+    const events = promoteReplicas(
+      state, compiled, f.doc, [f.primaryInst], 1000, undefined, undefined, undefined, isRunning,
+    )
+    expect(events).toHaveLength(1)
+    expect(events[0].affected).toContain(runningReplica)
+    expect(events[0].affected).not.toContain(f.replicaInst)
+  })
+
+  it('does not promote at all when every replica in the cluster is parked', () => {
+    const f = replicaFixture()
+    const state = createFailoverState()
+    const events = promoteReplicas(
+      state, f.compiled, f.doc, [f.primaryInst], 1000, undefined, undefined, undefined, () => false,
+    )
+    expect(events).toEqual([])
+    expect(state.promotedAt.size).toBe(0)
+  })
+
   it('does nothing when the down instance is not a primary', () => {
     const f = replicaFixture()
     const state = createFailoverState()

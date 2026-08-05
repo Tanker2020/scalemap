@@ -2026,7 +2026,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     }
     for (const e of promoteReplicas(
       s.failover, compiled, doc, downInstances, simMs, healthOfInstance,
-      s.replication.lagSecByInstance, writeRpsByReplicaInstance,
+      // FEAT-008 (Task 19): s.runningSet keeps a PARKED envelope slot from being promoted into the
+      // cluster's primary role -- healthOfInstance reports a parked instance as 'healthy' by
+      // design (running/parked bears on eligibility for NEW work, not on health), so without this
+      // the sort would happily pick an instance that has no CPU, no traffic and no metrics.
+      s.replication.lagSecByInstance, writeRpsByReplicaInstance, s.runningSet,
     )) emitEvent(e)
 
     // FEAT-002 Task 12: cross-region split-brain. promoteReplicas (failover.ts) only ever picks a
