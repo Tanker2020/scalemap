@@ -4139,6 +4139,56 @@ describe('FEAT-008 Task 13: wire AutoscaleState into the engine loop', () => {
     sim.engine.stop()
   })
 
+  it('AUTOSCALE ROUTING: a parked instance never receives routed traffic', () => {
+    const f = autoscaledPlacementWorld({
+      minCount: 1, maxCount: 4, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300,
+    })
+    const compiled = compileWorld(f.doc)
+    const sim = drive(f.doc, compiled)
+    sim.stepFor(5)
+    const b = sim.latest()
+    for (const parkedId of f.instanceIdsForPlacement.slice(1)) {
+      // whether the batch omits the entry (Task 16) or still includes it, rps must be 0 for any
+      // parked instance that IS present in this intermediate state
+      const im = (b.instances as any)[parkedId]
+      if (im) expect(im.rps).toBe(0)
+    }
+    sim.engine.stop()
+  })
+
+  // Companion to the test above: checking a parked instance's OWN rps==0 doesn't by itself prove
+  // traffic-exclusion is wired up, because Task 13 already keeps a parked instance out of the
+  // host scheduler's per-step window entirely -- its rps reads 0 by construction whether or not
+  // the LB still round-robins live demand onto it. The real, pre-Task-14 bug is upstream of that:
+  // distributeToTargets' round-robin cursor cycled across ALL 4 envelope instances (including the
+  // 3 parked ones), so only 1-in-4 routing passes ever landed the region's full demand on the one
+  // RUNNING instance -- the other 3 passes handed real rps to a parked instance, which the host
+  // scheduler then silently dropped (no window entry ever created for it -- not served, not
+  // errored, not counted as dropped-by-AZ either). This test pins the OTHER, directly-observable
+  // side of that: with only 1 eligible target, the running instance's published rps should track
+  // the FULL offered demand every step once the EMA has settled, not oscillate/undershoot from
+  // only receiving its turn 1-in-4 routing passes.
+  it('AUTOSCALE ROUTING: the one running instance absorbs the full demand once EMA settles (no traffic lost to a parked round-robin target)', () => {
+    const f = autoscaledPlacementWorld({
+      minCount: 1, maxCount: 4, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300,
+    })
+    const compiled = compileWorld(f.doc)
+    const sim = drive(f.doc, compiled)
+    const runningId = f.instanceIdsForPlacement[0]
+    let lastRps = 0
+    for (let step = 0; step < 30; step++) {
+      sim.stepFor(1)
+      lastRps = ((sim.latest().instances as any)[runningId]?.rps ?? 0) as number
+    }
+    // With only 1 eligible (non-parked) target, distributeToTargets' round-robin cursor now
+    // always lands on it -- the running instance's EMA'd rps at step 30 settles at ~10.6 with
+    // this fix applied, vs. ~6.5 pre-fix (only 1-in-4 routing passes ever reached the running
+    // instance, the other 3 silently lost to a parked target). 8.5 sits cleanly between the two
+    // measured values -- a real red/green boundary, not a loose sanity check.
+    expect(lastRps).toBeGreaterThan(8.5)
+    sim.engine.stop()
+  })
+
   it('REGRESSION FLOOR: a placement with no autoscale compiles to exactly count instances and simulates byte-identically', () => {
     const f = e2eFixture()
     const simA = drive(f.doc, f.compiled); simA.stepFor(30)

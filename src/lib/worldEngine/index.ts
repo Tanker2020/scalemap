@@ -638,6 +638,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     const lb = s.compiled.routing.lbRouting[regionId]
     if (!lb) return
     const regionAzSpread = s.compiled.routing.regionAzSpread[regionId] ?? []
+    // A parked (scaled-in) instance must never be picked as an LB target, regardless of its
+    // underlying health signal -- Task 15's drain grace period doesn't exist yet, so this is the
+    // only thing standing between a parked instance and new traffic today. Scoped to routing only
+    // (not the module-scope healthOfInstance itself) so failover/breaker/metrics health reporting
+    // is untouched -- runningSet has no bearing on whether an instance IS healthy, only on whether
+    // it's currently eligible to receive work.
+    const routingHealthOfInstance = (iid: InstanceId): HealthState =>
+      s.runningSet(iid) ? healthOfInstance(iid) : 'down'
     for (const { routeId, rps } of routeDemands) {
       if (rps <= 0) continue
       const path = routeId != null ? s.routePathById.get(routeId) : null
@@ -649,7 +657,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         regionAzSpread,
         azBlueprintTargets: s.compiled.routing.azBlueprintTargets,
         healthOfScope,
-        healthOfInstance,
+        healthOfInstance: routingHealthOfInstance,
         cursors: s.routing,
         into: target,
         droppedByAz,
