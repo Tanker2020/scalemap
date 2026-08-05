@@ -297,6 +297,16 @@ export interface FlowInput {
   // other protocol) — direct `solveFlows` callers/tests that don't wire this through are
   // unaffected; the real engine (index.ts) always supplies it.
   topicRuntime?: TopicRuntime
+  // FEAT-008 (Task 19 consumer audit): the engine's running-set resolver. `compiled.instances` --
+  // and therefore every candidate path this solver fans out over -- is an autoscaled placement's
+  // full maxCount ENVELOPE (Task 11). A PARKED slot has no CPU/RAM scheduled (Task 13) and
+  // publishes no metrics (Task 16), and `healthOf` deliberately reports it 'healthy' (running
+  // bears on eligibility for NEW work, not on health), so without this it drew a full even share
+  // of internal service-to-service traffic that then silently vanished. Task 14 closed the same
+  // hole for the ENTRY tier (LB target selection); this closes it for internal fan-out and for
+  // event-topic consumer seeding below. Optional: absent => every compiled instance counts as
+  // running, the exact pre-FEAT-008 behavior, so existing callers/tests are unaffected.
+  isRunning?: (instanceId: InstanceId) => boolean
   // Per-path (keyed by CompiledPath.id) network-partition impairment (FEAT-002, Task 10), built
   // ONCE per step by the engine (index.ts) from state.faults.partitions and threaded through here.
   // Consumed in the dependency loop (Task 11): `blocked` short-circuits like a firewall block
@@ -495,6 +505,11 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
   // entry tier's down-exclusion), so internal traffic routes around a down replica instead of
   // erroring 1/N of the group's calls forever.
   const healthWeightOf = (id: InstanceId): number => {
+    // FEAT-008 (Task 19): a parked envelope slot is weighted out exactly like a down one — it is
+    // not a target that can serve. If EVERY candidate in a pool is parked, splitDependencyShares'
+    // existing all-zero-weight fallback still makes the attempt (even split, then refused
+    // downstream), matching how an all-down target pool already behaves.
+    if (input.isRunning && !input.isRunning(id)) return 0
     const h = healthOf(id)
     return h === 'down' ? 0 : h === 'degraded' ? DEGRADED_ADMIT_FACTOR : 1
   }
@@ -650,7 +665,11 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
         }
       }
       if (!targetBpId) continue
-      const consumers = Object.values(compiled.instances).filter(i => i.blueprintId === targetBpId)
+      // FEAT-008 (Task 19): only RUNNING consumers drain a topic — seeding a parked slot would
+      // hand it a share of drainRps it can never process (no CPU/RAM, no published metrics),
+      // silently under-draining the topic in proportion to the parked share of the envelope.
+      const consumers = Object.values(compiled.instances).filter(
+        i => i.blueprintId === targetBpId && (input.isRunning?.(i.id) ?? true))
       if (consumers.length === 0) continue
       const share = rt.drainRps / consumers.length
       for (const c of consumers) {

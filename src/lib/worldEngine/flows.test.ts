@@ -1259,3 +1259,49 @@ describe('solveFlows — network-partition impairment memo (FEAT-002)', () => {
     expect(flows[repl.iid].offeredRps).toBeCloseTo(70 * 0.8, 9)   // the rest actually transits
   })
 })
+
+// FEAT-008 (Task 19 consumer audit): `compiled.instances` is an autoscaled placement's full
+// maxCount ENVELOPE (Task 11), so a dependency's candidate paths include PARKED targets. Task 14
+// excluded parked instances from LB target selection (the ENTRY tier), but internal
+// service-to-service fan-out routes through compiled.paths and weights candidates by `healthOf`,
+// which reports a parked instance as 'healthy' by design. A parked target therefore drew a full
+// even share of internal traffic it can never serve — it has no CPU/RAM scheduled (Task 13) and
+// publishes no metrics (Task 16), so that share silently vanishes.
+describe('solveFlows — parked autoscale-envelope targets (FEAT-008)', () => {
+  function autoscaledDownstreamWorld() {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    const db = addService(doc, 'db', server.id, 1)
+    db.pl.count = 1
+    db.pl.autoscale = { minCount: 1, maxCount: 4, targetCpuPercent: 70, scaleUpCooldownSec: 60, scaleDownCooldownSec: 300 }
+    api.bp.dependencies = [dep('d1', db.bp.id)]
+    return { doc, api, db }
+  }
+
+  it('sends the whole dependency volume to the running slot, not an even split across the envelope', () => {
+    const { doc, api, db } = autoscaledDownstreamWorld()
+    const compiled = compileWorld(doc)
+    const dbInstances = Object.values(compiled.instances).filter(i => i.blueprintId === db.bp.id)
+    expect(dbInstances).toHaveLength(4)   // envelope, not the authored count of 1
+    const runningDb = instanceId(db.pl.id, 0)
+    const isRunning = (id: string) => id !== runningDb ? !id.startsWith(db.pl.id) : true
+
+    const { flows } = solveFlows({
+      ...baseInput(doc, { [api.iid]: 1000 }),
+      isRunning,
+    })
+    // The running db slot absorbs the full 1000 rps; the three parked slots get nothing.
+    expect(flows[runningDb].admittedRps).toBeGreaterThan(900)
+    for (let i = 1; i < 4; i++) {
+      expect(flows[instanceId(db.pl.id, i)]?.admittedRps ?? 0).toBe(0)
+    }
+  })
+
+  it('regression floor: with no isRunning supplied, the even split across all compiled targets is unchanged', () => {
+    const { doc, api, db } = autoscaledDownstreamWorld()
+    const { flows } = solveFlows(baseInput(doc, { [api.iid]: 1000 }))
+    for (let i = 0; i < 4; i++) {
+      expect(flows[instanceId(db.pl.id, i)].admittedRps).toBeGreaterThan(0)
+    }
+  })
+})

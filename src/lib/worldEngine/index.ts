@@ -1752,6 +1752,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       managedDown: (id) => hasOutage(s.failover, 'managed', id),
       managedDbRuntime: managedDbRt,
       topicRuntime: topicRt,
+      // FEAT-008 (Task 19): keeps internal service-to-service fan-out (and event-topic consumer
+      // seeding) off PARKED envelope slots. Task 14 closed the same hole for the entry tier;
+      // healthOfInstance reports a parked instance as 'healthy' by design, so the solver needs
+      // the running set explicitly. A DRAINING instance still reads running (Task 15) and keeps
+      // serving its in-flight internal work through the grace window, matching stepHost.
+      isRunning: s.runningSet,
       impairmentMemo,
       // FEAT-005 (Task 11): see the field's own comment just above for the one-step-lag rationale.
       staleReadFractionByReplica,
