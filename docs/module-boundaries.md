@@ -5838,24 +5838,28 @@ envelope + 4 backend = 1,954 total, still inside the file's `(1800, 2000]` sanit
 compensating reduction was needed).
 
 **The perf finding.** Adding that one small autoscaled placement to a ~2,000-instance world
-exposed a real cost: two `hasAnyAutoscale`-gated code paths in `index.ts` were each `O(the whole
-compiled fleet)` per step, not `O(the autoscaled envelope)` — `routingHealthOfInstance`'s
-`s.runningSet`/`drainUntilByInstance` lookups ran for every LB-routing candidate regardless of
-whether that candidate's placement was ever autoscaled, and the observed-CPU collection pass in
-the per-server host-scheduling loop populated a `cpuUtilByInstance` dictionary-mode object with an
-entry for every resident instance on every server, fleet-wide. Measured delta before the fix:
-~4-5ms/step extra versus a same-machine, same-moment build with no `autoscale` authored anywhere
-(median step time is otherwise strongly machine-load-dependent — observed anywhere from ~3.9ms to
-~7.5ms across otherwise-identical runs in this session, which is why the fix was verified by
-DELTA against a same-moment baseline, not against the historical "~3.9ms" figure in isolation).
+exposed a real cost: two `hasAnyAutoscale`-gated code paths in `index.ts` were each paying avoidable
+per-step overhead — `routingHealthOfInstance`'s `s.runningSet`/`drainUntilByInstance` lookups ran
+for every LB-routing candidate regardless of whether that candidate's placement was ever autoscaled
+(genuinely `O(the whole fleet)` per step when routing-candidate count is high), and the
+observed-CPU collection pass in the per-server host-scheduling loop iterated every resident
+instance on every server while computing the expensive division + dictionary-mode object write
+even for the ~99% of non-autoscaled instances that could never be parked or draining. Measured
+delta before the fix: ~4-5ms/step extra versus a same-machine, same-moment build with no
+`autoscale` authored anywhere (median step time is otherwise strongly machine-load-dependent —
+observed anywhere from ~3.9ms to ~7.5ms across otherwise-identical runs in this session, which is
+why the fix was verified by DELTA against a same-moment baseline, not against the historical
+"~3.9ms" figure in isolation).
+
 Fixed by precomputing two `Set`s once at `start()` — `EngineState.autoscaledPlacementIds`
 (`PlacementId`s) and `autoscaledInstanceIds` (`InstanceId`s, every compiled instance belonging to
-one of those placements) — and gating both call sites on `Set.has()` membership instead of the
-coarser `hasAnyAutoscale` boolean, so the ~99% of a large fleet that could never be parked or
-draining (only an autoscaled placement's envelope ever populates `desiredCount` below its max or
-`drainUntilByInstance` at all) skips the expensive lookups entirely. Post-fix delta: under
-~0.5ms/step, matching the "`hasAnyAutoscale` fast path" budget this bench exists to guard. Neither
-change alters `runningSetResolver`'s own behavior for a NOT-autoscaled instance — its existing
+one of those placements). `routingHealthOfInstance` genuinely benefited from `O(fleet)` → `O(envelope)`: it now short-circuits via `autoscaledInstanceIds.has()` to skip all `s.runningSet`/`drainUntilByInstance`
+lookups for instances that could never be parked or draining in the first place. The
+`cpuUtilByInstance` loop still iterates every resident instance on each server (unchanged
+iteration count), but a cheap `Set.has()` check now skips the expensive body for non-autoscaled
+entries, reducing per-iteration cost for the vast majority. Post-fix delta: under ~0.5ms/step,
+matching the "`hasAnyAutoscale` fast path" budget this bench exists to guard. Neither change
+alters `runningSetResolver`'s own behavior for a NOT-autoscaled instance — its existing
 `desired === undefined ⇒ true` fast path already made this semantically a no-op; the fix only
 skips redundant work to reach the same answer.
 

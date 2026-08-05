@@ -1529,9 +1529,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // already excludes parked) instances contribute -- there is nothing to read for a parked
       // one anyway. Gated on hasAnyAutoscale so an unconfigured world skips this per-instance pass
       // entirely, and further scoped to autoscaledPlacementIds (Task 22 perf fix) so a world where
-      // only a SMALL fraction of a large fleet is actually autoscaled doesn't pay a per-step cost
-      // proportional to the WHOLE fleet -- only the evaluatePolicy call site below ever reads
-      // cpuUtilByInstance, and it only ever looks up ids belonging to an autoscaled placement.
+      // only a SMALL fraction of a large fleet is actually autoscaled doesn't pay the expensive
+      // division + dictionary-mode object write for non-autoscaled entries -- the loop still
+      // iterates every resident instance on this server (O(loaded instances)), but a cheap Set.has()
+      // check skips the expensive body for the ~99% of instances that could never be parked anyway.
       if (s.hasAnyAutoscale) {
         for (const l of loads) {
           if (!s.autoscaledPlacementIds.has(compiled.instances[l.instanceId]?.placementId ?? '')) continue
