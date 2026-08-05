@@ -86,6 +86,11 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
     [layout.residentInstanceIds, display.instances],
   )
 
+  // FEAT-008 (Task 19 consumer audit): the running signal for a chip. `display.instances` is `{}`
+  // before the first batch of a run (useServerDisplayMetrics' `batch?.instances ?? {}`), so
+  // "absent from the batch" only means PARKED once the batch has actually published something.
+  const hasPublishedInstances = Object.keys(display.instances).length > 0
+
   const portsLabel = (chip: (typeof layout.chips)[number]): string => {
     const pl = doc.placements[chip.placementId]
     if (pl?.runtime.type === 'container' && pl.runtime.portMappings.length) {
@@ -182,6 +187,12 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
           // must freeze at its scrubbed value too, not keep ticking off the live clock.
           const inst = compiled.instances[chip.instanceId]
           const lagSec = inst ? replicaClusterLagSec(inst, compiled, scrubBatch ?? latestBatch ?? null) : null
+          // FEAT-008 (Task 19 consumer audit): boardLayout draws a chip per compiled instance,
+          // which for an autoscaled placement is the full maxCount ENVELOPE (Task 11). A parked
+          // slot publishes no metrics (Task 16), so absence from the display batch IS the running
+          // signal — gated on a non-empty published map so a not-yet-simulated board keeps its
+          // ordinary (non-parked) look rather than showing every chip as scaled in.
+          const parked = hasPublishedInstances && !m
           return (
             <ServiceChip
               key={chip.instanceId} chip={chip} name={bp?.name ?? '?'} color={bp?.color ?? '#888'}
@@ -194,6 +205,7 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
               replicaLagSec={lagSec ?? undefined}
               replicaLagOverRpo={lagSec != null && bp?.dbConfig?.rpoTargetSec != null && lagSec > bp.dbConfig.rpoTargetSec}
               warmth={m?.warmth}
+              parked={parked}
               selected={selected} hovered={hovered} dimmed={dimmed}
               onSelect={() => props.onSelect({ kind: 'instance', instanceId: chip.instanceId })}
               onHover={v => props.onHoverBlueprint(v ? chip.blueprintId : null)}

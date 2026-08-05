@@ -64,6 +64,14 @@ export function ServicesDrawer({ server, doc, compiled, running, liveInstances }
 
   if (liveInstances) {
     const serverInstances = Object.values(compiled.instances).filter(i => i.serverId === server.id)
+    // FEAT-008 (Task 19 consumer audit): `compiled.instances` is an autoscaled placement's full
+    // maxCount ENVELOPE (Task 11), and a parked (scaled-in) slot is omitted from the published
+    // batch entirely (Task 16). This body means "what is running right now", so a slot with no
+    // published metrics must read as PARKED — not as the `?? 'healthy'` fallback (phantom running
+    // capacity) and not as 'down' either, which would conflate elastic scale-in with a kill/chaos
+    // fault. Gated on a non-empty published map so the pre-first-batch case (watching, nothing
+    // published yet) keeps its historical healthy-fallback rendering.
+    const hasPublished = Object.keys(liveInstances).length > 0
     return (
       <div data-testid="services-drawer-body">
         {serverInstances.length === 0 && (
@@ -72,18 +80,26 @@ export function ServicesDrawer({ server, doc, compiled, running, liveInstances }
         {serverInstances.map(inst => {
           const bp = doc.blueprints[inst.blueprintId]
           const m = liveInstances[inst.id]
+          const parked = hasPublished && !m
           const health = m?.health ?? 'healthy'
           return (
             <div
-              key={inst.id} data-testid="service-live-row"
-              style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 6px', fontSize: 10 }}
+              key={inst.id} data-testid="service-live-row" data-parked={parked ? 'true' : 'false'}
+              style={{
+                display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 6px', fontSize: 10,
+                opacity: parked ? 0.55 : 1,
+              }}
             >
               <span style={{ color: 'var(--color-text-secondary)' }}>
                 {bp?.name ?? '?'} :{bp?.ports[0]?.port ?? '—'}
               </span>
-              <span style={{ color: HEALTH_COLOR[health], fontVariantNumeric: 'tabular-nums' }}>
-                {health} · {Math.round(m?.rps ?? 0).toLocaleString('en-US')} rps
-              </span>
+              {parked ? (
+                <span style={{ color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>parked</span>
+              ) : (
+                <span style={{ color: HEALTH_COLOR[health], fontVariantNumeric: 'tabular-nums' }}>
+                  {health} · {Math.round(m?.rps ?? 0).toLocaleString('en-US')} rps
+                </span>
+              )}
             </div>
           )
         })}

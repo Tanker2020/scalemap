@@ -167,4 +167,57 @@ describe('ServicesDrawer — watching posture (liveInstances supplied)', () => {
     render(<ServicesDrawer server={currentServer(serverId)} doc={doc} compiled={compileWorld(doc)} running liveInstances={{}} />)
     expect(screen.getByText('No services mounted here yet.')).toBeTruthy()
   })
+
+  // FEAT-008 (Task 19 consumer audit): `compiled.instances` is the full maxCount ENVELOPE for an
+  // autoscaled placement (Task 11), and a parked slot publishes no metrics (Task 16). This body
+  // iterates the envelope but read health as `m?.health ?? 'healthy'` — so every not-yet-scaled-to
+  // slot rendered as a green "healthy · 0 rps" service that is not actually running. Phantom
+  // capacity in a live view; a parked slot must read as parked, and must NOT read as 'down'
+  // either (that would conflate elastic scale-in with a kill/chaos fault).
+  it('renders a parked autoscale-envelope slot as parked, not as healthy', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    useWorldStore.getState().updatePlacement(plId, {
+      count: 1, autoscale: { minCount: 1, maxCount: 3, targetCpuPercent: 70, scaleUpCooldownSec: 60, scaleDownCooldownSec: 300 },
+    })
+    const doc = currentDoc()
+    const compiled = compileWorld(doc)
+    const instances = Object.values(compiled.instances).filter(i => i.serverId === serverId)
+    expect(instances).toHaveLength(3)   // envelope, not the authored count
+
+    const running = instances.find(i => i.indexInPlacement === 0)!
+    const liveInstances: Record<string, InstanceMetrics> = {
+      [running.id]: {
+        instanceId: running.id, rps: 100, errorRate: 0, p50Ms: 2.1, p99Ms: 4,
+        activeConnections: 1, cpuCoresUsed: 0.1, ramMb: 64, health: 'healthy',
+      },
+    }
+
+    render(<ServicesDrawer server={currentServer(serverId)} doc={doc} compiled={compiled} running liveInstances={liveInstances} />)
+    const rows = screen.getAllByTestId('service-live-row')
+    expect(rows).toHaveLength(3)
+    expect(rows[0]).toHaveTextContent('healthy · 100 rps')
+    expect(rows[0].dataset.parked).toBe('false')
+    for (const parked of rows.slice(1)) {
+      expect(parked.dataset.parked).toBe('true')
+      expect(parked).toHaveTextContent('parked')
+      expect(parked).not.toHaveTextContent('healthy')
+      expect(parked).not.toHaveTextContent('down')
+    }
+  })
+
+  // Regression floor: with no published instances at all (watching, but before the first batch),
+  // nothing is parked — the pre-FEAT-008 healthy fallback stands.
+  it('does not treat instances as parked before the first batch publishes', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('db')
+    useWorldStore.getState().addPlacement(bpId, serverId)
+    const doc = currentDoc()
+    render(<ServicesDrawer server={currentServer(serverId)} doc={doc} compiled={compileWorld(doc)} running liveInstances={{}} />)
+    const rows = screen.getAllByTestId('service-live-row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].dataset.parked).toBe('false')
+    expect(rows[0]).toHaveTextContent('healthy')
+  })
 })

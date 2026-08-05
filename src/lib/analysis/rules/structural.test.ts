@@ -416,7 +416,7 @@ describe('structural: split-brain-risk', () => {
     const db = s.blueprint('db'); db.stateful = true
     const pl = s.placement(db.id, s.server(a1.id).id)   // primary by default
     pl.count = 1
-    pl.autoscale = { minCount: 1, maxCount: 3, targetCpuUtilization: 0.7, cooldownSec: 60 }
+    pl.autoscale = { minCount: 1, maxCount: 3, targetCpuPercent: 70, scaleUpCooldownSec: 60, scaleDownCooldownSec: 300 }
     const compiled = s.compile()
     // Envelope expansion: 3 compiled instances, only slot #0 is running.
     expect(Object.keys(compiled.instances)).toHaveLength(3)

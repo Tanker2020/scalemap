@@ -14,6 +14,7 @@ import {
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { compileWorld } from '../../../lib/world/compileWorld'
 import type { WorldDoc, ComposeStack } from '../../../lib/world/types'
+import type { MetricsBatch } from '../../../lib/worldEngine/types'
 
 beforeAll(() => {
   // jsdom lacks ResizeObserver, which ServerBoard uses for scale-to-fit.
@@ -161,5 +162,52 @@ describe('ServerBoard — "+ service" ghost chip (2026-07-12)', () => {
     unmount()
     act(() => { useSimulationStore.setState({ running: true }) })
     expect(screen.queryByTestId('board-add-service')).toBeNull()
+  })
+})
+
+// FEAT-008 (Task 19 consumer audit): boardLayout draws one chip per `compiled.instances` entry,
+// which since Task 11 is an autoscaled placement's full maxCount ENVELOPE. A parked slot publishes
+// no metrics (Task 16), so ServiceChip's `health = 'healthy'` default painted it with a green
+// health dot and a 0-rps sparkbar — a chip that looks like a running service but isn't one.
+describe('ServerBoard — parked autoscale-envelope chips (FEAT-008)', () => {
+  beforeEach(() => useWorldStore.getState().newWorld())
+
+  it('marks envelope slots absent from the published batch as parked, and leaves running ones alone', () => {
+    const { doc, server } = seed((d, sid) => {
+      const bp = createBlueprint('web', 0)
+      d.blueprints[bp.id] = bp
+      const pl = createPlacement(bp.id, sid)
+      pl.count = 1
+      pl.autoscale = { minCount: 1, maxCount: 3, targetCpuPercent: 70, scaleUpCooldownSec: 60, scaleDownCooldownSec: 300 }
+      d.placements[pl.id] = pl
+    })
+    const compiled = compileWorld(doc)
+    const instances = Object.values(compiled.instances)
+    expect(instances).toHaveLength(3)
+    const running = instances.find(i => i.indexInPlacement === 0)!
+
+    act(() => {
+      useSimulationStore.setState({
+        running: true, scrubBatch: null,
+        latestBatch: {
+          simMs: 1000,
+          instances: {
+            [running.id]: {
+              instanceId: running.id, rps: 50, errorRate: 0, p50Ms: 2, p99Ms: 4,
+              activeConnections: 1, cpuCoresUsed: 0.1, ramMb: 64, health: 'healthy',
+            },
+          },
+          servers: {}, azs: {}, regions: {},
+        } as unknown as MetricsBatch,
+      })
+    })
+
+    renderBoard(doc, server.id)
+    const chips = Array.from(document.querySelectorAll('[data-chip]')) as HTMLElement[]
+    expect(chips).toHaveLength(3)
+    const parked = chips.filter(c => c.dataset.parked === 'true')
+    expect(parked).toHaveLength(2)
+    expect(chips.find(c => c.dataset.instance === running.id)!.dataset.parked).toBe('false')
+    for (const c of parked) expect(c.textContent).toContain('parked')
   })
 })

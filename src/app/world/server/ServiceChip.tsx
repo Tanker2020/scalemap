@@ -39,6 +39,13 @@ export interface ServiceChipProps {
   // gate). Drives a partial-fill bar that interpolates from a dim/amber "still ramping" look
   // toward the chip's normal steady-state look as warmth approaches 1.
   warmth?: number
+  // FEAT-008 (Task 19 consumer audit): this envelope slot exists in `compiled.instances` (an
+  // autoscaled placement compiles to its full maxCount envelope, Task 11) but is NOT currently
+  // running — it publishes no metrics at all (Task 16), so without this flag the `health =
+  // 'healthy'` default below painted it with a green health dot: a chip that looks like a running
+  // service but is not one. Rendered dim with a muted dot and an explicit "parked" line —
+  // deliberately distinct from the red 'down' treatment, since elastic scale-in is not a fault.
+  parked?: boolean
   selected?: boolean
   hovered?: boolean
   dimmed?: boolean
@@ -46,7 +53,7 @@ export interface ServiceChipProps {
   onHover?: (v: boolean) => void
 }
 
-export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy', connLabel = '—', rps = 0, cacheHitRatio, cacheWarming, replicaLagSec, replicaLagOverRpo, warmth, selected, hovered, dimmed, onSelect, onHover }: ServiceChipProps): ReactElement {
+export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy', connLabel = '—', rps = 0, cacheHitRatio, cacheWarming, replicaLagSec, replicaLagOverRpo, warmth, parked, selected, hovered, dimmed, onSelect, onHover }: ServiceChipProps): ReactElement {
   const reduced = useReducedMotion()
   const [samples, setSamples] = useState<number[]>([])
 
@@ -59,7 +66,9 @@ export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy',
     background: 'linear-gradient(160deg,#16202E,#0E141E)',
     border: `1px solid ${selected || hovered ? color : color + '88'}`, borderRadius: 6, padding: 6,
     boxShadow: hovered ? `0 0 16px ${color}` : `0 0 10px ${color}22`,
-    opacity: dimmed ? 0.45 : 1, cursor: 'pointer', font: '9px var(--font-mono)',
+    // A parked slot reads dim on its own; when it is ALSO hover-dimmed the two compound to the
+    // existing dimmed floor rather than fading out of the board entirely.
+    opacity: dimmed ? 0.45 : parked ? 0.5 : 1, cursor: 'pointer', font: '9px var(--font-mono)',
     transform: hovered ? 'translateY(-2px)' : undefined,
     transition: reduced ? undefined : 'transform 0.14s, box-shadow 0.14s, opacity 0.15s',
   }
@@ -72,14 +81,20 @@ export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy',
   const maxSample = Math.max(1, ...samples)
 
   return (
-    <div data-chip data-instance={chip.instanceId} style={style} onClick={onSelect}
+    <div data-chip data-instance={chip.instanceId} data-parked={parked ? 'true' : 'false'} style={style} onClick={onSelect}
       onMouseEnter={() => onHover?.(true)} onMouseLeave={() => onHover?.(false)}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ color: '#DBEAFE' }}><span data-chip-tab style={{ color }}>▮</span> {name}</span>
-        <span style={{ width: 4, height: 4, borderRadius: '50%', background: HEALTH_COLOR[health], boxShadow: `0 0 5px ${HEALTH_COLOR[health]}` }} />
+        <span style={{
+          width: 4, height: 4, borderRadius: '50%',
+          background: parked ? 'var(--color-text-muted)' : HEALTH_COLOR[health],
+          boxShadow: parked ? 'none' : `0 0 5px ${HEALTH_COLOR[health]}`,
+        }} />
       </div>
       <div style={{ color: '#7CFFE9', marginTop: 2, fontSize: 7 }}>{portsLabel}</div>
-      <div style={{ color: 'var(--color-text-secondary)', fontSize: 7 }}>{connLabel}</div>
+      <div style={{ color: 'var(--color-text-secondary)', fontSize: 7 }}>
+        {parked ? <span data-testid="parked-readout">parked · scaled in</span> : connLabel}
+      </div>
       {cacheHitRatio != null && (
         <div
           data-testid="cache-hit-readout" data-warming={cacheWarming ? 'true' : 'false'}
