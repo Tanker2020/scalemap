@@ -456,3 +456,40 @@ logic behind an event kind that already existed.
 
 `npx tsc --noEmit` clean. Full suite: 152 files / 1970 tests passing (`index.test.ts`'s two new
 `AUTOSCALE EVENTS` tests, 2/2; the full FEAT-008 autoscale describe block, 6/6).
+
+## 2026-08-05 — Task 20: `autoscale-ceiling-reached` / `autoscale-thrash` analysis rules + `MetricsBatch.recentScaleEventCount` (FEAT-008)
+`autoscale-ceiling-reached` needed no new signal: it reads the already-published
+`MetricsBatch.runningByPlacement` (Task 16) against `pl.autoscale.maxCount`, plus
+`ServerMetrics.coreUtilization` (the same mean-vs-threshold signal `burstable-sustained-load`
+already reads) as the "still above target CPU" proxy — `InstanceMetrics` only carries
+`cpuCoresUsed` (absolute cores), not a percent, so there is no more direct per-instance percent
+reading available to an analysis rule than the server's own core utilization array.
+
+`autoscale-thrash` genuinely had no existing signal: an `AnalysisRule` only ever sees
+`{ doc, compiled, lastBatch }` — one `MetricsBatch` snapshot — and "scaled N times in a window"
+needs history no snapshot carries. Implemented the brief's preferred option (a): an additive
+`MetricsBatch.recentScaleEventCount?: Record<PlacementId, number>` field, mirroring
+`activeFaultCount`'s precedent of a batch-level rollup of engine-side rolling state.
+
+- Added `EngineState.scaleEventHistory: Map<PlacementId, number[]>` (`index.ts`) — a **time**-
+  trimmed ring (entries older than `SCALE_EVENT_WINDOW_MS = 5 * 60 * 1000` dropped), deliberately
+  NOT reusing `createEventRing`'s shape (`events.ts`), which trims by entry COUNT, not age;
+  "thrashing" is a rate-in-a-window concept, so age-based trimming is the correct precedent here,
+  not the existing ring's.
+- `recordScaleEvent()` (new helper, `index.ts`) pushes `simMs` and trims at both the `scale_out`
+  and `scale_in` emission sites (Task 17's call sites, ~line 1600/1612) — thrash counts churn in
+  either direction, not just one.
+- `metrics.ts`'s `buildBatch` gained one more additive-optional trailing param,
+  `recentScaleEventCount?: Record<string, number>`, published as-is (never re-derived) — same
+  divergence-guard discipline as `runningByPlacement`.
+- `index.ts`'s batch-build call site builds `recentScaleEventCount` from
+  `s.scaleEventHistory`'s trimmed lengths, guarded on `s.hasAnyAutoscale` (undefined vs. `{}`,
+  matching `runningByPlacement`'s own convention).
+- Both rules added to `capacityRules` (`analysis/rules/capacity.ts`): `AUTOSCALE_THRASH_THRESHOLD
+  = 4` scale events in the trailing 5-minute window fires `autoscale-thrash`.
+
+No signature break — every new field/param is additive-optional. `npx tsc --noEmit` clean. Full
+`src/` suite (excluding the unrelated stray `.claude/worktrees/audit-spec-execution/` copy, which
+has its own duplicate `react`/`react-dom` and fails independently of this change):
+152 files / 1991 tests passing, including 9 new tests across `autoscale-ceiling-reached` and
+`autoscale-thrash`.

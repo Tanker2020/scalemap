@@ -331,6 +331,12 @@ export function buildBatch(
   // placement from ever diverging. Optional: absent ⇒ `runningByPlacement` stays undefined (no
   // placement in the world authors `autoscale`), matching the additive-optional-field convention.
   runningByPlacement?: Record<string, number>,
+  // FEAT-008 (Task 20): the SAME `state.scaleEventHistory` trimmed-length record `index.ts`'s step
+  // loop already built, published verbatim as `MetricsBatch.recentScaleEventCount` -- never a
+  // re-derived count, matching runningByPlacement's own divergence-guard discipline above.
+  // Optional: absent ⇒ `recentScaleEventCount` stays undefined, so every existing direct-buildBatch
+  // caller/test is unchanged by omission.
+  recentScaleEventCount?: Record<string, number>,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
   const servers: Record<ServerId, ServerMetrics> = {}
@@ -667,5 +673,6 @@ export function buildBatch(
     simMs, instances, servers, azs, regions, world, managedServices, topics,
     activeFaultCount: activeFaultCount ?? 0, clusters,
     ...(runningByPlacement !== undefined ? { runningByPlacement } : {}),
+    ...(recentScaleEventCount !== undefined ? { recentScaleEventCount } : {}),
   }
 }

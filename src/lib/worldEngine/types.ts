@@ -225,6 +225,14 @@ export interface MetricsBatch {
   // `autoscale` (`hasAnyAutoscale` false); present (possibly `{}`) once any does. See
   // contract-drift.md §FEAT-008.
   runningByPlacement?: Record<PlacementId, number>
+  // Additive-optional (frozen-contract rule, FEAT-008/Task 20): count of scale_out/scale_in
+  // decisions in the trailing 5-minute window per autoscaled placement -- published from
+  // `EngineState.scaleEventHistory`'s trimmed length, never re-derived, feeding the
+  // `autoscale-thrash` analysis rule the literal "direction changes in a window" signal the rule
+  // needs (a single MetricsBatch snapshot alone carries no history). Same undefined-vs-`{}`
+  // convention as `runningByPlacement`: undefined when `hasAnyAutoscale` is false, `{}` (or
+  // sparse) once any placement autoscales. See contract-drift.md §FEAT-008/Task 20.
+  recentScaleEventCount?: Record<PlacementId, number>
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────

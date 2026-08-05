@@ -293,7 +293,81 @@ const iopsSaturated: AnalysisRule = {
   },
 }
 
+// FEAT-008 (Task 20): a placement pinned at its autoscale maxCount with no runway left. Mirrors
+// burstableSustainedLoad's mean-coreUtilization-vs-threshold shape -- the closest existing signal
+// to the engine's own per-step observedCpuPercent (index.ts's autoscale control loop), since
+// InstanceMetrics carries cpuCoresUsed (absolute), not a percent, while ServerMetrics.
+// coreUtilization is already the 0..1-per-core reading burstableSustainedLoad reads for the same
+// "is this hot" judgment. Gated on runningByPlacement === maxCount (i.e. no parked headroom left
+// in the envelope) so a placement mid-ramp toward its ceiling doesn't false-positive.
+const autoscaleCeilingReached: AnalysisRule = {
+  id: 'autoscale-ceiling-reached', family: 'capacity',
+  run: ({ doc, compiled, lastBatch }) => {
+    if (!lastBatch?.runningByPlacement) return []
+    const out: AnalysisFinding[] = []
+    for (const pl of Object.values(doc.placements)) {
+      if (!pl.autoscale) continue
+      const running = lastBatch.runningByPlacement[pl.id]
+      if (running == null || running < pl.autoscale.maxCount) continue
+      const insts = Object.values(compiled.instances)
+        .filter(i => i.placementId === pl.id && i.indexInPlacement < running)
+      if (insts.length === 0) continue
+      const serverIds = [...new Set(insts.map(i => i.serverId))]
+      let utilSum = 0, utilCount = 0
+      for (const serverId of serverIds) {
+        const util = lastBatch.servers[serverId]?.coreUtilization
+        if (!util || util.length === 0) continue
+        utilSum += util.reduce((a, b) => a + b, 0) / util.length
+        utilCount++
+      }
+      if (utilCount === 0) continue
+      const meanCpuPercent = (utilSum / utilCount) * 100
+      if (meanCpuPercent <= pl.autoscale.targetCpuPercent) continue
+      const bp = doc.blueprints[pl.blueprintId]
+      out.push({
+        id: `autoscale-ceiling-reached:${pl.id}`, ruleId: 'autoscale-ceiling-reached', family: 'capacity', severity: 'warning',
+        title: 'Autoscale ceiling reached',
+        why: `${bp?.name ?? pl.id} is pinned at its autoscale ceiling (${pl.autoscale.maxCount} instances) averaging ${Math.round(meanCpuPercent)}% CPU, above its ${pl.autoscale.targetCpuPercent}% target -- no scale-out runway left.`,
+        fix: `Raise maxCount, add capacity another way (a second placement/region), or lower per-request CPU cost on this blueprint (Placement drawer).`,
+        affected: [pl.id, ...insts.map(i => i.id)],
+      })
+    }
+    return out
+  },
+}
+
+// FEAT-008 (Task 20): fires when a placement's autoscaler is oscillating rather than settling.
+// Analysis rules see only a single MetricsBatch snapshot (no rolling event history), so this reads
+// MetricsBatch.recentScaleEventCount -- an additive, engine-maintained trailing-5-minute counter
+// (EngineState.scaleEventHistory, recordScaleEvent in worldEngine/index.ts) published the same way
+// activeFaultCount/runningByPlacement already surface engine-side rolling/derived state to this
+// file, rather than a re-derived proxy computed from a single batch's static fields.
+const AUTOSCALE_THRASH_THRESHOLD = 4
+
+const autoscaleThrash: AnalysisRule = {
+  id: 'autoscale-thrash', family: 'capacity',
+  run: ({ doc, lastBatch }) => {
+    if (!lastBatch?.recentScaleEventCount) return []
+    const out: AnalysisFinding[] = []
+    for (const pl of Object.values(doc.placements)) {
+      if (!pl.autoscale) continue
+      const count = lastBatch.recentScaleEventCount[pl.id] ?? 0
+      if (count < AUTOSCALE_THRASH_THRESHOLD) continue
+      const bp = doc.blueprints[pl.blueprintId]
+      out.push({
+        id: `autoscale-thrash:${pl.id}`, ruleId: 'autoscale-thrash', family: 'capacity', severity: 'warning',
+        title: 'Autoscaler thrashing',
+        why: `${bp?.name ?? pl.id} has scaled ${count} times in the last 5 minutes -- its cooldowns may be too tight for this load pattern, causing oscillation instead of settling.`,
+        fix: `Widen scaleUpCooldownSec/scaleDownCooldownSec or the CPU target band (Placement drawer).`,
+        affected: [pl.id],
+      })
+    }
+    return out
+  },
+}
+
 export const capacityRules: AnalysisRule[] = [
   ramOversubscribed, burstableSustainedLoad, oceanCrossingPopulation, ttlOutlivesDetection,
   consumerLagBehindProducer, faultInjected, cacheMissStorm, iopsSaturated,
+  autoscaleCeilingReached, autoscaleThrash,
 ]

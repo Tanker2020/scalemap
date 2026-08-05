@@ -393,3 +393,114 @@ describe('capacity: iops-saturated', () => {
     expect(ids(runAnalysis(ctx.doc, ctx.compiled, ctx.lastBatch), 'iops-saturated')).toHaveLength(0)
   })
 })
+
+// FEAT-008 Task 20: pinned-at-ceiling + still-over-target CPU. Mirrors iops-saturated's fixture
+// convention -- one placement, one server, an autoscale policy authored on the placement, a batch
+// stubbing runningByPlacement + the server's coreUtilization.
+describe('capacity: autoscale-ceiling-reached', () => {
+  function buildAutoscaleCeilingFixture(opts: {
+    maxCount: number; runningCount: number; targetCpuPercent: number; observedCpuPercent: number
+  }) {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const srv = s.server(az.id)
+    const bp = s.blueprint('web', opts.maxCount)
+    const pl = s.placement(bp.id, srv.id)
+    pl.autoscale = {
+      minCount: 1, maxCount: opts.maxCount, targetCpuPercent: opts.targetCpuPercent,
+      scaleUpCooldownSec: 30, scaleDownCooldownSec: 300,
+    }
+    const compiled = s.compile()
+    const batch = {
+      servers: { [srv.id]: { coreUtilization: [opts.observedCpuPercent / 100, opts.observedCpuPercent / 100] } },
+      instances: {},
+      runningByPlacement: { [pl.id]: opts.runningCount },
+    } as unknown as MetricsBatch
+    return { doc: s.doc, compiled, lastBatch: batch, placementId: pl.id, serverId: srv.id }
+  }
+
+  it('fires when a placement sits at maxCount while its instances are above target CPU', () => {
+    const ctx = buildAutoscaleCeilingFixture({ maxCount: 4, runningCount: 4, targetCpuPercent: 60, observedCpuPercent: 90 })
+    const f = ids(runAnalysis(ctx.doc, ctx.compiled, ctx.lastBatch), 'autoscale-ceiling-reached')
+    expect(f).toHaveLength(1)
+    expect(f[0].severity).toBe('warning')
+    expect(f[0].affected[0]).toBe(ctx.placementId)
+  })
+
+  it('does not fire when running below maxCount', () => {
+    const ctx = buildAutoscaleCeilingFixture({ maxCount: 4, runningCount: 2, targetCpuPercent: 60, observedCpuPercent: 90 })
+    expect(ids(runAnalysis(ctx.doc, ctx.compiled, ctx.lastBatch), 'autoscale-ceiling-reached')).toHaveLength(0)
+  })
+
+  it('does not fire when at maxCount but under target CPU', () => {
+    const ctx = buildAutoscaleCeilingFixture({ maxCount: 4, runningCount: 4, targetCpuPercent: 60, observedCpuPercent: 40 })
+    expect(ids(runAnalysis(ctx.doc, ctx.compiled, ctx.lastBatch), 'autoscale-ceiling-reached')).toHaveLength(0)
+  })
+
+  it('silent with a null batch', () => {
+    const ctx = buildAutoscaleCeilingFixture({ maxCount: 4, runningCount: 4, targetCpuPercent: 60, observedCpuPercent: 90 })
+    expect(ids(runAnalysis(ctx.doc, ctx.compiled, null), 'autoscale-ceiling-reached')).toHaveLength(0)
+  })
+
+  it('silent on a placement with no autoscale policy', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const srv = s.server(az.id)
+    s.placement(s.blueprint('web').id, srv.id)
+    const batch = {
+      servers: { [srv.id]: { coreUtilization: [0.95] } }, instances: {}, runningByPlacement: {},
+    } as unknown as MetricsBatch
+    expect(ids(runAnalysis(s.doc, s.compile(), batch), 'autoscale-ceiling-reached')).toHaveLength(0)
+  })
+})
+
+// FEAT-008 Task 20: thrash detection reads MetricsBatch.recentScaleEventCount (a trailing
+// 5-minute window the engine maintains, see index.ts's scaleEventHistory/recordScaleEvent) --
+// analysis rules see only a single batch snapshot, so this additive published counter is the
+// signal, not a re-derived one.
+describe('capacity: autoscale-thrash', () => {
+  function buildAutoscaleThrashFixture(opts: { recentScaleEvents: number }) {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const srv = s.server(az.id)
+    const bp = s.blueprint('web')
+    const pl = s.placement(bp.id, srv.id)
+    pl.autoscale = {
+      minCount: 1, maxCount: 4, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300,
+    }
+    const compiled = s.compile()
+    const batch = {
+      servers: {}, instances: {},
+      recentScaleEventCount: { [pl.id]: opts.recentScaleEvents },
+    } as unknown as MetricsBatch
+    return { doc: s.doc, compiled, lastBatch: batch, placementId: pl.id }
+  }
+
+  it('fires when scale-event churn exceeds the threshold in the recent window', () => {
+    const ctx = buildAutoscaleThrashFixture({ recentScaleEvents: 6 })
+    const f = ids(runAnalysis(ctx.doc, ctx.compiled, ctx.lastBatch), 'autoscale-thrash')
+    expect(f).toHaveLength(1)
+    expect(f[0].severity).toBe('warning')
+    expect(f[0].affected).toEqual([ctx.placementId])
+    expect(f[0].why).toMatch(/6/)
+  })
+
+  it('does not fire below the threshold', () => {
+    const ctx = buildAutoscaleThrashFixture({ recentScaleEvents: 1 })
+    expect(ids(runAnalysis(ctx.doc, ctx.compiled, ctx.lastBatch), 'autoscale-thrash')).toHaveLength(0)
+  })
+
+  it('silent with a null batch', () => {
+    const ctx = buildAutoscaleThrashFixture({ recentScaleEvents: 6 })
+    expect(ids(runAnalysis(ctx.doc, ctx.compiled, null), 'autoscale-thrash')).toHaveLength(0)
+  })
+
+  it('silent on a placement with no autoscale policy', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const srv = s.server(az.id)
+    const pl = s.placement(s.blueprint('web').id, srv.id)
+    const batch = { servers: {}, instances: {}, recentScaleEventCount: { [pl.id]: 10 } } as unknown as MetricsBatch
+    expect(ids(runAnalysis(s.doc, s.compile(), batch), 'autoscale-thrash')).toHaveLength(0)
+  })
+})

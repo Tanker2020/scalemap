@@ -11,7 +11,7 @@ import { MAX_GLOBE_ARCS } from './types'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
   ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole, BlueprintDependency,
-  ScenarioAction, ScenarioStep, CacheConfig, DbConfig,
+  ScenarioAction, ScenarioStep, CacheConfig, DbConfig, PlacementId,
 } from '../world/types'
 import { effectiveMissFraction } from './cache'
 import { managedDbEngine } from '../world/types'
@@ -80,6 +80,18 @@ const REPLICATION_EVENT_MIN_GAP_MS = 1000    // ≤1 replication_lag_high/stale_
 const DISK_EVENT_MIN_GAP_MS = 1000           // ≤1 disk_saturated per server per second (FEAT-006, Task 21)
 const DISK_SATURATION_THRESHOLD = 0.9        // matches iops-saturated's analysis-rule threshold
 const AUTOSCALE_CEILING_EVENT_MIN_GAP_MS = 1000  // ≤1 autoscale_ceiling per placement per second (FEAT-008, Task 17)
+const SCALE_EVENT_WINDOW_MS = 5 * 60 * 1000  // trailing window for autoscale-thrash's recentScaleEventCount signal (FEAT-008, Task 20)
+
+// FEAT-008 (Task 20): push simMs into a placement's scale-event ring and trim entries older than
+// SCALE_EVENT_WINDOW_MS -- called at both the scale_out and scale_in emission sites so thrash
+// detection counts direction changes in either direction, not just one.
+function recordScaleEvent(history: Map<PlacementId, number[]>, placementId: PlacementId, simMs: number): void {
+  const arr = history.get(placementId) ?? []
+  arr.push(simMs)
+  const cutoff = simMs - SCALE_EVENT_WINDOW_MS
+  while (arr.length > 0 && arr[0] < cutoff) arr.shift()
+  history.set(placementId, arr)
+}
 const MIN_HEALTH_SIGNAL_RPS = 0.5            // below this offered rps, errorRate carries no signal
 const DEGRADE_THRESHOLD_MS = 4               // spec decision 9 / Global Constraints
 const DEGRADE_WINDOW_STEPS = 30              // 3s of 100ms steps
@@ -543,6 +555,13 @@ interface EngineState {
   // running (CPU/RAM/publishing), while routingHealthOfInstance below additionally treats it as
   // 'down' for NEW-traffic eligibility -- draining is "running but not accepting new work".
   drainUntilByInstance: Map<InstanceId, number>
+  // FEAT-008 (Task 20): trailing 5-minute ring of scale_out/scale_in simMs timestamps per
+  // placement, feeding the autoscale-thrash analysis rule via MetricsBatch.recentScaleEventCount.
+  // Unlike s.events (a fixed-COUNT ring, createEventRing), this is a fixed-TIME window -- trimmed
+  // by simMs age, not entry count -- since "thrashing" is a rate-in-a-window concept, not "the last
+  // N events regardless of how long ago they happened". Populated only at the two emission sites
+  // (scale_out/scale_in below); a placement never seen there simply has no entry (read as 0).
+  scaleEventHistory: Map<PlacementId, number[]>
   // start()-time fast-path flag (the hasAnyCache/hasAnyDisk precedent): true iff ANY placement in
   // the doc carries an authored `autoscale` policy. desiredCount always has an entry per
   // placement (Task 12's createAutoscaleState seeds every placement, autoscaled or not), so
@@ -1595,6 +1614,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
               emit('instance_warming', 'info', `instance ${newId} started cold by autoscale scale-out`, [newId], simMs)
             }
           }
+          recordScaleEvent(s.scaleEventHistory, pl.id, simMs)
           emit('scale_out', 'info', `placement ${pl.id} scaled out ${desired} -> ${result.next} instances`, [pl.id], simMs)
         } else if (result.scaled === 'in') {
           // Task 15: every instance whose index falls in [result.next, desired) just transitioned
@@ -1607,6 +1627,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
           for (let i = result.next; i < desired; i++) {
             beginInstanceDrain(s.drainUntilByInstance, instanceId(pl.id, i), simMs)
           }
+          recordScaleEvent(s.scaleEventHistory, pl.id, simMs)
           emit('scale_in', 'info', `placement ${pl.id} scaled in ${desired} -> ${result.next} instances`, [pl.id], simMs)
         } else {
           // Task 17: 'autoscale_ceiling' -- the policy still wants to scale out further (observed
@@ -2194,7 +2215,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       const runningByPlacement = s.hasAnyAutoscale
         ? Object.fromEntries(s.autoscale.desiredCount)
         : undefined
-      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance, s.faults.leakAccumMb, s.faults.active.size, roleOf, s.warmSinceMs, s.replicasByCluster, s.replication.lagSecByInstance, s.warmingUntil, s.runningSet, runningByPlacement)
+      // FEAT-008 (Task 20): recentScaleEventCount is the trimmed s.scaleEventHistory ring's length
+      // per placement, published verbatim (never re-derived) so the autoscale-thrash analysis rule
+      // reads the exact same window recordScaleEvent maintains. Guarded on hasAnyAutoscale, same
+      // undefined-vs-{} convention as runningByPlacement above.
+      const recentScaleEventCount = s.hasAnyAutoscale
+        ? Object.fromEntries([...s.scaleEventHistory.entries()].map(([id, arr]) => [id, arr.length]))
+        : undefined
+      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance, s.faults.leakAccumMb, s.faults.active.size, roleOf, s.warmSinceMs, s.replicasByCluster, s.replication.lagSecByInstance, s.warmingUntil, s.runningSet, runningByPlacement, recentScaleEventCount)
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
       s.tracer.sample(flows, compiled, doc, simMs, entryId => populationsForEntry(entryId), managedDbRt)
@@ -2538,6 +2566,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         // as the "everyone running" fast path and is rebuilt on the very first runStep call below
         // once autoscale.desiredCount is actually read.
         autoscale: createAutoscaleState(doc),
+        scaleEventHistory: new Map(),
         runningSet: () => true,
         runningSetKey: '',
         // Task 15: empty at start() -- nothing is draining until the first scale-in decision.
