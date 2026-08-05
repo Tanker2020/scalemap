@@ -21,7 +21,17 @@ describe('createAutoscaleState', () => {
 })
 
 describe('runningSetResolver', () => {
-  it('fast path: with an empty desiredCount overlay change-set, every compiled instance is running', () => {
+  it('fast path: with an empty desiredCount overlay, returns true for any instance id without consulting compiled.instances', () => {
+    const compiled = { instances: {
+      a: { id: 'a', placementId: 'p1', indexInPlacement: 0 },
+    } } as any
+    const desiredCount = new Map() // genuinely empty
+    const resolver = runningSetResolver(compiled, desiredCount)
+    expect(resolver('a')).toBe(true) // exists in compiled
+    expect(resolver('nonexistent')).toBe(true) // does NOT exist in compiled, yet returns true -- proof of short-circuit
+  })
+
+  it('returns true for every instance within its placement\'s desiredCount', () => {
     const compiled = { instances: {
       a: { id: 'a', placementId: 'p1', indexInPlacement: 0 },
       b: { id: 'b', placementId: 'p1', indexInPlacement: 1 },
