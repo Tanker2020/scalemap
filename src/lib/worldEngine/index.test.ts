@@ -4070,3 +4070,81 @@ describe('FEAT-007 Task 7: instance_warming/instance_warm events', () => {
     sim.engine.stop()
   })
 })
+
+describe('FEAT-008 Task 13: wire AutoscaleState into the engine loop', () => {
+  // One region/AZ/server, one public autoscaled placement (count === autoscale.minCount, per the
+  // compile-finding invariant Task 11 added). compileWorld expands it to the FULL maxCount
+  // envelope on the SAME server (a Placement has exactly one serverId), so every instance of this
+  // placement is resident on `server` -- exactly the shape the parking test needs. Traffic is
+  // deliberately tiny relative to targetCpuPercent so desiredCount never actually moves during a
+  // short drive (this describe block is about the PARKING/exclusion machinery, not the control
+  // loop's arithmetic -- that's Task 22's scope).
+  function autoscaledPlacementWorld(policy: {
+    minCount: number; maxCount: number; targetCpuPercent: number
+    scaleUpCooldownSec: number; scaleDownCooldownSec: number
+  }) {
+    const doc = createWorld()
+    doc.routing.policy = 'latency'
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+
+    const blueprint = publicBlueprint('web', 0)
+    doc.blueprints[blueprint.id] = blueprint
+
+    const pl = createPlacement(blueprint.id, server.id)
+    pl.count = policy.minCount
+    pl.autoscale = { ...policy }
+    doc.placements[pl.id] = pl
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 5   // small: keeps observedCpu well under targetCpuPercent for this block's tests
+    doc.populations[pop.id] = pop
+
+    const instanceIdsForPlacement = Array.from({ length: policy.maxCount }, (_, i) => instanceId(pl.id, i))
+    return { doc, placementId: pl.id, instanceIdsForPlacement, server, blueprint }
+  }
+
+  it('AUTOSCALE PARKING: parked instances are excluded from host CPU/RAM totals', () => {
+    const f = autoscaledPlacementWorld({
+      minCount: 1, maxCount: 4, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300,
+    })
+    const compiled = compileWorld(f.doc)
+    // The envelope: compileWorld expands to maxCount, not the authored/desired count (Task 11).
+    expect(Object.values(compiled.instances).filter(i => i.placementId === f.placementId).length).toBe(4)
+
+    const sim = drive(f.doc, compiled)
+    sim.stepFor(5)
+    const b = sim.latest()
+
+    // Task 13's own scope: the host scheduler must never see an InstanceLoad entry for a parked
+    // instance, so the published per-server RAM total -- servers[id].ramUsedMb, read straight off
+    // HostStepResult.ramUsedMb (metrics.ts prefers `host?.ramUsedMb` over summing ramByInstance) --
+    // can only ever reflect the ONE running instance's footprint here, never the 4-instance
+    // envelope compileWorld expanded to. If parking were broken (all 4 resident instances handed
+    // to stepHost every step), this would read >= 4 * ramBaseMb (512); with parking working, it
+    // must stay under 2x a single instance's base RAM.
+    //
+    // (The complementary assertion -- that MetricsBatch.instances OMITS parked instance ids
+    // entirely -- depends on Task 16's metrics-publishing change and is added there; metrics.ts
+    // today still iterates ALL of compiled.instances when building the per-instance map, so every
+    // envelope id is present in b.instances regardless of running/parked state until that task
+    // lands.)
+    const serverMetrics = b.servers[f.server.id]
+    expect(serverMetrics.ramUsedMb).toBeGreaterThan(0)
+    expect(serverMetrics.ramUsedMb).toBeLessThan(f.blueprint.workload.ramBaseMb * 2)
+    sim.engine.stop()
+  })
+
+  it('REGRESSION FLOOR: a placement with no autoscale compiles to exactly count instances and simulates byte-identically', () => {
+    const f = e2eFixture()
+    const simA = drive(f.doc, f.compiled); simA.stepFor(30)
+    const simB = drive(f.doc, f.compiled); simB.stepFor(30)
+    expect(simB.latest()).toEqual(simA.latest())
+    simA.engine.stop()
+    simB.engine.stop()
+  })
+})

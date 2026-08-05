@@ -271,6 +271,17 @@ export type EngineEventKind =
                                   // step warmthOf(iid, ...) first reaches 1 -- the SAME cleanup
                                   // pass that deletes the s.warmingUntil entry is the one-shot
                                   // guard, no separate "already emitted" tracking needed
+  | 'scale_out' | 'scale_in'      // FEAT-008 (Task 13): a placement's desiredCount changed via
+                                  // evaluatePolicy -- 'out' grows the running set (paired with an
+                                  // 'instance_warming' registration per newly-unparked instance,
+                                  // Task 6's FEAT-007 hookup), 'in' shrinks it (Task 15 owns the
+                                  // drain-before-park mechanics; this event fires the moment
+                                  // desiredCount itself changes, not once draining completes)
+  | 'autoscale_ceiling'           // FEAT-008: Task 17 fully owns this variant's EMISSION (rate-
+                                  // limiting, message shape, call site) -- added here as a
+                                  // type-only stub by Task 13 so 'scale_out'/'scale_in' can land
+                                  // without a second EngineEventKind edit landing right behind it.
+                                  // Task 17 must NOT re-add this union member, only wire its emit.
 
 export interface EngineEvent {
   id: string

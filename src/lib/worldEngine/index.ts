@@ -52,6 +52,10 @@ import {
   recoverMultiAzManagedDbs, failbackPromotions, applyAzOutageToManaged,
 } from './failover'
 import {
+  createAutoscaleState, runningSetResolver, evaluatePolicy, type AutoscaleState,
+} from './autoscale'
+import { instanceId } from '../world/compileWorld'
+import {
   createMetricsState, accumulateStep, buildBatch, type MetricsState, type RoutingSnapshot,
   type VpsPublish,
 } from './metrics'
@@ -515,6 +519,24 @@ interface EngineState {
   // blueprint id, built ONCE from the frozen compiled world's instances so the per-server per-step
   // disk-demand computation never allocates a fresh Map from `resident` every step.
   blueprintIdByInstance: Map<InstanceId, BlueprintId>
+  // FEAT-008 (Task 13): the engine's live desiredCount/cooldown state -- compileWorld already
+  // expanded every autoscaled placement to its full maxCount envelope (the frozen-doc/frozen-
+  // compiled constraint means the running/parked split can only be decided here, at simulation
+  // time, never by recompiling). Mutated in place by evaluatePolicy every step it runs.
+  autoscale: AutoscaleState
+  // Memoized per Task 12's runningSetResolver -- mirrors roleResolver/roleResolverKey's exact
+  // shape (effectiveRoleResolver's own precedent): rebuilt only when autoscale.desiredCount's
+  // CONTENTS change, not every step, so an unconfigured/static-fleet world pays one string-join
+  // comparison per step and nothing else.
+  runningSet: (instanceId: InstanceId) => boolean
+  runningSetKey: string
+  // start()-time fast-path flag (the hasAnyCache/hasAnyDisk precedent): true iff ANY placement in
+  // the doc carries an authored `autoscale` policy. desiredCount always has an entry per
+  // placement (Task 12's createAutoscaleState seeds every placement, autoscaled or not), so
+  // desiredCount.size === 0 is never a useful guard -- this flag is the real one, skipping the
+  // per-step control-loop scan entirely for the overwhelming common case (no autoscaling
+  // authored anywhere).
+  hasAnyAutoscale: boolean
   // Task 10's pure backlog/lag tracker — persistent across ticks, mutated in place by
   // stepReplication.
   replication: ReplicationState
@@ -1230,6 +1252,25 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       }
     }
 
+    // FEAT-008 (Task 13): rebuild the running-set resolver only when desiredCount's CONTENTS
+    // actually changed since the last build -- the SAME memoization shape roleResolver/
+    // roleResolverKey use just above (promoKey), applied to a running-set overlay instead of a
+    // role overlay. Sits ahead of section 4/5 (host scheduling) below, which is the first reader.
+    // Fast-pathed on hasAnyAutoscale so a world with no autoscaling authored never even computes
+    // runningSetKey -- runningSet stays the `() => true` set at start() forever.
+    if (s.hasAnyAutoscale) {
+      const runningSetKey = [...s.autoscale.desiredCount.entries()].map(([k, v]) => `${k}:${v}`).join(',')
+      if (runningSetKey !== s.runningSetKey) {
+        s.runningSet = runningSetResolver(compiled, s.autoscale.desiredCount)
+        s.runningSetKey = runningSetKey
+      }
+    }
+    // FEAT-008 (Task 13): per-instance CPU utilization (cpuCoresUsed / this server's fair vCPU
+    // share of that instance), collected only when hasAnyAutoscale so an unconfigured world pays
+    // zero cost -- consumed by the control loop right after the per-server loop below to compute
+    // `observedCpu = mean(...) over RUNNING instances of the placement` per the spec's formula.
+    const cpuUtilByInstance: Record<InstanceId, number> = {}
+
     // ── 4/5. host scheduling (prev-step load) + VPS ──
     const admittedScaleByServer: Record<ServerId, number> = {}
     const latencyMultiplierByServer: Record<ServerId, number> = {}
@@ -1281,7 +1322,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
           stepLeaks(s.faults, resident.map(i => ({ instanceId: i.id, mbPerMinute: activeLeak.mbPerMinute })), stepSec)
         }
       }
-      const loads: InstanceLoad[] = resident.map(i => {
+      // FEAT-008 (Task 13): a parked instance (indexInPlacement past the placement's current
+      // desiredCount) contributes NO InstanceLoad entry at all -- stepHost only ever sees the
+      // loads it's handed, so "not present" already means "zero CPU, zero RAM" for free, no
+      // stepHost change needed. runningSet's fast path (`() => true`) makes this filter a no-op
+      // for every world with no autoscaling authored.
+      const loads: InstanceLoad[] = resident.filter(i => s.runningSet(i.id)).map(i => {
         const pf = s.prevFlows[i.id]
         const bp = doc.blueprints[i.blueprintId]
         const admitted = pf?.admittedRps ?? 0
@@ -1392,6 +1438,22 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // `internalRespBytesByInstance`, above) are already built this same step for the CPU blend.
       const nicCeilingBytesPerSec = (server.specs.nicMbps * 1e6) / 8
       const totalShares = loads.reduce((sum, l) => sum + Math.max(0, l.cpuShares ?? 1), 0) || 1
+      // FEAT-008 (Task 13): observedCpu = mean(cpuCoresUsed / vcpuShare) over a placement's
+      // RUNNING instances (spec formula) -- cpuCoresUsed from THIS step's prev-flow admitted load
+      // (the same admitted/cpuMsPerRequest basis `loads` was just built from), vcpuShare from the
+      // SAME fair-share split the NIC bandwidth divvy-up just above uses (cpuShares / totalShares
+      // of this server's effectiveVcpu), so a placement co-resident with heavier siblings reads a
+      // proportionally smaller ceiling, not the server's full core count. Only running (loads
+      // already excludes parked) instances contribute -- there is nothing to read for a parked
+      // one anyway. Gated on hasAnyAutoscale so an unconfigured world skips this per-instance pass
+      // entirely.
+      if (s.hasAnyAutoscale) {
+        for (const l of loads) {
+          const vcpuShare = effectiveVcpu * (Math.max(0, l.cpuShares ?? 1) / totalShares)
+          const cpuCoresUsed = (l.admittedRps * l.cpuMsPerRequest) / 1000
+          cpuUtilByInstance[l.instanceId] = vcpuShare > 0 ? cpuCoresUsed / vcpuShare : 0
+        }
+      }
       const fallbackWireBytes = Math.max(NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES)
       for (const l of loads) {
         const eb = entryNicBytesByInstance[l.instanceId]
@@ -1459,6 +1521,53 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       } else {
         s.vpsFactor.set(server.id, 1)
         vpsPublish[server.id] = { steal: 0, effectiveVcpuFactor: 1, creditsFraction: null }
+      }
+    }
+
+    // ── FEAT-008 (Task 13): autoscale control loop ──
+    // Runs every step (not literally gated to a cooldown boundary) because evaluatePolicy is
+    // itself cooldown-gated internally (lastScaleUpAt/lastScaleDownAt) -- calling it on a step
+    // inside a cooldown window is a cheap no-op (`{ next: current, scaled: null }`), so a separate
+    // step-scheduling gate on top would only add complexity without changing behavior. Hard-gated
+    // on hasAnyAutoscale so a world with no autoscaling authored never even walks doc.placements
+    // here.
+    if (s.hasAnyAutoscale) {
+      for (const pl of Object.values(doc.placements)) {
+        if (!pl.autoscale) continue
+        const desired = s.autoscale.desiredCount.get(pl.id) ?? pl.autoscale.minCount
+        // Mean over the placement's CURRENTLY RUNNING instances only (spec formula) -- an
+        // instance past `desired` is parked and never entered `loads`/`cpuUtilByInstance` this
+        // step, so it is correctly excluded by construction, not by an extra filter here.
+        let utilSum = 0
+        for (let i = 0; i < desired; i++) utilSum += cpuUtilByInstance[instanceId(pl.id, i)] ?? 0
+        const observedCpuPercent = desired > 0 ? (utilSum / desired) * 100 : 0
+        const result = evaluatePolicy(pl, observedCpuPercent, s.autoscale, simMs)
+        if (result.scaled === 'out') {
+          // FEAT-007 hookup (Task 6 of this task's brief): every NEWLY-running instance starts
+          // cold, the same registration Task 3 established for OOM restarts -- scale-out
+          // therefore does not help immediately, and scaleUpCooldownSec is a genuine design
+          // decision rather than a decorative field (spec's own framing).
+          const bp = doc.blueprints[pl.blueprintId]
+          const coldStartMs = bp?.workload.coldStartMs ?? 0
+          for (let i = desired; i < result.next; i++) {
+            const newId = instanceId(pl.id, i)
+            if (coldStartMs > 0) {
+              s.warmingUntil.set(newId, { startedMs: simMs, coldStartMs })
+              emit('instance_warming', 'info', `instance ${newId} started cold by autoscale scale-out`, [newId], simMs)
+            }
+          }
+          emit('scale_out', 'info', `placement ${pl.id} scaled out ${desired} -> ${result.next} instances`, [pl.id], simMs)
+        } else if (result.scaled === 'in') {
+          // Task 15 owns the drain-before-park mechanics (failover.ts's drainFactor/drainUntil,
+          // reused rather than a second implementation) -- this event fires the moment
+          // desiredCount itself changes, matching 'scale_out' firing on the decision, not on
+          // completion.
+          emit('scale_in', 'info', `placement ${pl.id} scaled in ${desired} -> ${result.next} instances`, [pl.id], simMs)
+        }
+        // Task 17 owns 'autoscale_ceiling' emission (rate-limited, sat-at-maxCount-while-over-
+        // target detection) -- deliberately not stubbed here beyond the EngineEventKind variant
+        // itself (types.ts), to avoid a second, uncoordinated rate-limit map landing ahead of
+        // Task 17's own.
       }
     }
 
@@ -2334,6 +2443,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         // per-step disk cost.
         hasAnyDisk: Object.values(doc.servers).some(sv => sv.specs.diskIops != null || sv.specs.diskType != null),
         blueprintIdByInstance: new Map(Object.values(compiled.instances).map(i => [i.id, i.blueprintId])),
+        // FEAT-008 (Task 13): desiredCount seeded to minCount for every autoscaled placement, to
+        // count for every static one (createAutoscaleState's own contract) -- runningSet starts
+        // as the "everyone running" fast path and is rebuilt on the very first runStep call below
+        // once autoscale.desiredCount is actually read.
+        autoscale: createAutoscaleState(doc),
+        runningSet: () => true,
+        runningSetKey: '',
+        hasAnyAutoscale: Object.values(doc.placements).some(pl => pl.autoscale != null),
         replication: createReplicationState(),
         prevWriteRpsByCluster: {},
         routing: createRoutingState(), failover: createFailoverState(), faults: createFaultState(),

@@ -75,6 +75,15 @@ export function decodeAffected(
     case 'instance_warm':
       // FEAT-007 (Task 7): affected is [instanceId] (index.ts's emit call).
       return { primaryId: affected[0] ?? '', secondaryId: null }
+    case 'scale_out':
+    case 'scale_in':
+      // FEAT-008 (Task 13): affected is [placementId] (index.ts's emit call).
+      return { primaryId: affected[0] ?? '', secondaryId: null }
+    case 'autoscale_ceiling':
+      // FEAT-008: type-only stub landed by Task 13 (see types.ts) -- Task 17 owns this variant's
+      // actual emission/affected shape. Placeholder single-primary decode keeps this switch
+      // exhaustive in the meantime; Task 17 should revisit if its affected[] shape differs.
+      return { primaryId: affected[0] ?? '', secondaryId: null }
   }
 }
 
