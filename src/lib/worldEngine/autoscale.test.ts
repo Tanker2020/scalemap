@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { createAutoscaleState, runningSetResolver, evaluatePolicy } from './autoscale'
+import {
+  createAutoscaleState, runningSetResolver, evaluatePolicy,
+  beginInstanceDrain, clearInstanceDrain, instanceDrainFactor, INSTANCE_DRAIN_MS,
+} from './autoscale'
 
 const policy = {
   minCount: 2, maxCount: 8, targetCpuPercent: 60,
@@ -53,6 +56,56 @@ describe('runningSetResolver', () => {
     expect(resolver('a')).toBe(true)
     expect(resolver('b')).toBe(true)
     expect(resolver('c')).toBe(false) // parked -- envelope index 2 >= desired 2
+  })
+
+  it('treats a draining-but-otherwise-parked instance as still running (Task 15 widening)', () => {
+    const compiled = { instances: {
+      a: { id: 'a', placementId: 'p1', indexInPlacement: 0 },
+      b: { id: 'b', placementId: 'p1', indexInPlacement: 1 }, // >= desired, would normally park
+    } } as any
+    const desiredCount = new Map([['p1', 1]])
+    // 'b' is past the envelope (indexInPlacement 1 >= desired 1) but is present in the drain map.
+    const drainUntilByInstance = new Map([['b', 5000]])
+    const resolver = runningSetResolver(compiled, desiredCount, drainUntilByInstance)
+    expect(resolver('a')).toBe(true)
+    expect(resolver('b')).toBe(true) // widened: draining overrides the index/desired parking check
+
+    // Without the drain entry, the same instance parks as usual -- proves the widening is the
+    // drain map's doing, not some unconditional relaxation of the index check.
+    const resolverNoDrain = runningSetResolver(compiled, desiredCount, new Map())
+    expect(resolverNoDrain('b')).toBe(false)
+  })
+})
+
+describe('instance drain', () => {
+  it('beginInstanceDrain sets the deadline to simMs + INSTANCE_DRAIN_MS', () => {
+    const drainUntilByInstance = new Map<string, number>()
+    beginInstanceDrain(drainUntilByInstance, 'i-1', 1000)
+    expect(drainUntilByInstance.get('i-1')).toBe(1000 + INSTANCE_DRAIN_MS)
+  })
+
+  it('beginInstanceDrain is idempotent -- a second call on an already-draining instance does not push the deadline out', () => {
+    const drainUntilByInstance = new Map<string, number>()
+    beginInstanceDrain(drainUntilByInstance, 'i-1', 1000)
+    beginInstanceDrain(drainUntilByInstance, 'i-1', 1900) // called again, later, same instance
+    expect(drainUntilByInstance.get('i-1')).toBe(1000 + INSTANCE_DRAIN_MS) // unchanged, NOT 1900 + ms
+  })
+
+  it('clearInstanceDrain removes the entry', () => {
+    const drainUntilByInstance = new Map<string, number>()
+    beginInstanceDrain(drainUntilByInstance, 'i-1', 1000)
+    clearInstanceDrain(drainUntilByInstance, 'i-1')
+    expect(drainUntilByInstance.has('i-1')).toBe(false)
+  })
+
+  it('instanceDrainFactor ramps 1 -> 0 across INSTANCE_DRAIN_MS (2000) after drain begins', () => {
+    const drainUntilByInstance = new Map<string, number>()
+    beginInstanceDrain(drainUntilByInstance, 'i-1', 0)
+    expect(instanceDrainFactor(drainUntilByInstance, 'i-1', 0)).toBeCloseTo(1, 5)
+    expect(instanceDrainFactor(drainUntilByInstance, 'i-1', 1000)).toBeCloseTo(0.5, 5)
+    expect(instanceDrainFactor(drainUntilByInstance, 'i-1', 2000)).toBeCloseTo(0, 5)
+    expect(instanceDrainFactor(drainUntilByInstance, 'i-1', 2500)).toBe(0)
+    expect(instanceDrainFactor(drainUntilByInstance, 'i-other', 0)).toBe(0) // no drain entry
   })
 })
 

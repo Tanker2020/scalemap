@@ -14,6 +14,7 @@ import type { MetricsBatch, EngineEvent, FramePayload } from './types'
 import { populationDemandRps } from './demand'
 import { createRng } from './rng'
 import { effectiveHitRatio } from './cache'
+import { INSTANCE_DRAIN_MS } from './autoscale'
 
 // A public-facing entry blueprint: the facade routes client demand only to blueprints that
 // expose a 'public' port (documented entry rule).
@@ -4191,18 +4192,37 @@ describe('FEAT-008 Task 13: wire AutoscaleState into the engine loop', () => {
 
   it('AUTOSCALE DRAIN: a scaled-in instance stops receiving new traffic but its errorRate does not spike', () => {
     const f = autoscaledPlacementWorld({
-      minCount: 1, maxCount: 4, targetCpuPercent: 10, scaleUpCooldownSec: 1, scaleDownCooldownSec: 1,
+      minCount: 1, maxCount: 4, targetCpuPercent: 10, scaleUpCooldownSec: 9999, scaleDownCooldownSec: 1,
     })
-    // targetCpuPercent set absurdly low + tiny cooldowns so a scale-out happens fast under the
+    // targetCpuPercent set absurdly low so a scale-out happens fast (evaluatePolicy has no
+    // scaleStep here, so it jumps straight from minCount to maxCount in one decision) under the
     // fixture's synthetic demand, then a scale-in happens fast once the running fleet's mean CPU
     // settles back under a target this low (it always will, at target=10%). peakRps bumped well
     // above the fixture default (5) so the placement is forced above minCount at all -- otherwise
-    // it never leaves 1 instance and there is nothing to scale back IN from.
-    f.doc.populations[Object.keys(f.doc.populations)[0]].peakRps = 200
+    // it never leaves 1 instance and there is nothing to scale back IN from. scaleUpCooldownSec is
+    // set absurdly HIGH (asymmetric on purpose, review fix) so the one initial ramp-up scale_out
+    // can never be followed by another mid-test -- without this, a naive 1s/1s cooldown pair
+    // thrashes scale_out/scale_in every ~1-2s once the fleet shrinks and per-instance CPU rises
+    // again, which re-inflates ramUsedMb between our drain-window readings and makes the RAM
+    // assertion below flaky/wrong for reasons unrelated to drain correctness. With scale-out
+    // effectively locked out after the first ramp-up, every scale_in from here on is monotonic --
+    // host RAM can only ever go down, never bounce back up, which is exactly what makes "did RAM
+    // drop when it should have" an unambiguous, non-flaky signal.
+    const popId = Object.keys(f.doc.populations)[0]
+    f.doc.populations[popId].peakRps = 200
     const compiled = compileWorld(f.doc)
     const sim = drive(f.doc, compiled)
     sim.stepFor(2)
-    sim.stepFor(60) // long enough for at least one scale-in decision under low load
+    sim.stepFor(3) // let the placement ramp all the way out to maxCount under the heavy demand
+
+    // Now drop demand hard (review fix, replaces relying on organic 1s/1s thrash): with
+    // scaleUpCooldownSec locked out for the rest of the test, the ONLY way back down from
+    // maxCount is a genuine scale-in decision -- so cutting peakRps here (the doc is read live by
+    // populationDemandRps every step, no re-compile needed) drives observed per-instance CPU
+    // (25% at maxCount under the original 200rps) comfortably under targetCpuPercent (10%),
+    // triggering a clean, single-direction scale-in run with nothing to muddy the RAM reading.
+    f.doc.populations[popId].peakRps = 5
+    sim.stepFor(60) // long enough for at least one scale-in decision under the now-low load
 
     const scaleInEvents = sim.events.filter(e => e.kind === 'scale_in')
     expect(scaleInEvents.length).toBeGreaterThan(0)
@@ -4210,6 +4230,56 @@ describe('FEAT-008 Task 13: wire AutoscaleState into the engine loop', () => {
     const b = sim.latest()
     const errorRates = Object.values(b.instances).map((i: any) => i.errorRate)
     expect(Math.max(...errorRates, 0)).toBeLessThan(0.05) // no error spike from an abrupt drop
+
+    // Review fix: errorRate<0.05 alone does NOT discriminate "drain correctly kept the instance
+    // running" from "the instance was parked instantly with zero CPU/RAM" -- a parked instance
+    // with no traffic also trivially reports errorRate 0. Assert directly on the server's
+    // published ramUsedMb -- built from HostStepResult.ramUsedMb, the SAME running-instance-
+    // filtered sum the AUTOSCALE PARKING test above exercises via stepHost's `loads` array
+    // (index.ts's `resident.filter(i => s.runningSet(i.id))`). A running-but-draining instance
+    // still contributes its ramBaseMb to that sum (its InstanceLoad entry isn't dropped until the
+    // drain window elapses and it actually parks) -- ramBaseMb=128 for this fixture's default
+    // blueprint workload (factories.ts createBlueprint), dwarfing the few-MB connection-driven
+    // swing on the surviving instances, so a 64 MB (half a baseline) tolerance cleanly separates
+    // "still counted" from "already dropped".
+    const ramBaseMb = 128
+    // MetricsBatch publishes at 1 Hz (one batch per simulated second, not per 100ms engine step —
+    // confirmed empirically: consecutive sim.batches entries are ~1000ms apart), so "before"/
+    // "after" the scale_in instant must be resolved against ACTUAL batch simMs values, not an
+    // arbitrary +/-100ms offset (which can land on the very same batch as its neighbor and
+    // silently compare a value against itself, proving nothing either way).
+    const batchBefore = (simMs: number) => {
+      let best: (typeof sim.batches)[number] | undefined
+      for (const batch of sim.batches) {
+        if (batch.simMs >= simMs) break
+        best = batch
+      }
+      return best
+    }
+    const batchAtOrAfter = (simMs: number) => sim.batches.find(b => b.simMs >= simMs)
+    const ramOf = (b: (typeof sim.batches)[number] | undefined) => b!.servers[f.server.id].ramUsedMb
+
+    const firstScaleIn = scaleInEvents[0]
+    const ramJustBeforeScaleIn = ramOf(batchBefore(firstScaleIn.simMs))
+    // The FIRST batch published at/after the scale_in instant -- the earliest possible moment a
+    // broken (non-draining) implementation could show the drop.
+    const rightAfterBatch = batchAtOrAfter(firstScaleIn.simMs)
+    const ramRightAfterScaleIn = ramOf(rightAfterBatch)
+    // If drain were broken (instant park instead of a graceful window), ramUsedMb would drop by a
+    // full ramBaseMb the very step scale_in fires. With drain wired correctly it must NOT drop
+    // (the just-demoted instance is still in the running set, still billed its RAM baseline).
+    expect(ramRightAfterScaleIn).toBeGreaterThan(ramJustBeforeScaleIn - ramBaseMb * 0.5)
+
+    // Buffer beyond INSTANCE_DRAIN_MS is generous (2s, ~2 more 1Hz batch ticks) because the
+    // drain-complete cleanup pass and metrics EMA settle a little after the raw deadline, not
+    // exactly on it -- and it's safe to be generous here specifically because scaleUpCooldownSec
+    // is locked out for the rest of this test (see above), so nothing can re-inflate ramUsedMb
+    // while we wait.
+    const ramAfterDrainWindow = ramOf(batchAtOrAfter(rightAfterBatch!.simMs + INSTANCE_DRAIN_MS + 2000))
+    // Once the drain window (INSTANCE_DRAIN_MS) elapses, the instance genuinely parks and host RAM
+    // must drop -- if drain never actually completed (e.g. clearInstanceDrain never wired to the
+    // cleanup pass), ramUsedMb would stay flat forever instead.
+    expect(ramAfterDrainWindow).toBeLessThan(ramRightAfterScaleIn - ramBaseMb * 0.5)
     sim.engine.stop()
   })
 
