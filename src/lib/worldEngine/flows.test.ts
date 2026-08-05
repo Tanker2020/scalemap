@@ -1304,4 +1304,48 @@ describe('solveFlows — parked autoscale-envelope targets (FEAT-008)', () => {
       expect(flows[instanceId(db.pl.id, i)].admittedRps).toBeGreaterThan(0)
     }
   })
+
+  // Wave 3 final review (Important #1): a DRAINING instance still reads `isRunning` true (Task
+  // 15's whole point -- it keeps its CPU/RAM/publishing through the grace window), but it must
+  // NOT keep drawing NEW internal fan-out. `isEligibleForNewWork` is the separate, narrower
+  // signal for that -- these two tests pin the case `isRunning` alone gets wrong.
+  it('a draining instance (isRunning=true) is excluded from fan-out once isEligibleForNewWork says so', () => {
+    const { doc, api, db } = autoscaledDownstreamWorld()
+    const compiled = compileWorld(doc)
+    const dbInstances = Object.values(compiled.instances).filter(i => i.blueprintId === db.bp.id)
+    expect(dbInstances).toHaveLength(4)
+    const runningDb = instanceId(db.pl.id, 0)
+    const drainingDb = instanceId(db.pl.id, 1)
+    // Both slot 0 and slot 1 are "running" (draining still counts as running) -- only slot 0 is
+    // eligible for NEW work.
+    const isRunning = (id: string) => id === runningDb || id === drainingDb
+    const isEligibleForNewWork = (id: string) => id === runningDb
+
+    const { flows } = solveFlows({
+      ...baseInput(doc, { [api.iid]: 1000 }),
+      isRunning,
+      isEligibleForNewWork,
+    })
+    expect(flows[runningDb].admittedRps).toBeGreaterThan(900)
+    // The draining slot draws no NEW fan-out despite isRunning(drainingDb) being true.
+    expect(flows[drainingDb]?.admittedRps ?? 0).toBe(0)
+    for (let i = 2; i < 4; i++) {
+      expect(flows[instanceId(db.pl.id, i)]?.admittedRps ?? 0).toBe(0)
+    }
+  })
+
+  it('regression floor: with no isEligibleForNewWork supplied, fan-out falls back to isRunning unchanged', () => {
+    const { doc, api, db } = autoscaledDownstreamWorld()
+    const runningDb = instanceId(db.pl.id, 0)
+    const isRunning = (id: string) => id !== runningDb ? !id.startsWith(db.pl.id) : true
+
+    const { flows } = solveFlows({
+      ...baseInput(doc, { [api.iid]: 1000 }),
+      isRunning,
+    })
+    expect(flows[runningDb].admittedRps).toBeGreaterThan(900)
+    for (let i = 1; i < 4; i++) {
+      expect(flows[instanceId(db.pl.id, i)]?.admittedRps ?? 0).toBe(0)
+    }
+  })
 })

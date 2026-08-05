@@ -28,10 +28,14 @@ export function createAutoscaleState(doc: WorldDoc): AutoscaleState {
  * "running" — for CPU/RAM/publishing purposes — while it is draining. `drainUntilByInstance` is
  * passed through LIVE (the same mutated-in-place Map the engine owns), so this resolver does NOT
  * need to be rebuilt when a drain begins or completes — only the indexInPlacement/desired
- * relationship changes require a rebuild (index.ts's runningSetKey memoization). Draining
- * instances are still excluded from NEW traffic, but that exclusion lives in index.ts's
- * routingHealthOfInstance wrapper (Task 14), not here — this resolver answers ONLY "is this
- * instance running" (CPU/RAM/metrics), never "is this instance eligible for new work".
+ * relationship changes require a rebuild. This resolver answers ONLY "is this instance running"
+ * (CPU/RAM/metrics), never "is this instance eligible for new work" — that is a SEPARATE
+ * question, answered by two SEPARATE wrappers built in index.ts from this same resolver plus
+ * `drainUntilByInstance`, one per tier: `routingHealthOfInstance` (Task 14) for the entry/LB
+ * tier, and the `isEligibleForNewWork` predicate threaded into `FlowInput` (Wave 3 final review,
+ * Important #1) for internal service-to-service fan-out and event-topic consumer seeding — both
+ * exclude a draining instance from NEW work of any kind while it keeps finishing work already in
+ * flight.
  */
 export function runningSetResolver(
   compiled: CompiledWorld,

@@ -307,6 +307,18 @@ export interface FlowInput {
   // event-topic consumer seeding below. Optional: absent => every compiled instance counts as
   // running, the exact pre-FEAT-008 behavior, so existing callers/tests are unaffected.
   isRunning?: (instanceId: InstanceId) => boolean
+  // Wave 3 final review (Important #1): a SEPARATE signal from `isRunning` above, mirroring why
+  // index.ts's `routingHealthOfInstance` is its own wrapper rather than reusing `runningSet`/
+  // `healthOfInstance` directly. `isRunning` answers "is this instance running for CPU/RAM
+  // purposes" -- true for a DRAINING instance (Task 15's whole point: it keeps serving in-flight
+  // work through its ~2s grace window). This field instead answers "is this instance eligible to
+  // receive NEW work" -- false for both a parked AND a draining instance. The two usage sites
+  // below (`healthWeightOf`'s fan-out weighting and the topic-consumer seed filter) are both
+  // NEW-work-assignment decisions, so both read this field, never `isRunning`, once it is
+  // supplied. Optional: absent ⇒ falls back to `isRunning` (draining instances keep drawing new
+  // internal work, the pre-fix FEAT-008 Task 19 behavior), so existing callers/tests that only
+  // wire `isRunning` are unaffected.
+  isEligibleForNewWork?: (instanceId: InstanceId) => boolean
   // Per-path (keyed by CompiledPath.id) network-partition impairment (FEAT-002, Task 10), built
   // ONCE per step by the engine (index.ts) from state.faults.partitions and threaded through here.
   // Consumed in the dependency loop (Task 11): `blocked` short-circuits like a firewall block
@@ -504,12 +516,19 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
   // Audit ISSUE-006: dependency fan-out weights each candidate by target health (mirroring the
   // entry tier's down-exclusion), so internal traffic routes around a down replica instead of
   // erroring 1/N of the group's calls forever.
+  // Wave 3 final review (Important #1): new-work eligibility, not raw running state -- excludes
+  // both a parked AND a draining instance. Falls back to `isRunning` when the caller hasn't wired
+  // the narrower signal (regression floor for existing tests/callers).
+  const eligibleForNewWork = (id: InstanceId): boolean =>
+    input.isEligibleForNewWork ? input.isEligibleForNewWork(id) : (input.isRunning?.(id) ?? true)
+
   const healthWeightOf = (id: InstanceId): number => {
-    // FEAT-008 (Task 19): a parked envelope slot is weighted out exactly like a down one — it is
-    // not a target that can serve. If EVERY candidate in a pool is parked, splitDependencyShares'
-    // existing all-zero-weight fallback still makes the attempt (even split, then refused
-    // downstream), matching how an all-down target pool already behaves.
-    if (input.isRunning && !input.isRunning(id)) return 0
+    // FEAT-008 (Task 19): a parked (or, since the Wave 3 final review, draining) envelope slot is
+    // weighted out exactly like a down one — it is not a target that can take on NEW work. If
+    // EVERY candidate in a pool is ineligible, splitDependencyShares' existing all-zero-weight
+    // fallback still makes the attempt (even split, then refused downstream), matching how an
+    // all-down target pool already behaves.
+    if (!eligibleForNewWork(id)) return 0
     const h = healthOf(id)
     return h === 'down' ? 0 : h === 'degraded' ? DEGRADED_ADMIT_FACTOR : 1
   }
@@ -665,11 +684,12 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
         }
       }
       if (!targetBpId) continue
-      // FEAT-008 (Task 19): only RUNNING consumers drain a topic — seeding a parked slot would
-      // hand it a share of drainRps it can never process (no CPU/RAM, no published metrics),
-      // silently under-draining the topic in proportion to the parked share of the envelope.
+      // FEAT-008 (Task 19; narrowed to new-work eligibility in the Wave 3 final review): only a
+      // consumer eligible for NEW work drains a topic — seeding a parked OR draining slot would
+      // hand it a share of drainRps it can never (or, mid-drain, should no longer) process,
+      // silently under-draining the topic in proportion to the ineligible share of the envelope.
       const consumers = Object.values(compiled.instances).filter(
-        i => i.blueprintId === targetBpId && (input.isRunning?.(i.id) ?? true))
+        i => i.blueprintId === targetBpId && eligibleForNewWork(i.id))
       if (consumers.length === 0) continue
       const share = rt.drainRps / consumers.length
       for (const c of consumers) {

@@ -52,7 +52,8 @@ import {
   recoverMultiAzManagedDbs, failbackPromotions, applyAzOutageToManaged,
 } from './failover'
 import {
-  createAutoscaleState, runningSetResolver, evaluatePolicy, beginInstanceDrain, type AutoscaleState,
+  createAutoscaleState, runningSetResolver, evaluatePolicy, beginInstanceDrain, clearInstanceDrain,
+  type AutoscaleState,
 } from './autoscale'
 import { instanceId } from '../world/compileWorld'
 import {
@@ -542,12 +543,15 @@ interface EngineState {
   // compiled constraint means the running/parked split can only be decided here, at simulation
   // time, never by recompiling). Mutated in place by evaluatePolicy every step it runs.
   autoscale: AutoscaleState
-  // Memoized per Task 12's runningSetResolver -- mirrors roleResolver/roleResolverKey's exact
-  // shape (effectiveRoleResolver's own precedent): rebuilt only when autoscale.desiredCount's
-  // CONTENTS change, not every step, so an unconfigured/static-fleet world pays one string-join
-  // comparison per step and nothing else.
+  // Task 12's runningSetResolver closure reads `autoscale.desiredCount`/`drainUntilByInstance` BY
+  // REFERENCE (both live, mutated-in-place Maps) -- unlike roleResolver/roleResolverKey (which
+  // memoizes an actual per-instance overlay snapshot), rebuilding this closure can never change
+  // its behavior, since any rebuild reads the exact same live state the previous closure already
+  // read. Wave 3 final review (Minor #3): a per-step key-comparison here was therefore pure
+  // overhead with no behavioral payoff -- built ONCE, on the first qualifying step, and never
+  // rebuilt again (see `runningSetBuilt` below).
   runningSet: (instanceId: InstanceId) => boolean
-  runningSetKey: string
+  runningSetBuilt: boolean
   // Task 15: instance id -> simMs the drain completes. An instance enters this map the moment a
   // scale-in decision drops it below the placement's new desiredCount (instead of being parked
   // that same step) and leaves it once INSTANCE_DRAIN_MS elapses (the periodic cleanup pass near
@@ -1335,17 +1339,17 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     // roleResolverKey use just above (promoKey), applied to a running-set overlay instead of a
     // role overlay. Sits ahead of section 4/5 (host scheduling) below, which is the first reader.
     // Fast-pathed on hasAnyAutoscale so a world with no autoscaling authored never even computes
-    // runningSetKey -- runningSet stays the `() => true` set at start() forever.
-    if (s.hasAnyAutoscale) {
-      const runningSetKey = [...s.autoscale.desiredCount.entries()].map(([k, v]) => `${k}:${v}`).join(',')
-      if (runningSetKey !== s.runningSetKey) {
-        // Task 15: drainUntilByInstance is threaded through so a draining instance (below the
-        // NEW desiredCount but not yet past its drain window) still resolves running=true --
-        // passed by reference (live Map), so a drain beginning/completing later this step or a
-        // future one is seen without forcing a resolver rebuild of its own.
-        s.runningSet = runningSetResolver(compiled, s.autoscale.desiredCount, s.drainUntilByInstance)
-        s.runningSetKey = runningSetKey
-      }
+    // runningSetBuilt -- runningSet stays the `() => true` set at start() forever.
+    // Wave 3 final review (Minor #3): built ONCE (guarded on runningSetBuilt, not rebuilt every
+    // step off a recomputed key) -- see runningSetBuilt's own comment above for why a rebuild can
+    // never change behavior here.
+    if (s.hasAnyAutoscale && !s.runningSetBuilt) {
+      // Task 15: drainUntilByInstance is threaded through so a draining instance (below the
+      // current desiredCount but not yet past its drain window) still resolves running=true --
+      // passed by reference (live Map), so a drain beginning/completing any future step is seen
+      // without needing a resolver rebuild.
+      s.runningSet = runningSetResolver(compiled, s.autoscale.desiredCount, s.drainUntilByInstance)
+      s.runningSetBuilt = true
     }
     // FEAT-008 (Task 13): per-instance CPU utilization (cpuCoresUsed / this server's fair vCPU
     // share of that instance), collected only when hasAnyAutoscale so an unconfigured world pays
@@ -1496,8 +1500,13 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // the ramp's midpoint blends to 0.65, not 0.5. Fast-pathed on s.warmingUntil.size (the same
       // "empty map ⇒ undefined, skip the per-server Object.fromEntries" discipline hasAnyDisk/
       // hasAnyCache use elsewhere) so a world with no warming instance anywhere pays zero cost
-      // here and stepHost sees `undefined` (its own regression floor).
-      const warmthByInstance: Record<InstanceId, number> | undefined = s.warmingUntil.size === 0
+      // here and stepHost sees `undefined` (its own regression floor). Wave 3 final review
+      // (Minor #4): the global size check alone still made EVERY server pay the per-resident
+      // Object.fromEntries whenever ANY single instance anywhere in the world was warming --
+      // narrowed with a cheap per-server `.some()` first, the same lesson Task 22 applied to the
+      // sibling autoscaledInstanceIds-scoped fast path.
+      const anyResidentWarming = s.warmingUntil.size > 0 && resident.some(i => s.warmingUntil.has(i.id))
+      const warmthByInstance: Record<InstanceId, number> | undefined = !anyResidentWarming
         ? undefined
         : Object.fromEntries(
             resident.map(inst => {
@@ -1638,6 +1647,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
           const coldStartMs = bp?.workload.coldStartMs ?? 0
           for (let i = desired; i < result.next; i++) {
             const newId = instanceId(pl.id, i)
+            // Wave 3 final review (Important #2): if a scale-in and this scale-out both land on
+            // the SAME instance slot faster than INSTANCE_DRAIN_MS apart, that slot can still be
+            // sitting in drainUntilByInstance from the earlier scale-in. Left alone it would (a)
+            // stay excluded from routing (routingHealthOfInstance / isEligibleForNewWork above)
+            // for the remainder of the now-stale drain window even though it is actively serving
+            // again, and (b) be about to get re-registered into warmingUntil as cold below.
+            // Clearing it BEFORE that registration makes the slot immediately routable again.
+            clearInstanceDrain(s.drainUntilByInstance, newId)
             if (coldStartMs > 0) {
               s.warmingUntil.set(newId, { startedMs: simMs, coldStartMs })
               emit('instance_warming', 'info', `instance ${newId} started cold by autoscale scale-out`, [newId], simMs)
@@ -1805,9 +1822,17 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // FEAT-008 (Task 19): keeps internal service-to-service fan-out (and event-topic consumer
       // seeding) off PARKED envelope slots. Task 14 closed the same hole for the entry tier;
       // healthOfInstance reports a parked instance as 'healthy' by design, so the solver needs
-      // the running set explicitly. A DRAINING instance still reads running (Task 15) and keeps
-      // serving its in-flight internal work through the grace window, matching stepHost.
+      // the running set explicitly. `isRunning` alone still reads true for a DRAINING instance
+      // (Task 15) -- that is what keeps it in stepHost's CPU/RAM accounting through its grace
+      // window -- so it is deliberately NOT what decides eligibility for new internal work below.
       isRunning: s.runningSet,
+      // Wave 3 final review (Important #1): a draining instance must stop drawing NEW work of any
+      // kind, not just be excluded from entry-tier (LB) routing -- routingHealthOfInstance already
+      // covers the entry tier; this is the internal-fan-out/topic-consumer half of that same
+      // intent. Wraps s.runningSet with the drain check `routingHealthOfInstance` already applies,
+      // so a draining instance is running (CPU/RAM/publishing continue) but not eligible for new
+      // internal fan-out or topic consumption -- it only finishes work already in flight.
+      isEligibleForNewWork: (iid) => s.runningSet(iid) && !s.drainUntilByInstance.has(iid),
       impairmentMemo,
       // FEAT-005 (Task 11): see the field's own comment just above for the one-step-lag rationale.
       staleReadFractionByReplica,
@@ -2238,9 +2263,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // CPU/RAM accounting — passing it lets buildBatch omit that same instance from `instances`
       // instead of publishing it with zero/default values. runningByPlacement is built straight
       // from s.autoscale.desiredCount (the exact map runningSet was resolved from), never a
-      // re-derived count, so the published desired/running number and the actual number of
-      // published instance entries for a placement can never diverge. Guarded on hasAnyAutoscale so
-      // a world with no autoscaling authored publishes `undefined`, not `{}`.
+      // re-derived count. That keeps it in lockstep with the published `instances` count in the
+      // COMMON case, but NOT during a Task 15 scale-in drain window: s.runningSet still counts a
+      // DRAINING instance as running (by design, so it keeps CPU/RAM/publishing through its ~2s
+      // grace window), while desiredCount already reflects the new, lower target -- so a draining
+      // placement legitimately publishes more `instances` entries than its own
+      // `runningByPlacement` reading for that window (the UI's "draining" suffix exists to
+      // surface exactly this gap; it is not a bug). Guarded on hasAnyAutoscale so a world with no
+      // autoscaling authored publishes `undefined`, not `{}`.
       const runningByPlacement = s.hasAnyAutoscale
         ? Object.fromEntries(s.autoscale.desiredCount)
         : undefined
@@ -2603,7 +2633,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         autoscale: createAutoscaleState(doc),
         scaleEventHistory: new Map(),
         runningSet: () => true,
-        runningSetKey: '',
+        runningSetBuilt: false,
         // Task 15: empty at start() -- nothing is draining until the first scale-in decision.
         drainUntilByInstance: new Map(),
         hasAnyAutoscale: autoscaledPlacementIdsAtStart.size > 0,

@@ -4324,6 +4324,70 @@ describe('FEAT-008 Task 13: wire AutoscaleState into the engine loop', () => {
     sim.engine.stop()
   })
 
+  // Wave 3 final review (Important #2): clearInstanceDrain/instanceDrainFactor were exported and
+  // unit-tested in autoscale.ts but had ZERO production callers in index.ts -- only
+  // beginInstanceDrain was wired up. Concrete bug: a scale-in followed by a scale-out that
+  // re-activates the SAME instance slot faster than INSTANCE_DRAIN_MS (2000ms) apart left that
+  // slot stuck in drainUntilByInstance from the earlier scale-in, so routingHealthOfInstance kept
+  // reporting it 'down' for routing purposes for the remainder of the now-stale drain window even
+  // though the engine now wants it actively serving again. This test drives that exact sequence
+  // end-to-end (both cooldowns at 0 so decisions aren't cooldown-gated) and confirms the
+  // reactivated slot is genuinely routable again, not silently starved.
+  it('AUTOSCALE DRAIN: a scale-out that re-activates a still-draining slot is immediately routable again', () => {
+    const f = autoscaledPlacementWorld({
+      minCount: 1, maxCount: 2, targetCpuPercent: 20, scaleUpCooldownSec: 0, scaleDownCooldownSec: 0,
+    })
+    const popId = Object.keys(f.doc.populations)[0]
+    const compiled = compileWorld(f.doc)
+    const sim = drive(f.doc, compiled)
+    const reactivatedId = f.instanceIdsForPlacement[1]   // the slot both scale-out decisions touch
+
+    // Steps in 100ms increments, polling for `predicate` after each -- avoids brittle fixed step
+    // counts against an EMA-driven control loop whose exact settling time isn't a stable constant.
+    const stepUntil = (predicate: () => boolean, maxSteps: number): boolean => {
+      for (let i = 0; i < maxSteps; i++) {
+        sim.engine.__test_step(1)
+        if (predicate()) return true
+      }
+      return false
+    }
+
+    // Phase 1: spike demand (matching "AUTOSCALE EVENTS" above's proven 1000rps/20%-target
+    // combination -- comfortably past what a single dedicated-8 instance can hold), wait for the
+    // first scale-out (1 -> 2). Generous budget -- this decision isn't timing-sensitive, only the
+    // phase 2 -> 3 gap below is.
+    f.doc.populations[popId].peakRps = 1000
+    expect(stepUntil(() => sim.events.some(e => e.kind === 'scale_out'), 120)).toBe(true)
+
+    // Phase 2: drop demand hard, wait for a scale-in (2 -> 1) -- begins index 1's drain.
+    f.doc.populations[popId].peakRps = 1
+    const scaleInCountBefore = sim.events.filter(e => e.kind === 'scale_in').length
+    expect(stepUntil(() => sim.events.filter(e => e.kind === 'scale_in').length > scaleInCountBefore, 100)).toBe(true)
+    const firstScaleInEvent = sim.events.filter(e => e.kind === 'scale_in')[0]
+
+    // Phase 3: spike again IMMEDIATELY -- tight budget (well under INSTANCE_DRAIN_MS in step
+    // count) so this genuinely exercises the race, not a scale-out that happens to land after the
+    // original drain would have completed on its own anyway.
+    f.doc.populations[popId].peakRps = 1000
+    const scaleOutCountBefore = sim.events.filter(e => e.kind === 'scale_out').length
+    expect(stepUntil(() => sim.events.filter(e => e.kind === 'scale_out').length > scaleOutCountBefore, 18)).toBe(true)
+    const scaleOutEventsAfter = sim.events.filter(e => e.kind === 'scale_out')
+    const secondScaleOutEvent = scaleOutEventsAfter[scaleOutEventsAfter.length - 1]
+
+    // Pin the actual regression condition: this second scale-out landed WHILE the original drain
+    // (begun by firstScaleInEvent) was still pending, not after it would have naturally elapsed.
+    expect(secondScaleOutEvent.simMs - firstScaleInEvent.simMs).toBeLessThan(INSTANCE_DRAIN_MS)
+
+    // Let routing settle, then confirm the reactivated slot is genuinely receiving traffic. If
+    // clearInstanceDrain were never wired to this scale-out, routingHealthOfInstance would still
+    // see a live drainUntilByInstance entry for it and report it 'down' for routing purposes,
+    // pinning its rps at 0 for the remainder of the ORIGINAL (now stale) drain window.
+    sim.stepFor(3)
+    const rps = ((sim.latest().instances as any)[reactivatedId]?.rps ?? 0) as number
+    expect(rps).toBeGreaterThan(0)
+    sim.engine.stop()
+  })
+
   // Task 17: 'scale_out' itself was already wired by Task 13 (the emit() call sits right next to
   // 'scale_in' at the evaluatePolicy call site) -- this test's job is to genuinely exercise that
   // path end-to-end (not just assert Task 13's own scale-in test incidentally implies it fired),

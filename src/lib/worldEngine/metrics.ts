@@ -326,10 +326,15 @@ export function buildBatch(
   // direct-buildBatch caller/test is unchanged by omission.
   runningSet?: (instanceId: InstanceId) => boolean,
   // FEAT-008 (Task 16): the SAME `state.autoscale.desiredCount` map `runningSet` above was resolved
-  // from, published verbatim as `MetricsBatch.runningByPlacement` -- never a re-derived count, which
-  // is what keeps this number and the actual number of published `instances` entries for that
-  // placement from ever diverging. Optional: absent ⇒ `runningByPlacement` stays undefined (no
-  // placement in the world authors `autoscale`), matching the additive-optional-field convention.
+  // from, published verbatim as `MetricsBatch.runningByPlacement` -- never a re-derived count.
+  // This matches the actual number of published `instances` entries for that placement in the
+  // COMMON case, but NOT during Task 15's ~2s scale-in drain window: `runningSet` (and therefore
+  // published `instances`) still counts a draining instance as running, while this desiredCount
+  // snapshot already reflects the NEW, lower target -- so a draining placement legitimately shows
+  // more published instances than `runningByPlacement` for that window (the UI's "draining"
+  // suffix is the intended way to surface exactly that gap, not a bug). Optional: absent ⇒
+  // `runningByPlacement` stays undefined (no placement in the world authors `autoscale`), matching
+  // the additive-optional-field convention.
   runningByPlacement?: Record<string, number>,
   // FEAT-008 (Task 20): the SAME `state.scaleEventHistory` trimmed-length record `index.ts`'s step
   // loop already built, published verbatim as `MetricsBatch.recentScaleEventCount` -- never a
