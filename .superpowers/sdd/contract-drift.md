@@ -412,3 +412,8 @@ off `lastBatch`.
 - Additive: `InstanceMetrics.warmth?: number` — published only for a warming instance, computed by
   `hostScheduler.ts`'s `warmthOf`, same call the capacity/latency throttles used via
   `state.warmingUntil`. No signature break.
+- Additive: `EngineEventKind` gains `'instance_warming'` (fired at each `s.warmingUntil.set(...)`
+  write site — OOM restart, or a 'down' fault clearing on a cold-start-capable instance) and
+  `'instance_warm'` (fired once per cold-start cycle, in the warmth-reaches-1 cleanup pass right
+  before the `s.warmingUntil.delete(iid)` that is itself the one-shot guard — no separate
+  "already emitted" tracking set needed). No signature break.

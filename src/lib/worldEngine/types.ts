@@ -263,6 +263,14 @@ export type EngineEventKind =
                                   // DISK_EVENT_MIN_GAP_MS window, not once per step). Never fires
                                   // for a server with no resolvable ceiling (diskIoRatio undefined
                                   // -- the legacy diskIo/100 branch has no comparable ratio).
+  | 'instance_warming'           // FEAT-007 (Task 7): an instance just started a cold-start ramp
+                                  // (OOM restart, or a 'down' fault clearing) -- s.warmingUntil
+                                  // was just written, so throttled capacity/latency starts
+                                  // ramping from the authored floors
+  | 'instance_warm'              // FEAT-007 (Task 7): fires exactly once per cold-start cycle, the
+                                  // step warmthOf(iid, ...) first reaches 1 -- the SAME cleanup
+                                  // pass that deletes the s.warmingUntil entry is the one-shot
+                                  // guard, no separate "already emitted" tracking needed
 
 export interface EngineEvent {
   id: string

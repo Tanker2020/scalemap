@@ -761,6 +761,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
           const coldStartMs = bp?.workload.coldStartMs ?? 0
           if (coldStartMs > 0) {
             s.warmingUntil.set(iid, { startedMs: simMs, coldStartMs })
+            emit('instance_warming', 'info', `instance ${iid} restarted and is ramping up from cold`, [iid], simMs)
           }
         }
       }
@@ -868,7 +869,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     // consumer this same step, mirroring how oomRestartAt is cleared before host scheduling reads
     // it above.
     for (const [iid] of [...s.warmingUntil]) {
-      if (warmthOf(iid, s.warmingUntil, simMs) >= 1) s.warmingUntil.delete(iid)
+      if (warmthOf(iid, s.warmingUntil, simMs) >= 1) {
+        emit('instance_warm', 'info', `instance ${iid} finished warming up`, [iid], simMs)
+        s.warmingUntil.delete(iid)
+      }
     }
 
     // ── Demand backpressure — Mechanism B (audit ISSUE-008) ──
@@ -1437,6 +1441,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         const coldStartMs = victimBp?.workload.coldStartMs ?? 0
         if (coldStartMs > 0) {
           s.warmingUntil.set(host.oomVictim, { startedMs: simMs, coldStartMs })
+          emit('instance_warming', 'info', `instance ${host.oomVictim} restarted and is ramping up from cold`, [host.oomVictim], simMs)
         }
       }
 

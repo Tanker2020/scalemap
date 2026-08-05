@@ -5560,3 +5560,10 @@ The following files receive edits from both features and must be touched in **FE
 ### In-place extensions
 
 - `src/lib/worldEngine/hostScheduler.ts` — gains `warmthOf` resolver (FEAT-007, no new file): `warmthOf(instance, currentMs)` → `0..1`, consumed by `flows.ts` to apply warmth-dependent latency/capacity factors, and by `hostScheduler` itself to gate cold-start degradation in the water-fill scheduler.
+- `src/lib/worldEngine/types.ts` — FEAT-007 Task 7 adds two `EngineEventKind` variants,
+  `'instance_warming'`/`'instance_warm'`, emitted once per cold/warm transition (see
+  `.superpowers/sdd/contract-drift.md`'s FEAT-007 heading for the exact emit sites).
+- `src/lib/aiChat/eventCausality.ts` — every new `EngineEventKind` needs a `decodeAffected` case
+  (the file's established pattern, per its Task 4 note above); FEAT-007 Task 7's two new kinds
+  were added here alongside `types.ts` in the same commit, mirroring `disk_saturated`'s
+  single-instance-id shape (no secondary id).

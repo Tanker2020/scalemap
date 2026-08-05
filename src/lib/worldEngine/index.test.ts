@@ -4023,3 +4023,50 @@ describe('FEAT-007 Task 6: degraded health during warm-up + published warmth', (
     sim.engine.stop()
   })
 })
+
+describe('FEAT-007 Task 7: instance_warming/instance_warm events', () => {
+  // Same shape as Task 4/5/6's singleServerTwoInstances fixture (one cold-capable public
+  // blueprint, container-limited so a 'down' fault cleanly restarts it), duplicated locally per
+  // this file's existing per-describe-block fixture convention.
+  function singleServerTwoInstances(opts: { coldStartMs: number; warmCapacityFraction: number }) {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    server.specs.ramMb = 100_000
+    doc.servers[server.id] = server
+
+    const coldBp = publicBlueprint('cold', 0)
+    coldBp.workload = {
+      cpuMsPerRequest: 5, ramBaseMb: 64, ramPerConnMb: 0.01, diskIoPerRequest: 0,
+      coldStartMs: opts.coldStartMs, warmCapacityFraction: opts.warmCapacityFraction,
+    }
+    doc.blueprints[coldBp.id] = coldBp
+    const coldPl = createPlacement(coldBp.id, server.id)
+    doc.placements[coldPl.id] = coldPl
+    const coldInstanceId = instanceId(coldPl.id, 0)
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 50
+    doc.populations[pop.id] = pop
+
+    return { doc, serverId: server.id, instanceId: coldInstanceId }
+  }
+
+  it('emits instance_warming on restart and instance_warm once coldStartMs has elapsed', () => {
+    const f = singleServerTwoInstances({ coldStartMs: 10_000, warmCapacityFraction: 0.3 })
+    const compiled = compileWorld(f.doc)
+    const sim = drive(f.doc, compiled)
+    sim.stepFor(5)
+    sim.engine.setFault('server', f.serverId, { kind: 'down' })
+    sim.stepFor(1)
+    sim.engine.setFault('server', f.serverId, null)
+    sim.stepFor(1)
+    expect(sim.events.filter(e => e.kind === 'instance_warming')).toHaveLength(1)
+    for (let i = 0; i < 12; i++) sim.stepFor(1)
+    expect(sim.events.filter(e => e.kind === 'instance_warm')).toHaveLength(1)
+    sim.engine.stop()
+  })
+})

@@ -71,6 +71,10 @@ export function decodeAffected(
     case 'disk_saturated':
       // FEAT-006 (Task 21): affected is [serverId, ...residentInstanceIds] (index.ts's emit call).
       return { primaryId: affected[0] ?? '', secondaryId: affected[1] || null }
+    case 'instance_warming':
+    case 'instance_warm':
+      // FEAT-007 (Task 7): affected is [instanceId] (index.ts's emit call).
+      return { primaryId: affected[0] ?? '', secondaryId: null }
   }
 }
 
