@@ -24,7 +24,12 @@ export function compileWorld(doc: WorldDoc): CompiledWorld {
     const region = doc.regions[az.regionId]
     if (!region) continue
 
-    for (let i = 0; i < pl.count; i++) {
+    // FEAT-008: an autoscaled placement compiles to its full maxCount envelope, not its
+    // authored count -- the running/parked split is decided at simulation time (Task 12's
+    // worldEngine/autoscale.ts), not at compile time. This is the spec's one sanctioned
+    // exception to compiled.instances cardinality always equaling pl.count.
+    const envelopeCount = pl.autoscale ? pl.autoscale.maxCount : pl.count
+    for (let i = 0; i < envelopeCount; i++) {
       const id = instanceId(pl.id, i)
       instances[id] = {
         id, blueprintId: bp.id, placementId: pl.id, serverId: server.id,
@@ -35,6 +40,28 @@ export function compileWorld(doc: WorldDoc): CompiledWorld {
 
   const paths: CompiledPath[] = []
   const findings: CompileFinding[] = []
+
+  for (const pl of Object.values(doc.placements)) {
+    if (!pl.autoscale) continue
+    if (pl.autoscale.minCount > pl.autoscale.maxCount) {
+      findings.push({
+        id: `finding-autoscale-invalid-range-${pl.id}`,
+        severity: 'error',
+        kind: 'autoscale-invalid-range',
+        message: `Placement ${pl.id}'s autoscale minCount (${pl.autoscale.minCount}) exceeds maxCount (${pl.autoscale.maxCount})`,
+        affected: [pl.id],
+      })
+    }
+    if (pl.count < pl.autoscale.minCount || pl.count > pl.autoscale.maxCount) {
+      findings.push({
+        id: `finding-autoscale-count-out-of-range-${pl.id}`,
+        severity: 'warning',
+        kind: 'autoscale-count-out-of-range',
+        message: `Placement ${pl.id}'s authored count (${pl.count}) is outside its autoscale range [${pl.autoscale.minCount}, ${pl.autoscale.maxCount}]`,
+        affected: [pl.id],
+      })
+    }
+  }
 
   // Audit ISSUE-027: index instances by blueprint ONCE so each dependency resolves against only
   // its target blueprint's instances (O(I × D × matches)) instead of re-scanning — and

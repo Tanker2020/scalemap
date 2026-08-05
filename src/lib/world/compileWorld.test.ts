@@ -69,6 +69,75 @@ describe('compileWorld — instance expansion', () => {
   })
 })
 
+// ─── Autoscale envelope expansion + compile findings (FEAT-008) ──────────────
+// Task 10 added Placement.autoscale?: AutoscalePolicy. A placement with autoscale authored
+// compiles to its maxCount envelope, not its authored count -- the spec's one sanctioned
+// exception to the regression floor (compiled.instances cardinality != pl.count). A placement
+// WITHOUT autoscale must remain byte-identical to the pre-Task-11 behavior.
+describe('compileWorld — autoscale envelope expansion (FEAT-008)', () => {
+  it('expands an autoscaled placement to maxCount instances, not count', () => {
+    const { doc, bp, server } = tinyWorld()
+    const pl = createPlacement(bp.id, server.id)
+    pl.count = 2
+    pl.autoscale = { minCount: 2, maxCount: 8, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300 }
+    doc.placements[pl.id] = pl
+
+    const compiled = compileWorld(doc)
+    const instances = Object.values(compiled.instances).filter(i => i.placementId === pl.id)
+    expect(instances).toHaveLength(8)
+  })
+
+  it('expands a non-autoscaled placement to count instances, unchanged (regression floor)', () => {
+    const { doc, bp, server } = tinyWorld()
+    const pl = createPlacement(bp.id, server.id)
+    pl.count = 3
+    doc.placements[pl.id] = pl
+
+    const compiled = compileWorld(doc)
+    const instances = Object.values(compiled.instances).filter(i => i.placementId === pl.id)
+    expect(instances).toHaveLength(3)
+  })
+
+  it('emits an error finding when minCount > maxCount', () => {
+    const { doc, bp, server } = tinyWorld()
+    const pl = createPlacement(bp.id, server.id)
+    pl.count = 2
+    pl.autoscale = { minCount: 8, maxCount: 2, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300 }
+    doc.placements[pl.id] = pl
+
+    const compiled = compileWorld(doc)
+    const found = compiled.findings.filter(f => f.kind === 'autoscale-invalid-range')
+    expect(found).toHaveLength(1)
+    expect(found[0].severity).toBe('error')
+    expect(found[0].affected).toContain(pl.id)
+  })
+
+  it('emits a warning finding when count is outside [minCount, maxCount]', () => {
+    const { doc, bp, server } = tinyWorld()
+    const pl = createPlacement(bp.id, server.id)
+    pl.count = 20
+    pl.autoscale = { minCount: 2, maxCount: 8, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300 }
+    doc.placements[pl.id] = pl
+
+    const compiled = compileWorld(doc)
+    const found = compiled.findings.filter(f => f.kind === 'autoscale-count-out-of-range')
+    expect(found).toHaveLength(1)
+    expect(found[0].severity).toBe('warning')
+    expect(found[0].affected).toContain(pl.id)
+  })
+
+  it('does not fire either autoscale finding for a valid range and in-range count', () => {
+    const { doc, bp, server } = tinyWorld()
+    const pl = createPlacement(bp.id, server.id)
+    pl.count = 4
+    pl.autoscale = { minCount: 2, maxCount: 8, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300 }
+    doc.placements[pl.id] = pl
+
+    const compiled = compileWorld(doc)
+    expect(compiled.findings.some(f => f.kind === 'autoscale-invalid-range' || f.kind === 'autoscale-count-out-of-range')).toBe(false)
+  })
+})
+
 // ─── Protocol-mismatch findings (audit ISSUE-007) ────────────────────────────
 // dep.protocol drives ONLY particle render tint; every simulated consequence comes from the bound
 // mix's own protocol. A mismatch is advisory-surfaced, never auto-corrected.
