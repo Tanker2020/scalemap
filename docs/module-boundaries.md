@@ -5540,6 +5540,7 @@ not a blueprint modal.
 
 | Module | Feature | Purpose |
 |---|---|---|
+| FEAT-007 in-place extensions | FEAT-007 | Instance cold-start warmth tracking and capacity throttling: pure `warmthOf(instance, currentMs)` resolver in `hostScheduler.ts` (0..1, linearly ramping from `coldStartMs` to `warmCapacityFraction`), consumed by `flows.ts` to apply warmth-dependent latency/capacity reduction factors in the dependency solver, and by `hostScheduler.ts` itself to cap cold-starting instances' admitted load in the water-fill scheduler. New optional `WorkloadProfile` fields `coldStartMs?`/`warmCapacityFraction?` (Task 1, doc model) and `InstanceMetrics.warmth?` (Task 6, published 1 Hz). Two new `EngineEventKind` variants `'instance_warming'`/`'instance_warm'` (Task 7, added to `types.ts` and `aiChat/eventCausality.ts`) emit once per cold/warm transition. UI layer (Task 8) authors `coldStartMs` via `EditServiceForm.tsx` and renders live warm-up readout as a chip fill bar (`ServiceChip.tsx`) and floor LED/badge (`RackCabinet.tsx`/`FreePoolPod.tsx`). Spec budget: zero cost when no instances are warming (`warmingUntil.size === 0` fast path), < 0.05ms per warming instance per step. |
 | `src/lib/worldEngine/autoscale.ts` | FEAT-008 | Pure, dependency-free autoscaling resolver (`AutoscaleState`, `runningSetResolver`, `evaluatePolicy`, no engine imports). Computes running/parked instance membership for each autoscaled placement, consumed by `index.ts` to coordinate placement envelope and instance lifecycle transitions. |
 
 ### Hub files receiving sequential edits
