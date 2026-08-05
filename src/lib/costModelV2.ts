@@ -1,6 +1,6 @@
 // World-level monthly cost projection (spec decision 8): Σ server hourlyUsd×730 + managed
 // service pricing (reused from cloudRegistry) + egress from live WorldMetrics byte rates.
-import type { WorldDoc, RegionId, AzId, ManagedServiceId, ManagedService } from './world/types'
+import type { WorldDoc, RegionId, AzId, ServerId, Placement, PlacementId, ManagedServiceId, ManagedService } from './world/types'
 import type { WorldMetrics, ManagedServiceMetrics } from './worldEngine/types'
 import { getServiceSpec, egressMonthlyCost, PROVIDER_EGRESS, PROVIDER_INTERZONE, type CloudProvider, type RealProvider } from './cloudRegistry'
 import { getDbInstanceClass } from './dbInstanceClasses'
@@ -188,7 +188,12 @@ function managedEgressUsd(ms: ManagedService, egressBytesPerSec: number): number
 
 export function computeWorldCost(
   doc: WorldDoc,
-  world: WorldMetrics | null,
+  // Task 18 (FEAT-008): `runningByPlacement` actually lives on `MetricsBatch` (Task 16), one
+  // level up from the `WorldMetrics` slice every existing caller passes here — widened via
+  // intersection rather than moved onto `WorldMetrics` itself (a frozen, additive-only contract;
+  // see contract-drift.md §FEAT-008) or onto this parameter's base type. Optional field, so every
+  // existing `WorldMetrics`-shaped caller remains structurally assignable unchanged.
+  world: (WorldMetrics & { runningByPlacement?: Record<PlacementId, number> }) | null,
   managed: Record<ManagedServiceId, ManagedServiceMetrics> | null = null,
 ): WorldCostResult {
   const byRegionMap = new Map<RegionId, number>()
@@ -201,8 +206,35 @@ export function computeWorldCost(
   // appeared in byAz but not in monthlyUsd, so sum(byAz) ≠ monthlyUsd.
   let computeTotal = 0
 
+  // Task 18 (FEAT-008): a server's hourly cost is a flat, per-box charge in this model — there is
+  // no per-instance billing. Autoscaling only becomes a FinOps signal if a scaled-down placement's
+  // presence on a server apportions that fixed charge by running-instance share. Bill in full
+  // (today's behavior, unchanged) unless at least one resident placement authors `autoscale`.
+  const placementsByServer = new Map<ServerId, Placement[]>()
+  for (const pl of Object.values(doc.placements)) {
+    const list = placementsByServer.get(pl.serverId) ?? []
+    list.push(pl)
+    placementsByServer.set(pl.serverId, list)
+  }
+
   for (const server of Object.values(doc.servers)) {
-    const usd = server.hourlyUsd * HOURS_PER_MONTH
+    const residents = placementsByServer.get(server.id) ?? []
+    const anyAutoscaled = residents.some(pl => pl.autoscale)
+    let billedFraction = 1
+    if (anyAutoscaled) {
+      let runningWeight = 0
+      let maxWeight = 0
+      for (const pl of residents) {
+        const maxW = pl.autoscale ? pl.autoscale.maxCount : pl.count
+        // world?.runningByPlacement is only present once a run has started; pl.count is the
+        // authored fallback both pre-run (world === null) and for a static resident placement.
+        const runningW = pl.autoscale ? (world?.runningByPlacement?.[pl.id] ?? pl.count) : pl.count
+        maxWeight += maxW
+        runningWeight += runningW
+      }
+      billedFraction = maxWeight > 0 ? runningWeight / maxWeight : 1
+    }
+    const usd = server.hourlyUsd * HOURS_PER_MONTH * billedFraction
     computeTotal += usd
     bump(byAzMap, server.azId, usd)
     const az = doc.azs[server.azId]

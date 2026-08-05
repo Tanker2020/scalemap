@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { computeWorldCost } from './costModelV2'
-import { createWorld, createRegion, createAz, createServer, createLoadBalancer } from './world/factories'
+import { createWorld, createRegion, createAz, createServer, createLoadBalancer, createBlueprint, createPlacement } from './world/factories'
 import { getPreset } from './world/instanceCatalog'
 import { useWorldStore } from '../app/store/world.store'
-import type { WorldDoc } from './world/types'
+import { HOURS_PER_MONTH } from './costModelV2'
+import type { WorldDoc, AutoscalePolicy } from './world/types'
 
 function twoServerWorld(): { doc: WorldDoc; regionId: string; azId: string } {
   const doc = createWorld()
@@ -433,5 +434,67 @@ describe('cross-AZ / cross-region egress rates (ISSUE-023)', () => {
     expect(PROVIDER_INTERZONE.azure.crossAzUsdPerGb).toBe(0)                // Azure AZ transfer free
     expect(PROVIDER_INTERZONE.gcp.crossRegionUsdPerGb)
       .toBeGreaterThan(PROVIDER_INTERZONE.aws.crossRegionUsdPerGb)
+  })
+})
+
+// Task 18 (FEAT-008): a server's fixed hourly cost is apportioned across its resident
+// placements by running-instance share when at least one of them is autoscaled — the FinOps
+// signal a scale-down should actually move the displayed cost.
+describe('autoscaled-placement cost apportionment (FEAT-008, Task 18)', () => {
+  function buildDocWithOneServerOnePlacement(opts: { hourlyUsd: number; count: number; autoscale?: AutoscalePolicy }): WorldDoc {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('vps-medium')!)
+    server.hourlyUsd = opts.hourlyUsd
+    doc.servers[server.id] = server
+    const blueprint = createBlueprint('svc', 0)
+    doc.blueprints[blueprint.id] = blueprint
+    const placement = createPlacement(blueprint.id, server.id)
+    placement.count = opts.count
+    if (opts.autoscale) placement.autoscale = opts.autoscale
+    doc.placements[placement.id] = placement
+    return doc
+  }
+
+  // Zeroed-but-valid WorldMetrics, so egress math (which reads crossAzBytesPerSec etc.
+  // unconditionally once `world` is non-null) doesn't produce NaN — plus the runningByPlacement
+  // map this test exists to exercise.
+  function worldWithRunning(runningByPlacement: Record<string, number>) {
+    return {
+      totalRps: 0, errorRate: 0, populationRoutes: [],
+      crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0,
+      runningByPlacement,
+    }
+  }
+
+  it('REGRESSION FLOOR: a server with no autoscaled placement bills its full hourlyUsd regardless of runningByPlacement', () => {
+    const doc = buildDocWithOneServerOnePlacement({ hourlyUsd: 10, count: 3 }) // no autoscale
+    const placementId = Object.keys(doc.placements)[0]
+    const world = worldWithRunning({ [placementId]: 1 }) // present but irrelevant
+    const result = computeWorldCost(doc, world, null)
+    expect(result.monthlyUsd).toBeCloseTo(10 * HOURS_PER_MONTH, 2)
+  })
+
+  it('apportions a server hosting one fully-autoscaled placement by running/maxCount', () => {
+    const doc = buildDocWithOneServerOnePlacement({
+      hourlyUsd: 10, count: 4,
+      autoscale: { minCount: 1, maxCount: 4, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300 },
+    })
+    const placementId = Object.keys(doc.placements)[0]
+    const world = worldWithRunning({ [placementId]: 1 }) // scaled down to minCount
+    const result = computeWorldCost(doc, world, null)
+    expect(result.monthlyUsd).toBeCloseTo(10 * HOURS_PER_MONTH * (1 / 4), 1)
+  })
+
+  it('with no metrics (pre-run state), bills the full server cost using count/maxCount as the fallback ratio', () => {
+    const doc = buildDocWithOneServerOnePlacement({
+      hourlyUsd: 10, count: 2,
+      autoscale: { minCount: 1, maxCount: 4, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300 },
+    })
+    const result = computeWorldCost(doc, null, null) // Cost tab renders before a run starts
+    expect(result.monthlyUsd).toBeCloseTo(10 * HOURS_PER_MONTH * (2 / 4), 1) // uses authored count, not minCount
   })
 })
