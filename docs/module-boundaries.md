@@ -5552,11 +5552,55 @@ The following files receive edits from both features and must be touched in **FE
 - `src/lib/worldEngine/types.ts` — contract drift (instance warmth/capacity metrics, autoscaling state in `EngineEvent`)
 - `src/lib/worldEngine/index.ts` — runStep instrumentation (cold-start warmth tracking, autoscale state advancement)
 - `src/lib/worldEngine/hostScheduler.ts` — gains `warmthOf` resolver (FEAT-007, no new file), plus autoscale load gating (FEAT-008)
-- `src/lib/worldEngine/flows.ts` — capacity model (exclude parked instances, FEAT-008 forward-looking placeholder — actual implementation pending)
+- `src/lib/worldEngine/flows.ts` — capacity model (exclude parked instances; LANDED in FEAT-008 Task 19 as the optional `FlowInput.isRunning` resolver — see "The running/possible split" below)
 - `src/lib/worldEngine/metrics.ts` — metric aggregation (publish warmth, instance running state, placement scaling state)
 - `src/lib/worldEngine/routingRuntime.ts` — routing/LB gating (exclude parked instances from target selection)
 - `src/lib/worldEngine/failover.ts` — promotion logic (exclude parked instances from replica promotion)
 - `src/lib/costModelV2.ts` — cost model (apportion by running-instance share, account for cold-start overhead)
+
+### The running/possible split (FEAT-008 Task 19 — read this before touching any `compiled.instances` reader)
+
+Since FEAT-008 Task 11, `compileWorld` expands an **autoscaled** placement to its full
+`autoscale.maxCount` **envelope**, not its authored `count`. `compiled.instances` therefore no
+longer means "every instance that is running" — it means "every instance that COULD run". This is
+the spec's one sanctioned exception to instance cardinality equalling `placement.count`, and it
+silently changes the meaning of every consumer in the codebase that iterates that map.
+
+Two legitimate signals exist for a consumer OUTSIDE the engine:
+
+- **"possible"** — iterate `compiled.instances` unchanged. Correct for topology, authoring,
+  structural/firewall analysis, navigation and id-closure lookups: a defect or a link exists whether
+  or not that slot happens to be running right now.
+- **"running"** — gate on **membership in `MetricsBatch.instances`**. `metrics.ts` omits ONLY
+  parked (non-draining) instances from that map — a killed / down / degraded / draining instance
+  still publishes an entry — so for a batch that has published anything, *absence ⟺ parked*. Always
+  gate the check itself on the published map being NON-EMPTY, so a never-simulated / pre-first-batch
+  world keeps its historical behavior.
+
+Inside the engine, `EngineState.runningSet` (`autoscale.ts`'s `runningSetResolver`) is the
+authority. It is engine-private; it reaches `flows.ts` and `failover.ts` as an **optional**
+`isRunning` parameter (absent ⇒ every compiled instance counts as running — the exact pre-FEAT-008
+behavior, which is the regression floor every direct caller and test relies on).
+
+⚠ **`healthOf`/`healthOfInstance` deliberately knows nothing about running/parked.** Running bears
+on eligibility for NEW work, not on whether an instance IS healthy — so a parked instance reports
+`'healthy'`. Any code that picks a target/victim/candidate by health MUST take the running set
+separately; this is what made the four Task 19 bugs possible. The current running-aware sites are:
+
+- `worldEngine/index.ts` — per-step `InstanceLoad` filter (Task 13), LB target selection (Task 14).
+- `worldEngine/flows.ts` — `healthWeightOf` (internal service-to-service fan-out) and event-topic
+  consumer seeding, via `FlowInput.isRunning` (Task 19).
+- `worldEngine/failover.ts` — `promoteReplicas`' sibling-replica eligibility, via `isRunning`
+  (Task 19).
+- `worldEngine/metrics.ts` — parked-instance omission from the published batch (Task 16).
+- `analysis/rules/structural.ts` — `split-brain-risk`'s effective-primary candidate set (Task 19).
+- `app/world/server/ServerBoard.tsx` + `dock/drawers/ServicesDrawer.tsx` — per-instance live
+  rendering; a parked slot gets `ServiceChip`'s `parked` treatment (dim, muted dot, "parked ·
+  scaled in"), deliberately DISTINCT from the red `'down'` look, since elastic scale-in is not a
+  fault (Task 19).
+
+The full file-by-file classification of every `compiled.instances` reader in the codebase is
+`.superpowers/sdd/2026-08-04-wave3-elasticity/task-19-report.md`.
 
 ### In-place extensions
 
