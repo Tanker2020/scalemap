@@ -432,3 +432,27 @@ off `lastBatch`.
   published (`instances[i.id]` truthy) before aggregating rps/errorRate/p50/instanceCount — the
   servers loop already used optional chaining (`instances[i.id]?.ramMb ?? 0`) so it needed no
   change.
+
+## 2026-08-05 — Task 17: `autoscale_ceiling` emission + rate-limiting (FEAT-008)
+The three `EngineEventKind` variants this task's brief asked for (`'scale_out'`, `'scale_in'`,
+`'autoscale_ceiling'`) already existed in `worldEngine/types.ts` (added ahead of schedule by Task
+13, along with `eventCausality.ts`'s exhaustive-switch cases for all three) — no new type-level
+entry here. `scale_out`/`scale_in` were also already emitted by Task 13 at the `evaluatePolicy`
+call site (`index.ts`'s FEAT-008 autoscale control loop, ~line 1573). This task's actual scope was
+the one variant Task 13 deliberately left as a type-only stub: `autoscale_ceiling`.
+
+Added at the same call site, in a new `else` branch alongside the existing `scaled === 'out'`/
+`scaled === 'in'` branches: when `evaluatePolicy` legitimately returns `{ scaled: null }` because
+the placement is already pinned at `maxCount`, recompute the same `observedCpuPercent /
+targetCpuPercent` ratio `evaluatePolicy` derives internally (not returned in its shape, so
+recomputed rather than widening that return type) and emit `autoscale_ceiling` only when
+`result.next === policy.maxCount && ratio > 1` — i.e. the policy still wants to scale out further
+but has nowhere left to go. This is a sustained condition (true every step the fleet stays
+overloaded at the ceiling), so it is rate-limited exactly like `disk_saturated`/
+`connection_refused`: a new `EngineState.autoscaleCeilingRateLimit: Map<string, number>`
+(last-emitted-at simMs per placement id) gated on a new `AUTOSCALE_CEILING_EVENT_MIN_GAP_MS = 1000`
+constant, cloning `diskSaturatedRateLimit`'s exact shape. No signature break — purely new emission
+logic behind an event kind that already existed.
+
+`npx tsc --noEmit` clean. Full suite: 152 files / 1970 tests passing (`index.test.ts`'s two new
+`AUTOSCALE EVENTS` tests, 2/2; the full FEAT-008 autoscale describe block, 6/6).

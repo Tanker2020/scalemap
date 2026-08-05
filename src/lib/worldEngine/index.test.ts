@@ -4298,6 +4298,49 @@ describe('FEAT-008 Task 13: wire AutoscaleState into the engine loop', () => {
     sim.engine.stop()
   })
 
+  // Task 17: 'scale_out' itself was already wired by Task 13 (the emit() call sits right next to
+  // 'scale_in' at the evaluatePolicy call site) -- this test's job is to genuinely exercise that
+  // path end-to-end (not just assert Task 13's own scale-in test incidentally implies it fired),
+  // so a low targetCpuPercent + short scaleUpCooldownSec here is deliberately picked to force a
+  // fast, observable scale-out under this fixture's synthetic demand.
+  it('AUTOSCALE EVENTS: emits scale_out when a placement scales up under sustained load', () => {
+    const f = autoscaledPlacementWorld({
+      minCount: 1, maxCount: 4, targetCpuPercent: 20, scaleUpCooldownSec: 1, scaleDownCooldownSec: 300,
+    })
+    const popId = Object.keys(f.doc.populations)[0]
+    // Well above what a single dedicated-8 (8 vCPU, full share to a lone running instance) instance
+    // can hold under a 20% CPU target -- observedCpuPercent = cpuCoresUsed / 8 * 100, so this needs
+    // to push cpuCoresUsed comfortably past 1.6 cores.
+    f.doc.populations[popId].peakRps = 1000
+    const compiled = compileWorld(f.doc)
+    const sim = drive(f.doc, compiled)
+    sim.stepFor(10) // enough for at least one evaluation past the 1s cooldown under saturating load
+    expect(sim.events.filter(e => e.kind === 'scale_out').length).toBeGreaterThan(0)
+    sim.engine.stop()
+  })
+
+  // Task 17's actual new scope: 'autoscale_ceiling' fires when a placement is pinned at maxCount
+  // while still over its CPU target -- maxCount deliberately tiny (2) and targetCpuPercent
+  // deliberately low (5%) so the fixture's default demand guarantees saturation even once the
+  // fleet is fully scaled out, and scaleUpCooldownSec is short so the placement reaches maxCount
+  // quickly within the step budget.
+  it('AUTOSCALE EVENTS: emits autoscale_ceiling when sustained overload holds the placement at maxCount', () => {
+    const f = autoscaledPlacementWorld({
+      minCount: 1, maxCount: 2, targetCpuPercent: 5, scaleUpCooldownSec: 1, scaleDownCooldownSec: 300,
+    })
+    // The fixture's default peakRps (5) keeps CPU well under even a 5% target -- override it here
+    // so the fleet both reaches maxCount AND stays saturated once there (matching the brief's
+    // "maxCount deliberately tiny + target deliberately low so saturation is guaranteed even at
+    // maxCount").
+    const popId = Object.keys(f.doc.populations)[0]
+    f.doc.populations[popId].peakRps = 200
+    const compiled = compileWorld(f.doc)
+    const sim = drive(f.doc, compiled)
+    sim.stepFor(15)
+    expect(sim.events.filter(e => e.kind === 'autoscale_ceiling').length).toBeGreaterThan(0)
+    sim.engine.stop()
+  })
+
   it('REGRESSION FLOOR: a placement with no autoscale compiles to exactly count instances and simulates byte-identically', () => {
     const f = e2eFixture()
     const simA = drive(f.doc, f.compiled); simA.stepFor(30)

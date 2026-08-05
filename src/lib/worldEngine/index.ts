@@ -79,6 +79,7 @@ const REFUSED_EVENT_MIN_GAP_MS = 1000        // ≤1 connection_refused per path
 const REPLICATION_EVENT_MIN_GAP_MS = 1000    // ≤1 replication_lag_high/stale_read_served per key per second (FEAT-005, Task 14)
 const DISK_EVENT_MIN_GAP_MS = 1000           // ≤1 disk_saturated per server per second (FEAT-006, Task 21)
 const DISK_SATURATION_THRESHOLD = 0.9        // matches iops-saturated's analysis-rule threshold
+const AUTOSCALE_CEILING_EVENT_MIN_GAP_MS = 1000  // ≤1 autoscale_ceiling per placement per second (FEAT-008, Task 17)
 const MIN_HEALTH_SIGNAL_RPS = 0.5            // below this offered rps, errorRate carries no signal
 const DEGRADE_THRESHOLD_MS = 4               // spec decision 9 / Global Constraints
 const DEGRADE_WINDOW_STEPS = 30              // 3s of 100ms steps
@@ -455,6 +456,11 @@ interface EngineState {
   // FEAT-006 (Task 21): rate-limit gate for disk_saturated, mirroring the same shape -- a
   // last-emitted-at simMs per serverId, checked against DISK_EVENT_MIN_GAP_MS before pushing.
   diskSaturatedRateLimit: Map<string, number>
+  // FEAT-008 (Task 17): rate-limit gate for autoscale_ceiling, mirroring the same shape -- a
+  // last-emitted-at simMs per placementId, checked against AUTOSCALE_CEILING_EVENT_MIN_GAP_MS
+  // before pushing. This is a sustained-condition event (pinned at maxCount while still over
+  // target) so without this gate it would fire every single step it holds true.
+  autoscaleCeilingRateLimit: Map<string, number>
   // FEAT-004 (Task 3): cache warm-since bookkeeping, keyed by the cache instance id, or
   // `managed:${managedServiceId}` for a managed cache target. A key ABSENT from this map means
   // "already warm" (Task 2's cache.ts contract: warmSinceMs === undefined ⇒ effectiveHitRatio ===
@@ -1602,11 +1608,29 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
             beginInstanceDrain(s.drainUntilByInstance, instanceId(pl.id, i), simMs)
           }
           emit('scale_in', 'info', `placement ${pl.id} scaled in ${desired} -> ${result.next} instances`, [pl.id], simMs)
+        } else {
+          // Task 17: 'autoscale_ceiling' -- the policy still wants to scale out further (observed
+          // CPU is still above target, i.e. the ratio evaluatePolicy would have used is > 1) but
+          // the placement is already pinned at maxCount, so evaluatePolicy legitimately returned
+          // `{ scaled: null }` (clamp(proposedRaw) === current === maxCount). Recompute the same
+          // ratio evaluatePolicy derives internally (observedCpuPercent / targetCpuPercent) rather
+          // than widening evaluatePolicy's return shape just to smuggle it out -- this is a
+          // sustained condition (it holds true every step the fleet stays overloaded at the
+          // ceiling), so it is rate-limited the same way disk_saturated/connection_refused are:
+          // a last-emitted-at simMs per key (here, placement id), gated on
+          // AUTOSCALE_CEILING_EVENT_MIN_GAP_MS before pushing.
+          const policy = pl.autoscale
+          const ratio = observedCpuPercent / policy.targetCpuPercent
+          if (result.next === policy.maxCount && ratio > 1) {
+            const last = s.autoscaleCeilingRateLimit.get(pl.id) ?? -Infinity
+            if (simMs - last >= AUTOSCALE_CEILING_EVENT_MIN_GAP_MS) {
+              s.autoscaleCeilingRateLimit.set(pl.id, simMs)
+              emit('autoscale_ceiling', 'warning',
+                `placement ${pl.id} pinned at maxCount (${policy.maxCount}) while still over its ${policy.targetCpuPercent}% CPU target`,
+                [pl.id], simMs)
+            }
+          }
         }
-        // Task 17 owns 'autoscale_ceiling' emission (rate-limited, sat-at-maxCount-while-over-
-        // target detection) -- deliberately not stubbed here beyond the EngineEventKind variant
-        // itself (types.ts), to avoid a second, uncoordinated rate-limit map landing ahead of
-        // Task 17's own.
       }
     }
 
@@ -2524,6 +2548,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         checkFailedPrev: new Map(), probePrev: new Map(), instanceHealth: new Map(), oomRestartAt: new Map(), refusedRateLimit: new Map(),
         replicationLagRateLimit: new Map(), staleReadRateLimit: new Map(),
         diskSaturatedRateLimit: new Map(),
+        autoscaleCeilingRateLimit: new Map(),
         depthExceededReported: new Set(), cycleCutReported: new Set(),
         idSeq: 0, lastBatchMs: -1000, stepCosts: [], degraded: false, rafId: null, lastFrameMs: null,
         renderers: new Map(), rendererSeq: 0,
