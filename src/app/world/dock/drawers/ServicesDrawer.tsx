@@ -14,6 +14,7 @@
 // "first resident blueprint" convention for its consequence hints).
 import { useState, type ReactElement } from 'react'
 import { SpreadControl } from './SpreadControl'
+import { AutoscaleControl } from './AutoscaleControl'
 import { AddServiceForm } from './AddServiceForm'
 import { EditServiceForm } from './EditServiceForm'
 import { useWorldStore } from '../../../store/world.store'
@@ -40,9 +41,13 @@ export interface ServicesDrawerProps {
   compiled: CompiledWorld
   running: boolean
   liveInstances?: Record<InstanceId, InstanceMetrics> | null
+  // FEAT-008 (Task 21): the batch's `MetricsBatch.runningByPlacement` (Task 16), threaded down
+  // from ServerFaceplate's `display.runningByPlacement` — undefined whenever no batch has
+  // published one yet (pre-first-batch, or no autoscaled placement exists at all).
+  runningByPlacement?: Record<string, number>
 }
 
-export function ServicesDrawer({ server, doc, compiled, running, liveInstances }: ServicesDrawerProps): ReactElement {
+export function ServicesDrawer({ server, doc, compiled, running, liveInstances, runningByPlacement }: ServicesDrawerProps): ReactElement {
   const [mounting, setMounting] = useState(false)
   const [adding, setAdding] = useState(false)
   const [editingBp, setEditingBp] = useState<string | null>(null)
@@ -72,34 +77,77 @@ export function ServicesDrawer({ server, doc, compiled, running, liveInstances }
     // fault. Gated on a non-empty published map so the pre-first-batch case (watching, nothing
     // published yet) keeps its historical healthy-fallback rendering.
     const hasPublished = Object.keys(liveInstances).length > 0
+    // FEAT-008 (Task 21): group this server's envelope by placement so an autoscaled placement
+    // can carry one `desired / running / max` readout line ahead of its per-instance rows,
+    // without disturbing the flat per-instance iteration non-autoscaled placements still get.
+    // Map preserves first-seen order, matching `serverInstances`' own (compiled.instances) order.
+    const byPlacement = new Map<string, typeof serverInstances>()
+    for (const inst of serverInstances) {
+      const arr = byPlacement.get(inst.placementId)
+      if (arr) arr.push(inst); else byPlacement.set(inst.placementId, [inst])
+    }
     return (
       <div data-testid="services-drawer-body">
         {serverInstances.length === 0 && (
           <div style={{ color: 'var(--color-text-muted)', padding: '4px 2px' }}>No services mounted here yet.</div>
         )}
-        {serverInstances.map(inst => {
-          const bp = doc.blueprints[inst.blueprintId]
-          const m = liveInstances[inst.id]
-          const parked = hasPublished && !m
-          const health = m?.health ?? 'healthy'
+        {Array.from(byPlacement.entries()).map(([placementId, instances]) => {
+          const pl = doc.placements[placementId]
+          // Brief's exact gate: only when the batch has actually published a running count for
+          // THIS placement AND it is authored as autoscaled — a placement mid-transition (just
+          // toggled off autoscale, batch not yet caught up) simply gets no readout line, same as
+          // the pre-Task-21 body rendered nothing extra there.
+          const desired = runningByPlacement?.[placementId]
+          const showReadout = hasPublished && pl?.autoscale != null && desired != null
+          const runningNow = instances.filter(i => liveInstances[i.id] != null).length
+          // "running still includes the draining instance briefly" (brief, Step 2): runningNow
+          // can exceed desired for one tick while a scaled-in instance is still draining its
+          // in-flight connections — render that gap as a distinct "draining" suffix rather than
+          // silently disagreeing with `desired`.
+          const draining = runningNow > (desired ?? 0)
           return (
-            <div
-              key={inst.id} data-testid="service-live-row" data-parked={parked ? 'true' : 'false'}
-              style={{
-                display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 6px', fontSize: 10,
-                opacity: parked ? 0.55 : 1,
-              }}
-            >
-              <span style={{ color: 'var(--color-text-secondary)' }}>
-                {bp?.name ?? '?'} :{bp?.ports[0]?.port ?? '—'}
-              </span>
-              {parked ? (
-                <span style={{ color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>parked</span>
-              ) : (
-                <span style={{ color: HEALTH_COLOR[health], fontVariantNumeric: 'tabular-nums' }}>
-                  {health} · {Math.round(m?.rps ?? 0).toLocaleString('en-US')} rps
-                </span>
+            <div key={placementId}>
+              {showReadout && (
+                <div
+                  data-testid="autoscale-readout"
+                  style={{
+                    display: 'flex', justifyContent: 'space-between', gap: 8, padding: '2px 6px 3px',
+                    fontSize: 9, color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums',
+                  }}
+                >
+                  <span>autoscale</span>
+                  <span style={{ color: 'var(--color-text-secondary)' }}>
+                    {desired} / {runningNow} / {pl!.autoscale!.maxCount}
+                    {draining && <span style={{ color: 'var(--color-warning)' }}> · draining</span>}
+                  </span>
+                </div>
               )}
+              {instances.map(inst => {
+                const bp = doc.blueprints[inst.blueprintId]
+                const m = liveInstances[inst.id]
+                const parked = hasPublished && !m
+                const health = m?.health ?? 'healthy'
+                return (
+                  <div
+                    key={inst.id} data-testid="service-live-row" data-parked={parked ? 'true' : 'false'}
+                    style={{
+                      display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 6px', fontSize: 10,
+                      opacity: parked ? 0.55 : 1,
+                    }}
+                  >
+                    <span style={{ color: 'var(--color-text-secondary)' }}>
+                      {bp?.name ?? '?'} :{bp?.ports[0]?.port ?? '—'}
+                    </span>
+                    {parked ? (
+                      <span style={{ color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>parked</span>
+                    ) : (
+                      <span style={{ color: HEALTH_COLOR[health], fontVariantNumeric: 'tabular-nums' }}>
+                        {health} · {Math.round(m?.rps ?? 0).toLocaleString('en-US')} rps
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           )
         })}
@@ -164,6 +212,12 @@ export function ServicesDrawer({ server, doc, compiled, running, liveInstances }
               count stepper above scales this service ON THIS BOX, spread scales it ACROSS AZs. */}
           <div style={{ padding: '0 6px 4px' }}>
             <SpreadControl blueprintId={pl.blueprintId} serverId={server.id} running={running} />
+          </div>
+          {/* FEAT-008 (Task 21): author this placement's AutoscalePolicy — a static-count
+              placement (the stepper above) and an autoscaled one are mutually exclusive on the
+              SAME placement, so this toggle lives right beside the stepper it supersedes. */}
+          <div style={{ padding: '0 6px 4px' }}>
+            <AutoscaleControl placement={pl} running={running} />
           </div>
           </div>
         )

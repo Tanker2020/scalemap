@@ -8,7 +8,14 @@ import { sectionLabel, row } from './panels/panelStyles'
 export function CostTab() {
   const doc = useWorldStore(s => s.doc)
   const batch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
-  const cost = computeWorldCost(doc, batch?.world ?? null, batch?.managedServices ?? null)
+  // FEAT-008 (Task 21, controller-added gap): `runningByPlacement` lives at the MetricsBatch
+  // level (Task 16), not on `batch.world` (WorldMetrics) — computeWorldCost's `world` param is
+  // typed as an intersection of the two (Task 18) specifically so a caller can fold it in like
+  // this. Without it, an autoscaled placement's server cost stays apportioned by its FULL
+  // maxCount envelope instead of by live running-instance share, and this number never moves as
+  // the fleet scales.
+  const worldForCost = batch?.world ? { ...batch.world, runningByPlacement: batch.runningByPlacement } : null
+  const cost = computeWorldCost(doc, worldForCost, batch?.managedServices ?? null)
 
   return (
     <div>

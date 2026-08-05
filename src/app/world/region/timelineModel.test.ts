@@ -48,6 +48,9 @@ describe('markerClass', () => {
     expect(markerClass('outage_cleared')).toBe('other')
     expect(markerClass('oom_kill')).toBe('other')
     expect(markerClass('engine_degraded')).toBe('other')
+    // FEAT-008 (Task 21)
+    expect(markerClass('scale_out')).toBe('scale-out')
+    expect(markerClass('scale_in')).toBe('scale-in')
   })
 })
 
@@ -120,6 +123,22 @@ describe('buildLanes', () => {
     const events = [evt({ id: 'e1', kind: 'breaker_open', simMs: 1000, affected: [instanceId] })]
     const lanes = buildLanes(region.id, doc, compiled, events, [], 10_000)
     expect(lanes.find(l => l.azId === azA.id)!.markers).toHaveLength(1)
+  })
+
+  // FEAT-008 (Task 21): scale_out/scale_in fire with `affected = [placementId]` (index.ts's
+  // emit call sites), not a server/AZ/instance id — this locks in the azClosureContains fix
+  // that resolves a placement-scoped event to the lane owning its host server.
+  it('assigns a placement-scoped scale event to the lane owning its host server', () => {
+    const { doc, region, azA, azB, serverA } = twoAzWorld()
+    const bp = createBlueprint('api', 0)
+    const placement = createPlacement(bp.id, serverA.id)
+    doc.blueprints[bp.id] = bp
+    doc.placements[placement.id] = placement
+    const compiled = compileWorld(doc)
+    const events = [evt({ id: 'e1', kind: 'scale_out', simMs: 1000, affected: [placement.id] })]
+    const lanes = buildLanes(region.id, doc, compiled, events, [], 10_000)
+    expect(lanes.find(l => l.azId === azA.id)!.markers).toEqual([{ event: events[0], cls: 'scale-out' }])
+    expect(lanes.find(l => l.azId === azB.id)!.markers).toHaveLength(0)
   })
 
   it('falls back to the first lane for a region-scoped event that names no specific AZ', () => {

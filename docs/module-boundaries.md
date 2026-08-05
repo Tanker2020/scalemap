@@ -5670,3 +5670,85 @@ on nothing.
   the OS/CDP level (not exposed by the available browser-automation tools) — confirmed instead by
   reading `ServiceChip.tsx`'s `transition: reduced ? undefined : 'width 0.3s linear'`, which reuses
   the SAME `useReducedMotion()` flag already gating the chip's pre-existing hover-lift transition.
+
+### FEAT-008 Task 21 — author `AutoscalePolicy` + live desired/running/max readout + scale markers
+
+The terminal UI task for FEAT-008. Consumes `AutoscalePolicy` (Task 10), `MetricsBatch.runningByPlacement?`
+(Task 16), and `scale_out`/`scale_in` events (Task 17).
+
+- **`src/app/world/dock/drawers/AutoscaleControl.tsx` (new)** — authors a placement's
+  `AutoscalePolicy` inline in `ServicesDrawer`'s per-placement chip body, right beside
+  `SpreadControl`. A "static count"/"autoscale" pill toggle switches `Placement.autoscale` between
+  `undefined` (the stepper above is authoritative) and a policy object; picking "autoscale"
+  seeds sane defaults (`minCount = max(1, pl.count)`, `maxCount = max(2, pl.count * 2)`,
+  `targetCpuPercent: 70`, `scaleUpCooldownSec: 60`, `scaleDownCooldownSec: 300`). Six numeric
+  fields (`minCount`/`maxCount`/`targetCpuPercent`/`scaleUpCooldownSec`/`scaleDownCooldownSec`/
+  optional `scaleStep`) dispatch `updatePlacement` LIVE on every change (EditServiceForm's
+  live-edit convention, not AddServiceForm's local-draft+submit) — no separate "apply" step.
+  Edit-locked (`disabled={running}`) throughout, same law every authoring surface honors. A
+  placement whose `count` drifts outside `[minCount, maxCount]` via the pre-existing stepper is
+  caught by `compileWorld.ts`'s existing Task 10 validation finding, not re-validated here.
+- **`src/app/world/dock/drawers/ServicesDrawer.tsx`** — the liveInstances (watching) body now
+  groups `serverInstances` by `placementId` (a `Map`, first-seen order) instead of a flat list,
+  so an autoscaled placement can carry one `data-testid="autoscale-readout"` line — `desired /
+  running / max`, plus a `· draining` suffix when the batch's published running count exceeds
+  `desired` for one tick (the in-flight drain window) — ahead of its per-instance rows. Gated on
+  the brief's exact condition: `hasPublished && pl.autoscale != null && runningByPlacement?.[placementId] != null`.
+  `desired` is read verbatim off the new `runningByPlacement` prop (never re-derived — same
+  divergence-guard discipline the engine documents for `activeConnections`); `runningNow` counts
+  this placement's instances with a published metrics entry. `ServicesDrawerProps` gained an
+  optional `runningByPlacement?: Record<string, number>` prop.
+- **`src/app/world/server/useServerDisplayMetrics.ts`** — `ServerDisplay` gained
+  `runningByPlacement: Record<PlacementId, number> | undefined`, read straight off
+  `(scrubBatch ?? latestBatch)?.runningByPlacement` (the same scrub-or-latest resolution every
+  other field on this hook already uses). `src/app/world/dock/ServerFaceplate.tsx` threads it
+  into `ServicesDrawer` as `watching ? display.runningByPlacement : undefined`.
+- **`src/app/world/region/timelineModel.ts`** — `TimelineMarker['cls']` gained `'scale-out'` |
+  `'scale-in'`; `markerClass` maps `scale_out`/`scale_in` to them (never entering `narration()`'s
+  kill/hc/shift/promote chain, which only ever looks for those four classes — additive and
+  inert there). **Bug fixed in the same task**: `azClosureContains` only matched a server/AZ/
+  instance id against `affected`, but `scale_out`/`scale_in` fire with `affected = [placementId]`
+  (`index.ts`'s emit call sites) — a placement id matched NOTHING, so a scale event could never
+  resolve to any lane. Fixed by also checking `doc.servers[doc.placements[id]?.serverId]?.azId
+  === azId`.
+- **`src/app/world/region/regionData.ts`** — same bug, one level up: `regionEvents`'s
+  `isRelevant` closure never included placement ids either, so a scale event failed the
+  REGION-scope filter before `buildLanes` ever saw it. Fixed by adding a `placementIds` set
+  (placements whose `serverId` is in this region's `serverIds`) to `isRelevant`.
+- **`src/app/world/region/TimelineV2.tsx`** — `GLYPH`/`MARKER_COLOR`/`MARKER_BG`/`LEGEND` all
+  extended for the two new classes: `→` (scale-out, `var(--color-success)`) and `−` (scale-in,
+  `var(--color-text-secondary)`), both from the approved glyph set, distinct from every existing
+  marker so a scale event never reads as a failover-chain step.
+- **Controller-added gap (not in the original brief): `computeWorldCost`'s `world` param — Task
+  18 widened it to `(WorldMetrics & { runningByPlacement?: Record<PlacementId, number> }) | null`
+  so an autoscaled placement's server cost apportions by live running-instance share, but NO UI
+  call site threaded `runningByPlacement` (a `MetricsBatch`-level field, not on `WorldMetrics`)
+  through — every real caller was passing `batch?.world` alone, so the Cost tab's number stayed
+  pinned to the full maxCount envelope regardless of live scaling. Fixed at every call site that
+  actually displays a cost figure derived from `computeWorldCost`/`scopedCost`:
+  `CostTab.tsx`, `RegionView.tsx` (memoized separately from `costs` itself so the existing
+  ISSUE-030 memoization discipline survives), `panels/TopologyPanel.tsx`, and — one level down —
+  `dock/scopeData.ts`'s `scopedCost` (widened to the same intersection type) plus its four real
+  callers (`AtlasHeader.tsx` ×2, `AzConfigTab.tsx`, `FloorPlanHeader.tsx`, `WorldPanel.tsx`).
+  Each site folds it in as `{ ...batch.world, runningByPlacement: batch.runningByPlacement }`.
+- Live smoke test (brief's Step 4) **was performed** against `npm run dev` (Vite-only, port 1420,
+  `tauriMock` fallback per the project's own documented dev-mode caveat — no real Tauri APIs) +
+  Playwright browser automation: authored an autoscaled placement (`minCount 1, maxCount 4,
+  targetCpuPercent 60`) via the new `AutoscaleControl`; ran the sim and confirmed, reading the
+  live DOM, `autoscale-readout` rendering `"1 / 1 / 4"`; the region timeline's legend rendering
+  the new `→ scale out` / `− scale in` entries; and the Cost tab showing a live `$/mo` figure.
+  Verified in both dark and light theme (confirmed via `getComputedStyle`/`data-theme` — the
+  Playwright screenshot tool itself rendered a stale/dark frame in this sandbox despite the DOM
+  being genuinely light-themed underneath, a tooling artifact, not a product bug). Two REAL bugs
+  were caught live and fixed as part of this task: (1) `AutoscaleControl.tsx`'s own
+  `pillActive` originally overrode only `borderColor` on top of `pillBase`'s `border` shorthand —
+  React's "don't mix shorthand and non-shorthand" console error on every toggle click, fixed by
+  overriding the full `border` shorthand; (2) the exact same PRE-EXISTING bug, unrelated to this
+  task, was found in `ServerFaceplate.tsx`'s `dangerBtn`/`dangerBtnLocked` (surfaced when
+  stopping the sim flips the "remove…" button's style) and fixed as a drive-by since it was
+  trivial and directly adjacent to code already being edited. A THIRD instance of the same bug
+  class was found in `dock/ChaosControl.tsx` (lines ~81/84/87) but left untouched — a shared
+  component this task never otherwise touches, out of scope for a targeted UI task; noted here
+  for whoever picks it up next (`PartitionsSection.tsx`'s own comments already document this bug
+  class recurring in this codebase). Full run: `npx tsc --noEmit`, `npx vitest run src --exclude
+  "**/.claude/**"` (152 files / 1999 tests), and `npm run build` all green.

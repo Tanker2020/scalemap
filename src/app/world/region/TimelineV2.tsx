@@ -30,10 +30,17 @@ const AXIS_OFFSET = LANE_GUTTER + LANE_GAP
 const LANE_H = 44
 const VB_W = 1000        // causality-arrow SVG's x-axis reference width (see arrow-geometry note below)
 
-const GLYPH: Record<TimelineMarker['cls'], string> = { kill: '✕', hc: '♺', shift: '⇄', promote: '⬆', other: '●' }
+// FEAT-008 (Task 21): scale-out/scale-in get their own glyphs from the approved set (→ for
+// growing the fleet, − for shrinking it) — distinct from every existing class so a scale event
+// never reads as a failover-chain step.
+const GLYPH: Record<TimelineMarker['cls'], string> = {
+  kill: '✕', hc: '♺', shift: '⇄', promote: '⬆', 'scale-out': '→', 'scale-in': '−', other: '●',
+}
 const MARKER_COLOR: Record<TimelineMarker['cls'], string> = {
   kill: 'var(--color-danger)', hc: 'var(--color-warning)',
-  shift: 'var(--tl-teal)', promote: 'var(--tl-violet)', other: 'var(--color-text-muted)',
+  shift: 'var(--tl-teal)', promote: 'var(--tl-violet)',
+  'scale-out': 'var(--color-success)', 'scale-in': 'var(--color-text-secondary)',
+  other: 'var(--color-text-muted)',
 }
 // Opaque chip fill (accent mixed into the node surface, not into transparent) — a theme-aware
 // stand-in for the mock's near-black per-class literals (#2a0f0f/#241b07/#0a1f1c/#16121f),
@@ -44,12 +51,16 @@ const MARKER_BG: Record<TimelineMarker['cls'], string> = {
   hc: 'color-mix(in srgb, var(--color-warning) 16%, var(--color-node-base))',
   shift: 'color-mix(in srgb, var(--tl-teal) 16%, var(--color-node-base))',
   promote: 'color-mix(in srgb, var(--tl-violet) 16%, var(--color-node-base))',
+  'scale-out': 'color-mix(in srgb, var(--color-success) 16%, var(--color-node-base))',
+  'scale-in': 'color-mix(in srgb, var(--color-text-secondary) 16%, var(--color-node-base))',
   other: 'var(--color-node-base)',
 }
 const LEGEND: { cls: TimelineMarker['cls']; label: string }[] = [
   { cls: 'kill', label: 'manual kill' },
   { cls: 'hc', label: 'health detection' },
   { cls: 'shift', label: 'traffic shift' },
+  { cls: 'scale-out', label: 'scale out' },
+  { cls: 'scale-in', label: 'scale in' },
   { cls: 'promote', label: 'promotion' },
 ]
 // Band tint families (brief: "#22c55e22/#f59e0b22/#ef444426 ... via tokens where they exist,

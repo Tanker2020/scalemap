@@ -112,9 +112,15 @@ export function regionEvents(
   const instanceIds = new Set(Object.values(compiled.instances).filter(i => i.regionId === regionId).map(i => i.id))
   const routedPopulationIds = new Set(
     (batch?.world.populationRoutes ?? []).filter(r => r.regionId === regionId).map(r => r.populationId))
+  // FEAT-008 (Task 21): scale_out/scale_in fire with `affected = [placementId]`, not a
+  // server/AZ/instance id (index.ts's emit call sites) — without this, an autoscaled
+  // placement's own scale events would never pass this region-scope filter at all.
+  const placementIds = new Set(
+    Object.values(doc.placements).filter(p => serverIds.has(p.serverId)).map(p => p.id))
 
   const isRelevant = (id: string): boolean =>
-    id === regionId || azIds.has(id) || serverIds.has(id) || instanceIds.has(id) || routedPopulationIds.has(id)
+    id === regionId || azIds.has(id) || serverIds.has(id) || instanceIds.has(id) ||
+    routedPopulationIds.has(id) || placementIds.has(id)
 
   return events.filter(e => e.affected.some(isRelevant))
 }

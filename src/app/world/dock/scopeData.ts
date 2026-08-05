@@ -21,7 +21,13 @@ export { scopeEntityIds, scopedEvents, scopedFindings } from '../../../lib/world
 // Server scope reads the server's own hourlyUsd directly and carries the documented deviation
 // note: the cost model attributes egress at AZ/region/world level only, never per-server.
 export function scopedCost(
-  scope: DockScope, doc: WorldDoc, world: WorldMetrics | null,
+  scope: DockScope, doc: WorldDoc,
+  // FEAT-008 (Task 21, controller-added gap): widened to the same intersection
+  // computeWorldCost's own `world` param accepts (Task 18) — `runningByPlacement` lives at the
+  // MetricsBatch level (Task 16), not on WorldMetrics itself, so every real caller below now
+  // folds it in; without this an autoscaled placement's region/AZ cost share here would stay
+  // pinned to its full maxCount envelope and never move as the fleet scales.
+  world: (WorldMetrics & { runningByPlacement?: Record<string, number> }) | null,
   managed: Record<string, ManagedServiceMetrics> | null = null,
 ): { hourlyUsd: number; monthlyUsd: number; egressNote: string | null } {
   if (scope.kind === 'server') {

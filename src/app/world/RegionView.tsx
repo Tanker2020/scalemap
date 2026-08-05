@@ -69,8 +69,15 @@ export function RegionView() {
   const shares = useMemo(() => azShares(rid, doc, batch), [rid, doc, batch])
   const batchSimMs = batch?.simMs ?? 0
   const alert = useMemo(() => ribbonAlert(rid, doc, events, batchSimMs), [rid, doc, events, batchSimMs])
-  const worldMetrics = batch?.world ?? null
   const managedMetrics = batch?.managedServices ?? null
+  // FEAT-008 (Task 21, controller-added gap): fold `runningByPlacement` (a MetricsBatch-level
+  // field, Task 16) into the `world` arg so an autoscaled placement's per-AZ/egress cost share
+  // (SourcesColumn/AzRow below) tracks the live fleet, not its full maxCount envelope — same fix
+  // as CostTab.tsx's. Memoized on the batch's own `world`/`runningByPlacement` refs (not
+  // recreated every render) so the ISSUE-030 memoization above stays effective.
+  const worldMetrics = useMemo(
+    () => batch?.world ? { ...batch.world, runningByPlacement: batch.runningByPlacement } : null,
+    [batch?.world, batch?.runningByPlacement])
   const costs = useMemo(
     () => computeWorldCost(doc, worldMetrics, managedMetrics),
     [doc, worldMetrics, managedMetrics])

@@ -175,6 +175,9 @@ describe('regionEvents', () => {
       evt({ id: 'byServer', affected: [serverA.id] }),
       evt({ id: 'byInstance', affected: [instId] }),
       evt({ id: 'byPopulation', affected: ['pop-1'] }),
+      // FEAT-008 (Task 21): scale_out/scale_in fire with `affected = [placementId]` — this
+      // placement's host server (serverA) lives in regionA, so it must match too.
+      evt({ id: 'byPlacement', kind: 'scale_out', affected: [pl.id] }),
       evt({ id: 'otherRegionAz', affected: [azX.id] }),
       evt({ id: 'otherRegionServer', affected: [serverX.id] }),
     ]
@@ -182,10 +185,10 @@ describe('regionEvents', () => {
       ...emptyWorldMetrics(), populationRoutes: [{ populationId: 'pop-1', regionId: regionA.id, rps: 10 }],
     })
     const matched = regionEvents(regionA.id, doc, compiled, events, batch).map(e => e.id)
-    expect(matched).toEqual(expect.arrayContaining(['byRegion', 'byAz', 'byServer', 'byInstance', 'byPopulation']))
+    expect(matched).toEqual(expect.arrayContaining(['byRegion', 'byAz', 'byServer', 'byInstance', 'byPopulation', 'byPlacement']))
     expect(matched).not.toContain('otherRegionAz')
     expect(matched).not.toContain('otherRegionServer')
-    expect(matched).toHaveLength(5)
+    expect(matched).toHaveLength(6)
   })
 })
 

@@ -145,7 +145,14 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
     [scope, doc, compiled, events, displayBatch],
   )
   const scopedCostResult = useMemo(
-    () => scopedCost(scope, doc, displayBatch?.world ?? null, displayBatch?.managedServices ?? null),
+    // FEAT-008 (Task 21, controller-added gap): fold runningByPlacement in — see scopedCost's
+    // own comment. `displayBatch` is already this memo's dep, so building the intersection
+    // object inline here doesn't change the memoization cadence.
+    () => scopedCost(
+      scope, doc,
+      displayBatch?.world ? { ...displayBatch.world, runningByPlacement: displayBatch.runningByPlacement } : null,
+      displayBatch?.managedServices ?? null,
+    ),
     [scope, doc, displayBatch],
   )
 

@@ -72,7 +72,11 @@ export function TopologyPanel() {
   // Region cost rollup (D4's "meta line with price") — computed once for the whole panel, not
   // per-region-row, and reuses the SAME computeWorldCost/HOURS_PER_MONTH primitives every other
   // $/hr readout in the app already uses (no new cost math).
-  const worldCost = computeWorldCost(doc, displayBatch?.world ?? null, displayBatch?.managedServices ?? null)
+  // FEAT-008 (Task 21, controller-added gap): fold `runningByPlacement` (MetricsBatch-level,
+  // Task 16) into the `world` arg — same fix as CostTab.tsx's — so this panel's per-region
+  // $/hr readout tracks an autoscaled placement's live running share, not its full envelope.
+  const worldForCost = displayBatch?.world ? { ...displayBatch.world, runningByPlacement: displayBatch.runningByPlacement } : null
+  const worldCost = computeWorldCost(doc, worldForCost, displayBatch?.managedServices ?? null)
 
   const nextAzLabel = (catalogId: string, regionId: string) => {
     const count = Object.values(doc.azs).filter(a => a.regionId === regionId).length

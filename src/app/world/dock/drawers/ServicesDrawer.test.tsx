@@ -19,6 +19,15 @@ function seedServer(): string {
 function currentDoc(): WorldDoc { return useWorldStore.getState().doc }
 function currentServer(id: string): Server { return currentDoc().servers[id] }
 
+// FEAT-008 (Task 21): ServicesDrawer takes `doc` as a plain prop (no store subscription of its
+// own — that's ServerFaceplate's job in the real app), so a live-editing test needs a small
+// reactive wrapper to see a store mutation reflected in the next render, mirroring how
+// ServerFaceplate actually re-renders this drawer on every `doc` change.
+function ReactiveDrawer({ serverId, running }: { serverId: string; running: boolean }) {
+  const doc = useWorldStore(s => s.doc)
+  return <ServicesDrawer server={doc.servers[serverId]} doc={doc} compiled={compileWorld(doc)} running={running} />
+}
+
 describe('servicesPv', () => {
   it('returns "—" when no placements', () => {
     const serverId = seedServer()
@@ -219,5 +228,137 @@ describe('ServicesDrawer — watching posture (liveInstances supplied)', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].dataset.parked).toBe('false')
     expect(rows[0]).toHaveTextContent('healthy')
+  })
+
+  // FEAT-008 (Task 21): the "desired / running / max" readout — gated on the batch actually
+  // having published a runningByPlacement entry for this placement AND the placement being
+  // authored as autoscaled, per the brief's exact condition.
+  it('renders desired / running / max for an autoscaled placement once runningByPlacement publishes', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    useWorldStore.getState().updatePlacement(plId, {
+      count: 1, autoscale: { minCount: 1, maxCount: 4, targetCpuPercent: 60, scaleUpCooldownSec: 60, scaleDownCooldownSec: 300 },
+    })
+    const doc = currentDoc()
+    const compiled = compileWorld(doc)
+    const instances = Object.values(compiled.instances).filter(i => i.serverId === serverId)
+    expect(instances).toHaveLength(4)   // envelope
+
+    const running2 = instances.filter(i => i.indexInPlacement < 2)
+    const liveInstances: Record<string, InstanceMetrics> = {}
+    running2.forEach(inst => {
+      liveInstances[inst.id] = {
+        instanceId: inst.id, rps: 10, errorRate: 0, p50Ms: 2, p99Ms: 4,
+        activeConnections: 1, cpuCoresUsed: 0.1, ramMb: 64, health: 'healthy',
+      }
+    })
+
+    render(
+      <ServicesDrawer
+        server={currentServer(serverId)} doc={doc} compiled={compiled} running liveInstances={liveInstances}
+        runningByPlacement={{ [plId]: 2 }}
+      />,
+    )
+    const readout = screen.getByTestId('autoscale-readout')
+    expect(readout).toHaveTextContent('2 / 2 / 4')
+  })
+
+  it('renders a "draining" suffix when running exceeds desired for one tick', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    useWorldStore.getState().updatePlacement(plId, {
+      count: 1, autoscale: { minCount: 1, maxCount: 4, targetCpuPercent: 60, scaleUpCooldownSec: 60, scaleDownCooldownSec: 300 },
+    })
+    const doc = currentDoc()
+    const compiled = compileWorld(doc)
+    const instances = Object.values(compiled.instances).filter(i => i.serverId === serverId)
+    const liveInstances: Record<string, InstanceMetrics> = {}
+    instances.slice(0, 2).forEach(inst => {
+      liveInstances[inst.id] = {
+        instanceId: inst.id, rps: 10, errorRate: 0, p50Ms: 2, p99Ms: 4,
+        activeConnections: 1, cpuCoresUsed: 0.1, ramMb: 64, health: 'healthy',
+      }
+    })
+    render(
+      <ServicesDrawer
+        server={currentServer(serverId)} doc={doc} compiled={compiled} running liveInstances={liveInstances}
+        runningByPlacement={{ [plId]: 1 }}
+      />,
+    )
+    const readout = screen.getByTestId('autoscale-readout')
+    expect(readout).toHaveTextContent('1 / 2 / 4')
+    expect(readout).toHaveTextContent('draining')
+  })
+
+  it('shows no readout for a non-autoscaled placement even when runningByPlacement is supplied', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('db')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    const doc = currentDoc()
+    const compiled = compileWorld(doc)
+    const instances = Object.values(compiled.instances).filter(i => i.serverId === serverId)
+    const liveInstances: Record<string, InstanceMetrics> = {
+      [instances[0].id]: {
+        instanceId: instances[0].id, rps: 10, errorRate: 0, p50Ms: 2, p99Ms: 4,
+        activeConnections: 1, cpuCoresUsed: 0.1, ramMb: 64, health: 'healthy',
+      },
+    }
+    render(
+      <ServicesDrawer
+        server={currentServer(serverId)} doc={doc} compiled={compiled} running liveInstances={liveInstances}
+        runningByPlacement={{ [plId]: 1 }}
+      />,
+    )
+    expect(screen.queryByTestId('autoscale-readout')).toBeNull()
+  })
+})
+
+describe('ServicesDrawer — authoring the AutoscalePolicy (FEAT-008 Task 21)', () => {
+  it('the chip defaults to "static count" and toggling "autoscale" reveals the policy fields with sane defaults', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    render(<ReactiveDrawer serverId={serverId} running={false} />)
+    expect(screen.queryByTestId('autoscale-fields')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'autoscale' }))
+    expect(screen.getByTestId('autoscale-fields')).toBeTruthy()
+    expect(currentDoc().placements[plId].autoscale).toMatchObject({ minCount: 1, maxCount: 2, targetCpuPercent: 70 })
+  })
+
+  it('editing a policy field dispatches updatePlacement live', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    render(<ReactiveDrawer serverId={serverId} running={false} />)
+    fireEvent.click(screen.getByRole('button', { name: 'autoscale' }))
+    fireEvent.change(screen.getByLabelText('max count'), { target: { value: '8' } })
+    expect(currentDoc().placements[plId].autoscale?.maxCount).toBe(8)
+  })
+
+  it('switching back to "static count" drops the autoscale policy', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    useWorldStore.getState().updatePlacement(plId, {
+      autoscale: { minCount: 1, maxCount: 4, targetCpuPercent: 60, scaleUpCooldownSec: 60, scaleDownCooldownSec: 300 },
+    })
+    render(<ServicesDrawer server={currentServer(serverId)} doc={currentDoc()} compiled={compileWorld(currentDoc())} running={false} />)
+    fireEvent.click(screen.getByRole('button', { name: 'static count' }))
+    expect(currentDoc().placements[plId].autoscale).toBeUndefined()
+  })
+
+  it('the toggle and fields are edit-locked while running', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    useWorldStore.getState().updatePlacement(plId, {
+      autoscale: { minCount: 1, maxCount: 4, targetCpuPercent: 60, scaleUpCooldownSec: 60, scaleDownCooldownSec: 300 },
+    })
+    render(<ServicesDrawer server={currentServer(serverId)} doc={currentDoc()} compiled={compileWorld(currentDoc())} running />)
+    expect(screen.getByRole('button', { name: 'static count' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'autoscale' })).toBeDisabled()
+    expect(screen.getByLabelText('max count')).toBeDisabled()
   })
 })

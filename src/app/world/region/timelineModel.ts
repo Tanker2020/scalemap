@@ -11,7 +11,11 @@ import type { EngineEvent, EngineEventKind, ReplayFrame, HealthState } from '../
 import { regionEvents } from './regionData'
 
 export interface TimelineBand { startMs: number; endMs: number; state: HealthState }
-export interface TimelineMarker { event: EngineEvent; cls: 'kill' | 'hc' | 'shift' | 'promote' | 'other' }
+// FEAT-008 (Task 21): 'scale-out'/'scale-in' cover the autoscaler's own scale_out/scale_in
+// events — a distinct class from 'other' so TimelineV2 can give them their own glyph/color,
+// same as every other narrated class. They never enter `narration()`'s kill/hc/shift/promote
+// chain (that function only ever looks for those four classes), so adding them here is additive.
+export interface TimelineMarker { event: EngineEvent; cls: 'kill' | 'hc' | 'shift' | 'promote' | 'scale-out' | 'scale-in' | 'other' }
 export interface TimelineLane { azId: AzId; label: string; serverCount: number; bands: TimelineBand[]; markers: TimelineMarker[] }
 
 // Last 120s of sim time (D8 layout). Shorter runs simply produce bands that start later than
@@ -28,6 +32,8 @@ export function markerClass(kind: EngineEventKind): TimelineMarker['cls'] {
     case 'ttl_lag_expired':
       return 'shift'
     case 'replica_promoted': return 'promote'
+    case 'scale_out': return 'scale-out'
+    case 'scale_in': return 'scale-in'
     default: return 'other'
   }
 }
@@ -51,10 +57,16 @@ function buildBandsForAz(azId: AzId, framesInWindow: ReplayFrame[], endMs: numbe
 }
 
 // The per-AZ analog of regionData.ts's region-level `isRelevant`: true when `affected` names
-// this AZ itself, a server that lives in it, or a compiled instance resident on it.
+// this AZ itself, a server that lives in it, or a compiled instance resident on it. FEAT-008
+// (Task 21): scale_out/scale_in fire with `affected = [placementId]` (index.ts's emit call
+// sites), not a server/AZ/instance id, so a placement whose host server lives in this AZ must
+// also count — otherwise a scale event never resolves to any lane.
 function azClosureContains(azId: AzId, doc: WorldDoc, compiled: CompiledWorld, affected: string[]): boolean {
   if (affected.includes(azId)) return true
-  return affected.some(id => doc.servers[id]?.azId === azId || compiled.instances[id]?.azId === azId)
+  return affected.some(id =>
+    doc.servers[id]?.azId === azId ||
+    compiled.instances[id]?.azId === azId ||
+    doc.servers[doc.placements[id]?.serverId ?? '']?.azId === azId)
 }
 
 // One lane per AZ in the region (doc iteration order, matching RegionView/AzRow's own

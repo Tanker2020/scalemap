@@ -73,9 +73,14 @@ const actionBtn: CSSProperties = {
   border: '1px solid var(--color-node-border)', borderRadius: 5, padding: '4px 12px',
   color: 'var(--color-text-secondary)', cursor: 'pointer',
 }
+// Full `border` shorthand (not a `borderColor` longhand override on top of actionBtn's own
+// shorthand `border`) — pre-existing mix that React warns about on rerender (caught live during
+// FEAT-008/Task 21's smoke test, when the "remove…" button toggles dangerBtn/dangerBtnLocked as
+// `running` flips); fixed as a drive-by since it's the exact same class of bug this task's own
+// new AutoscaleControl.tsx had to avoid.
 const dangerBtn: CSSProperties = {
   ...actionBtn, color: 'var(--color-danger)',
-  borderColor: 'color-mix(in srgb, var(--color-danger) 25%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--color-danger) 25%, transparent)',
 }
 const dangerBtnLocked: CSSProperties = { ...dangerBtn, opacity: 0.35, cursor: 'default' }
 
@@ -271,6 +276,7 @@ export function ServerFaceplate({ serverId, showEnter, openFirewallRules }: Serv
             <ServicesDrawer
               server={server} doc={doc} compiled={compiled} running={running}
               liveInstances={watching ? display.instances : null}
+              runningByPlacement={watching ? display.runningByPlacement : undefined}
             />
           </Drawer>
           <Drawer accent="var(--kit-cat-network)" title="PLACEMENT" readout={placementPv(server, doc)} open={openDrawer === 'pl'} onToggle={() => toggle('pl')}>

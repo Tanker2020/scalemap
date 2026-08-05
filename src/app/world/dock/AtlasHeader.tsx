@@ -176,7 +176,8 @@ export function AtlasHeader({ regionId }: AtlasHeaderProps): ReactElement {
     if (!displayBatch) {
       headline = `${regionCount} region${regionCount === 1 ? '' : 's'} · ${serverCount} server${serverCount === 1 ? '' : 's'} · ${cityCount} population${cityCount === 1 ? '' : 's'}`
     } else {
-      const cost = scopedCost({ kind: 'world' }, doc, displayBatch.world, displayBatch.managedServices ?? null)
+      // FEAT-008 (Task 21, controller-added gap): fold runningByPlacement in — see scopedCost's own comment.
+      const cost = scopedCost({ kind: 'world' }, doc, { ...displayBatch.world, runningByPlacement: displayBatch.runningByPlacement }, displayBatch.managedServices ?? null)
       headline = (
         <>
           Handling <b style={{ color: HEADLINE_STRONG, fontVariantNumeric: 'tabular-nums' }}>{Math.round(rolledRps).toLocaleString('en-US')} rps</b>
@@ -186,7 +187,9 @@ export function AtlasHeader({ regionId }: AtlasHeaderProps): ReactElement {
     }
   } else {
     const region = doc.regions[regionId]
-    const cost = scopedCost({ kind: 'region', regionId }, doc, displayBatch?.world ?? null, displayBatch?.managedServices ?? null)
+    // FEAT-008 (Task 21, controller-added gap): fold runningByPlacement in — see scopedCost's own comment.
+    const worldForCost = displayBatch?.world ? { ...displayBatch.world, runningByPlacement: displayBatch.runningByPlacement } : null
+    const cost = scopedCost({ kind: 'region', regionId }, doc, worldForCost, displayBatch?.managedServices ?? null)
     headline = (
       <>
         {region?.catalogId ?? regionId} · {Math.round(rolledRps).toLocaleString('en-US')} rps{' '}

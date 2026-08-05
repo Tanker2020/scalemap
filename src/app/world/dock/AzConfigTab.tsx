@@ -127,7 +127,9 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
   // dedupes the two call sites and makes module-boundaries.md's "reads the SAME helper" claim
   // true. `regionId` is only read by scopedCost's server branch, so `az?.regionId ?? ''` is safe
   // here too (FloorPlanHeader's own precedent, scopeData.ts's az branch never touches it).
-  const azCost = scopedCost({ kind: 'az', regionId: az?.regionId ?? '', azId }, doc, batch?.world ?? null, batch?.managedServices ?? null)
+  // FEAT-008 (Task 21, controller-added gap): fold runningByPlacement in — see scopedCost's own comment.
+  const azWorldForCost = batch?.world ? { ...batch.world, runningByPlacement: batch.runningByPlacement } : null
+  const azCost = scopedCost({ kind: 'az', regionId: az?.regionId ?? '', azId }, doc, azWorldForCost, batch?.managedServices ?? null)
 
   // "+ rack" ghost (D5): hidden while running, same precedent as the floor's own ghost rack
   // (DatacenterFloor.tsx's `{ghostCell && !running && (...)}`).

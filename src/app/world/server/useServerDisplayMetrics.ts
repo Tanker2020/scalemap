@@ -4,12 +4,19 @@
 import { useMemo } from 'react'
 import { useSimulationStore } from '../../store/simulation.store'
 import type { ServerMetrics, InstanceMetrics } from '../../../lib/worldEngine/types'
-import type { InstanceId } from '../../../lib/world/types'   // id types live in world/types, NOT re-exported by worldEngine/types
+import type { InstanceId, PlacementId } from '../../../lib/world/types'   // id types live in world/types, NOT re-exported by worldEngine/types
 
 export interface ServerDisplay {
   server: ServerMetrics | null
   instances: Record<InstanceId, InstanceMetrics>
   scrubbing: boolean
+  // FEAT-008 (Task 21): the batch-level (not server-level) running-instance count per
+  // autoscaled placement — published verbatim off `MetricsBatch.runningByPlacement` (Task 16).
+  // Undefined when the batch predates any autoscale (or there is no batch yet); {} is a real,
+  // distinct "autoscale exists, nothing running yet" state (same convention the batch field
+  // itself documents) — never re-derived here, matching the two-call-site divergence-guard
+  // discipline the engine enforces for `activeConnections`.
+  runningByPlacement: Record<PlacementId, number> | undefined
 }
 
 export function useServerDisplayMetrics(serverId: string): ServerDisplay {
@@ -21,6 +28,7 @@ export function useServerDisplayMetrics(serverId: string): ServerDisplay {
       server: batch?.servers[serverId] ?? null,
       instances: batch?.instances ?? {},
       scrubbing: scrubBatch !== null,
+      runningByPlacement: batch?.runningByPlacement,
     }
   }, [scrubBatch, latestBatch, serverId])
 }
