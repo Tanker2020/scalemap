@@ -2143,7 +2143,18 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // throttle (Task 5) above already read via hostScheduler.ts's warmthOf — publishing
       // InstanceMetrics.warmth/degraded-health from it (never re-derived) is that same divergence
       // guard applied to warm-up.
-      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance, s.faults.leakAccumMb, s.faults.active.size, roleOf, s.warmSinceMs, s.replicasByCluster, s.replication.lagSecByInstance, s.warmingUntil)
+      // s.runningSet/runningByPlacement (FEAT-008, Task 16): s.runningSet is the SAME memoized
+      // predicate stepHost's `loads` filter above already used to exclude a parked instance from
+      // CPU/RAM accounting — passing it lets buildBatch omit that same instance from `instances`
+      // instead of publishing it with zero/default values. runningByPlacement is built straight
+      // from s.autoscale.desiredCount (the exact map runningSet was resolved from), never a
+      // re-derived count, so the published desired/running number and the actual number of
+      // published instance entries for a placement can never diverge. Guarded on hasAnyAutoscale so
+      // a world with no autoscaling authored publishes `undefined`, not `{}`.
+      const runningByPlacement = s.hasAnyAutoscale
+        ? Object.fromEntries(s.autoscale.desiredCount)
+        : undefined
+      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance, s.faults.leakAccumMb, s.faults.active.size, roleOf, s.warmSinceMs, s.replicasByCluster, s.replication.lagSecByInstance, s.warmingUntil, s.runningSet, runningByPlacement)
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
       s.tracer.sample(flows, compiled, doc, simMs, entryId => populationsForEntry(entryId), managedDbRt)

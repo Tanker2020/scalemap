@@ -417,3 +417,18 @@ off `lastBatch`.
   `'instance_warm'` (fired once per cold-start cycle, in the warmth-reaches-1 cleanup pass right
   before the `s.warmingUntil.delete(iid)` that is itself the one-shot guard — no separate
   "already emitted" tracking set needed). No signature break.
+
+## FEAT-008: Horizontal Autoscaling Policy (Wave 3)
+- Additive: `MetricsBatch.runningByPlacement?: Record<PlacementId, number>` — published from the
+  same `state.autoscale.desiredCount` map `runningSetResolver` filters `MetricsBatch.instances`
+  with. No signature break.
+- Semantic (not type) break, sanctioned by the spec: for an autoscaled placement,
+  `compiled.instances` is now an envelope (`maxCount` entries) rather than the running set;
+  `MetricsBatch.instances` is the running subset. Non-autoscaled placements are unaffected.
+- Defensive fix surfaced by the change (not `tsc`): `metrics.ts`'s AZ aggregation loop indexed
+  `instances[i.id]` directly off `instancesByAz` (grouped from ALL of `compiled.instances`,
+  unconditionally, before the new running-set skip). Once a parked instance's id has no
+  `instances[id]` entry, that direct index threw. Fixed by filtering `inAz` to ids that actually
+  published (`instances[i.id]` truthy) before aggregating rps/errorRate/p50/instanceCount — the
+  servers loop already used optional chaining (`instances[i.id]?.ramMb ?? 0`) so it needed no
+  change.

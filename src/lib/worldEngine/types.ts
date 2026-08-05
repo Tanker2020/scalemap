@@ -3,7 +3,7 @@
 // additive-optional extension only. Governs every module in src/lib/worldEngine/.
 import type {
   InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId, ManagedServiceId,
-  CompiledWorld, WorldDoc, PlacementRole,
+  CompiledWorld, WorldDoc, PlacementRole, PlacementId,
 } from '../world/types'
 
 // ─── Time ────────────────────────────────────────────────────────────────────
@@ -217,6 +217,14 @@ export interface MetricsBatch {
   // (as `{}`) for a world with any replica-role db instance; absent/omitted on an older/test-built
   // batch or a world with no replicas at all — read as `batch.clusters?.[clusterId]?.lagSec ?? 0`.
   clusters?: Record<string, { lagSec: number }>
+  // Additive-optional (frozen-contract rule, FEAT-008): current desired/running instance count per
+  // autoscaled placement, built from the SAME `state.autoscale.desiredCount` map `runningSetResolver`
+  // reads to filter which instance ids appear in `instances` above -- never re-derived, so the
+  // published count and the actual number of published instance entries for that placement can
+  // never diverge (index.ts's DIVERGENCE GUARD). undefined when no placement in the world authors
+  // `autoscale` (`hasAnyAutoscale` false); present (possibly `{}`) once any does. See
+  // contract-drift.md §FEAT-008.
+  runningByPlacement?: Record<PlacementId, number>
 }
 
 // ─── Events ──────────────────────────────────────────────────────────────────

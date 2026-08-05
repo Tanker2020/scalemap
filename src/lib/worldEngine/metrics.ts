@@ -317,6 +317,20 @@ export function buildBatch(
   // step. Optional: absent ⇒ warmth stays unpublished and health is never lifted for warm-up, so
   // every existing direct-buildBatch caller/test is unchanged by omission.
   warmingUntil?: Map<InstanceId, WarmingEntry>,
+  // FEAT-008 (Task 16): the SAME memoized running-set predicate index.ts's step loop already built
+  // via `runningSetResolver` (`EngineState.runningSet`) to filter stepHost's `loads` array -- never
+  // re-derived here, so a parked instance can never appear in the published `instances` map while
+  // simultaneously being excluded from the host scheduler's CPU/RAM accounting (or vice versa).
+  // Optional: absent ⇒ every compiled instance is treated as running (the `() => true` identity
+  // index.ts itself seeds at start() for a world with no autoscaling authored), so every existing
+  // direct-buildBatch caller/test is unchanged by omission.
+  runningSet?: (instanceId: InstanceId) => boolean,
+  // FEAT-008 (Task 16): the SAME `state.autoscale.desiredCount` map `runningSet` above was resolved
+  // from, published verbatim as `MetricsBatch.runningByPlacement` -- never a re-derived count, which
+  // is what keeps this number and the actual number of published `instances` entries for that
+  // placement from ever diverging. Optional: absent ⇒ `runningByPlacement` stays undefined (no
+  // placement in the world authors `autoscale`), matching the additive-optional-field convention.
+  runningByPlacement?: Record<string, number>,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
   const servers: Record<ServerId, ServerMetrics> = {}
@@ -339,6 +353,12 @@ export function buildBatch(
 
   // ── Instances ──
   for (const inst of Object.values(compiled.instances)) {
+    // FEAT-008 (Task 16): a genuinely parked (non-draining) instance is omitted from the published
+    // batch entirely -- not just zeroed -- so the UI/analysis rules can't mistake "envelope slot
+    // not yet scaled to" for "running but idle". A draining instance still reads running=true here
+    // (Task 15's runningSetResolver widens on drainUntilByInstance), so it keeps its entry until the
+    // drain window elapses and it actually parks.
+    if (runningSet && !runningSet(inst.id)) continue
     const bp = doc.blueprints[inst.blueprintId]
     const w = state.window.get(inst.id) ?? { steps: 1, admittedSum: 0, errorSum: 0, latencies: [0], selfLatencySum: 0 }
     const windowRps = w.admittedSum / Math.max(1, w.steps)
@@ -482,7 +502,12 @@ export function buildBatch(
 
   // ── AZs ──
   for (const az of Object.values(doc.azs)) {
-    const inAz = instancesByAz.get(az.id) ?? []
+    // FEAT-008 (Task 16): instancesByAz is grouped from ALL of compiled.instances (built above,
+    // before the running-set skip in the loop that populated `instances`), so a parked instance's
+    // id can still appear here even though it has no `instances[id]` entry. Filter to the ones
+    // that actually published -- the running set -- so this AZ's rps/errorRate/p50/instanceCount
+    // reflect only running instances, matching the omission semantics `instances` itself now has.
+    const inAz = (instancesByAz.get(az.id) ?? []).filter(i => instances[i.id])
     const rps = inAz.reduce((s, i) => s + instances[i.id].rps, 0)
     const errWeighted = inAz.reduce((s, i) => s + instances[i.id].errorRate * instances[i.id].rps, 0)
     const errorRate = rps > 0 ? errWeighted / rps : 0
@@ -638,5 +663,9 @@ export function buildBatch(
   state.droppedSteps = 0
   state.staleReadWindow.clear()
 
-  return { simMs, instances, servers, azs, regions, world, managedServices, topics, activeFaultCount: activeFaultCount ?? 0, clusters }
+  return {
+    simMs, instances, servers, azs, regions, world, managedServices, topics,
+    activeFaultCount: activeFaultCount ?? 0, clusters,
+    ...(runningByPlacement !== undefined ? { runningByPlacement } : {}),
+  }
 }

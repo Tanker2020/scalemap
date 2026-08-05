@@ -4140,6 +4140,21 @@ describe('FEAT-008 Task 13: wire AutoscaleState into the engine loop', () => {
     sim.engine.stop()
   })
 
+  it('DIVERGENCE GUARD: MetricsBatch.instances contains only running instances, runningByPlacement matches', () => {
+    const f = autoscaledPlacementWorld({
+      minCount: 1, maxCount: 4, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300,
+    })
+    const compiled = compileWorld(f.doc)
+    expect(Object.keys(compiled.instances).filter(id => f.instanceIdsForPlacement.includes(id)).length).toBe(4)
+    const sim = drive(f.doc, compiled)
+    sim.stepFor(5)
+    const b = sim.latest()
+    const publishedForPlacement = Object.keys(b.instances).filter(id => f.instanceIdsForPlacement.includes(id))
+    expect(publishedForPlacement.length).toBe((b as any).runningByPlacement[f.placementId])
+    expect((b as any).runningByPlacement[f.placementId]).toBe(1) // still at minCount, no load yet to trigger scale-out
+    sim.engine.stop()
+  })
+
   it('AUTOSCALE ROUTING: a parked instance never receives routed traffic', () => {
     const f = autoscaledPlacementWorld({
       minCount: 1, maxCount: 4, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300,
