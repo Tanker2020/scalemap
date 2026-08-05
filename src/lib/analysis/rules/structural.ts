@@ -298,8 +298,22 @@ const splitBrainRisk: AnalysisRule = {
   id: 'split-brain-risk', family: 'structural',
   run: ({ doc, compiled, lastBatch }) => {
     interface Candidate { inst: ServiceInstance; authoredRole: PlacementRole }
+    // FEAT-008 (Task 19 consumer audit): "acting as primary" is a LIVE claim, so this rule's
+    // candidate set must be the RUNNING set, not the compiled ENVELOPE. Since Task 11,
+    // `compiled.instances` expands an autoscaled placement to its full maxCount envelope, and a
+    // parked slot is omitted from `lastBatch.instances` (Task 16) — which made the
+    // `?? inst.role` fallback below resolve every parked slot to its AUTHORED role ('primary' by
+    // default for every placement), reporting a whole idle envelope as a critical split-brain.
+    // Membership in `lastBatch.instances` is the sanctioned running signal for a non-engine
+    // consumer, and metrics.ts omits ONLY parked (non-draining) instances — a killed/down/
+    // degraded instance still publishes an entry — so absence here means parked, nothing else.
+    // Gated on a NON-EMPTY published instance map so the never-simulated case (no batch, or a
+    // batch that predates any instance publishing) keeps the pure authored-role behavior.
+    const published = lastBatch?.instances
+    const hasRunningSignal = published != null && Object.keys(published).length > 0
     const primariesByBlueprint = new Map<string, Candidate[]>()
     for (const inst of Object.values(compiled.instances)) {
+      if (hasRunningSignal && !published[inst.id]) continue   // parked envelope slot — not running, not acting
       const effectiveRole = lastBatch?.instances?.[inst.id]?.effectiveRole ?? inst.role
       if (effectiveRole !== 'primary') continue
       if (!doc.blueprints[inst.blueprintId]?.stateful) continue

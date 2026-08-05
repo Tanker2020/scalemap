@@ -402,6 +402,31 @@ describe('structural: split-brain-risk', () => {
     } as unknown as MetricsBatch
     expect(ids(runAnalysis(s.doc, compiled, batch), 'split-brain-risk')).toHaveLength(0)
   })
+
+  // FEAT-008 (Task 19 consumer audit): compileWorld expands an AUTOSCALED placement to its full
+  // maxCount ENVELOPE, so `compiled.instances` now contains parked (not-running) slots. Those
+  // slots are absent from `lastBatch.instances` (Task 16), which made the rule's
+  // `lastBatch?.instances?.[id]?.effectiveRole ?? inst.role` fall back to the AUTHORED role —
+  // 'primary' by default for every placement — and report the whole parked envelope as
+  // simultaneously-acting primaries. A critical-severity false positive on an ordinary
+  // single-running-instance autoscaled stateful placement.
+  it('does NOT count parked autoscale-envelope slots as effective primaries (FEAT-008 envelope split)', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const a1 = s.az(r.id, 'us-east-1a')
+    const db = s.blueprint('db'); db.stateful = true
+    const pl = s.placement(db.id, s.server(a1.id).id)   // primary by default
+    pl.count = 1
+    pl.autoscale = { minCount: 1, maxCount: 3, targetCpuUtilization: 0.7, cooldownSec: 60 }
+    const compiled = s.compile()
+    // Envelope expansion: 3 compiled instances, only slot #0 is running.
+    expect(Object.keys(compiled.instances)).toHaveLength(3)
+    const runningIid = Object.values(compiled.instances).find(i => i.indexInPlacement === 0)!.id
+
+    const batch = {
+      instances: { [runningIid]: { effectiveRole: 'primary' } },
+    } as unknown as MetricsBatch
+    expect(ids(runAnalysis(s.doc, compiled, batch), 'split-brain-risk')).toHaveLength(0)
+  })
 })
 
 // FEAT-005 (Task 14): replication-lag-exceeds-rpo — reads lastBatch.clusters (Task 12) against
