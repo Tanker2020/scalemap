@@ -3783,3 +3783,133 @@ describe('FEAT-007 Task 4: cold-start capacity throttle', () => {
     sim.engine.stop()
   })
 })
+
+describe('FEAT-007 Task 5: cold-start latency throttle', () => {
+  // Same shape as Task 4's singleServerTwoInstances fixture (one cold-capable public blueprint,
+  // container-limited so a 'down' fault cleanly restarts it), duplicated locally rather than
+  // hoisted out of the Task 4 describe block above -- kept self-contained per this file's existing
+  // per-describe-block fixture convention.
+  function singleServerTwoInstances(opts: { coldStartMs: number; warmCapacityFraction: number }) {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    server.specs.ramMb = 100_000
+    doc.servers[server.id] = server
+
+    const coldBp = publicBlueprint('cold', 0)
+    coldBp.workload = {
+      cpuMsPerRequest: 5, ramBaseMb: 64, ramPerConnMb: 0.01, diskIoPerRequest: 0,
+      coldStartMs: opts.coldStartMs, warmCapacityFraction: opts.warmCapacityFraction,
+    }
+    doc.blueprints[coldBp.id] = coldBp
+    const coldPl = createPlacement(coldBp.id, server.id)
+    doc.placements[coldPl.id] = coldPl
+    const coldInstanceId = instanceId(coldPl.id, 0)
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 50   // deliberately low utilization (~3% of the 1600 rps solo ceiling) -- this
+    // test is about the latency SHAPE the cold-start throttle produces, so demand is kept far
+    // below any capacity/backlog feedback threshold that would otherwise superimpose its own
+    // queueing-driven oscillation onto the signal being measured.
+    doc.populations[pop.id] = pop
+
+    return { doc, serverId: server.id, instanceId: coldInstanceId }
+  }
+
+  it('COLD START LATENCY: a cold instance shows elevated p50 that decays back to baseline as it warms', () => {
+    const f = singleServerTwoInstances({ coldStartMs: 30_000, warmCapacityFraction: 0.3 })
+    const compiled = compileWorld(f.doc)
+    const sim = drive(f.doc, compiled)
+    const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
+    // Published p50Ms (metrics.ts) is an EMA(alpha=0.3) over a 3-batch percentile RESERVOIR, not
+    // a raw per-step reading -- even at this fixture's deliberately low, non-saturating rps it
+    // oscillates by design (the reservoir mixes in up to 3 seconds of history) independent of the
+    // cold-start throttle entirely: a plain steady-state run with no fault at all shows the SAME
+    // amplitude of wander. A single-sample-point comparison is therefore not a reliable read of
+    // the throttle's effect -- this test instead averages over windows wide enough to smooth that
+    // ambient wander out, isolating the throttle's much larger, sustained deviation.
+    const baselineTrace: number[] = []
+    for (let i = 0; i < 30; i++) { sim.stepFor(1); baselineTrace.push(sim.latest().instances[f.instanceId].p50Ms) }
+    const baselineP50 = avg(baselineTrace)
+    sim.engine.setFault('server', f.serverId, { kind: 'down' })
+    sim.stepFor(1)
+    sim.engine.setFault('server', f.serverId, null)
+    const trace: number[] = []
+    for (let i = 0; i < 150; i++) { sim.stepFor(1); trace.push(sim.latest().instances[f.instanceId].p50Ms) }
+    // The window from t=7..26s post-restart (indices 6..25): skips the first ~6s, where the
+    // 3-batch reservoir still carries the 'down' window's own zero-rps sample and transiently
+    // pulls the published p50 BELOW baseline before the throttled samples dominate it -- a known
+    // artifact of the reservoir mechanic, not the throttle itself. This window sits well inside
+    // the 30s coldStartMs ramp, so it is still meaningfully cold.
+    const coldP50 = avg(trace.slice(6, 26))
+    // t=121..150s post-restart: 90+ seconds past the 30s ramp (warmth long since reached 1) AND
+    // past the metrics pipeline's own settling time (EMA + 3-batch reservoir).
+    const warmP50 = avg(trace.slice(120, 150))
+    expect(coldP50).toBeGreaterThan(baselineP50 * 1.5)   // 1/0.3 ~= 3.3x at t=0, generous floor
+    expect(warmP50).toBeLessThan(coldP50)
+    expect(warmP50).toBeCloseTo(baselineP50, 0)
+    sim.engine.stop()
+  })
+
+  // A single instance sustaining ~90% CPU under heavy client load, RAM-sized so a brief
+  // ramPerConnMb pressure at that admitted rps tips it over its container limit -- the same
+  // "OOM emerges from sustained load, no fault injection needed" shape as the pre-existing
+  // "OOM-kills the largest consumer under a RAM-starved fixture" test above, but tuned to
+  // saturate CPU (not just RAM) so the cold-started restart is immediately handed full,
+  // unthrottled demand.
+  function singleSaturatedInstance(opts: {
+    coldStartMs: number
+    warmCapacityFraction: number
+    targetCpuUtilization: number
+  }) {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)   // 8 vCPU
+    doc.servers[server.id] = server
+
+    const cpuMsPerRequest = 5
+    const soloCeilingRps = (server.specs.vcpu * 1000) / cpuMsPerRequest   // 1600 rps
+    const bp = publicBlueprint('saturated', 0)
+    bp.workload = {
+      cpuMsPerRequest, ramBaseMb: 64, ramPerConnMb: 4, diskIoPerRequest: 0,
+      coldStartMs: opts.coldStartMs, warmCapacityFraction: opts.warmCapacityFraction,
+    }
+    doc.blueprints[bp.id] = bp
+    const pl = createPlacement(bp.id, server.id)
+    pl.runtime = {
+      type: 'container', stackName: 'app', networkNames: [], portMappings: [],
+      cpuLimit: null, memLimitMb: 600,
+    }
+    doc.placements[pl.id] = pl
+    const inst = instanceId(pl.id, 0)
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    // Demand well past the solo ceiling -- sustained overload drives both CPU saturation
+    // (~targetCpuUtilization and beyond) and, via activeConnections * ramPerConnMb, RAM past the
+    // container limit on its own, no fault injection required for either OOM.
+    pop.peakRps = soloCeilingRps * (opts.targetCpuUtilization + 0.6) / opts.targetCpuUtilization
+    doc.populations[pop.id] = pop
+
+    return { doc, serverId: server.id, instanceId: inst }
+  }
+
+  it('RESTART STORM: an overloaded service, killed and restarted cold, re-saturates and OOMs again without new operator action', () => {
+    const f = singleSaturatedInstance({ coldStartMs: 30_000, warmCapacityFraction: 0.2, targetCpuUtilization: 0.9 })
+    const compiled = compileWorld(f.doc)
+    const sim = drive(f.doc, compiled)
+    sim.stepFor(5)
+    const oomEvents1 = sim.events.filter(e => e.kind === 'oom_kill')
+    expect(oomEvents1.length).toBeGreaterThanOrEqual(1)   // saturation already causes at least one OOM
+    // let it restart cold and receive full traffic immediately (no operator throttling of demand)
+    sim.stepFor(30)
+    const oomEvents2 = sim.events.filter(e => e.kind === 'oom_kill')
+    expect(oomEvents2.length).toBeGreaterThan(oomEvents1.length)   // re-saturates and OOMs a second time
+    sim.engine.stop()
+  })
+})

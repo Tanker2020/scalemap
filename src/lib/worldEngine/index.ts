@@ -1201,6 +1201,30 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       const inst = compiled.instances[iid]
       effectiveCpuMsByInstance[iid] = effectiveCpuMs(iid, inst ? doc.blueprints[inst.blueprintId] : undefined)
     }
+    // FEAT-007 (Task 5): the "latency tracks the reciprocal of capacity" half of the cold-start
+    // coupling -- a warming instance's effective per-request cost (which flows.ts:519 reads as its
+    // p50 basis) is scaled up by 1/warmthBlend, so a cold instance handed the SAME demand shows
+    // higher latency exactly as its capacity throttle (Task 4) is granting it fewer cores. Reads
+    // s.warmingUntil directly (not Task 4's warmthByInstance, which is server-loop-local and
+    // already blended+keyed by resident instances only) so this pass can run once here, ahead of
+    // the per-server loop, over every instance present in effectiveCpuMsByInstance -- an instance
+    // absent from that record (no packet/conn signal at all) still falls back to the flat
+    // cpuMsPerRequest at every OTHER read site (loads[].cpuMsPerRequest, the InstanceLoad built in
+    // the server loop below), so it is deliberately left unthrottled here too: nothing downstream
+    // would see a throttled value for it anyway. Guarded on s.warmingUntil.size so the fast path
+    // costs nothing when no instance anywhere is warming.
+    if (s.warmingUntil.size > 0) {
+      for (const iid of Object.keys(effectiveCpuMsByInstance)) {
+        const entry = s.warmingUntil.get(iid)
+        if (!entry) continue
+        const inst = compiled.instances[iid]
+        const bp = inst ? doc.blueprints[inst.blueprintId] : undefined
+        const warmCapacityFraction = bp?.workload.warmCapacityFraction ?? 0.3
+        const w = warmthOf(iid, s.warmingUntil, simMs)
+        const blend = warmCapacityFraction + (1 - warmCapacityFraction) * w
+        effectiveCpuMsByInstance[iid] = effectiveCpuMsByInstance[iid] / Math.max(blend, 0.0001)
+      }
+    }
 
     // ── 4/5. host scheduling (prev-step load) + VPS ──
     const admittedScaleByServer: Record<ServerId, number> = {}
