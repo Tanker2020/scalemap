@@ -54,6 +54,10 @@ interface RackSlotProps {
   accents: readonly string[]   // resident blueprints' signature colors (≤3) — per-slat identity
   cacheHit: CacheHitInfo | null
   replicaLag: ReplicaLagInfo | null
+  // FEAT-007 (Task 8): live cold-start ramp (0..1), or null once warm/absent. See
+  // DatacenterFloor.tsx's warmthByServer comment for the "first resolvable instance is
+  // representative" convention this mirrors from cacheHit/replicaLag.
+  warmth: number | null
   selected: boolean
   isNew: boolean
   animatedLed: boolean
@@ -63,16 +67,23 @@ interface RackSlotProps {
 }
 
 function RackSlot({
-  server, box, yTop, yBottom, cpuMean, health, accents, cacheHit, replicaLag, selected, isNew, animatedLed, reducedMotion, onSelect, onEnter,
+  server, box, yTop, yBottom, cpuMean, health, accents, cacheHit, replicaLag, warmth, selected, isNew, animatedLed, reducedMotion, onSelect, onEnter,
 }: RackSlotProps): ReactElement {
   const { handlers, progressRef } = useHoldTap(() => onSelect(server.id), () => onEnter(server.id))
   const { poly: slatPoly, led } = isoSlat(box, yTop, yBottom)
   const { lit, color } = ledParams(cpuMean)
-  const ledColor = health === 'down' ? 'var(--color-danger)' : LED_COLOR[color]
+  // FEAT-007 (Task 8): a warming resident gets a distinct LED — neither the ordinary cpu-driven
+  // success/warning/danger read, nor the steady 'down' red — a color-mix ramp from amber toward
+  // the normal success color as warmth climbs to 1, matching ServiceChip's fill-bar treatment.
+  const ledColor = health === 'down' ? 'var(--color-danger)'
+    : warmth != null ? `color-mix(in srgb, var(--color-warning) ${Math.round((1 - warmth) * 100)}%, var(--color-success) ${Math.round(warmth * 100)}%)`
+      : LED_COLOR[color]
   const blinking = lit > 0 && animatedLed && !reducedMotion
   const labelY = box.roofSW.y + (yTop + yBottom) / 2 + ((yBottom - yTop) * 0.24) / 2
   const cacheTitle = cacheHit ? ` · ⌬ ${Math.round(cacheHit.ratio * 100)}% hit${cacheHit.warming ? ' (warming)' : ''}` : ''
   const lagTitle = replicaLag ? ` · ⏎ ${replicaLag.lagSec.toFixed(1)}s lag${replicaLag.overRpo ? ' (over RPO)' : ''}` : ''
+  const warmthTitle = warmth != null ? ` · ⚡ ${Math.round(warmth * 100)}% warm` : ''
+  const readoutOffset = (cacheHit ? 30 : 0) + (replicaLag ? 30 : 0)
 
   return (
     <g
@@ -85,7 +96,7 @@ function RackSlot({
       onPointerUp={handlers.onPointerUp}
       onPointerLeave={handlers.onPointerLeave}
     >
-      <title>{server.label} · {server.kind} · {health} · {Math.round(cpuMean * 100)}% cpu{cacheTitle}{lagTitle}</title>
+      <title>{server.label} · {server.kind} · {health} · {Math.round(cpuMean * 100)}% cpu{cacheTitle}{lagTitle}{warmthTitle}</title>
       <polygon
         points={slatPoly}
         fill={selected ? 'color-mix(in srgb, var(--color-accent) 22%, #0e1116)' : '#0e1116'}
@@ -132,6 +143,17 @@ function RackSlot({
           ⏎ {replicaLag.lagSec.toFixed(1)}s
         </text>
       )}
+      {warmth != null && (
+        // Offset past any cache/lag readouts already occupying this row — same tiebreak those
+        // two use against each other.
+        <text
+          data-testid="rack-warmth" x={box.roofSW.x + 34 + readoutOffset} y={labelY + 5} fontSize={6}
+          fill="var(--color-warning)"
+          style={{ font: '6px var(--font-mono)', pointerEvents: 'none' }}
+        >
+          ⚡ {Math.round(warmth * 100)}%
+        </text>
+      )}
       <circle
         className={blinking ? 'az-led az-led-blink' : 'az-led'}
         cx={led.x} cy={led.y} r={2}
@@ -155,6 +177,7 @@ export interface RackCabinetProps {
   accentsByServer: ReadonlyMap<ServerId, readonly string[]>   // resident-blueprint colors per server
   cacheByServer: ReadonlyMap<ServerId, CacheHitInfo>   // FEAT-004 live hit-ratio readout per server
   lagByServer: ReadonlyMap<ServerId, ReplicaLagInfo>   // FEAT-005 live replication-lag readout per server
+  warmthByServer: ReadonlyMap<ServerId, number>   // FEAT-007 live cold-start ramp per server
   selectedServerId: ServerId | null
   newServerIds: ReadonlySet<ServerId>
   animatedLedIds: ReadonlySet<ServerId>
@@ -164,7 +187,7 @@ export interface RackCabinetProps {
 }
 
 export function RackCabinet({
-  rack, cell, cols, residents, usedU, batch, accentsByServer, cacheByServer, lagByServer, selectedServerId, newServerIds, animatedLedIds, reducedMotion, onSelect, onEnter,
+  rack, cell, cols, residents, usedU, batch, accentsByServer, cacheByServer, lagByServer, warmthByServer, selectedServerId, newServerIds, animatedLedIds, reducedMotion, onSelect, onEnter,
 }: RackCabinetProps): ReactElement {
   const heightPx = cabinetHeightPx(usedU)
   const box = isoBox(cell.x, cell.y, cols, heightPx)
@@ -203,6 +226,7 @@ export function RackCabinet({
             accents={accentsByServer.get(server.id) ?? []}
             cacheHit={cacheByServer.get(server.id) ?? null}
             replicaLag={lagByServer.get(server.id) ?? null}
+            warmth={warmthByServer.get(server.id) ?? null}
             selected={selectedServerId === server.id}
             isNew={newServerIds.has(server.id)}
             animatedLed={animatedLedIds.has(server.id)}

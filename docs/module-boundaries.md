@@ -5567,3 +5567,61 @@ The following files receive edits from both features and must be touched in **FE
   (the file's established pattern, per its Task 4 note above); FEAT-007 Task 7's two new kinds
   were added here alongside `types.ts` in the same commit, mirroring `disk_saturated`'s
   single-instance-id shape (no secondary id).
+
+### FEAT-007 Task 8 — `coldStartMs`/`warmCapacityFraction` authoring + live warm-up readout
+
+The terminal UI task for FEAT-007 (Task 9 is a bench/wave-progress check, not a code task). Writes
+`WorkloadProfile.coldStartMs`/`warmCapacityFraction` (Task 1); reads `InstanceMetrics.warmth`
+(Task 6, published only while an instance is actively ramping). Structurally the same three-call-site
+shape as FEAT-004/005's Task 7/15 (drawer → `ServiceChip` → floor mirror), located via the
+`cacheConfig`/`cacheHitRatio` precedent per the task brief, with one difference: `coldStartMs` lives
+on `WorkloadProfile`, not a kind-gated `cacheConfig`, and every service can have one — so the
+authoring surface is `EditServiceForm.tsx` (the post-creation service editor reachable from a
+service's chip in the SERVICES drawer), not `BlueprintModal.tsx`, and the two new fields are gated
+on nothing.
+
+- `src/app/world/dock/drawers/EditServiceForm.tsx` — `numberField`'s helper signature grew an
+  optional `{ min, max, step }` third arg (previously bare, no input constraints anywhere in this
+  file); two new rows, "cold start (ms)" (`min 0, step 100`) and "warm capacity fraction" (`min 0,
+  max 1, step 0.05`), appended after "disk io per request", writing into
+  `draft.workload.coldStartMs`/`warmCapacityFraction` via the file's existing `tuneWorkload`
+  patch-and-spread pattern. Both display the type's documented absent-defaults (`?? 0` /
+  `?? 0.3`) rather than a blank box, matching every other numeric field in this form.
+- `src/app/world/server/ServiceChip.tsx` — new optional `warmth` prop (0..1). When present, renders
+  a `data-testid="warmth-readout"` label ("warming NN%") plus a `data-testid="warmth-fill"`
+  track+fill bar (the same track+fill visual language `HardwarePlatform.tsx`'s disk-saturation bar
+  established), width driven by `warmth`, color a `color-mix(in srgb, var(--color-warning) …%,
+  var(--color-success) …%)` ramp from amber toward the chip's normal steady-state green as `warmth`
+  climbs to 1. The bar's CSS `transition` is gated on the chip's existing `useReducedMotion()`
+  `reduced` flag (`undefined` under reduced motion — the fill still jumps to each new metrics
+  batch's value, it just never animates the move), the same gate the chip's hover-lift transition
+  already uses. `ServerBoard.tsx` passes `warmth={m?.warmth}` straight from the display batch —
+  no new store/hook, same call site as `cacheHitRatio`/`replicaLagSec`.
+- `src/app/world/az/RackCabinet.tsx` / `FreePoolPod.tsx` — the floor-node mirror: a `⚡ NN%` text
+  badge offset past any cache/lag readouts already occupying that row (same tiebreak
+  `ReplicaLagInfo`'s offset uses against `CacheHitInfo`), folded into the native SVG `<title>`
+  tooltip, and — the distinct part FEAT-004/005's readouts didn't need — a warming-specific LED
+  color: `health === 'down'` still wins (steady red), otherwise a warming resident's LED renders
+  the SAME `color-mix` amber→success ramp as the chip's fill bar instead of the ordinary
+  cpu-driven success/warning/danger read, so a warming server is visually distinguishable from
+  both the healthy-steady and killed/down looks per the task brief. `DatacenterFloor.tsx`'s new
+  `warmthByServer` memo resolves the first warming resident on each server via
+  `instancesByServerFor(compiled)` + `batch.instances[id].warmth` — the same "first resolvable
+  instance is representative" convention `cacheByServer`/`lagByServer` established, never re-derived.
+- Live smoke test (brief's Step 4: author `coldStartMs`, run the sim, kill the server, restore it,
+  confirm the chip refills gradually) **was performed** — this task's environment had a running
+  `npm run dev` Vite server (port 1420) plus Playwright browser automation available. Verified live,
+  in-browser, against the "Classic three-tier" example world: authored `coldStartMs: 30000` on
+  `web-01` via `EditServiceForm`; started the scenario; used a hold-tap `PointerEvent` sequence to
+  drill in/out of the server board and AZ floor (the app's own tap-select/hold-drill gesture,
+  scripted since no real pointer device is available); killed and restored `web-01`'s server; and
+  confirmed, reading the live DOM: the chip's `warmth-readout` progressing from "warming 62%" through
+  intermediate values (never an instant snap — no evidence of jumping straight to 100%), the
+  `warmth-fill` bar's width and `color-mix` color tracking the value, the floor's `pod-warmth`
+  badge and `<title>` tooltip showing the same value independently, and the LED's `color-mix` fill
+  resolving correctly. Confirmed in both themes (the app defaulted to `light`; toggled to `dark` via
+  Settings and re-verified the same chip mid-ramp). Zero console errors throughout (one pre-existing
+  `THREE.Clock` deprecation warning, unrelated). `prefers-reduced-motion` itself was NOT toggled at
+  the OS/CDP level (not exposed by the available browser-automation tools) — confirmed instead by
+  reading `ServiceChip.tsx`'s `transition: reduced ? undefined : 'width 0.3s linear'`, which reuses
+  the SAME `useReducedMotion()` flag already gating the chip's pre-existing hover-lift transition.

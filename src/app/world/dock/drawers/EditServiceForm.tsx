@@ -46,11 +46,13 @@ export function EditServiceForm({ blueprintId, running, onDone }: EditServiceFor
 
   const numberField = (
     label: string, value: number, onChange: (v: number) => void,
+    opts?: { min?: number; max?: number; step?: number },
   ): ReactElement => (
     <div style={rowGap}>
       <label style={rowLabel}>{label}</label>
       <input
         aria-label={label} type="number" style={field} value={value} disabled={running}
+        min={opts?.min} max={opts?.max} step={opts?.step}
         onChange={e => onChange(Number(e.target.value))}
       />
     </div>
@@ -95,6 +97,11 @@ export function EditServiceForm({ blueprintId, running, onDone }: EditServiceFor
       {numberField('ram base', bp.workload.ramBaseMb, v => tuneWorkload({ ramBaseMb: v }))}
       {numberField('ram per connection', bp.workload.ramPerConnMb, v => tuneWorkload({ ramPerConnMb: v }))}
       {numberField('disk io per request', bp.workload.diskIoPerRequest, v => tuneWorkload({ diskIoPerRequest: v }))}
+      {/* FEAT-007: instance cold start — gated on nothing (every service can have a cold start,
+          unlike cacheConfig above which is kind-gated to the cache blueprint kind). Absent ⇒ 0
+          (instant readiness); the worldEngine only ramps warmth when this is > 0. */}
+      {numberField('cold start (ms)', bp.workload.coldStartMs ?? 0, v => tuneWorkload({ coldStartMs: v }), { min: 0, step: 100 })}
+      {numberField('warm capacity fraction', bp.workload.warmCapacityFraction ?? 0.3, v => tuneWorkload({ warmCapacityFraction: v }), { min: 0, max: 1, step: 0.05 })}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, ...rowGap }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-muted)', flex: 1 }}>

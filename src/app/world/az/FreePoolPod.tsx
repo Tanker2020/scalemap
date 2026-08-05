@@ -51,6 +51,9 @@ export interface FreePoolPodProps {
   /** FEAT-005 (Task 15): this server's live replication-lag readout (first replica instance with
    *  a resolvable cluster lag), or null. */
   replicaLag: ReplicaLagInfo | null
+  /** FEAT-007 (Task 8): this server's live cold-start ramp (first warming instance found, 0..1),
+   *  or null once warm/absent. */
+  warmth: number | null
   selectedServerId: ServerId | null
   isNew: boolean
   animatedLed: boolean
@@ -60,7 +63,7 @@ export interface FreePoolPodProps {
 }
 
 export function FreePoolPod({
-  server, cell, cols, batch, accents, cacheHit, replicaLag, selectedServerId, isNew, animatedLed, reducedMotion, onSelect, onEnter,
+  server, cell, cols, batch, accents, cacheHit, replicaLag, warmth, selectedServerId, isNew, animatedLed, reducedMotion, onSelect, onEnter,
 }: FreePoolPodProps): ReactElement {
   const { handlers, progressRef } = useHoldTap(() => onSelect(server.id), () => onEnter(server.id))
   const box = isoBox(cell.x, cell.y, cols, POD_HEIGHT_PX, POD_SCALE)
@@ -68,7 +71,12 @@ export function FreePoolPod({
   const cpuMean = meanUtilization(batch?.servers[server.id]?.coreUtilization)
   const { lit, color } = ledParams(cpuMean)
   const health = batch?.servers[server.id]?.health ?? 'healthy'
-  const ledColor = health === 'down' ? 'var(--color-danger)' : LED_COLOR[color]
+  // FEAT-007 (Task 8): same distinct warming LED treatment as RackCabinet's RackSlot — a
+  // color-mix ramp from amber toward the normal success color as warmth climbs to 1, neither the
+  // ordinary cpu-driven read nor the steady 'down' red.
+  const ledColor = health === 'down' ? 'var(--color-danger)'
+    : warmth != null ? `color-mix(in srgb, var(--color-warning) ${Math.round((1 - warmth) * 100)}%, var(--color-success) ${Math.round(warmth * 100)}%)`
+      : LED_COLOR[color]
   const selected = selectedServerId === server.id
   const blinking = lit > 0 && animatedLed && !reducedMotion
 
@@ -88,7 +96,7 @@ export function FreePoolPod({
       onPointerUp={handlers.onPointerUp}
       onPointerLeave={handlers.onPointerLeave}
     >
-      <title>{server.label} · {server.kind} · free pool · {health} · {Math.round(cpuMean * 100)}% cpu{cacheHit ? ` · ⌬ ${Math.round(cacheHit.ratio * 100)}% hit${cacheHit.warming ? ' (warming)' : ''}` : ''}{replicaLag ? ` · ⏎ ${replicaLag.lagSec.toFixed(1)}s lag${replicaLag.overRpo ? ' (over RPO)' : ''}` : ''}</title>
+      <title>{server.label} · {server.kind} · free pool · {health} · {Math.round(cpuMean * 100)}% cpu{cacheHit ? ` · ⌬ ${Math.round(cacheHit.ratio * 100)}% hit${cacheHit.warming ? ' (warming)' : ''}` : ''}{replicaLag ? ` · ⏎ ${replicaLag.lagSec.toFixed(1)}s lag${replicaLag.overRpo ? ' (over RPO)' : ''}` : ''}{warmth != null ? ` · ⚡ ${Math.round(warmth * 100)}% warm` : ''}</title>
       {/* az-lift: hover raises each pod independently (same treatment cabinets already have). */}
       <g className="az-lift">
         <polygon points={box.side} fill="url(#az-rackside)" stroke="#232b38" />
@@ -133,6 +141,17 @@ export function FreePoolPod({
             style={{ font: '6px var(--font-mono)', pointerEvents: 'none' }}
           >
             ⏎ {replicaLag.lagSec.toFixed(1)}s
+          </text>
+        )}
+        {warmth != null && (
+          // Offset past cache/lag (same tiebreak RackCabinet's RackSlot uses) so the readouts
+          // never draw on top of each other.
+          <text
+            data-testid="pod-warmth" x={frontMidX - 12 + (cacheHit ? 30 : 0) + (replicaLag ? 30 : 0)} y={frontBottomY - 4} fontSize={6}
+            fill="var(--color-warning)"
+            style={{ font: '6px var(--font-mono)', pointerEvents: 'none' }}
+          >
+            ⚡ {Math.round(warmth * 100)}%
           </text>
         )}
         <circle

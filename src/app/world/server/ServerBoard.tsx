@@ -193,6 +193,7 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
               cacheWarming={m?.cacheHitRatio != null && bp?.cacheConfig != null && m.cacheHitRatio < bp.cacheConfig.hitRatio - 0.001}
               replicaLagSec={lagSec ?? undefined}
               replicaLagOverRpo={lagSec != null && bp?.dbConfig?.rpoTargetSec != null && lagSec > bp.dbConfig.rpoTargetSec}
+              warmth={m?.warmth}
               selected={selected} hovered={hovered} dimmed={dimmed}
               onSelect={() => props.onSelect({ kind: 'instance', instanceId: chip.instanceId })}
               onHover={v => props.onHoverBlueprint(v ? chip.blueprintId : null)}

@@ -290,6 +290,25 @@ export function DatacenterFloor() {
     return m
   }, [azServers, compiled, batch, doc.blueprints])
 
+  // FEAT-007 (Task 8): the floor's per-server mirror of ServiceChip's live warm-up readout —
+  // same "first resolvable instance is representative" call as cacheByServer/lagByServer above.
+  // InstanceMetrics.warmth is only published while an instance is actively ramping (absent once
+  // it reaches 1, per metrics.ts's `warmth01 < 1` gate), so a server with no warming resident is
+  // simply absent from this map — the floor draws its ordinary healthy/degraded/down look.
+  const warmthByServer = useMemo(() => {
+    const byServer = instancesByServerFor(compiled)
+    const m = new Map<ServerId, number>()
+    for (const s of azServers) {
+      for (const inst of byServer.get(s.id) ?? []) {
+        const w = batch?.instances[inst.id]?.warmth
+        if (w == null) continue
+        m.set(s.id, w)
+        break
+      }
+    }
+    return m
+  }, [azServers, compiled, batch])
+
   // Camera: fit-to-view on mount/plan growth, wheel zoom at the cursor, background drag-pan
   // (post-Polish-3 fix wave — the floor previously rendered fixed-size with no navigation).
   const camera = useFloorCamera(VIEW_W, VIEW_H, `${plan.cols}x${plan.rows}`)
@@ -611,6 +630,7 @@ export function DatacenterFloor() {
                   accentsByServer={accentsByServer}
                   cacheByServer={cacheByServer}
                   lagByServer={lagByServer}
+                  warmthByServer={warmthByServer}
                   selectedServerId={selectedServerId}
                   newServerIds={reducedMotion ? EMPTY_SERVER_ID_SET : newIds}
                   animatedLedIds={animatedLedIds}
@@ -631,6 +651,7 @@ export function DatacenterFloor() {
                   accents={accentsByServer.get(server.id) ?? []}
                   cacheHit={cacheByServer.get(server.id) ?? null}
                   replicaLag={lagByServer.get(server.id) ?? null}
+                  warmth={warmthByServer.get(server.id) ?? null}
                   selectedServerId={selectedServerId}
                   isNew={newIds.has(server.id) && !reducedMotion}
                   animatedLed={animatedLedIds.has(server.id)}

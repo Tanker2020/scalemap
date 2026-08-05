@@ -34,6 +34,11 @@ export interface ServiceChipProps {
   // steady/attention color split the cache readout uses.
   replicaLagSec?: number
   replicaLagOverRpo?: boolean
+  // FEAT-007 (Task 8): live cold-start ramp readout — InstanceMetrics.warmth, present only while
+  // an instance is warming (0..1, absent once it reaches 1 — see metrics.ts's `warmth01 < 1`
+  // gate). Drives a partial-fill bar that interpolates from a dim/amber "still ramping" look
+  // toward the chip's normal steady-state look as warmth approaches 1.
+  warmth?: number
   selected?: boolean
   hovered?: boolean
   dimmed?: boolean
@@ -41,7 +46,7 @@ export interface ServiceChipProps {
   onHover?: (v: boolean) => void
 }
 
-export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy', connLabel = '—', rps = 0, cacheHitRatio, cacheWarming, replicaLagSec, replicaLagOverRpo, selected, hovered, dimmed, onSelect, onHover }: ServiceChipProps): ReactElement {
+export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy', connLabel = '—', rps = 0, cacheHitRatio, cacheWarming, replicaLagSec, replicaLagOverRpo, warmth, selected, hovered, dimmed, onSelect, onHover }: ServiceChipProps): ReactElement {
   const reduced = useReducedMotion()
   const [samples, setSamples] = useState<number[]>([])
 
@@ -96,6 +101,28 @@ export function ServiceChip({ chip, name, color, portsLabel, health = 'healthy',
           }}
         >
           ⏎ {replicaLagSec.toFixed(1)}s
+        </div>
+      )}
+      {warmth != null && (
+        <div data-testid="warmth-readout" style={{ marginTop: 2 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 6.5, color: 'var(--color-warning)' }}>
+            <span>warming</span><span>{Math.round(warmth * 100)}%</span>
+          </div>
+          <div style={{ position: 'relative', width: '100%', height: 3, borderRadius: 2, marginTop: 1, background: '#1a212c', overflow: 'hidden' }}>
+            {/* Static partial fill at the current warmth value under reduced motion (no CSS
+                transition) — Step 2's motion budget: the fill still moves as new metrics batches
+                arrive (each render simply jumps to the new width), it just never animates the
+                move itself. */}
+            <div
+              data-testid="warmth-fill"
+              style={{
+                position: 'absolute', left: 0, top: 0, bottom: 0,
+                width: `${Math.round(Math.max(0, Math.min(1, warmth)) * 100)}%`,
+                background: `color-mix(in srgb, var(--color-warning) ${Math.round((1 - warmth) * 100)}%, var(--color-success) ${Math.round(warmth * 100)}%)`,
+                transition: reduced ? undefined : 'width 0.3s linear',
+              }}
+            />
+          </div>
         </div>
       )}
       <div style={{ display: 'flex', gap: 1.5, marginTop: 6, height: 9, alignItems: 'flex-end' }}>
