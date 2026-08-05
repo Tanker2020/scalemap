@@ -5540,7 +5540,7 @@ not a blueprint modal.
 
 | Module | Feature | Purpose |
 |---|---|---|
-| FEAT-007 in-place extensions | FEAT-007 | Instance cold-start warmth tracking and capacity throttling: pure `warmthOf(instance, currentMs)` resolver in `hostScheduler.ts` (0..1, linearly ramping from `coldStartMs` to `warmCapacityFraction`), consumed by `flows.ts` to apply warmth-dependent latency/capacity reduction factors in the dependency solver, and by `hostScheduler.ts` itself to cap cold-starting instances' admitted load in the water-fill scheduler. New optional `WorkloadProfile` fields `coldStartMs?`/`warmCapacityFraction?` (Task 1, doc model) and `InstanceMetrics.warmth?` (Task 6, published 1 Hz). Two new `EngineEventKind` variants `'instance_warming'`/`'instance_warm'` (Task 7, added to `types.ts` and `aiChat/eventCausality.ts`) emit once per cold/warm transition. UI layer (Task 8) authors `coldStartMs` via `EditServiceForm.tsx` and renders live warm-up readout as a chip fill bar (`ServiceChip.tsx`) and floor LED/badge (`RackCabinet.tsx`/`FreePoolPod.tsx`). Spec budget: zero cost when no instances are warming (`warmingUntil.size === 0` fast path), < 0.05ms per warming instance per step. |
+| FEAT-007 in-place extensions | FEAT-007 | Instance cold-start warmth tracking and capacity throttling: pure `warmthOf(instance, currentMs)` resolver in `hostScheduler.ts` (0..1, linearly ramping from `coldStartMs` to `warmCapacityFraction`), consumed by `index.ts` to build the capacity-throttle input for `hostScheduler.ts`'s water-fill scheduler and to apply the latency-throttle multiplier to `effectiveCpuMsByInstance` before the flow solver reads it, and by `metrics.ts` to publish `InstanceMetrics.warmth`. New optional `WorkloadProfile` fields `coldStartMs?`/`warmCapacityFraction?` (Task 1, doc model) and `InstanceMetrics.warmth?` (Task 6, published 1 Hz). Two new `EngineEventKind` variants `'instance_warming'`/`'instance_warm'` (Task 7, added to `types.ts` and `aiChat/eventCausality.ts`) emit once per cold/warm transition. UI layer (Task 8) authors `coldStartMs` via `EditServiceForm.tsx` and renders live warm-up readout as a chip fill bar (`ServiceChip.tsx`) and floor LED/badge (`RackCabinet.tsx`/`FreePoolPod.tsx`). Spec budget: zero cost when no instances are warming (`warmingUntil.size === 0` fast path), < 0.05ms per warming instance per step. |
 | `src/lib/worldEngine/autoscale.ts` | FEAT-008 | Pure, dependency-free autoscaling resolver (`AutoscaleState`, `runningSetResolver`, `evaluatePolicy`, no engine imports). Computes running/parked instance membership for each autoscaled placement, consumed by `index.ts` to coordinate placement envelope and instance lifecycle transitions. |
 
 ### Hub files receiving sequential edits
@@ -5552,7 +5552,7 @@ The following files receive edits from both features and must be touched in **FE
 - `src/lib/worldEngine/types.ts` — contract drift (instance warmth/capacity metrics, autoscaling state in `EngineEvent`)
 - `src/lib/worldEngine/index.ts` — runStep instrumentation (cold-start warmth tracking, autoscale state advancement)
 - `src/lib/worldEngine/hostScheduler.ts` — gains `warmthOf` resolver (FEAT-007, no new file), plus autoscale load gating (FEAT-008)
-- `src/lib/worldEngine/flows.ts` — capacity model (apply latency/capacity factors from warmth, exclude parked instances)
+- `src/lib/worldEngine/flows.ts` — capacity model (exclude parked instances, FEAT-008 forward-looking placeholder — actual implementation pending)
 - `src/lib/worldEngine/metrics.ts` — metric aggregation (publish warmth, instance running state, placement scaling state)
 - `src/lib/worldEngine/routingRuntime.ts` — routing/LB gating (exclude parked instances from target selection)
 - `src/lib/worldEngine/failover.ts` — promotion logic (exclude parked instances from replica promotion)
@@ -5560,7 +5560,7 @@ The following files receive edits from both features and must be touched in **FE
 
 ### In-place extensions
 
-- `src/lib/worldEngine/hostScheduler.ts` — gains `warmthOf` resolver (FEAT-007, no new file): `warmthOf(instance, currentMs)` → `0..1`, consumed by `flows.ts` to apply warmth-dependent latency/capacity factors, and by `hostScheduler` itself to gate cold-start degradation in the water-fill scheduler.
+- `src/lib/worldEngine/hostScheduler.ts` — gains `warmthOf` resolver (FEAT-007, no new file): `warmthOf(instance, currentMs)` → `0..1`, consumed by `index.ts` to build the capacity-throttle input for the water-fill scheduler and to apply the latency-throttle multiplier, and by `metrics.ts` to publish `InstanceMetrics.warmth`.
 - `src/lib/worldEngine/types.ts` — FEAT-007 Task 7 adds two `EngineEventKind` variants,
   `'instance_warming'`/`'instance_warm'`, emitted once per cold/warm transition (see
   `.superpowers/sdd/contract-drift.md`'s FEAT-007 heading for the exact emit sites).
