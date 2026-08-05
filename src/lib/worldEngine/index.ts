@@ -1986,7 +1986,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // staleReadFractionByReplica for THIS step's solveFlows call — publishing MetricsBatch.
       // clusters from them (never re-derived) is the divergence guard this file's other additive
       // fields already apply.
-      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance, s.faults.leakAccumMb, s.faults.active.size, roleOf, s.warmSinceMs, s.replicasByCluster, s.replication.lagSecByInstance)
+      // s.warmingUntil (FEAT-007, Task 6): the SAME map the capacity throttle (Task 4) and latency
+      // throttle (Task 5) above already read via hostScheduler.ts's warmthOf — publishing
+      // InstanceMetrics.warmth/degraded-health from it (never re-derived) is that same divergence
+      // guard applied to warm-up.
+      const batch = buildBatch(s.metrics, doc, compiled, s.lastRoutingSnapshot, { ...s.windowTotals }, simMs, starved, connProfileByInstance, effectiveCpuMsByInstance, s.faults.leakAccumMb, s.faults.active.size, roleOf, s.warmSinceMs, s.replicasByCluster, s.replication.lagSecByInstance, s.warmingUntil)
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
       s.tracer.sample(flows, compiled, doc, simMs, entryId => populationsForEntry(entryId), managedDbRt)

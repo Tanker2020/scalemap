@@ -3966,3 +3966,60 @@ describe('FEAT-007 Task 5: cold-start latency throttle', () => {
     simC.engine.stop()
   })
 })
+
+describe('FEAT-007 Task 6: degraded health during warm-up + published warmth', () => {
+  // Same shape as Task 4/5's singleServerTwoInstances fixture (one cold-capable public blueprint,
+  // container-limited so a 'down' fault cleanly restarts it), duplicated locally rather than
+  // hoisted out of those describe blocks -- kept self-contained per this file's existing
+  // per-describe-block fixture convention.
+  function singleServerTwoInstances(opts: { coldStartMs: number; warmCapacityFraction: number }) {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    server.specs.ramMb = 100_000
+    doc.servers[server.id] = server
+
+    const coldBp = publicBlueprint('cold', 0)
+    coldBp.workload = {
+      cpuMsPerRequest: 5, ramBaseMb: 64, ramPerConnMb: 0.01, diskIoPerRequest: 0,
+      coldStartMs: opts.coldStartMs, warmCapacityFraction: opts.warmCapacityFraction,
+    }
+    doc.blueprints[coldBp.id] = coldBp
+    const coldPl = createPlacement(coldBp.id, server.id)
+    doc.placements[coldPl.id] = coldPl
+    const coldInstanceId = instanceId(coldPl.id, 0)
+
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 50   // deliberately low utilization -- keeps this test about health/warmth
+    // publication, not capacity/latency throttle shape (already covered by Tasks 4/5).
+    doc.populations[pop.id] = pop
+
+    return { doc, serverId: server.id, instanceId: coldInstanceId }
+  }
+
+  it('DIVERGENCE GUARD: published warmth equals warmthOf computed with the same warmingUntil/simMs the scheduler used', () => {
+    const f = singleServerTwoInstances({ coldStartMs: 20_000, warmCapacityFraction: 0.3 })
+    const compiled = compileWorld(f.doc)
+    const sim = drive(f.doc, compiled)
+    sim.stepFor(5)
+    sim.engine.setFault('server', f.serverId, { kind: 'down' })
+    sim.stepFor(1)
+    sim.engine.setFault('server', f.serverId, null)
+    // A 'down'-fault clear does not un-latch server-scope health to 'healthy' instantly --
+    // failover.ts's computeHealth holds the pre-clear severity for DEFAULT_HYSTERESIS.recoveryMs
+    // (5s) once the instant probe starts reading healthy again, mirroring a real LB's
+    // slow-to-trust-recovery behavior. 9s comfortably clears that 5s recovery lock while staying
+    // well inside the 20s coldStartMs ramp, so baseHealth reads 'healthy' by the time this
+    // assertion runs and the only thing that can still be lifting it to 'degraded' is warmth < 1.
+    sim.stepFor(9) // mid-warmup, past the recovery-hysteresis lock
+    const b = sim.latest()
+    const published = (b.instances[f.instanceId] as any).warmth
+    expect(published).toBeGreaterThan(0)
+    expect(published).toBeLessThan(1)
+    expect(b.instances[f.instanceId].health).toBe('degraded')
+    sim.engine.stop()
+  })
+})

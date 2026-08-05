@@ -82,6 +82,12 @@ export interface InstanceMetrics {
   // ceiling (diskIops and/or diskType authored) that is CURRENTLY at/over saturation this step —
   // absent otherwise (unmodelled disk, or a modelled disk with no wait this step).
   diskWaitMs?: number
+  // Additive-optional (contract-drift, FEAT-007): 0..1 warm-up progress, published ONLY for a
+  // currently-warming instance (state.warmingUntil has an entry for it) — see the `warmth` param
+  // doc on buildBatch for the divergence-guard rationale. Absent once fully warm (regression
+  // floor: an instance that never cold-starts, or has already finished ramping, is
+  // indistinguishable from pre-FEAT-007 output).
+  warmth?: number   // 0..1, present only for a warming instance (FEAT-007 cold start)
 }
 
 export interface ServerMetrics {

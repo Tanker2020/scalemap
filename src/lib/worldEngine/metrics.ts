@@ -15,7 +15,8 @@ import { managedDbEngine } from '../world/types'
 import { effectiveHitRatio } from './cache'
 import type { ManagedDbRuntime } from '../managedDbRuntime'
 import type { TopicRuntime } from './broker'
-import type { HostStepResult } from './hostScheduler'
+import type { HostStepResult, WarmingEntry } from './hostScheduler'
+import { warmthOf } from './hostScheduler'
 import type { NicState } from './networkRuntime'
 import type { ReplicaRef } from './replication'
 import type {
@@ -309,6 +310,13 @@ export function buildBatch(
   // here, so a cluster's published lagSec can never disagree with the lag the engine actually used
   // to compute this step's stale-read fractions. Optional: absent ⇒ clusters stays `{}`.
   replicationLagByInstance?: Map<InstanceId, number>,
+  // FEAT-007 (Task 6): the SAME `EngineState.warmingUntil` map the capacity throttle (Task 4's
+  // stepHost water-fill weight) and the latency throttle (Task 5's effectiveCpuMsByInstance)
+  // already read via `hostScheduler.ts`'s `warmthOf` — read here, never re-derived, so the
+  // published warmth/degraded-health can never disagree with the throttle actually applied this
+  // step. Optional: absent ⇒ warmth stays unpublished and health is never lifted for warm-up, so
+  // every existing direct-buildBatch caller/test is unchanged by omission.
+  warmingUntil?: Map<InstanceId, WarmingEntry>,
 ): MetricsBatch {
   const instances: Record<InstanceId, InstanceMetrics> = {}
   const servers: Record<ServerId, ServerMetrics> = {}
@@ -405,6 +413,13 @@ export function buildBatch(
     const staleReadFraction = staleWin && staleWin.rpsSum > 0
       ? ema(state, `i:${inst.id}:stale`, staleWin.fracRpsSum / staleWin.rpsSum)
       : undefined
+    // FEAT-007 (Task 6): the SAME warmingUntil map + warmthOf call the capacity (Task 4) and
+    // latency (Task 5) throttles used this step — read here, never re-derived, so the published
+    // warmth/degraded-health can never disagree with the throttle actually applied. Guarded on
+    // `.size > 0` (the fast path every other warmingUntil consumer in index.ts already uses) so a
+    // world with no cold-starting instance at all pays zero per-instance cost, byte-identical to
+    // pre-FEAT-007 output.
+    const warmth01 = warmingUntil && warmingUntil.size > 0 ? warmthOf(inst.id, warmingUntil, simMs) : 1
     instances[inst.id] = {
       instanceId: inst.id,
       rps,
@@ -415,12 +430,13 @@ export function buildBatch(
       activeConnections,
       cpuCoresUsed: rps * (effectiveCpuMsByInstance?.[inst.id] ?? workload.cpuMsPerRequest) / 1000,
       ramMb: memLimitMb != null ? Math.min(rawRamMb, memLimitMb) : rawRamMb,
-      health: starved?.has(inst.id) && baseHealth === 'healthy' ? 'degraded' : baseHealth,
+      health: (starved?.has(inst.id) || warmth01 < 1) && baseHealth === 'healthy' ? 'degraded' : baseHealth,
       ...(checkoutWaitMs != null ? { checkoutWaitMs } : {}),
       ...(roleOf ? { effectiveRole: roleOf(inst.id) } : {}),
       ...(cacheHitRatio !== undefined ? { cacheHitRatio } : {}),
       ...(staleReadFraction !== undefined ? { staleReadFraction } : {}),
       ...(diskWaitMs != null ? { diskWaitMs } : {}),
+      ...(warmth01 < 1 ? { warmth: warmth01 } : {}),
     }
   }
 

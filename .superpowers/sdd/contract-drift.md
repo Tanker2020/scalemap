@@ -407,3 +407,8 @@ off `lastBatch`.
 `npx tsc --noEmit` clean. Full suite: 151 files / 1911 tests passing (`index.test.ts`'s new
 `FEAT-006 Task 21: disk_saturated event` describe block, 2/2; `capacity.test.ts`'s new
 `capacity: iops-saturated` describe block, 4/4).
+
+## FEAT-007: Instance Cold Start (Wave 3)
+- Additive: `InstanceMetrics.warmth?: number` — published only for a warming instance, computed by
+  `hostScheduler.ts`'s `warmthOf`, same call the capacity/latency throttles used via
+  `state.warmingUntil`. No signature break.
