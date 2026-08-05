@@ -19,7 +19,12 @@ export default defineConfig(async () => ({
     // for a step that costs ~3.9ms alone, failing on every run). It is excluded here and run in
     // isolation via `npm run bench`, which points vitest at the bench/ dir directly. See the
     // file header in bench/enginePerf.bench.test.ts for the full measurement rationale.
-    exclude: [...configDefaults.exclude, "bench/**"],
+    // Wave 3 final review (Minor #9): a stray, pre-existing nested git worktree at
+    // .claude/worktrees/ carries its own duplicate react/react-dom install -- picking it up under
+    // a bare `npx vitest run` produces ~57 failed files / ~466 failed tests that are not real
+    // failures in THIS repo. Excluded so the bare command matches what every task in this repo
+    // actually needs to run.
+    exclude: [...configDefaults.exclude, "bench/**", ".claude/**"],
   },
 
   // Phase 5 (D1): the globe view's three.js dependency (~600KB) gets its own chunk so it
