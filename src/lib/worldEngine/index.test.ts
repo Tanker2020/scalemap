@@ -4189,6 +4189,30 @@ describe('FEAT-008 Task 13: wire AutoscaleState into the engine loop', () => {
     sim.engine.stop()
   })
 
+  it('AUTOSCALE DRAIN: a scaled-in instance stops receiving new traffic but its errorRate does not spike', () => {
+    const f = autoscaledPlacementWorld({
+      minCount: 1, maxCount: 4, targetCpuPercent: 10, scaleUpCooldownSec: 1, scaleDownCooldownSec: 1,
+    })
+    // targetCpuPercent set absurdly low + tiny cooldowns so a scale-out happens fast under the
+    // fixture's synthetic demand, then a scale-in happens fast once the running fleet's mean CPU
+    // settles back under a target this low (it always will, at target=10%). peakRps bumped well
+    // above the fixture default (5) so the placement is forced above minCount at all -- otherwise
+    // it never leaves 1 instance and there is nothing to scale back IN from.
+    f.doc.populations[Object.keys(f.doc.populations)[0]].peakRps = 200
+    const compiled = compileWorld(f.doc)
+    const sim = drive(f.doc, compiled)
+    sim.stepFor(2)
+    sim.stepFor(60) // long enough for at least one scale-in decision under low load
+
+    const scaleInEvents = sim.events.filter(e => e.kind === 'scale_in')
+    expect(scaleInEvents.length).toBeGreaterThan(0)
+
+    const b = sim.latest()
+    const errorRates = Object.values(b.instances).map((i: any) => i.errorRate)
+    expect(Math.max(...errorRates, 0)).toBeLessThan(0.05) // no error spike from an abrupt drop
+    sim.engine.stop()
+  })
+
   it('REGRESSION FLOOR: a placement with no autoscale compiles to exactly count instances and simulates byte-identically', () => {
     const f = e2eFixture()
     const simA = drive(f.doc, f.compiled); simA.stepFor(30)

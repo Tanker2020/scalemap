@@ -23,10 +23,20 @@ export function createAutoscaleState(doc: WorldDoc): AutoscaleState {
  * (instanceId) -> is this instance currently in the running set (vs. parked past desiredCount).
  * Mirrors failover.ts's effectiveRoleResolver: a closure built once per desiredCount change,
  * with a fast path when there is nothing tracked to overlay against the compiled envelope.
+ *
+ * Task 15: an instance below `desired` (i.e. genuinely past the current envelope) is still
+ * "running" — for CPU/RAM/publishing purposes — while it is draining. `drainUntilByInstance` is
+ * passed through LIVE (the same mutated-in-place Map the engine owns), so this resolver does NOT
+ * need to be rebuilt when a drain begins or completes — only the indexInPlacement/desired
+ * relationship changes require a rebuild (index.ts's runningSetKey memoization). Draining
+ * instances are still excluded from NEW traffic, but that exclusion lives in index.ts's
+ * routingHealthOfInstance wrapper (Task 14), not here — this resolver answers ONLY "is this
+ * instance running" (CPU/RAM/metrics), never "is this instance eligible for new work".
  */
 export function runningSetResolver(
   compiled: CompiledWorld,
   desiredCount: Map<PlacementId, number>,
+  drainUntilByInstance?: Map<InstanceId, number>,
 ): (instanceId: InstanceId) => boolean {
   if (desiredCount.size === 0) return () => true
   return (instanceId: InstanceId) => {
@@ -34,8 +44,38 @@ export function runningSetResolver(
     if (!inst) return false
     const desired = desiredCount.get(inst.placementId)
     if (desired === undefined) return true // not an autoscaled/tracked placement -> always running
-    return inst.indexInPlacement < desired
+    return inst.indexInPlacement < desired || (drainUntilByInstance?.has(instanceId) ?? false)
   }
+}
+
+// ── Task 15: scale-in drain — instance-keyed clone of failover.ts's drainUntil/beginDrain/
+// clearDrain/drainFactor pattern. Kept here (rather than a second copy in index.ts or a shared
+// generalization of failover.ts's AZ-keyed version) so FEAT-008's pure mechanics stay in ONE file,
+// per this task's brief. Same formula, same shape, different key (instance id, not AZ id) and a
+// separate constant since an instance drain and an AZ drain are conceptually independent knobs
+// even though they currently share the same 2000ms value.
+export const INSTANCE_DRAIN_MS = 2000 // mirrors failover.ts's DRAIN_MS
+
+export function beginInstanceDrain(
+  drainUntilByInstance: Map<InstanceId, number>,
+  instanceId: InstanceId,
+  simMs: number,
+): void {
+  if (!drainUntilByInstance.has(instanceId)) drainUntilByInstance.set(instanceId, simMs + INSTANCE_DRAIN_MS)
+}
+
+export function clearInstanceDrain(drainUntilByInstance: Map<InstanceId, number>, instanceId: InstanceId): void {
+  drainUntilByInstance.delete(instanceId)
+}
+
+export function instanceDrainFactor(
+  drainUntilByInstance: Map<InstanceId, number>,
+  instanceId: InstanceId,
+  simMs: number,
+): number {
+  const until = drainUntilByInstance.get(instanceId)
+  if (until === undefined) return 0
+  return Math.max(0, Math.min(1, (until - simMs) / INSTANCE_DRAIN_MS))
 }
 
 export function evaluatePolicy(

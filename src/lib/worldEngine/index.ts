@@ -52,7 +52,7 @@ import {
   recoverMultiAzManagedDbs, failbackPromotions, applyAzOutageToManaged,
 } from './failover'
 import {
-  createAutoscaleState, runningSetResolver, evaluatePolicy, type AutoscaleState,
+  createAutoscaleState, runningSetResolver, evaluatePolicy, beginInstanceDrain, type AutoscaleState,
 } from './autoscale'
 import { instanceId } from '../world/compileWorld'
 import {
@@ -530,6 +530,13 @@ interface EngineState {
   // comparison per step and nothing else.
   runningSet: (instanceId: InstanceId) => boolean
   runningSetKey: string
+  // Task 15: instance id -> simMs the drain completes. An instance enters this map the moment a
+  // scale-in decision drops it below the placement's new desiredCount (instead of being parked
+  // that same step) and leaves it once INSTANCE_DRAIN_MS elapses (the periodic cleanup pass near
+  // section 0). While present, runningSetResolver (autoscale.ts) treats the instance as still
+  // running (CPU/RAM/publishing), while routingHealthOfInstance below additionally treats it as
+  // 'down' for NEW-traffic eligibility -- draining is "running but not accepting new work".
+  drainUntilByInstance: Map<InstanceId, number>
   // start()-time fast-path flag (the hasAnyCache/hasAnyDisk precedent): true iff ANY placement in
   // the doc carries an authored `autoscale` policy. desiredCount always has an entry per
   // placement (Task 12's createAutoscaleState seeds every placement, autoscaled or not), so
@@ -639,13 +646,15 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     if (!lb) return
     const regionAzSpread = s.compiled.routing.regionAzSpread[regionId] ?? []
     // A parked (scaled-in) instance must never be picked as an LB target, regardless of its
-    // underlying health signal -- Task 15's drain grace period doesn't exist yet, so this is the
-    // only thing standing between a parked instance and new traffic today. Scoped to routing only
-    // (not the module-scope healthOfInstance itself) so failover/breaker/metrics health reporting
-    // is untouched -- runningSet has no bearing on whether an instance IS healthy, only on whether
-    // it's currently eligible to receive work.
+    // underlying health signal. Task 15: a DRAINING instance is also excluded from new traffic
+    // even though runningSet(iid) now reads true for it (running=true is exactly what keeps it
+    // getting CPU/RAM/publishing during its grace window) -- so eligibility here checks
+    // drainUntilByInstance directly, independent of runningSet. Scoped to routing only (not the
+    // module-scope healthOfInstance itself) so failover/breaker/metrics health reporting is
+    // untouched -- runningSet/draining has no bearing on whether an instance IS healthy, only on
+    // whether it's currently eligible to receive NEW work.
     const routingHealthOfInstance = (iid: InstanceId): HealthState =>
-      s.runningSet(iid) ? healthOfInstance(iid) : 'down'
+      (!s.runningSet(iid) || s.drainUntilByInstance.has(iid)) ? 'down' : healthOfInstance(iid)
     for (const { routeId, rps } of routeDemands) {
       if (rps <= 0) continue
       const path = routeId != null ? s.routePathById.get(routeId) : null
@@ -902,6 +911,18 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       if (warmthOf(iid, s.warmingUntil, simMs) >= 1) {
         emit('instance_warm', 'info', `instance ${iid} finished warming up`, [iid], simMs)
         s.warmingUntil.delete(iid)
+      }
+    }
+
+    // ── 0c. FEAT-008 (Task 15): scale-in drain cleanup — drop entries whose grace window elapsed ──
+    // Once a drain completes, the instance is genuinely parked: runningSetResolver's own
+    // indexInPlacement < desired check already excludes it (desiredCount was lowered the step the
+    // drain began), so nothing further is needed here beyond clearing the overlay entry itself.
+    // Placed alongside 0b's warmingUntil cleanup so an instance whose drain finishes THIS exact
+    // step is already seen as parked by every downstream consumer this same step.
+    if (s.drainUntilByInstance.size > 0) {
+      for (const [iid, until] of [...s.drainUntilByInstance]) {
+        if (simMs >= until) s.drainUntilByInstance.delete(iid)
       }
     }
 
@@ -1269,7 +1290,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     if (s.hasAnyAutoscale) {
       const runningSetKey = [...s.autoscale.desiredCount.entries()].map(([k, v]) => `${k}:${v}`).join(',')
       if (runningSetKey !== s.runningSetKey) {
-        s.runningSet = runningSetResolver(compiled, s.autoscale.desiredCount)
+        // Task 15: drainUntilByInstance is threaded through so a draining instance (below the
+        // NEW desiredCount but not yet past its drain window) still resolves running=true --
+        // passed by reference (live Map), so a drain beginning/completing later this step or a
+        // future one is seen without forcing a resolver rebuild of its own.
+        s.runningSet = runningSetResolver(compiled, s.autoscale.desiredCount, s.drainUntilByInstance)
         s.runningSetKey = runningSetKey
       }
     }
@@ -1566,10 +1591,16 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
           }
           emit('scale_out', 'info', `placement ${pl.id} scaled out ${desired} -> ${result.next} instances`, [pl.id], simMs)
         } else if (result.scaled === 'in') {
-          // Task 15 owns the drain-before-park mechanics (failover.ts's drainFactor/drainUntil,
-          // reused rather than a second implementation) -- this event fires the moment
-          // desiredCount itself changes, matching 'scale_out' firing on the decision, not on
-          // completion.
+          // Task 15: every instance whose index falls in [result.next, desired) just transitioned
+          // from running to below the new desiredCount line -- instead of parking it outright this
+          // step, begin its drain grace window. Until the drain completes (the 0c cleanup pass
+          // above), runningSetResolver still treats it as running (CPU/RAM/publishing continue),
+          // while routingHealthOfInstance excludes it from NEW traffic immediately. This event
+          // fires the moment desiredCount itself changes, matching 'scale_out' firing on the
+          // decision, not on completion.
+          for (let i = result.next; i < desired; i++) {
+            beginInstanceDrain(s.drainUntilByInstance, instanceId(pl.id, i), simMs)
+          }
           emit('scale_in', 'info', `placement ${pl.id} scaled in ${desired} -> ${result.next} instances`, [pl.id], simMs)
         }
         // Task 17 owns 'autoscale_ceiling' emission (rate-limited, sat-at-maxCount-while-over-
@@ -2458,6 +2489,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         autoscale: createAutoscaleState(doc),
         runningSet: () => true,
         runningSetKey: '',
+        // Task 15: empty at start() -- nothing is draining until the first scale-in decision.
+        drainUntilByInstance: new Map(),
         hasAnyAutoscale: Object.values(doc.placements).some(pl => pl.autoscale != null),
         replication: createReplicationState(),
         prevWriteRpsByCluster: {},
