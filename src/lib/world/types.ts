@@ -275,6 +275,15 @@ export type PlacementRuntime =
       memLimitMb: number | null
     }
 
+export interface AutoscalePolicy {
+  minCount: number
+  maxCount: number
+  targetCpuPercent: number      // 0..100, the HPA-style setpoint
+  scaleUpCooldownSec: number    // typically short (30-60)
+  scaleDownCooldownSec: number  // typically long (300+) -- asymmetry prevents thrash
+  scaleStep?: number            // max instances added/removed per decision; absent -> unbounded
+}
+
 export interface Placement {
   id: PlacementId
   blueprintId: BlueprintId
@@ -282,6 +291,7 @@ export interface Placement {
   count: number
   role: PlacementRole
   runtime: PlacementRuntime
+  autoscale?: AutoscalePolicy
 }
 
 export type ManagedScope =
