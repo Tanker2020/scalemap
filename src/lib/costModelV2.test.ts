@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { computeWorldCost } from './costModelV2'
+import { computeWorldCost, attributeByBlueprint } from './costModelV2'
 import { createWorld, createRegion, createAz, createServer, createLoadBalancer, createBlueprint, createPlacement } from './world/factories'
 import { getPreset } from './world/instanceCatalog'
 import { useWorldStore } from '../app/store/world.store'
 import { HOURS_PER_MONTH } from './costModelV2'
+import { compileWorld } from './world/compileWorld'
 import type { WorldDoc, AutoscalePolicy } from './world/types'
 
 function twoServerWorld(): { doc: WorldDoc; regionId: string; azId: string } {
@@ -496,5 +497,135 @@ describe('autoscaled-placement cost apportionment (FEAT-008, Task 18)', () => {
     })
     const result = computeWorldCost(doc, null, null) // Cost tab renders before a run starts
     expect(result.monthlyUsd).toBeCloseTo(10 * HOURS_PER_MONTH * (2 / 4), 1) // uses authored count, not minCount
+  })
+})
+
+// FEAT-010 (Task 7): hourlyUsd is the primary FinOps unit for the Signals/Cost UI — a trivial
+// derived field, but it must reconcile EXACTLY (not approximately) with monthlyUsd for every
+// code path, since the UI will show one or the other depending on the selected time window.
+describe('hourlyUsd (FEAT-010)', () => {
+  it('hourlyUsd × HOURS_PER_MONTH === monthlyUsd exactly, with no metrics', () => {
+    const { doc } = twoServerWorld()
+    const cost = computeWorldCost(doc, null, null)
+    expect(cost.hourlyUsd * HOURS_PER_MONTH).toBe(cost.monthlyUsd)
+  })
+
+  it('hourlyUsd × HOURS_PER_MONTH === monthlyUsd exactly, with managed services + egress + LB', () => {
+    const { doc, regionId, azId } = twoServerWorld()
+    doc.managedServices['ms-1'] = {
+      id: 'ms-1', label: 'db', nodeType: 'dbSql', provider: 'aws',
+      scope: { kind: 'az', azId }, port: 5432, instanceClassId: 'sql.small', storageGb: 50,
+    }
+    const lb = createLoadBalancer(regionId)
+    doc.loadBalancers[lb.id] = lb
+    const world = {
+      totalRps: 500, errorRate: 0, populationRoutes: [{ populationId: 'pop-1', regionId, rps: 500 }],
+      crossAzBytesPerSec: 1000, crossRegionBytesPerSec: 500, internetEgressBytesPerSec: 2000,
+    }
+    const cost = computeWorldCost(doc, world, null)
+    expect(cost.hourlyUsd * HOURS_PER_MONTH).toBe(cost.monthlyUsd)
+  })
+})
+
+// FEAT-010 (Task 7): per-blueprint cost attribution, weighted by WorkloadProfile.cpuShares — the
+// SAME weight hostScheduler.ts uses for CPU capacity splitting on a shared server, so the Cost
+// tab's "by service" breakdown can never silently disagree with the capacity story the sim shows.
+describe('attributeByBlueprint (FEAT-010)', () => {
+  function buildDocWithTwoPlacements(opts: { shareA: number; shareB: number }): { doc: WorldDoc; bpAId: string; bpBId: string } {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+    const bpA = createBlueprint('svc-a', 0)
+    bpA.workload.cpuShares = opts.shareA
+    const bpB = createBlueprint('svc-b', 1)
+    bpB.workload.cpuShares = opts.shareB
+    doc.blueprints[bpA.id] = bpA
+    doc.blueprints[bpB.id] = bpB
+    const plA = createPlacement(bpA.id, server.id)
+    const plB = createPlacement(bpB.id, server.id)
+    doc.placements[plA.id] = plA
+    doc.placements[plB.id] = plB
+    return { doc, bpAId: bpA.id, bpBId: bpB.id }
+  }
+
+  it('splits a shared server by cpuShares (1:3 -> 25%/75%)', () => {
+    const { doc, bpAId, bpBId } = buildDocWithTwoPlacements({ shareA: 1, shareB: 3 })
+    const compiled = compileWorld(doc)
+    const rows = attributeByBlueprint(doc, compiled, null, null)
+    const total = rows.reduce((s, r) => s + r.monthlyUsd, 0)
+    const a = rows.find(r => r.blueprintId === bpAId)!
+    const b = rows.find(r => r.blueprintId === bpBId)!
+    expect(a.monthlyUsd / total).toBeCloseTo(0.25, 2)
+    expect(b.monthlyUsd / total).toBeCloseTo(0.75, 2)
+  })
+
+  it('reconciles with computeWorldCost\'s compute total for a world with no LBs/cross-zone traffic', () => {
+    // Known gap (documented in costModelV2.ts): cross-zone egress and LB costs have no blueprint
+    // owner (per-instance byte attribution doesn't reach costModelV2.ts today), so this
+    // reconciliation is scoped to a fixture with no LBs and no cross-zone traffic, where
+    // attributeByBlueprint's output should fully cover computeWorldCost's total.
+    const { doc } = buildDocWithTwoPlacements({ shareA: 1, shareB: 1 })
+    doc.managedServices['ms-1'] = {
+      id: 'ms-1', label: 'db', nodeType: 'dbSql', provider: 'aws',
+      scope: { kind: 'region', regionId: Object.keys(doc.regions)[0] }, port: 5432,
+      instanceClassId: 'sql.small', storageGb: 0,
+    }
+    const compiled = compileWorld(doc)
+    const rows = attributeByBlueprint(doc, compiled, null, null)
+    const cost = computeWorldCost(doc, null, null)
+    const attributed = rows.reduce((s, r) => s + r.monthlyUsd, 0)
+    expect(attributed).toBeCloseTo(cost.monthlyUsd, 6)
+  })
+
+  it('a parked (non-running) autoscaled placement contributes zero', () => {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+    const bp = createBlueprint('svc', 0)
+    doc.blueprints[bp.id] = bp
+    const placement = createPlacement(bp.id, server.id)
+    placement.count = 3
+    placement.autoscale = { minCount: 1, maxCount: 3, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300 }
+    doc.placements[placement.id] = placement
+    const compiled = compileWorld(doc)
+
+    const worldParked = {
+      totalRps: 0, errorRate: 0, populationRoutes: [],
+      crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0,
+      runningByPlacement: { [placement.id]: 0 },
+    }
+    const rowsParked = attributeByBlueprint(doc, compiled, worldParked, null)
+    const parkedTotal = rowsParked.reduce((s, r) => s + r.monthlyUsd, 0)
+    expect(parkedTotal).toBe(0)
+
+    const worldRunning = { ...worldParked, runningByPlacement: { [placement.id]: 1 } }
+    const rowsRunning = attributeByBlueprint(doc, compiled, worldRunning, null)
+    const runningTotal = rowsRunning.reduce((s, r) => s + r.monthlyUsd, 0)
+    // Billing granularity is per-SERVER (matching computeWorldCost): 1 of 3 max instances running
+    // apportions the whole server's cost by 1/3, not zero.
+    expect(runningTotal).toBeCloseTo(server.hourlyUsd * HOURS_PER_MONTH * (1 / 3), 5)
+  })
+
+  it('managed services attribute under a distinct managed: key, not colliding with a blueprint id', () => {
+    const { doc } = buildDocWithTwoPlacements({ shareA: 1, shareB: 1 })
+    const regionId = Object.keys(doc.regions)[0]
+    doc.managedServices['ms-1'] = {
+      id: 'ms-1', label: 'redis-cache', nodeType: 'redis', provider: 'aws',
+      scope: { kind: 'region', regionId }, port: 6379,
+    }
+    const compiled = compileWorld(doc)
+    const rows = attributeByBlueprint(doc, compiled, null, null)
+    const managedRow = rows.find(r => r.blueprintId === 'managed:ms-1')
+    expect(managedRow).toBeDefined()
+    expect(managedRow!.monthlyUsd).toBeGreaterThan(0)
+    expect(managedRow!.label).toBe('redis-cache')
   })
 })

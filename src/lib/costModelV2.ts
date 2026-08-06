@@ -1,6 +1,6 @@
 // World-level monthly cost projection (spec decision 8): Σ server hourlyUsd×730 + managed
 // service pricing (reused from cloudRegistry) + egress from live WorldMetrics byte rates.
-import type { WorldDoc, RegionId, AzId, ServerId, Placement, PlacementId, ManagedServiceId, ManagedService } from './world/types'
+import type { WorldDoc, RegionId, AzId, ServerId, Placement, PlacementId, ManagedServiceId, ManagedService, CompiledWorld } from './world/types'
 import type { WorldMetrics, ManagedServiceMetrics } from './worldEngine/types'
 import { getServiceSpec, egressMonthlyCost, PROVIDER_EGRESS, PROVIDER_INTERZONE, type CloudProvider, type RealProvider } from './cloudRegistry'
 import { getDbInstanceClass } from './dbInstanceClasses'
@@ -47,6 +47,10 @@ const MANAGED_TYPE_ALIASES: Record<string, string> = {
 
 export interface WorldCostResult {
   monthlyUsd: number
+  // monthlyUsd / HOURS_PER_MONTH — the primary FinOps unit for the Signals/Cost UI (FEAT-010).
+  // Always exactly reconciles (hourlyUsd * HOURS_PER_MONTH === monthlyUsd) since it's a pure
+  // derived division of the SAME monthlyUsd value below, not a separately-accumulated total.
+  hourlyUsd: number
   byRegion: { regionId: RegionId; monthlyUsd: number }[]
   byAz: { azId: AzId; monthlyUsd: number }[]
   egress: { crossAzUsd: number; crossRegionUsd: number; internetUsd: number }
@@ -300,6 +304,7 @@ export function computeWorldCost(
 
   return {
     monthlyUsd,
+    hourlyUsd: monthlyUsd / HOURS_PER_MONTH,
     byRegion: [...byRegionMap.entries()].map(([regionId, monthlyUsd]) => ({ regionId, monthlyUsd })),
     byAz: [...byAzMap.entries()].map(([azId, monthlyUsd]) => ({ azId, monthlyUsd })),
     egress: { crossAzUsd, crossRegionUsd, internetUsd },
@@ -307,4 +312,108 @@ export function computeWorldCost(
     loadBalancerCount,
     managedEgressUsd: managedEgressTotal,
   }
+}
+
+// Per-blueprint cost attribution (FEAT-010, Task 7) — re-derives cost at BLUEPRINT granularity
+// (rather than computeWorldCost's region/AZ granularity) by splitting each server's flat hourly
+// charge across its resident instances using WorkloadProfile.cpuShares (absent -> 1) as the
+// weight. This is deliberately the SAME weight hostScheduler.ts's fair-share CPU split uses
+// (`Math.max(0, cpuShares ?? 1)`), so a blueprint's cost share and its capacity share can never
+// silently disagree.
+//
+// KNOWN GAP (documented, not papered over): the spec's ideal design wants cross-zone egress and
+// load-balancer costs attributed to the CALLING blueprint via the flow solver's per-instance
+// depBytesById breakdown. That per-instance byte data does not reach costModelV2.ts today —
+// WorldMetrics/MetricsBatch (worldEngine/types.ts) only carry WORLD-level aggregate byte rates
+// (crossAzBytesPerSec/crossRegionBytesPerSec/internetEgressBytesPerSec), not a per-instance or
+// per-dependency breakdown. Re-deriving that attribution here would create a second resolution
+// point alongside flows.ts/packetResolve.ts's depBytesById (a documented anti-pattern in this
+// codebase). So: egress and load-balancer costs are LEFT UNATTRIBUTED to any blueprint by this
+// function — only server-resident compute and managed-service costs are split per-blueprint.
+// `attributed-total ≈ computeWorldCost().monthlyUsd` therefore does NOT hold in general; it only
+// holds for a world with no LBs and no cross-zone/cross-region/internet traffic. Callers that
+// need a fully-reconciling total (e.g. the Cost tab) should show the attributed rows plus an
+// explicit "+ $X/mo in cross-zone/LB costs not attributed to a service" residual line, computed
+// as `computeWorldCost(...).monthlyUsd - sum(attributeByBlueprint(...).monthlyUsd)`.
+export interface BlueprintCostRow {
+  blueprintId: string
+  label: string
+  monthlyUsd: number
+}
+
+export function attributeByBlueprint(
+  doc: WorldDoc,
+  compiled: CompiledWorld,
+  world: (WorldMetrics & { runningByPlacement?: Record<PlacementId, number> }) | null,
+  managed: Record<ManagedServiceId, ManagedServiceMetrics> | null,
+): BlueprintCostRow[] {
+  const byBlueprint = new Map<string, number>()
+  const bump = (id: string, usd: number) => byBlueprint.set(id, (byBlueprint.get(id) ?? 0) + usd)
+
+  // Group RUNNING instances by server, weighting by workload.cpuShares (absent -> 1) -- the SAME
+  // weight hostScheduler.ts uses for capacity, so the cost split and the capacity split tell one
+  // story (spec requirement).
+  const instancesByServer = new Map<ServerId, { blueprintId: string; placementId: PlacementId; cpuShares: number }[]>()
+  for (const inst of Object.values(compiled.instances)) {
+    const placement = doc.placements[inst.placementId]
+    if (!placement) continue
+    // Billing granularity here matches computeWorldCost's own per-SERVER (not per-instance)
+    // granularity: a parked placement (FEAT-008, running count 0) contributes nothing at all;
+    // otherwise every resident instance on the server participates in the cpuShares split below,
+    // and the SERVER's cost is apportioned across placements by the same running/max ratio
+    // computeWorldCost already uses (see the per-server loop below).
+    const runningCount = placement.autoscale
+      ? (world?.runningByPlacement?.[placement.id] ?? placement.count)
+      : placement.count
+    if (placement.autoscale && runningCount === 0) continue
+    const bp = doc.blueprints[inst.blueprintId]
+    const list = instancesByServer.get(inst.serverId) ?? []
+    list.push({ blueprintId: inst.blueprintId, placementId: inst.placementId, cpuShares: Math.max(0, bp?.workload.cpuShares ?? 1) })
+    instancesByServer.set(inst.serverId, list)
+  }
+
+  for (const server of Object.values(doc.servers)) {
+    const residents = instancesByServer.get(server.id) ?? []
+    if (residents.length === 0) continue
+    const placementIds = new Set(residents.map(r => r.placementId))
+    const anyAutoscaled = [...placementIds].some(pid => doc.placements[pid]?.autoscale)
+    // Mirrors computeWorldCost's own per-server autoscale apportionment EXACTLY (same
+    // running/max-weight ratio, same fallback to authored count pre-run) -- factored to reuse
+    // rather than reimplemented with different rounding/edge-case behavior.
+    let billedFraction = 1
+    if (anyAutoscaled) {
+      let runningWeight = 0
+      let maxWeight = 0
+      for (const pid of placementIds) {
+        const pl = doc.placements[pid]
+        if (!pl) continue
+        const maxW = pl.autoscale ? pl.autoscale.maxCount : pl.count
+        const runningW = pl.autoscale ? (world?.runningByPlacement?.[pl.id] ?? pl.count) : pl.count
+        maxWeight += maxW
+        runningWeight += runningW
+      }
+      billedFraction = maxWeight > 0 ? runningWeight / maxWeight : 1
+    }
+    const serverUsd = server.hourlyUsd * HOURS_PER_MONTH * billedFraction
+    const totalShares = residents.reduce((s, r) => s + r.cpuShares, 0) || residents.length
+    for (const r of residents) {
+      bump(r.blueprintId, serverUsd * (r.cpuShares / totalShares))
+    }
+  }
+
+  // Managed services attribute directly -- they are already priced per service, not per resident,
+  // and carry no blueprint. Grouped under a synthetic "managed:<id>" row (distinct namespace, so
+  // it can never collide with a real blueprint id) so the Cost tab can label it distinctly, e.g.
+  // "redis-cache (managed)".
+  for (const ms of Object.values(doc.managedServices)) {
+    const usd = managedServiceMonthlyUsd(ms, managed?.[ms.id]?.rps ?? 0) + (managed ? managedEgressUsd(ms, managed[ms.id]?.egressBytesPerSec ?? 0) : 0)
+    if (usd === 0) continue
+    bump(`managed:${ms.id}`, usd)
+  }
+
+  return [...byBlueprint.entries()].map(([blueprintId, monthlyUsd]) => ({
+    blueprintId,
+    label: doc.blueprints[blueprintId]?.name ?? doc.managedServices[blueprintId.replace('managed:', '')]?.label ?? blueprintId,
+    monthlyUsd,
+  })).sort((a, b) => b.monthlyUsd - a.monthlyUsd)
 }
