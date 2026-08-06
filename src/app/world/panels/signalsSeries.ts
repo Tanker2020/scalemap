@@ -11,6 +11,14 @@ import type { DockScope } from '../dock/scope'
 export type SignalKey =
   | 'rps' | 'errorRate' | 'p50Ms' | 'p90Ms' | 'p99Ms'
   | 'activeConnections' | 'cpu' | 'queueDepth' | 'ramMb'
+  // costUsdPerHour is charted through the SAME downsample()/SignalChart path as every other
+  // signal (FEAT-010), but its SeriesPoint[] comes from costSeries.ts's costSeriesFor map, not
+  // from extractSeries below -- cost isn't a field on MetricsBatch, it's derived per-frame by
+  // computeWorldCost. Deliberately NO branch for it exists in valueForScope/extractSeries; the
+  // future CostTab.tsx (Task 10) builds its own SeriesPoint[] straight from costSeriesFor and
+  // bypasses extractSeries entirely for this one key. If you're looking for a costUsdPerHour
+  // case below and not finding one, that's this -- not a bug.
+  | 'costUsdPerHour'
 
 export interface SeriesPoint { simMs: number; value: number }
 export interface DownsampledPoint { simMs: number; min: number; max: number; value: number }
