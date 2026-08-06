@@ -33,10 +33,26 @@ const CHART_HEIGHT = 36
 const ROW_COLORS = Object.values(CATEGORY_COLORS).map(c => c.accent)
 
 export function SignalsPanel({ scope }: { scope: DockScope }) {
-  const frames = useSimulationStore(s => s.getReplayFrames())
+  // Reactive subscription to something ELSE that already changes on every new frame/tick, per
+  // the WorldPanel.tsx (Task 5) / CostTab.tsx (Task 9) precedent for this exact hazard:
+  // worldEngine's real getReplayFrames() (worldEngine/index.ts -> replay.ts's getFrames())
+  // returns a freshly-allocated array on EVERY call -- `state?.replay.getFrames() ?? []`, and
+  // getFrames() itself always does `return [...frames]` (or a bare `[]` before any run has
+  // started). Subscribing to that call directly via a reactive selector hook
+  // (`useSimulationStore(s => s.getReplayFrames())`) makes every render see a "changed"
+  // snapshot, which makes React's useSyncExternalStore consistency check re-render forever --
+  // "Maximum update depth exceeded" the instant this mounts against the real store. Subscribing
+  // to `scrubBatch ?? latestBatch` instead (a referentially-stable object the store only
+  // replaces on an actual new batch or scrub) gives the same re-render cadence without ever
+  // reading the unstable array through the hook.
+  const displayBatch = useSimulationStore(s => s.scrubBatch ?? s.latestBatch)
   const scrubIndex = useSimulationStore(s => s.scrubIndex)
   const setScrubIndex = useSimulationStore(s => s.setScrubIndex)
-  const lastFrameSimMs = frames.length > 0 ? frames[frames.length - 1].simMs : null
+  // Non-reactive read -- this component still re-renders on every new batch/scrub-index change
+  // above, so a fresh frames array is picked up on the next render regardless; it just never
+  // subscribes to the unstable array itself.
+  const frames = useSimulationStore.getState().getReplayFrames()
+  const lastFrameSimMs = displayBatch?.simMs ?? (frames.length > 0 ? frames[frames.length - 1].simMs : null)
   const scopeKey = JSON.stringify(scope)
 
   const seriesByKey = useMemo(() => {

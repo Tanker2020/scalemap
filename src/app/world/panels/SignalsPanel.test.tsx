@@ -75,6 +75,29 @@ describe('SignalsPanel', () => {
     expect(extractSpy.mock.calls.length).toBeGreaterThan(callsAfterMount)
   })
 
+  it('does not throw "Maximum update depth exceeded" when getReplayFrames returns a FRESH array reference on every call', () => {
+    // Regression test for the production-crashing bug found via CostTab/Task 9: mockReturnValue
+    // (used by every other test in this file) happens to return the SAME array reference every
+    // call, which masks a reactive `useSimulationStore(s => s.getReplayFrames())` subscription
+    // bug entirely. The real engine's getReplayFrames() always allocates a fresh array
+    // (`[...frames]`/a bare `[]`), so the mock here must do the same to actually exercise the
+    // hazard the component guards against (a non-reactive `getState()` read).
+    const frames = twoFrameFixture()
+    vi.spyOn(useSimulationStore.getState(), 'getReplayFrames').mockImplementation(() => [...frames])
+    expect(() => render(<SignalsPanel scope={{ kind: 'world' }} />)).not.toThrow()
+    expect(screen.getByText('rps')).toBeInTheDocument()
+  })
+
+  it('does not throw against the REAL (unmocked) store, with no run active', () => {
+    // The exact empirical probe that surfaced the bug: render against worldEngine's real
+    // getReplayFrames() (no spy/mock at all). Before the fix, this threw "Maximum update depth
+    // exceeded" immediately on mount because the reactive selector subscribed directly to a
+    // call that reallocates its return value every single time, even the bare `[]` returned
+    // before any simulation run has started.
+    expect(() => render(<SignalsPanel scope={{ kind: 'world' }} />)).not.toThrow()
+    expect(screen.getByText(/no history yet/i)).toBeInTheDocument()
+  })
+
   it('clicking a chart calls setScrubIndex with the frame index nearest the click', () => {
     const frames = twoFrameFixture()
     vi.spyOn(useSimulationStore.getState(), 'getReplayFrames').mockReturnValue(frames)
