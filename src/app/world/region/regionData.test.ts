@@ -21,7 +21,7 @@ function fakeBatch(
   return { simMs, instances: {}, servers: {}, azs, regions, world }
 }
 function az(over: Partial<AzMetrics>): AzMetrics {
-  return { azId: '', rps: 0, errorRate: 0, p50Ms: 0, healthScore: 100, health: 'healthy', serverCount: 0, instanceCount: 0, ...over }
+  return { azId: '', rps: 0, errorRate: 0, p50Ms: 0, p90Ms: 0, healthScore: 100, health: 'healthy', serverCount: 0, instanceCount: 0, ...over }
 }
 function evt(over: Partial<EngineEvent>): EngineEvent {
   return { id: 'e', simMs: 0, kind: 'engine_degraded', severity: 'info', message: '', affected: [], ...over }
@@ -284,7 +284,7 @@ describe('sparklineSeries', () => {
     const regionId = 'r1'
     const frames: ReplayFrame[] = [1000, 2000, 3000].map((simMs, i) => ({
       simMs, events: [],
-      batch: fakeBatch(simMs, {}, { [regionId]: { regionId, rps: (i + 1) * 10, errorRate: 0, p50Ms: 0, healthScore: 100, health: 'healthy', inboundByPopulation: [] } }),
+      batch: fakeBatch(simMs, {}, { [regionId]: { regionId, rps: (i + 1) * 10, errorRate: 0, p50Ms: 0, p90Ms: 0, healthScore: 100, health: 'healthy', inboundByPopulation: [] } }),
     }))
     const series = sparklineSeries(frames, regionId, 5)
     expect(series).toEqual([0, 0, 10, 20, 30])

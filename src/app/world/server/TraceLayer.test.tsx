@@ -58,7 +58,7 @@ describe('TraceLayer', () => {
     const instanceId = Object.keys(compileWorld(doc).instances)[0]
     const { container } = render(
       <TraceLayer layout={layout} traces={traces} selection={null} onSelect={() => {}} hoveredBlueprintId={null}
-        serverId={serverId} instances={{ [instanceId]: { instanceId, rps: 42, errorRate: 0, p50Ms: 0, p99Ms: 0, activeConnections: 0, cpuCoresUsed: 0, ramMb: 0, health: "healthy" } }} />,
+        serverId={serverId} instances={{ [instanceId]: { instanceId, rps: 42, errorRate: 0, p50Ms: 0, p99Ms: 0, p90Ms: 0, activeConnections: 0, cpuCoresUsed: 0, ramMb: 0, health: "healthy" } }} />,
     )
     const flows = container.querySelectorAll('[data-testid="trace-flow"]')
     expect(flows.length).toBeGreaterThan(0)

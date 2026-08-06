@@ -37,7 +37,7 @@ describe('buildReviewContext', () => {
       simMs: 5000,
       instances: {
         'inst-secret-1': {
-          instanceId: 'inst-secret-1', rps: 10, errorRate: 0, p50Ms: 5, p99Ms: 9,
+          instanceId: 'inst-secret-1', rps: 10, errorRate: 0, p50Ms: 5, p99Ms: 9, p90Ms: 7,
           activeConnections: 2, cpuCoresUsed: 0.3, ramMb: 128, health: 'healthy',
         },
       },
@@ -51,7 +51,7 @@ describe('buildReviewContext', () => {
       azs: {},
       regions: {
         [region.id]: {
-          regionId: region.id, rps: 42, errorRate: 0.02, p50Ms: 18, healthScore: 91,
+          regionId: region.id, rps: 42, errorRate: 0.02, p50Ms: 18, p90Ms: 20, healthScore: 91,
           health: 'healthy', inboundByPopulation: [],
         },
       },

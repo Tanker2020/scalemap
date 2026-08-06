@@ -20,7 +20,7 @@ function fakeBatch(simMs: number, azs: Record<string, AzMetrics>): MetricsBatch 
   return { simMs, instances: {}, servers: {}, azs, regions: {}, world: emptyWorldMetrics() }
 }
 function az(over: Partial<AzMetrics>): AzMetrics {
-  return { azId: '', rps: 0, errorRate: 0, p50Ms: 0, healthScore: 100, health: 'healthy', serverCount: 0, instanceCount: 0, ...over }
+  return { azId: '', rps: 0, errorRate: 0, p50Ms: 0, p90Ms: 0, healthScore: 100, health: 'healthy', serverCount: 0, instanceCount: 0, ...over }
 }
 
 function seedRegion() {
@@ -239,7 +239,7 @@ describe('RegionView (Phase 4 flow page)', () => {
         simMs: 1000, instances: {}, servers: {}, azs: {},
         // region.rps deliberately far exceeds the ingress sum (as internal fan-out makes it) so a
         // trunk reading region.rps would show 9,999 instead of the ingress 1,894.
-        regions: { [region.id]: { regionId: region.id, rps: 9999, errorRate: 0, p50Ms: 5, healthScore: 100, health: 'healthy', inboundByPopulation: [] } },
+        regions: { [region.id]: { regionId: region.id, rps: 9999, errorRate: 0, p50Ms: 5, p90Ms: 6, healthScore: 100, health: 'healthy', inboundByPopulation: [] } },
         world: {
           ...emptyWorldMetrics(), totalRps: 9999,
           populationRoutes: [
@@ -292,7 +292,7 @@ describe('RegionView (Phase 4 flow page)', () => {
     // With live region traffic: at most MAX_ANIMATED_RAILS (1) carries dashflow.
     const region = Object.values(doc.regions)[0]
     const batch = fakeBatch(1000, { [azA.id]: az({ azId: azA.id, rps: 250 }), [azB.id]: az({ azId: azB.id, rps: 250 }) })
-    batch.regions[region.id] = { regionId: region.id, rps: 500, errorRate: 0, p50Ms: 5, healthScore: 100, health: 'healthy', inboundByPopulation: [] }
+    batch.regions[region.id] = { regionId: region.id, rps: 500, errorRate: 0, p50Ms: 5, p90Ms: 6, healthScore: 100, health: 'healthy', inboundByPopulation: [] }
     useSimulationStore.setState({ running: true, latestBatch: batch })   // live: rail marches only while ticking
     rerender(<RegionView />)
     const animatedPaths = container.querySelectorAll('path[stroke="var(--r3-amber)"][data-animated]')

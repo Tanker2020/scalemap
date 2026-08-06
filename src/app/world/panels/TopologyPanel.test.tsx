@@ -75,7 +75,7 @@ function serverBatch(serverId: string, regionId: string): MetricsBatch {
       },
     },
     azs: {},
-    regions: { [regionId]: { regionId, rps: 100, errorRate: 0, p50Ms: 5, healthScore: 100, health: 'healthy', inboundByPopulation: [] } },
+    regions: { [regionId]: { regionId, rps: 100, errorRate: 0, p50Ms: 5, p90Ms: 6, healthScore: 100, health: 'healthy', inboundByPopulation: [] } },
     world: { totalRps: 100, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
   }
 }

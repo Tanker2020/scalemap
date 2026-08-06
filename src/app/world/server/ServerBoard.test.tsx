@@ -193,7 +193,7 @@ describe('ServerBoard — parked autoscale-envelope chips (FEAT-008)', () => {
           simMs: 1000,
           instances: {
             [running.id]: {
-              instanceId: running.id, rps: 50, errorRate: 0, p50Ms: 2, p99Ms: 4,
+              instanceId: running.id, rps: 50, errorRate: 0, p50Ms: 2, p99Ms: 4, p90Ms: 3,
               activeConnections: 1, cpuCoresUsed: 0.1, ramMb: 64, health: 'healthy',
             },
           },

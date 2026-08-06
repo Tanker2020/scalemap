@@ -156,7 +156,7 @@ describe('ServicesDrawer — watching posture (liveInstances supplied)', () => {
     const liveInstances: Record<string, InstanceMetrics> = {}
     instances.forEach((inst, i) => {
       liveInstances[inst.id] = {
-        instanceId: inst.id, rps: 100 + i, errorRate: 0, p50Ms: 2.1, p99Ms: 4,
+        instanceId: inst.id, rps: 100 + i, errorRate: 0, p50Ms: 2.1, p99Ms: 4, p90Ms: 3,
         activeConnections: 1, cpuCoresUsed: 0.1, ramMb: 64, health: i === 0 ? 'healthy' : 'down',
       }
     })
@@ -198,7 +198,7 @@ describe('ServicesDrawer — watching posture (liveInstances supplied)', () => {
     const running = instances.find(i => i.indexInPlacement === 0)!
     const liveInstances: Record<string, InstanceMetrics> = {
       [running.id]: {
-        instanceId: running.id, rps: 100, errorRate: 0, p50Ms: 2.1, p99Ms: 4,
+        instanceId: running.id, rps: 100, errorRate: 0, p50Ms: 2.1, p99Ms: 4, p90Ms: 3,
         activeConnections: 1, cpuCoresUsed: 0.1, ramMb: 64, health: 'healthy',
       },
     }
@@ -249,7 +249,7 @@ describe('ServicesDrawer — watching posture (liveInstances supplied)', () => {
     const liveInstances: Record<string, InstanceMetrics> = {}
     running2.forEach(inst => {
       liveInstances[inst.id] = {
-        instanceId: inst.id, rps: 10, errorRate: 0, p50Ms: 2, p99Ms: 4,
+        instanceId: inst.id, rps: 10, errorRate: 0, p50Ms: 2, p99Ms: 4, p90Ms: 3,
         activeConnections: 1, cpuCoresUsed: 0.1, ramMb: 64, health: 'healthy',
       }
     })
@@ -277,7 +277,7 @@ describe('ServicesDrawer — watching posture (liveInstances supplied)', () => {
     const liveInstances: Record<string, InstanceMetrics> = {}
     instances.slice(0, 2).forEach(inst => {
       liveInstances[inst.id] = {
-        instanceId: inst.id, rps: 10, errorRate: 0, p50Ms: 2, p99Ms: 4,
+        instanceId: inst.id, rps: 10, errorRate: 0, p50Ms: 2, p99Ms: 4, p90Ms: 3,
         activeConnections: 1, cpuCoresUsed: 0.1, ramMb: 64, health: 'healthy',
       }
     })
@@ -301,7 +301,7 @@ describe('ServicesDrawer — watching posture (liveInstances supplied)', () => {
     const instances = Object.values(compiled.instances).filter(i => i.serverId === serverId)
     const liveInstances: Record<string, InstanceMetrics> = {
       [instances[0].id]: {
-        instanceId: instances[0].id, rps: 10, errorRate: 0, p50Ms: 2, p99Ms: 4,
+        instanceId: instances[0].id, rps: 10, errorRate: 0, p50Ms: 2, p99Ms: 4, p90Ms: 3,
         activeConnections: 1, cpuCoresUsed: 0.1, ramMb: 64, health: 'healthy',
       },
     }

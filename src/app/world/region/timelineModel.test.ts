@@ -18,7 +18,7 @@ function emptyWorldMetrics(): MetricsBatch['world'] {
   return { totalRps: 0, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 }
 }
 function az(over: Partial<AzMetrics>): AzMetrics {
-  return { azId: '', rps: 0, errorRate: 0, p50Ms: 0, healthScore: 100, health: 'healthy', serverCount: 0, instanceCount: 0, ...over }
+  return { azId: '', rps: 0, errorRate: 0, p50Ms: 0, p90Ms: 0, healthScore: 100, health: 'healthy', serverCount: 0, instanceCount: 0, ...over }
 }
 function frame(simMs: number, azs: Record<string, AzMetrics> = {}): ReplayFrame {
   return { simMs, events: [], batch: { simMs, instances: {}, servers: {}, azs, regions: {}, world: emptyWorldMetrics() } }

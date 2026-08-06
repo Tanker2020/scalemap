@@ -143,7 +143,7 @@ describe('AtlasHeader — world scope (regionId=null)', () => {
   it('a down region renders the danger color on its dot', () => {
     const regionId = seedRegion('us-east-1', 'us-east-1a')
     const batch = runningBatch({
-      regions: { [regionId]: { regionId, rps: 0, errorRate: 0, p50Ms: 0, healthScore: 0, health: 'down', inboundByPopulation: [] } },
+      regions: { [regionId]: { regionId, rps: 0, errorRate: 0, p50Ms: 0, p90Ms: 0, healthScore: 0, health: 'down', inboundByPopulation: [] } },
     })
     useSimulationStore.setState({ latestBatch: batch })
     render(<AtlasHeader regionId={null} />)
@@ -176,7 +176,7 @@ describe('AtlasHeader — world scope (regionId=null)', () => {
     const p3 = useWorldStore.getState().addPopulation('bos', 42.4, -71.1)
     const p4 = useWorldStore.getState().addPopulation('chi', 41.9, -87.6)
     const batch = runningBatch({
-      regions: { [r1]: { regionId: r1, rps: 400, errorRate: 0, p50Ms: 5, healthScore: 100, health: 'healthy', inboundByPopulation: [] } },
+      regions: { [r1]: { regionId: r1, rps: 400, errorRate: 0, p50Ms: 5, p90Ms: 6, healthScore: 100, health: 'healthy', inboundByPopulation: [] } },
       world: {
         totalRps: 400, errorRate: 0, crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0,
         populationRoutes: [

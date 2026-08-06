@@ -46,7 +46,7 @@ describe('FloorPlanHeader', () => {
     const { azId } = seedAz()
     const batch: MetricsBatch = {
       simMs: 1000, instances: {}, servers: {},
-      azs: { [azId]: { azId, rps: 425, errorRate: 0, p50Ms: 5, healthScore: 100, health: 'healthy', serverCount: 0, instanceCount: 0 } },
+      azs: { [azId]: { azId, rps: 425, errorRate: 0, p50Ms: 5, p90Ms: 6, healthScore: 100, health: 'healthy', serverCount: 0, instanceCount: 0 } },
       regions: {},
       world: { totalRps: 425, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
     }

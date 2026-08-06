@@ -337,7 +337,7 @@ describe('ServerFaceplate — watching mode (T5, spec D7)', () => {
     const { serverId, instanceId } = seedServerWithService()
     const instances: MetricsBatch['instances'] = {
       [instanceId]: {
-        instanceId, rps: 418, errorRate: 0, p50Ms: 2.1, p99Ms: 5,
+        instanceId, rps: 418, errorRate: 0, p50Ms: 2.1, p99Ms: 5, p90Ms: 3,
         activeConnections: 3, cpuCoresUsed: 0.3, ramMb: 64, health: 'healthy',
       },
     }
@@ -415,7 +415,7 @@ describe('ServerFaceplate — watching mode (T5, spec D7)', () => {
     const { serverId, instanceId } = seedServerWithService()
     const instances: MetricsBatch['instances'] = {
       [instanceId]: {
-        instanceId, rps: 100, errorRate: 0, p50Ms: 3.4, p99Ms: 6,
+        instanceId, rps: 100, errorRate: 0, p50Ms: 3.4, p99Ms: 6, p90Ms: 4,
         activeConnections: 2, cpuCoresUsed: 0.2, ramMb: 64, health: 'degraded',
       },
     }

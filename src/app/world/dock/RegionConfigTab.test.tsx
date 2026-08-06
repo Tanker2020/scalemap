@@ -60,7 +60,7 @@ describe('RegionConfigTab', () => {
 
     const batch: MetricsBatch = {
       simMs: 1000, instances: {}, servers: {},
-      azs: { [azId]: { azId, rps: 42, errorRate: 0, p50Ms: 5, healthScore: 100, health: 'healthy', serverCount: 0, instanceCount: 0 } },
+      azs: { [azId]: { azId, rps: 42, errorRate: 0, p50Ms: 5, p90Ms: 6, healthScore: 100, health: 'healthy', serverCount: 0, instanceCount: 0 } },
       regions: {},
       world: { totalRps: 42, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
     }
@@ -266,7 +266,7 @@ describe('RegionConfigTab', () => {
 
     const batch: MetricsBatch = {
       simMs: 1000, instances: {}, servers: {},
-      azs: { [azId]: { azId, rps: 42, errorRate: 0, p50Ms: 5, healthScore: 100, health: 'healthy', serverCount: 0, instanceCount: 0 } },
+      azs: { [azId]: { azId, rps: 42, errorRate: 0, p50Ms: 5, p90Ms: 6, healthScore: 100, health: 'healthy', serverCount: 0, instanceCount: 0 } },
       regions: {},
       world: { totalRps: 42, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 },
     }

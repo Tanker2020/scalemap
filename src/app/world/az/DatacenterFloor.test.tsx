@@ -35,7 +35,7 @@ function seedAz() {
 }
 
 const emptyInstance: InstanceMetrics = {
-  instanceId: '', rps: 0, errorRate: 0, p50Ms: 0, p99Ms: 0, activeConnections: 0,
+  instanceId: '', rps: 0, errorRate: 0, p50Ms: 0, p99Ms: 0, p90Ms: 0, activeConnections: 0,
   cpuCoresUsed: 0, ramMb: 0, health: 'healthy',
 }
 const emptyServer: ServerMetrics = {
