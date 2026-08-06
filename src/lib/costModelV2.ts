@@ -190,6 +190,34 @@ function managedEgressUsd(ms: ManagedService, egressBytesPerSec: number): number
   return egressMonthlyCost(provider, Math.max(0, gbMonth - storageFreeGb))
 }
 
+// Shared per-server autoscale billed-fraction computation (FEAT-008's original logic in
+// computeWorldCost, extracted per task-7 review fix so attributeByBlueprint can call the SAME
+// implementation instead of a second copy that can silently drift). MUST be built from EVERY
+// placement resident on the server (parked or not) — a fully parked autoscaled placement (running
+// count 0) still contributes its authored `maxCount` to the denominator, which is exactly why this
+// takes the server's full resident list rather than a pre-filtered "only instances that survived
+// a running-count filter" subset (task-7 review bug: attributeByBlueprint used to derive its
+// placement set from compiled.instances AFTER dropping parked placements, silently excluding their
+// maxCount from the denominator and inflating every other resident's billed fraction).
+function billedFractionForServer(
+  residents: Placement[],
+  world: { runningByPlacement?: Record<PlacementId, number> } | null,
+): number {
+  const anyAutoscaled = residents.some(pl => pl.autoscale)
+  if (!anyAutoscaled) return 1
+  let runningWeight = 0
+  let maxWeight = 0
+  for (const pl of residents) {
+    const maxW = pl.autoscale ? pl.autoscale.maxCount : pl.count
+    // world?.runningByPlacement is only present once a run has started; pl.count is the
+    // authored fallback both pre-run (world === null) and for a static resident placement.
+    const runningW = pl.autoscale ? (world?.runningByPlacement?.[pl.id] ?? pl.count) : pl.count
+    maxWeight += maxW
+    runningWeight += runningW
+  }
+  return maxWeight > 0 ? runningWeight / maxWeight : 1
+}
+
 export function computeWorldCost(
   doc: WorldDoc,
   // Task 18 (FEAT-008): `runningByPlacement` actually lives on `MetricsBatch` (Task 16), one
@@ -223,21 +251,7 @@ export function computeWorldCost(
 
   for (const server of Object.values(doc.servers)) {
     const residents = placementsByServer.get(server.id) ?? []
-    const anyAutoscaled = residents.some(pl => pl.autoscale)
-    let billedFraction = 1
-    if (anyAutoscaled) {
-      let runningWeight = 0
-      let maxWeight = 0
-      for (const pl of residents) {
-        const maxW = pl.autoscale ? pl.autoscale.maxCount : pl.count
-        // world?.runningByPlacement is only present once a run has started; pl.count is the
-        // authored fallback both pre-run (world === null) and for a static resident placement.
-        const runningW = pl.autoscale ? (world?.runningByPlacement?.[pl.id] ?? pl.count) : pl.count
-        maxWeight += maxW
-        runningWeight += runningW
-      }
-      billedFraction = maxWeight > 0 ? runningWeight / maxWeight : 1
-    }
+    const billedFraction = billedFractionForServer(residents, world)
     const usd = server.hourlyUsd * HOURS_PER_MONTH * billedFraction
     computeTotal += usd
     bump(byAzMap, server.azId, usd)
@@ -350,6 +364,17 @@ export function attributeByBlueprint(
   const byBlueprint = new Map<string, number>()
   const bump = (id: string, usd: number) => byBlueprint.set(id, (byBlueprint.get(id) ?? 0) + usd)
 
+  // ALL placements resident on each server (parked or not) — the billed-fraction denominator
+  // below (task-7 review fix) needs a fully parked placement's maxCount even though its
+  // instances contribute zero to the cpuShares split. Mirrors computeWorldCost's own
+  // placementsByServer construction exactly.
+  const placementsByServer = new Map<ServerId, Placement[]>()
+  for (const pl of Object.values(doc.placements)) {
+    const list = placementsByServer.get(pl.serverId) ?? []
+    list.push(pl)
+    placementsByServer.set(pl.serverId, list)
+  }
+
   // Group RUNNING instances by server, weighting by workload.cpuShares (absent -> 1) -- the SAME
   // weight hostScheduler.ts uses for capacity, so the cost split and the capacity split tell one
   // story (spec requirement).
@@ -360,8 +385,8 @@ export function attributeByBlueprint(
     // Billing granularity here matches computeWorldCost's own per-SERVER (not per-instance)
     // granularity: a parked placement (FEAT-008, running count 0) contributes nothing at all;
     // otherwise every resident instance on the server participates in the cpuShares split below,
-    // and the SERVER's cost is apportioned across placements by the same running/max ratio
-    // computeWorldCost already uses (see the per-server loop below).
+    // and the SERVER's cost is apportioned across ALL resident placements by billedFractionForServer
+    // above (which reads the full placementsByServer list, not this filtered one).
     const runningCount = placement.autoscale
       ? (world?.runningByPlacement?.[placement.id] ?? placement.count)
       : placement.count
@@ -375,25 +400,11 @@ export function attributeByBlueprint(
   for (const server of Object.values(doc.servers)) {
     const residents = instancesByServer.get(server.id) ?? []
     if (residents.length === 0) continue
-    const placementIds = new Set(residents.map(r => r.placementId))
-    const anyAutoscaled = [...placementIds].some(pid => doc.placements[pid]?.autoscale)
-    // Mirrors computeWorldCost's own per-server autoscale apportionment EXACTLY (same
-    // running/max-weight ratio, same fallback to authored count pre-run) -- factored to reuse
-    // rather than reimplemented with different rounding/edge-case behavior.
-    let billedFraction = 1
-    if (anyAutoscaled) {
-      let runningWeight = 0
-      let maxWeight = 0
-      for (const pid of placementIds) {
-        const pl = doc.placements[pid]
-        if (!pl) continue
-        const maxW = pl.autoscale ? pl.autoscale.maxCount : pl.count
-        const runningW = pl.autoscale ? (world?.runningByPlacement?.[pl.id] ?? pl.count) : pl.count
-        maxWeight += maxW
-        runningWeight += runningW
-      }
-      billedFraction = maxWeight > 0 ? runningWeight / maxWeight : 1
-    }
+    // Billed fraction is computed from EVERY placement resident on the server (via
+    // placementsByServer, built above from doc.placements directly) — the SAME helper
+    // computeWorldCost uses, over the SAME full resident set, so a fully parked sibling
+    // placement's maxCount is never silently dropped from the denominator (task-7 review fix).
+    const billedFraction = billedFractionForServer(placementsByServer.get(server.id) ?? [], world)
     const serverUsd = server.hourlyUsd * HOURS_PER_MONTH * billedFraction
     const totalShares = residents.reduce((s, r) => s + r.cpuShares, 0) || residents.length
     for (const r of residents) {

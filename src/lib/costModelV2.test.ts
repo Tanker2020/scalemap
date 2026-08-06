@@ -628,4 +628,55 @@ describe('attributeByBlueprint (FEAT-010)', () => {
     expect(managedRow!.monthlyUsd).toBeGreaterThan(0)
     expect(managedRow!.label).toBe('redis-cache')
   })
+
+  // Task-7 review regression: a server hosting TWO autoscaled placements, one fully parked
+  // (running 0, maxCount 2) and one partially running (running 1, maxCount 2). The billed
+  // fraction MUST be computed from BOTH placements' maxCount (0+1)/(2+2) = 0.25 -- matching
+  // computeWorldCost's own per-server apportionment exactly -- not just the surviving
+  // (non-parked) placement's own maxCount, which would silently double it to 1/2.
+  it('billed fraction accounts for a fully-parked SIBLING placement\'s maxCount, matching computeWorldCost', () => {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    doc.regions[region.id] = region
+    doc.azs[az.id] = az
+    const server = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[server.id] = server
+
+    const bpA = createBlueprint('svc-a-parked', 0)
+    const bpB = createBlueprint('svc-b-running', 1)
+    doc.blueprints[bpA.id] = bpA
+    doc.blueprints[bpB.id] = bpB
+
+    const autoscale = { minCount: 1, maxCount: 2, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300 }
+    const plA = createPlacement(bpA.id, server.id)
+    plA.count = 2
+    plA.autoscale = { ...autoscale }
+    const plB = createPlacement(bpB.id, server.id)
+    plB.count = 2
+    plB.autoscale = { ...autoscale }
+    doc.placements[plA.id] = plA
+    doc.placements[plB.id] = plB
+
+    const compiled = compileWorld(doc)
+    const world = {
+      totalRps: 0, errorRate: 0, populationRoutes: [],
+      crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0,
+      runningByPlacement: { [plA.id]: 0, [plB.id]: 1 },
+    }
+
+    // computeWorldCost's ground truth: billedFraction = (0 + 1) / (2 + 2) = 0.25.
+    const expectedServerUsd = server.hourlyUsd * HOURS_PER_MONTH * 0.25
+    const cost = computeWorldCost(doc, world, null)
+    expect(cost.monthlyUsd).toBeCloseTo(expectedServerUsd, 6)
+
+    const rows = attributeByBlueprint(doc, compiled, world, null)
+    // Only bpB has any surviving (non-parked) instances, so the whole apportioned server cost
+    // lands on it -- and it must be the SAME 0.25 fraction computeWorldCost used, not 0.5.
+    const bRow = rows.find(r => r.blueprintId === bpB.id)!
+    const aRow = rows.find(r => r.blueprintId === bpA.id)
+    expect(aRow).toBeUndefined()   // fully parked -- zero contribution, no row at all
+    expect(bRow.monthlyUsd).toBeCloseTo(expectedServerUsd, 6)
+    expect(bRow.monthlyUsd).not.toBeCloseTo(server.hourlyUsd * HOURS_PER_MONTH * 0.5, 2)
+  })
 })
