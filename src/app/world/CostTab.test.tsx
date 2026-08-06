@@ -1,14 +1,47 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { render, screen, cleanup } from '@testing-library/react'
 import { CostTab } from './CostTab'
 import { useWorldStore } from '../store/world.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { getPreset } from '../../lib/world/instanceCatalog'
+import * as costModel from '../../lib/costModelV2'
+import * as costSeriesModule from '../../lib/costSeries'
+import type { MetricsBatch, ReplayFrame } from '../../lib/worldEngine/types'
+
+function emptyWorldMetrics(over: Partial<MetricsBatch['world']> = {}): MetricsBatch['world'] {
+  return {
+    totalRps: 0, errorRate: 0, populationRoutes: [],
+    crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0,
+    ...over,
+  }
+}
+
+function fakeBatch(simMs: number): MetricsBatch {
+  return { simMs, instances: {}, servers: {}, azs: {}, regions: {}, world: emptyWorldMetrics() }
+}
+
+function fakeFrames(count: number): ReplayFrame[] {
+  return Array.from({ length: count }, (_, i) => ({ simMs: i * 1000, events: [], batch: fakeBatch(i * 1000) }))
+}
 
 beforeEach(() => {
   useWorldStore.getState().newWorld()
-  useSimulationStore.setState({ latestBatch: null, scrubBatch: null })
+  useSimulationStore.setState({ latestBatch: null, scrubBatch: null, scrubIndex: null })
+  // Pre-existing store/engine quirk (not introduced by this task, see task-9-report.md):
+  // worldEngine.getReplayFrames() returns a FRESH `[]` literal on every call while no run is
+  // active (`state?.replay.getFrames() ?? []`), which is referentially unstable across
+  // re-renders and trips React's useSyncExternalStore consistency check into an infinite
+  // render loop under jsdom. SignalsPanel.test.tsx (Task 4/5) never renders that hook unmocked
+  // for exactly this reason -- every one of its tests mocks getReplayFrames first. Follow the
+  // same established convention here: a stable default of no frames, overridden per-test where a
+  // fixture needs real frames.
+  vi.spyOn(useSimulationStore.getState(), 'getReplayFrames').mockReturnValue([])
+})
+
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
 })
 
 describe('CostTab', () => {
@@ -46,5 +79,107 @@ describe('CostTab', () => {
     expect(screen.getByText('Cross-AZ').nextSibling).toHaveStyle({ color: 'var(--color-price)' })
     expect(screen.getByText('Cross-region').nextSibling).toHaveStyle({ color: 'var(--color-price)' })
     expect(screen.getByText('Internet').nextSibling).toHaveStyle({ color: 'var(--color-price)' })
+  })
+
+  // --- FEAT-010 Task 9 additions ---
+
+  it('renders the $/hr headline in the price color', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<CostTab />)
+    const headline = screen.getByText(/\/hr/)
+    expect(headline).toHaveStyle({ color: 'var(--color-price)' })
+  })
+
+  it('renders a By service section ranked by cost (more expensive service first)', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const cheapServerId = useWorldStore.getState().addServer(azId, getPreset('vps-small')!)   // 0.018/hr
+    const pricyServerId = useWorldStore.getState().addServer(azId, getPreset('vps-large')!)   // 0.071/hr
+    const cheapBpId = useWorldStore.getState().addBlueprint('cheap-svc')
+    const pricyBpId = useWorldStore.getState().addBlueprint('pricy-svc')
+    useWorldStore.getState().addPlacement(cheapBpId, cheapServerId)
+    useWorldStore.getState().addPlacement(pricyBpId, pricyServerId)
+
+    render(<CostTab />)
+    expect(screen.getByText(/by service/i)).toBeInTheDocument()
+    const cheapLabel = screen.getByText('cheap-svc')
+    const pricyLabel = screen.getByText('pricy-svc')
+    // DOCUMENT_POSITION_FOLLOWING means `cheapLabel` comes AFTER `pricyLabel` in the DOM --
+    // i.e. pricy-svc (the more expensive row) is ranked first.
+    // eslint-disable-next-line no-bitwise
+    expect(cheapLabel.compareDocumentPosition(pricyLabel) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+  })
+
+  it('shows a negative incident-cost delta with a minus glyph, still in the price color (never success/danger)', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const frames = fakeFrames(4)
+    vi.spyOn(useSimulationStore.getState(), 'getReplayFrames').mockReturnValue(frames)
+    vi.spyOn(costSeriesModule, 'incidentCost').mockReturnValue({ actualUsd: 1, baselineUsd: 5, incidentUsd: -4 })
+    useSimulationStore.setState({ scrubIndex: 3 })
+
+    render(<CostTab />)
+    const el = screen.getByTestId('incident-cost')
+    expect(el.textContent).toMatch(/^−/)
+    expect(el).toHaveStyle({ color: 'var(--color-price)' })
+    // The forbidden temptation this test guards against: rendering a negative delta as "good
+    // news" in the success color (or as a warning in the danger color). Price law is absolute --
+    // every money value, including a negative one, is var(--color-price).
+    expect(el.style.color).not.toBe('var(--color-success)')
+    expect(el.style.color).not.toBe('var(--color-danger)')
+  })
+
+  it('shows a positive incident-cost delta with no minus glyph, still in the price color', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const frames = fakeFrames(4)
+    vi.spyOn(useSimulationStore.getState(), 'getReplayFrames').mockReturnValue(frames)
+    vi.spyOn(costSeriesModule, 'incidentCost').mockReturnValue({ actualUsd: 9, baselineUsd: 5, incidentUsd: 4 })
+    useSimulationStore.setState({ scrubIndex: 3 })
+
+    render(<CostTab />)
+    const el = screen.getByTestId('incident-cost')
+    expect(el.textContent).not.toMatch(/^−/)
+    expect(el).toHaveStyle({ color: 'var(--color-price)' })
+  })
+
+  it('does not render the incident-cost readout when not scrubbing', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<CostTab />)
+    expect(screen.queryByTestId('incident-cost')).not.toBeInTheDocument()
+  })
+
+  it('resets the cost-series cache when doc identity changes (no stale cost carried across worlds)', () => {
+    const frames = fakeFrames(2)
+    vi.spyOn(useSimulationStore.getState(), 'getReplayFrames').mockReturnValue(frames)
+    const spy = vi.spyOn(costModel, 'computeWorldCost')
+
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+
+    const { rerender } = render(<CostTab />)
+    const callsAfterFirst = spy.mock.calls.length
+    expect(callsAfterFirst).toBeGreaterThan(0)
+
+    // Change doc identity (a brand-new world -- different WorldDoc reference) while `frames`
+    // stays the SAME array/reference. If the per-doc cache were not reset, costSeriesFor would
+    // reuse the old doc's cached WorldCostResult for frame indices 0/1 and computeWorldCost would
+    // NOT be called again for the series -- only the always-uncached headline call would fire.
+    useWorldStore.getState().newWorld()
+    const region2 = useWorldStore.getState().addRegion('us-west-2')
+    const az2 = useWorldStore.getState().addAz(region2, 'us-west-2a')
+    useWorldStore.getState().addServer(az2, getPreset('vps-large')!)
+
+    rerender(<CostTab />)
+    const callsAfterSecond = spy.mock.calls.length - callsAfterFirst
+    // 1 headline call + 2 series calls (one per frame, cache freshly empty for the new doc) = 3.
+    expect(callsAfterSecond).toBeGreaterThanOrEqual(3)
   })
 })
