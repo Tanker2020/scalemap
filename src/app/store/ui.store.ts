@@ -33,7 +33,10 @@ import type { ServerId } from '../../lib/world/types'
 // 2026-08-02 (FEAT-003 Task 20): gained 'scenario' — the scenario-timeline authoring tab
 // (ScenarioPanel.tsx). World scope only, alongside routes/traffic; configuration, not a live
 // chaos surface, so it rides the ambient WorldPanel fieldset normally (disabled while running).
-export type PanelTab = 'topology' | 'blueprints' | 'packets' | 'managed' | 'connections' | 'traffic' | 'routes' | 'scenario' | 'analysis' | 'events' | 'cost' | 'config'
+// 2026-08-05 (FEAT-009 Task 5): gained 'signals' — the per-instance/AZ/region metric small-
+// multiples tab (SignalsPanel.tsx), reachable at EVERY scope (unlike 'scenario', which is
+// world-only) since it reads the replay ring scoped to wherever the dock currently is.
+export type PanelTab = 'topology' | 'blueprints' | 'packets' | 'managed' | 'connections' | 'traffic' | 'routes' | 'scenario' | 'signals' | 'analysis' | 'events' | 'cost' | 'config'
 
 export interface SceneOverlayTarget { kind: 'region' | 'population'; id: string }
 

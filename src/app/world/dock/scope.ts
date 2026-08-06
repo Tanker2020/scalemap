@@ -61,8 +61,12 @@ export function deriveScope(nav: NavSnapshot, selectedServerId: string | null, d
 // the tabs that describe a specific wiring (managed/connections/traffic/routes).
 // FEAT-003 Task 20: 'scenario' sits after 'routes' — the scenario timeline is a world-only
 // authoring surface (like routes/traffic), not a per-scope config concern.
-const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'packets', 'managed', 'connections', 'traffic', 'routes', 'scenario', 'analysis', 'events', 'cost']
-const SCOPED_TABS: PanelTab[] = ['config', 'analysis', 'events', 'cost']
+// FEAT-009 Task 5: 'signals' is added to BOTH lists — unlike 'scenario', the metric small-
+// multiples tab is meaningful at every scope (it reads the replay ring scoped to wherever the
+// dock currently is), so it rides alongside Analysis/Events/Cost rather than folding into the
+// world-only authoring set.
+const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'packets', 'managed', 'connections', 'traffic', 'routes', 'scenario', 'signals', 'analysis', 'events', 'cost']
+const SCOPED_TABS: PanelTab[] = ['config', 'signals', 'analysis', 'events', 'cost']
 
 export function scopeTabs(scope: DockScope): PanelTab[] {
   return scope.kind === 'world' ? [...WORLD_TABS] : [...SCOPED_TABS]

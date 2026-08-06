@@ -8,6 +8,7 @@ import { isEntryBlueprint } from '../../../lib/world/connections'
 import { TrafficPanel } from './TrafficPanel'
 import { RoutesPanel } from './RoutesPanel'
 import { ScenarioPanel } from './ScenarioPanel'
+import { SignalsPanel } from './SignalsPanel'
 import { AnalysisTab, unsuppressedCompileFindings } from './AnalysisTab'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { useWorldStore } from '../../store/world.store'
@@ -68,7 +69,7 @@ function SignatureHeader({ glyph, accent, summary, summaryColor }: SignatureHead
 const TAB_LABELS: Record<PanelTab, string> = {
   topology: 'Topology', blueprints: 'Blueprints', packets: 'Packets', managed: 'Managed',
   connections: 'Connections', traffic: 'Traffic',
-  routes: 'Routes', scenario: 'Scenario', analysis: 'Analysis', events: 'Events', cost: 'Cost', config: 'Config',
+  routes: 'Routes', scenario: 'Scenario', signals: 'Signals', analysis: 'Analysis', events: 'Events', cost: 'Cost', config: 'Config',
 }
 
 export interface WorldPanelProps {
@@ -253,6 +254,19 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
         : { glyph: '⏱', accent: 'var(--color-warning)', summary: 'no scenario yet' }
       break
     }
+    case 'signals': {
+      // Non-hook getState() read, deliberately — see the file-level note above `useSimulationStore`
+      // subscriptions: getReplayFrames() (simulation.store.ts -> replay.ts's getFrames()) always
+      // returns a FRESH array (`[...frames]`), so subscribing to it via a reactive selector hook
+      // gives every render a "changed" snapshot and makes React's useSyncExternalStore consistency
+      // check loop forever once this component is already re-rendering on its own cadence (it
+      // did, via displayBatch/events below — confirmed by a full-suite regression during Task 5).
+      // A plain getState() read still shows a live count on every one of those OTHER re-renders,
+      // without adding a subscription of its own.
+      const frames = useSimulationStore.getState().getReplayFrames()
+      header = { glyph: '◷', accent: 'var(--color-accent)', summary: frames.length > 0 ? `${frames.length} frames of history` : 'no history yet' }
+      break
+    }
     case 'analysis': {
       const errorCount = scopedFindingsResult.analysis.filter(f => f.severity === 'critical').length
         + scopedFindingsResult.compile.filter(cf => cf.severity === 'error').length
@@ -341,6 +355,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
             )}
             {tab === 'routes' && <RoutesPanel />}
             {tab === 'scenario' && <ScenarioPanel />}
+            {tab === 'signals' && <SignalsPanel scope={scope} />}
             {tab === 'analysis' && <AnalysisTab openSettings={openSettings} />}
             {tab === 'events' && <EventsTab />}
             {tab === 'cost' && <CostTab />}
@@ -368,6 +383,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
               <ScopedAnalysisBody analysis={scopedFindingsResult.analysis} compile={scopedFindingsResult.compile} />
             )}
             {tab === 'events' && <ScopedEventsBody events={scopedEventsList} />}
+            {tab === 'signals' && <SignalsPanel scope={scope} />}
             {tab === 'cost' && <ScopedCostBody cost={scopedCostResult} />}
           </>
         )}

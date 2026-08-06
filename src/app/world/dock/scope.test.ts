@@ -84,21 +84,28 @@ describe('scopeTabs', () => {
   it('returns the world tab ids, in the current dock order, for world scope', () => {
     expect(scopeTabs({ kind: 'world' })).toEqual([
       'topology', 'blueprints', 'packets', 'managed', 'connections', 'traffic', 'routes', 'scenario',
-      'analysis', 'events', 'cost',
+      'signals', 'analysis', 'events', 'cost',
     ])
   })
 
-  it('returns the 4-tab scoped set for region scope', () => {
-    expect(scopeTabs({ kind: 'region', regionId: 'r1' })).toEqual(['config', 'analysis', 'events', 'cost'])
+  it('returns the 5-tab scoped set for region scope', () => {
+    expect(scopeTabs({ kind: 'region', regionId: 'r1' })).toEqual(['config', 'signals', 'analysis', 'events', 'cost'])
   })
 
-  it('returns the 4-tab scoped set for az scope', () => {
-    expect(scopeTabs({ kind: 'az', regionId: 'r1', azId: 'az1' })).toEqual(['config', 'analysis', 'events', 'cost'])
+  it('returns the 5-tab scoped set for az scope', () => {
+    expect(scopeTabs({ kind: 'az', regionId: 'r1', azId: 'az1' })).toEqual(['config', 'signals', 'analysis', 'events', 'cost'])
   })
 
-  it('returns the 4-tab scoped set for server scope', () => {
+  it('returns the 5-tab scoped set for server scope', () => {
     expect(scopeTabs({ kind: 'server', regionId: 'r1', azId: 'az1', serverId: 's1' }))
-      .toEqual(['config', 'analysis', 'events', 'cost'])
+      .toEqual(['config', 'signals', 'analysis', 'events', 'cost'])
+  })
+
+  // FEAT-009 Task 5: 'signals' is reachable at EVERY scope (unlike world-only 'scenario'), so
+  // it must appear in both WORLD_TABS and SCOPED_TABS.
+  it('includes signals in both WORLD_TABS and SCOPED_TABS', () => {
+    expect(scopeTabs({ kind: 'world' })).toContain('signals')
+    expect(scopeTabs({ kind: 'region', regionId: 'r1' })).toContain('signals')
   })
 
   it('returns a fresh array each call (callers may not mutate the shared constant)', () => {
