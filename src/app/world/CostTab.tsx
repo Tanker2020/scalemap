@@ -118,7 +118,9 @@ export function CostTab() {
       </div>
       {cost.loadBalancerCount > 0 && (
         <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 12 }}>
-          includes {cost.loadBalancerCount} load balancer{cost.loadBalancerCount === 1 ? '' : 's'} · ${cost.loadBalancerUsd.toFixed(2)}/mo LB-hours (in the region totals below)
+          includes {cost.loadBalancerCount} load balancer{cost.loadBalancerCount === 1 ? '' : 's'} ·{' '}
+          <span style={{ color: 'var(--color-price)' }}>${cost.loadBalancerUsd.toFixed(2)}/mo</span>
+          {' '}LB-hours (in the region totals below)
         </div>
       )}
 

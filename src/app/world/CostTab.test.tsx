@@ -147,6 +147,19 @@ describe('CostTab', () => {
     expect(el).toHaveStyle({ color: 'var(--color-price)' })
   })
 
+  it('the LB-hours note renders its dollar amount in the price color, not the muted note color', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useWorldStore.getState().addLoadBalancer(regionId)
+    render(<CostTab />)
+    // The dollar amount lives in its OWN span, priced -- distinct from the surrounding
+    // descriptive note text, which stays muted.
+    const amountEl = screen.getByText(/^\$\d+\.\d{2}\/mo$/)
+    expect(amountEl).toHaveStyle({ color: 'var(--color-price)' })
+    expect(screen.getByText(/includes 1 load balancer/i)).toHaveStyle({ color: 'var(--color-text-muted)' })
+  })
+
   it('does not render the incident-cost readout when not scrubbing', () => {
     const regionId = useWorldStore.getState().addRegion('us-east-1')
     const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
