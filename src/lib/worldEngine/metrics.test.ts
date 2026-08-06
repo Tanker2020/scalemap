@@ -247,6 +247,18 @@ describe('metrics pyramid', () => {
     for (let i = 1; i < strata.length; i++) expect(strata[i - 1].ramMb).toBeGreaterThanOrEqual(strata[i].ramMb)
     expect(strata[0]).toMatchObject({ instanceId: f.i1, blueprintId: f.bp.id })
   })
+
+  it('p90Ms sits between p50Ms and p99Ms for every instance', () => {
+    const f = fixture()
+    const state = createMetricsState()
+    // Feed a window of varied latencies so percentiles differ meaningfully.
+    const w = state.window.get(f.i1) ?? { steps: 1, admittedSum: 10, errorSum: 0, latencies: [10, 20, 30, 40, 50, 200], selfLatencySum: 10 }
+    state.window.set(f.i1, w)
+    const batch = buildBatch(state, f.doc, f.compiled, snapshot(f, 1000), totals, 1000)
+    const m = batch.instances[f.i1]
+    expect(m.p90Ms).toBeGreaterThanOrEqual(m.p50Ms)
+    expect(m.p90Ms).toBeLessThanOrEqual(m.p99Ms)
+  })
 })
 
 // ─── Published vs enforced: CPU and RAM (audit ISSUE-011 / ISSUE-012) ────────

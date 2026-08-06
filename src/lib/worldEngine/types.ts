@@ -29,6 +29,11 @@ export interface InstanceMetrics {
   errorRate: number              // 0..1
   p50Ms: number                  // COMPOSED end-to-end (self + downstream), audit ISSUE-003
   p99Ms: number                  // COMPOSED end-to-end, same basis as p50Ms
+  // Additive-optional (contract-drift, FEAT-009): p90 — the percentile most SLOs are actually
+  // written against, sitting between p50 (hides tails) and p99 (dominated by outliers). Published
+  // UN-smoothed like p99Ms (audit ISSUE-037: EMA on a tail statistic attenuates a real spike),
+  // over the SAME multi-second latency reservoir p50Ms/p99Ms already read.
+  p90Ms: number
   // Additive-optional (contract-drift, audit ISSUE-003), same convention as ManagedServiceMetrics'
   // p50Ms/saturation below: self-only latency (own CPU/queue/NIC time, no downstream hops) —
   // pre-ISSUE-003 semantics, what p50Ms meant before composition. p50Ms/p99Ms above now fold in
@@ -113,6 +118,7 @@ export interface AzMetrics {
   rps: number
   errorRate: number
   p50Ms: number
+  p90Ms: number
   healthScore: number            // 0..100 composite — Phase 4's health ring reads this
   health: HealthState
   serverCount: number
@@ -130,6 +136,7 @@ export interface RegionMetrics {
   rps: number
   errorRate: number
   p50Ms: number
+  p90Ms: number
   healthScore: number
   health: HealthState
   // Live inbound share per population routed here (Phase 4 split-lines, Phase 5 arcs).

@@ -393,6 +393,8 @@ export function buildBatch(
     // to ~30% of its size, hiding exactly the transients a tail metric exists to show. The
     // multi-second reservoir already steadies it; p50 keeps the EMA for stable display.
     const p99Ms = percentile(sorted, 0.99)
+    // p90 — same un-smoothed convention as p99Ms (audit ISSUE-037), same reservoir.
+    const p90Ms = percentile(sorted, 0.9)
     // Self-only p50 (audit ISSUE-003): pre-composition semantics — own CPU/queue/NIC time, no
     // downstream hops folded in. A plain EMA'd window mean, not the multi-second tail reservoir
     // p50Ms/p99Ms use above, since this is a regression-floor readout, not a new tail statistic.
@@ -457,6 +459,7 @@ export function buildBatch(
       errorRate,
       p50Ms,
       p99Ms,
+      p90Ms,
       serviceP50Ms,
       activeConnections,
       cpuCoresUsed: rps * (effectiveCpuMsByInstance?.[inst.id] ?? workload.cpuMsPerRequest) / 1000,
@@ -526,6 +529,10 @@ export function buildBatch(
       ? inAz.reduce((s, i) => s + instances[i.id].p50Ms * (instances[i.id].rps || 1), 0) /
         Math.max(1, inAz.reduce((s, i) => s + (instances[i.id].rps || 1), 0))
       : 0
+    const p90 = inAz.length > 0
+      ? inAz.reduce((s, i) => s + instances[i.id].p90Ms * (instances[i.id].rps || 1), 0) /
+        Math.max(1, inAz.reduce((s, i) => s + (instances[i.id].rps || 1), 0))
+      : 0
     const health = state.lastHealth(az.id)
     // Mean undeliverable rps for this AZ (cross-zone-off forfeiture etc.), EMA'd like rps.
     const droppedRps = ema(state, `az:${az.id}:dropped`,
@@ -535,6 +542,7 @@ export function buildBatch(
       rps,
       errorRate,
       p50Ms: p50,
+      p90Ms: p90,
       healthScore: 100 * (1 - errorRate) * HEALTH_FACTOR[health],
       health,
       serverCount: Object.values(doc.servers).filter(s => s.azId === az.id).length,
@@ -551,6 +559,9 @@ export function buildBatch(
     const servedErrorRate = rps > 0 ? errWeighted / rps : 0
     const p50 = inRegion.length > 0
       ? inRegion.reduce((s, a) => s + a.p50Ms * (a.rps || 1), 0) / Math.max(1, inRegion.reduce((s, a) => s + (a.rps || 1), 0))
+      : 0
+    const p90 = inRegion.length > 0
+      ? inRegion.reduce((s, a) => s + a.p90Ms * (a.rps || 1), 0) / Math.max(1, inRegion.reduce((s, a) => s + (a.rps || 1), 0))
       : 0
     // Undeliverable inbound (cross-zone-off forfeiture etc.) impairs the region on DISPLAY only.
     // errorRate reflects the true failing fraction of inbound (served failures + dropped over
@@ -569,6 +580,7 @@ export function buildBatch(
       rps,
       errorRate,
       p50Ms: p50,
+      p90Ms: p90,
       healthScore: 100 * (1 - errorRate) * HEALTH_FACTOR[health],
       health,
       inboundByPopulation: routingSnapshot.populationRoutes

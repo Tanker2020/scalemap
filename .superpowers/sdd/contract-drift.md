@@ -1,5 +1,13 @@
 # Contract Drift Log
 
+## 2026-08-05 — FEAT-009: `p90Ms` (additive)
+
+Added `p90Ms: number` to `InstanceMetrics`, `AzMetrics`, `RegionMetrics` (`worldEngine/types.ts`).
+Computed in `metrics.ts` as `percentile(sorted, 0.9)` over the same multi-second latency reservoir
+`p50Ms`/`p99Ms` read, published un-smoothed (same convention as `p99Ms`, audit ISSUE-037).
+Aggregated up AZ/region with the same rps-weighted-mean shape as the existing `p50Ms` rollup.
+`WorldMetrics`/`ManagedServiceMetrics` were left untouched (out of scope for FEAT-009).
+
 ## 2026-08-01 — Fault injection (FEAT-001)
 
 `setOutage(scope, id, down: boolean)` on `WorldEngineApi` is superseded by `setFault(scope, id, spec: FaultSpec | null)`. `setOutage` survives as a documented alias implemented in terms of `setFault`. New `FaultKind`/`FaultSpec`/`FaultScope` types added. New `EngineEventKind` members `fault_injected`/`fault_cleared` added.
