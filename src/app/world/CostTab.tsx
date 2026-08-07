@@ -7,7 +7,7 @@ import { useMemo, useRef } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { computeWorldCost, attributeByBlueprint } from '../../lib/costModelV2'
-import { costSeriesFor, incidentCost } from '../../lib/costSeries'
+import { costSeriesFor, incidentCost, createCostSeriesCache, type CostSeriesCache } from '../../lib/costSeries'
 import { downsample, type SeriesPoint } from './panels/signalsSeries'
 import { SignalChart } from './panels/SignalChart'
 import { useCompiledWorld } from './useCompiledWorld'
@@ -45,15 +45,18 @@ export function CostTab() {
   const worldForCost = batch?.world ? { ...batch.world, runningByPlacement: batch.runningByPlacement } : null
   const cost = computeWorldCost(doc, worldForCost, batch?.managedServices ?? null)
 
-  // Frame-indexed cost memo (Task 8) -- a useRef so the cache survives re-renders but resets
-  // whenever `doc` changes identity (a different world, New, Open, or undo/redo restoring a
-  // prior snapshot reference), so a stale WorldCostResult from a PREVIOUS world's frame index
-  // never leaks into the current world's sparkline/incident readout.
-  const cacheRef = useRef<{ doc: WorldDoc; cache: ReturnType<typeof costSeriesFor> }>({ doc, cache: new Map() })
-  if (cacheRef.current.doc !== doc) cacheRef.current = { doc, cache: new Map() }
+  // simMs-keyed cost memo (Task 8; re-keyed off array index in the Wave 4 final review, Critical
+  // #1 -- the replay ring is a ROLLING 300-frame window, not append-only, so an array index does
+  // not stably identify a frame past 5 minutes of runtime) -- a useRef so the cache survives
+  // re-renders but resets whenever `doc` changes identity (a different world, New, Open, or
+  // undo/redo restoring a prior snapshot reference), so a stale WorldCostResult from a PREVIOUS
+  // world never leaks into the current world's sparkline/incident readout. A same-doc run
+  // restart (stop -> start) is handled INSIDE costSeriesFor itself via lastMaxSimMs.
+  const cacheRef = useRef<{ doc: WorldDoc; cache: CostSeriesCache }>({ doc, cache: createCostSeriesCache() })
+  if (cacheRef.current.doc !== doc) cacheRef.current = { doc, cache: createCostSeriesCache() }
   const series = costSeriesFor(frames, doc, cacheRef.current.cache)
 
-  const sparklinePoints: SeriesPoint[] = frames.map((f, i) => ({ simMs: f.simMs, value: series.get(i)?.hourlyUsd ?? 0 }))
+  const sparklinePoints: SeriesPoint[] = frames.map(f => ({ simMs: f.simMs, value: series.get(f.simMs)?.hourlyUsd ?? 0 }))
   const sparkline = downsample(sparklinePoints, SPARKLINE_WIDTH)
 
   const byService = useMemo(
@@ -61,6 +64,10 @@ export function CostTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [doc, compiled, batch],
   )
+  // costModelV2.ts's attributeByBlueprint doc comment: cross-zone/LB costs are left unattributed
+  // to any one blueprint, so a reconciling caller should show an explicit residual line computed
+  // exactly this way.
+  const residualUsd = cost.monthlyUsd - byService.reduce((s, r) => s + r.monthlyUsd, 0)
 
   // Bound to "from the start of the replay window through the current scrub point" -- there is
   // no separate authored incident-start marker in this UI, so the whole visible history up to
@@ -111,6 +118,17 @@ export function CostTab() {
           <span style={{ color: 'var(--color-price)' }}>${r.monthlyUsd.toFixed(2)}</span>
         </div>
       ))}
+      {/* Wave 4 final review, Important #2: attributeByBlueprint (costModelV2.ts) documents that
+          cross-zone/LB costs are NOT attributable to any one blueprint -- its own comment prescribes
+          this exact residual line for a caller (like this tab) that needs the rows to reconcile with
+          the monthly total. Epsilon guards against a spurious "$0.00" row in a world with no LB and
+          no cross-zone/cross-region/internet traffic. */}
+      {residualUsd > 0.005 && (
+        <div style={row} data-testid="cost-residual">
+          <span style={{ flex: 1, color: 'var(--color-text-muted)' }}>unattributed (cross-zone/LB)</span>
+          <span style={{ color: 'var(--color-price)' }}>${residualUsd.toFixed(2)}</span>
+        </div>
+      )}
 
       <div style={sectionLabel}>Monthly cost</div>
       <div style={{ font: '600 16px var(--font-mono)', color: 'var(--color-price)', marginBottom: cost.loadBalancerCount > 0 ? 2 : 12 }}>

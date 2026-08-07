@@ -29,7 +29,7 @@ export interface InstanceMetrics {
   errorRate: number              // 0..1
   p50Ms: number                  // COMPOSED end-to-end (self + downstream), audit ISSUE-003
   p99Ms: number                  // COMPOSED end-to-end, same basis as p50Ms
-  // Additive-optional (contract-drift, FEAT-009): p90 — the percentile most SLOs are actually
+  // Additive (contract-drift, FEAT-009): p90 — the percentile most SLOs are actually
   // written against, sitting between p50 (hides tails) and p99 (dominated by outliers). Published
   // UN-smoothed like p99Ms (audit ISSUE-037: EMA on a tail statistic attenuates a real spike),
   // over the SAME multi-second latency reservoir p50Ms/p99Ms already read.

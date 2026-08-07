@@ -626,7 +626,9 @@ describe('attributeByBlueprint (FEAT-010)', () => {
     const managedRow = rows.find(r => r.blueprintId === 'managed:ms-1')
     expect(managedRow).toBeDefined()
     expect(managedRow!.monthlyUsd).toBeGreaterThan(0)
-    expect(managedRow!.label).toBe('redis-cache')
+    // Fix 4 (Wave 4 final review): the label carries a distinguishing " (managed)" suffix so a
+    // managed service and a same-named blueprint are never indistinguishable in the rendered list.
+    expect(managedRow!.label).toBe('redis-cache (managed)')
   })
 
   // Task-7 review regression: a server hosting TWO autoscaled placements, one fully parked

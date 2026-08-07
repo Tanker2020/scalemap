@@ -415,16 +415,17 @@ export function attributeByBlueprint(
   // Managed services attribute directly -- they are already priced per service, not per resident,
   // and carry no blueprint. Grouped under a synthetic "managed:<id>" row (distinct namespace, so
   // it can never collide with a real blueprint id) so the Cost tab can label it distinctly, e.g.
-  // "redis-cache (managed)".
+  // "redis-cache (managed)" -- the " (managed)" suffix is appended below, not part of ms.label.
   for (const ms of Object.values(doc.managedServices)) {
     const usd = managedServiceMonthlyUsd(ms, managed?.[ms.id]?.rps ?? 0) + (managed ? managedEgressUsd(ms, managed[ms.id]?.egressBytesPerSec ?? 0) : 0)
     if (usd === 0) continue
     bump(`managed:${ms.id}`, usd)
   }
 
-  return [...byBlueprint.entries()].map(([blueprintId, monthlyUsd]) => ({
-    blueprintId,
-    label: doc.blueprints[blueprintId]?.name ?? doc.managedServices[blueprintId.replace('managed:', '')]?.label ?? blueprintId,
-    monthlyUsd,
-  })).sort((a, b) => b.monthlyUsd - a.monthlyUsd)
+  return [...byBlueprint.entries()].map(([blueprintId, monthlyUsd]) => {
+    const bp = doc.blueprints[blueprintId]
+    if (bp) return { blueprintId, label: bp.name, monthlyUsd }
+    const ms = blueprintId.startsWith('managed:') ? doc.managedServices[blueprintId.slice('managed:'.length)] : undefined
+    return { blueprintId, label: ms ? `${ms.label} (managed)` : blueprintId, monthlyUsd }
+  }).sort((a, b) => b.monthlyUsd - a.monthlyUsd)
 }

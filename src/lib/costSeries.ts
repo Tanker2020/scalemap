@@ -10,24 +10,59 @@
 // useRef that survives re-renders but must be reset by the CALLER whenever `doc` changes identity
 // -- this function has no way to detect "the world changed since last time" from a frame index
 // alone, so invalidation is NOT this function's responsibility.
+//
+// Wave 4 final review, Critical #1: the cache used to be keyed by ARRAY INDEX into `frames`. That
+// assumed the replay ring (worldEngine/replay.ts's createReplayBuffer, cap 300) is append-only. It
+// is NOT -- past 300 frames every push() evicts the oldest frame and shifts every remaining frame's
+// array position down by one, so index 0 on tick 301 is a DIFFERENT frame than index 0 on tick 1.
+// An index-keyed cache.has(i) check has no way to see that shift: past the 5-minute mark it never
+// calls computeWorldCost again, silently freezing the $/hr sparkline and every incidentCost
+// integral on the run's first five minutes. Re-keyed below by each frame's OWN `simMs` (stable and
+// monotonically increasing within one run) instead of its transient position in the array.
+//
+// A second failure mode: stop() then start() allocates a brand-new replay buffer, so a NEW run's
+// frame 0 (simMs starting back near 0) can collide with an OLD run's cached entry at the same
+// simMs, served from a cache the caller (CostTab.tsx) only resets on `doc` identity change, not on
+// a same-doc run restart. Detected here via `lastMaxSimMs`: if the incoming frames' last simMs is
+// LESS than the highest simMs this cache has ever seen, time went backwards -- a fresh run -- so
+// the cache is cleared before repopulating.
 import type { WorldDoc } from './world/types'
 import type { ReplayFrame } from './worldEngine/types'
 import { computeWorldCost, type WorldCostResult } from './costModelV2'
 
+export interface CostSeriesCache {
+  bySimMs: Map<number, WorldCostResult>
+  lastMaxSimMs: number
+}
+
+export function createCostSeriesCache(): CostSeriesCache {
+  return { bySimMs: new Map(), lastMaxSimMs: -Infinity }
+}
+
 export function costSeriesFor(
   frames: ReplayFrame[],
   doc: WorldDoc,
-  cache: Map<number, WorldCostResult> = new Map(),
+  cache: CostSeriesCache = createCostSeriesCache(),
 ): Map<number, WorldCostResult> {
-  for (let i = 0; i < frames.length; i++) {
-    if (cache.has(i)) continue
-    const f = frames[i]
+  if (frames.length > 0) {
+    const lastSimMs = frames[frames.length - 1].simMs
+    if (lastSimMs < cache.lastMaxSimMs) {
+      // Time went backwards relative to everything this cache has priced before -- a run
+      // restart, not a continuation of the same run. Stale entries from the OLD run would
+      // otherwise collide with the new run's simMs values and be served as if they still applied.
+      cache.bySimMs.clear()
+      cache.lastMaxSimMs = -Infinity
+    }
+  }
+  for (const f of frames) {
+    if (cache.bySimMs.has(f.simMs)) continue
     const worldForCost = f.batch.world
       ? { ...f.batch.world, runningByPlacement: f.batch.runningByPlacement }
       : null
-    cache.set(i, computeWorldCost(doc, worldForCost, f.batch.managedServices ?? null))
+    cache.bySimMs.set(f.simMs, computeWorldCost(doc, worldForCost, f.batch.managedServices ?? null))
+    if (f.simMs > cache.lastMaxSimMs) cache.lastMaxSimMs = f.simMs
   }
-  return cache
+  return cache.bySimMs
 }
 
 // actualUsd: the real, metered cost of the [fromIdx, toIdx) window, integrating each frame's
@@ -51,25 +86,29 @@ export function costSeriesFor(
 // actualUsd stays nonzero, producing a wildly wrong incidentUsd. Accumulating the SAME totalHours
 // actualUsd already walks guarantees the two numbers integrate over identical elapsed time no
 // matter where fromIdx/toIdx sit relative to the array, including at its very end.
+//
+// `series` is keyed by frame `simMs` (see costSeriesFor above), NOT array index -- fromIdx/toIdx
+// remain array positions into `frames` (the caller's natural scrub-index vocabulary); every lookup
+// below goes through `frames[i].simMs` to translate.
 export function incidentCost(
   series: Map<number, WorldCostResult>,
   frames: ReplayFrame[],
   fromIdx: number,
   toIdx: number,
 ): { actualUsd: number; baselineUsd: number; incidentUsd: number } {
-  if (toIdx <= fromIdx || !series.has(fromIdx)) {
+  if (toIdx <= fromIdx || !frames[fromIdx] || !series.has(frames[fromIdx].simMs)) {
     return { actualUsd: 0, baselineUsd: 0, incidentUsd: 0 }
   }
   let actualUsd = 0
   let totalHours = 0
   for (let i = fromIdx; i < toIdx; i++) {
-    const cost = series.get(i)
+    const cost = series.get(frames[i].simMs)
     if (!cost) continue
     const frameSec = Math.max(0, (frames[i + 1]?.simMs ?? frames[i].simMs) - frames[i].simMs) / 1000
     const hours = frameSec / 3600
     actualUsd += cost.hourlyUsd * hours
     totalHours += hours
   }
-  const baselineUsd = (series.get(fromIdx)?.hourlyUsd ?? 0) * totalHours
+  const baselineUsd = (series.get(frames[fromIdx].simMs)?.hourlyUsd ?? 0) * totalHours
   return { actualUsd, baselineUsd, incidentUsd: actualUsd - baselineUsd }
 }

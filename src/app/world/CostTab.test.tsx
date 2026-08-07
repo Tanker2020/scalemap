@@ -72,8 +72,10 @@ describe('CostTab', () => {
     const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
     useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
     render(<CostTab />)
-    const moneyValues = screen.getAllByText('$26.28')   // by-region row + by-AZ row
-    expect(moneyValues).toHaveLength(2)
+    // by-region row + by-AZ row + the residual row (Wave 4 final review fix #2: no blueprint is
+    // placed on this server, so its entire cost is unattributed and shows as the residual line).
+    const moneyValues = screen.getAllByText('$26.28')
+    expect(moneyValues).toHaveLength(3)
     for (const el of moneyValues) expect(el).toHaveStyle({ color: 'var(--color-price)' })
 
     expect(screen.getByText('Cross-AZ').nextSibling).toHaveStyle({ color: 'var(--color-price)' })
@@ -166,6 +168,40 @@ describe('CostTab', () => {
     useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
     render(<CostTab />)
     expect(screen.queryByTestId('incident-cost')).not.toBeInTheDocument()
+  })
+
+  // --- Wave 4 final review, Important #2: unattributed-residual row ---
+
+  it('shows an "unattributed" residual row when By-service rows do not sum to the monthly total (e.g. an LB)', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const bpId = useWorldStore.getState().addBlueprint('svc')
+    useWorldStore.getState().addPlacement(bpId, serverId)
+    // An authored LB adds LB-hours to computeWorldCost's monthlyUsd, but attributeByBlueprint
+    // documents that it deliberately does NOT attribute LB/cross-zone cost to any blueprint --
+    // so the By-service rows (just `svc`'s server cost) undershoot the monthly total by exactly
+    // the LB-hours amount, and that gap should render as an explicit residual line.
+    useWorldStore.getState().addLoadBalancer(regionId)
+
+    render(<CostTab />)
+    const residual = screen.getByTestId('cost-residual')
+    expect(residual).toBeInTheDocument()
+    expect(residual.textContent).toMatch(/unattributed/i)
+    const amountEl = residual.querySelector('span:last-child')!
+    expect(amountEl).toHaveStyle({ color: 'var(--color-price)' })
+    expect(amountEl.textContent).toMatch(/^\$\d+\.\d{2}$/)
+  })
+
+  it('does not show a residual row when By-service rows already sum to the monthly total', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const serverId = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const bpId = useWorldStore.getState().addBlueprint('svc')
+    useWorldStore.getState().addPlacement(bpId, serverId)
+    // No LB, no traffic -> nothing unattributed.
+    render(<CostTab />)
+    expect(screen.queryByTestId('cost-residual')).not.toBeInTheDocument()
   })
 
   it('resets the cost-series cache when doc identity changes (no stale cost carried across worlds)', () => {
