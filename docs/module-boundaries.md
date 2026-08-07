@@ -5877,3 +5877,152 @@ pre-existing + 2 new). `npx tsc --noEmit` clean. `npx vitest run src --exclude "
 line after the fix (~7.7-8.0ms on this session's specific, unusually loaded machine — see the perf
 finding above for why the raw number reads high; the AUTOSCALE-attributable component of it is
 what was actually being guarded, and that component is now small).
+
+## Wave 4 — Signals & Cost Velocity: module additions (FEAT-009/FEAT-010)
+
+FEAT-009 gives every scope (world/region/AZ/server) a "Signals" tab — small-multiple sparklines
+of the live/replay metric history, the first place in the app a metric's TREND, not just its
+instantaneous reading, is visible. FEAT-010 turns the existing static Cost tab into a velocity/
+attribution surface: a live `$/hr` headline, a by-service cost breakdown, and a scrub-bound
+incident-cost delta. The two features share one seam deliberately — FEAT-010's cost series rides
+the exact same `SignalChart`/`downsample` machinery FEAT-009 built, rather than growing a second
+charting primitive.
+
+### New modules
+
+| Module | Feature | Purpose |
+|---|---|---|
+| `src/app/world/panels/signalsSeries.ts` (Task 2) | FEAT-009 | Pure, store-free series extraction over `ReplayFrame[]`: `SignalKey` (`rps`/`errorRate`/`p50Ms`/`p90Ms`/`p99Ms`/`activeConnections`/`cpu`/`queueDepth`/`ramMb`, widened by FEAT-010 with `costUsdPerHour`) → `extractSeries(frames, scope, key)` → `SeriesPoint[]`, plus `downsample(points, targetWidth)`, an extrema-preserving bucketer (each output point keeps the bucket's `min`/`max` alongside its mean, so a single-frame spike survives visually even after the point count is shrunk 6x+ for a fixed chart width — a plain average would smear it away). Server-scope resolution goes through `MetricsBatch.servers[id].ramByInstance` — the ONLY serverId→instanceId mapping published on the batch itself (`InstanceMetrics` carries no `serverId` field, and this module deliberately stays compiled-world-free rather than taking a `CompiledWorld` dependency just for that link). `rps`/`activeConnections`/`cpu`/`ramMb` sum across a server's resident instances; everything else (latency percentiles, error rate) is rps-weighted-meaned, falling back to a plain mean when every instance in the set reports zero rps (avoids a divide-by-zero collapsing an idle-but-reporting fleet's latency floor to 0). |
+| `src/app/world/panels/SignalChart.tsx` (Task 3) | FEAT-009 | The one shared SVG line/band chart, consumed by both `SignalsPanel.tsx` and (FEAT-010) `CostTab.tsx`'s sparkline — no second chart-drawing implementation exists anywhere in the dock. Renders a `min`/`max` fill band (15% opacity) under the mean polyline, an optional dashed playhead line, and optional dashed event-marker lines; a click computes the nearest source point's `simMs` by pixel ratio and calls the caller's `onScrub`. Zero-point input renders an empty labeled `<svg>` rather than throwing on empty domains. |
+| `src/app/world/panels/SignalsPanel.tsx` (Task 4/5) | FEAT-009 | The Signals tab body — one labeled `SignalChart` row per `SignalKey`, stacked, over whichever `DockScope` the dock is currently showing (world/region/az/server — unlike the world-only `scenario`/`traffic`/`routes` tabs, this one is meaningful and wired at every scope). The first (`rps`) row alone carries the engine's event markers, so a scale/kill/failover annotation doesn't repeat across all eight charts. Clicking any chart scrubs the simulation to the nearest frame via `setScrubIndex`. |
+| `src/lib/costSeries.ts` (Task 8) | FEAT-010 | `costSeriesFor(frames, doc, cache)` — a caller-owned `Map<frameIndex, WorldCostResult>` memo over `computeWorldCost`, so charting a 300-frame replay window costs one `computeWorldCost` call per NEW frame ever seen, not one per render (that function iterates every server/managed-service/LB in the world — not free at 1 Hz, let alone at render cadence). `incidentCost(series, frames, fromIdx, toIdx)` derives `actualUsd`/`baselineUsd`/`incidentUsd` for a scrub range: `actualUsd` sums each frame's own `hourlyUsd × frameSec/3600` (so a mid-window rate change — an autoscale event, a fault — is captured exactly, not averaged away), and `baselineUsd` is the SAME summed duration priced at the `fromIdx` frame's rate, the "nothing happened" counterfactual. `incidentUsd` is deliberately signed, not clamped ≥ 0 — an incident that SHEDS load (a partition that stops traffic reaching an expensive path, an autoscale-in that never would have fired without the fault) can genuinely cost less than steady state, and the spec requires that to render as a real negative number rather than an absolute value that erases the direction of the effect. |
+
+### Engine contract (`worldEngine/metrics.ts`/`types.ts`, Task 1)
+
+`p90Ms` was added to `InstanceMetrics`, `AzMetrics`, and `RegionMetrics` — the percentile most
+SLOs are actually written against, sitting between `p50Ms` (hides tails) and `p99Ms` (dominated
+by outliers). Computed in `metrics.ts` as `percentile(sorted, 0.9)` over the exact same
+multi-second latency reservoir `p50Ms`/`p99Ms` already read, and published **un-smoothed**, the
+same convention `p99Ms` uses (audit ISSUE-037: an EMA on a tail statistic attenuates a real
+spike, hiding exactly the transient a tail metric exists to surface). AZ/region rollups use the
+identical rps-weighted-mean shape the existing `p50Ms` rollup already uses. Logged in
+`contract-drift.md` as additive; `WorldMetrics`/`ManagedServiceMetrics` were deliberately left
+untouched (world scope has no latency rollup at all today, and FEAT-009 was out of scope to add
+one). Note for anyone reading the type literally: `p90Ms` is declared as a plain `number`, not
+`p90Ms?:` — every code path that builds an `InstanceMetrics`/`AzMetrics`/`RegionMetrics` was
+updated in the same commit, so it's never actually absent at runtime; "additive" here means
+additive to the *contract's history*, not that callers need an `?? 0` guard.
+
+### Four-wiring-points pattern, again (`ui.store.ts` / `dock/scope.ts` / `WorldPanel.tsx`, Task 5)
+
+`'signals'` followed the exact wiring shape this file has already documented for `'scenario'`
+(§ "Packet Library + Global Blueprints" note near line ~3991) and every tab before it: `PanelTab`
+(`ui.store.ts`) → the tab-list arrays (`dock/scope.ts`) → `WorldPanel.tsx`'s `TAB_LABELS` +
+header-glyph switch + body switch. The one place `'signals'` diverges from `'scenario'`'s
+precedent is `scope.ts`: `'scenario'` only ever went into `WORLD_TABS` (a world-only authoring
+surface, like `traffic`/`routes`), but `'signals'` went into **both** `WORLD_TABS` and
+`SCOPED_TABS` — the metric small-multiples are meaningful at every scope, since `SignalsPanel`
+reads the replay ring scoped to wherever the dock currently is, so it rides alongside
+Analysis/Events/Cost rather than folding into the world-only set. `WorldPanel.tsx`'s header for
+the tab reads `getReplayFrames()` via a plain `getState()` call (glyph `◷`, summary `"N frames of
+history"` / `"no history yet"`) rather than a reactive selector — see the bug below for why that
+distinction is load-bearing, not stylistic.
+
+### Cost model (`src/lib/costModelV2.ts`, Task 7)
+
+`WorldCostResult` gained `hourlyUsd` — `monthlyUsd / HOURS_PER_MONTH`, always computed as a pure
+division of the SAME `monthlyUsd` total rather than independently accumulated, so the two figures
+can never disagree. New `attributeByBlueprint(doc, compiled, world, managed)` re-derives cost at
+**blueprint** granularity (rather than `computeWorldCost`'s region/AZ granularity) by splitting
+each server's flat hourly charge across its resident RUNNING instances, weighted by
+`WorkloadProfile.cpuShares` (absent → 1) — the SAME weight `hostScheduler.ts`'s fair-share CPU
+split uses, so a blueprint's cost share and its capacity share can never silently tell two
+different stories. Managed services attribute directly under a synthetic `managed:<id>` key
+(`ManagedService` has no blueprint id to key by), so the Cost tab's "By service" list can label a
+managed row distinctly (e.g. "redis-cache (managed)") instead of showing a raw id.
+
+**Documented gap, not silently papered over:** the spec's ideal design wants cross-zone egress
+and load-balancer cost attributed to the calling blueprint via the flow solver's per-instance
+`depBytesById` breakdown. That per-instance byte data does not reach `costModelV2.ts` today —
+`WorldMetrics`/`MetricsBatch` (`worldEngine/types.ts`) only carry WORLD-level aggregate byte
+rates, not a per-instance/per-dependency one — and re-deriving that attribution here would create
+a second `depBytesById`-shaped resolution point alongside `flows.ts`/`packetResolve.ts` (a
+documented anti-pattern in this codebase). So egress and LB costs are left unattributed to any
+blueprint; `attributeByBlueprint`'s rows only reconcile to `computeWorldCost().monthlyUsd` for a
+world with no LBs and no cross-zone/cross-region/internet traffic. `CostTab.tsx` (below) does not
+currently render the "+ $X/mo not attributed" residual line the cost model's own comment suggests
+a caller add — the By-service section and the pre-existing monthly total are both shown, but the
+gap between their sums is not called out explicitly in the UI as of this wave.
+
+**Real bug found and fixed mid-wave, not in the original plan:** `attributeByBlueprint`'s first
+cut derived its per-server resident-placement list from `compiled.instances` **after** the
+running-count filter that drops a fully-parked autoscaled placement (running count 0) — so a
+parked sibling's `maxCount` silently fell out of the billed-fraction denominator, doubling the
+billed fraction for whatever placement remained (0.5 instead of the correct 0.25, for a two-
+placement, `maxCount`-2-each server with one parked and one at `running=1`), diverging from what
+`computeWorldCost` bills for the SAME server state. Fixed by extracting a single shared
+`billedFractionForServer(residents, world)` helper, built from each server's FULL
+`doc.placements`-derived resident list (parked or not), and making both `computeWorldCost` and
+`attributeByBlueprint` call it — the two can no longer drift apart, mirroring this codebase's
+existing two-call-site discipline for `activeConnections`/`checkoutTimeoutErrorFraction`. A
+regression test locks the exact two-placement scenario (`costModelV2.test.ts`).
+
+### `CostTab.tsx` rewrite (Task 9/10) — supersedes the Task-16-era row
+
+The pre-Wave-4 row for this file (Phase 2 Task 16, near line ~226) described a static monthly
+total + per-region/per-AZ breakdown + egress line-items. That structure is **preserved verbatim**
+at the bottom of the tab, but the file now leads with the FEAT-010 additions: a `$/hr` headline
+(`var(--color-price)`, per price law) with a `SignalChart` sparkline fed by `costSeries.ts`'s
+per-frame memo (held in a `useRef` keyed on `doc` identity, so a New/Open/undo-restored world
+never reads a stale cost figure from the PREVIOUS world's frame indices); a scrub-bound
+"Incident cost (scrub range)" readout — priced from frame 0 through the current `scrubIndex`
+inclusive, since this UI has no separate authored incident-start marker, so "the whole visible
+history up to the playhead" is the range being priced; and a "By service" section from
+`attributeByBlueprint`. The incident-cost delta renders with a minus GLYPH (`−`) for a negative
+value, not a hyphen, and stays in `var(--color-price)` regardless of sign — price law is absolute
+even when the number is "good news" (cheaper), never recolored into `var(--color-success)`.
+
+**Review-fix, same wave:** the pre-existing LB-hours itemization note ("includes N load
+balancers · $X/mo LB-hours…") wrapped its whole line, dollar amount included, in
+`var(--color-text-muted)` — carried forward unnoticed from the file's Task-16 original and the
+task brief's own draft. Fixed in a follow-up commit: the amount now renders in its own span in
+`var(--color-price)`, with only the surrounding descriptive text staying muted.
+
+### Real bug found and fixed mid-wave: `getReplayFrames()` cannot be a reactive selector
+
+Both `SignalsPanel.tsx` and `CostTab.tsx` need the full replay-frame array (to build a chartable
+series and to memo cost per frame), and the natural first instinct — `useSimulationStore(s =>
+s.getReplayFrames())` — is a production-crashing bug against the REAL store. `getReplayFrames()`
+(`worldEngine/index.ts` → `replay.ts`'s `getFrames()`) always returns a **freshly-allocated**
+array (`[...frames]`, or a bare `[]` before any run has started), even when nothing has actually
+changed. A reactive selector hook therefore sees a "changed" snapshot on every single render,
+which trips React's `useSyncExternalStore` consistency check into "Maximum update depth exceeded"
+the instant the component mounts against the unmocked store — masked in `SignalsPanel.tsx`'s own
+first-cut test suite because every test there used `mockReturnValue`, which happens to hand back
+a stable reference across calls, unlike the real implementation.
+
+`WorldPanel.tsx`'s own `'signals'` tab header (Task 5) had already landed the correct pattern —
+a plain, non-reactive `useSimulationStore.getState().getReplayFrames()` call inside the render
+body, re-read on every render the component already performs for other reasons — but
+`SignalsPanel.tsx` itself (Task 4, written earlier) had not, and neither did the first cut of
+`CostTab.tsx` (Task 9) copy it forward correctly until this exact hazard was hit again. The fix,
+applied identically in both files: subscribe REACTIVELY to `scrubBatch ?? latestBatch` (and
+`scrubIndex`) — referentially stable values the store only replaces on an actual new batch or
+scrub — to get the right re-render cadence, and read `getReplayFrames()` as a plain `getState()`
+call inside the render body, never through the hook. The component still re-renders on every new
+batch/scrub-index change via the reactive fields above, so a fresh frames array is picked up on
+the next render regardless, without ever subscribing to the unstable array itself. Two regression
+tests were added to `SignalsPanel.test.tsx`: one mocking `getReplayFrames` with
+`mockImplementation(() => [...frames])` (a fresh reference every call, unlike the pre-existing
+`mockReturnValue` tests) and one rendering against the REAL, completely unmocked store with no run
+active — the exact empirical probe that surfaced the bug, which threw before the fix and passes
+after it. This is now the third place in the dock this exact pattern is required
+(`WorldPanel.tsx`, `CostTab.tsx`, `SignalsPanel.tsx`) — any FUTURE component that needs the replay
+ring should copy this precedent rather than reaching for `useSimulationStore(s =>
+s.getReplayFrames())` directly.
+
+**Verification.** Full-suite regression (`npx vitest run src --exclude "**/.claude/**"`) and
+`npx tsc --noEmit` were run clean after every task in this wave, per the wave's Task 10 close-out;
+`costModelV2.test.ts` carries the new billed-fraction-divergence regression case, and
+`SignalsPanel.test.tsx`/`SignalChart.test.tsx`/`signalsSeries.test.ts`/`costSeries.test.ts`/
+`CostTab.test.tsx` cover the new modules and both real-bug fixes above.
