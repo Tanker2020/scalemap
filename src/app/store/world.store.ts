@@ -173,10 +173,12 @@ interface WorldStore {
   addScenarioStep: (step: ScenarioStep) => void
   removeScenarioStep: (index: number) => void
   updateScenarioStep: (index: number, step: ScenarioStep) => void
-  // Comparison environments (Wave 5): named what-if overlays. addEnvironment mints
-  // `env-${n}` off the current count (same convention as addRack's `rack-${n}`); removing the
-  // active environment clears activeEnvironmentId too, so the doc never points at a deleted
-  // overlay (mirrors removeRack clearing dangling `server.rack` references).
+  // Comparison environments (Wave 5): named what-if overlays. addEnvironment mints a
+  // monotonic id via nextWorldId('env') (same as createRack's `Rack.id`) so ids never
+  // collide across add/remove cycles, even though the count-derived string is still used
+  // for addRack's human-readable LABEL. Removing the active environment clears
+  // activeEnvironmentId too, so the doc never points at a deleted overlay (mirrors
+  // removeRack clearing dangling `server.rack` references).
   addEnvironment: (label: string) => void
   updateEnvironment: (id: string, patch: Partial<Environment>) => void
   removeEnvironment: (id: string) => void
@@ -669,7 +671,7 @@ export const useWorldStore = create<WorldStore>((set, get) => {
     }),
 
     addEnvironment: (label) => mutate(d => {
-      const id = `env-${Object.keys(d.environments ?? {}).length + 1}`
+      const id = nextWorldId('env')
       return { ...d, environments: { ...(d.environments ?? {}), [id]: { id, label } } }
     }),
     updateEnvironment: (id, patch) => mutate(d => {

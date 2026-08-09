@@ -925,4 +925,66 @@ describe('world.store — Environment CRUD (Wave 5)', () => {
     useWorldStore.getState().setCloudProfile('aws')
     expect(useWorldStore.getState().doc.cloudProfile).toBe('aws')
   })
+
+  it('removeEnvironment is one undo step', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    const [id] = Object.keys(useWorldStore.getState().doc.environments!)
+    const beforeRemove = useWorldStore.getState().doc
+
+    useWorldStore.getState().removeEnvironment(id)
+    expect(useWorldStore.getState().doc.environments![id]).toBeUndefined()
+
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc).toBe(beforeRemove)
+    expect(useWorldStore.getState().doc.environments![id].label).toBe('staging')
+  })
+
+  it('updateEnvironment is one undo step', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    const [id] = Object.keys(useWorldStore.getState().doc.environments!)
+    const beforeUpdate = useWorldStore.getState().doc
+
+    useWorldStore.getState().updateEnvironment(id, { serverCountFactor: 0.5 })
+    expect(useWorldStore.getState().doc.environments![id].serverCountFactor).toBe(0.5)
+
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc).toBe(beforeUpdate)
+    expect(useWorldStore.getState().doc.environments![id].serverCountFactor).toBeUndefined()
+  })
+
+  it('setCloudProfile is one undo step', () => {
+    const before = useWorldStore.getState().doc
+    useWorldStore.getState().setCloudProfile('aws')
+    expect(useWorldStore.getState().doc.cloudProfile).toBe('aws')
+
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc).toBe(before)
+    expect(useWorldStore.getState().doc.cloudProfile).toBeUndefined()
+  })
+
+  // Regression for the id-collision data-loss bug: addEnvironment used to derive its id from
+  // Object.keys(d.environments).length, which is not monotonic across add/remove cycles.
+  // add "staging" -> env-1; add "canary" -> env-2; remove env-1 -> only canary (env-2) left;
+  // add "blue" -> count is 1 again, so the new id collided with "canary"'s and silently
+  // overwrote it. addEnvironment now mints ids via nextWorldId('env'), which never repeats.
+  it('addEnvironment never reuses an id after an add/remove/add cycle', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    useWorldStore.getState().addEnvironment('canary')
+    const [stagingId, canaryId] = Object.keys(useWorldStore.getState().doc.environments!)
+
+    useWorldStore.getState().removeEnvironment(stagingId)
+    expect(useWorldStore.getState().doc.environments![canaryId].label).toBe('canary')
+
+    useWorldStore.getState().addEnvironment('blue')
+    const ids = Object.keys(useWorldStore.getState().doc.environments!)
+    expect(ids).toHaveLength(2)
+    expect(new Set(ids).size).toBe(2)
+
+    // "canary" must survive untouched — this is the exact overwrite the bug caused.
+    expect(useWorldStore.getState().doc.environments![canaryId]).toBeDefined()
+    expect(useWorldStore.getState().doc.environments![canaryId].label).toBe('canary')
+
+    const blueId = ids.find(i => i !== canaryId)!
+    expect(useWorldStore.getState().doc.environments![blueId].label).toBe('blue')
+  })
 })
