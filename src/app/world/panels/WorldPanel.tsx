@@ -68,7 +68,7 @@ function SignatureHeader({ glyph, accent, summary, summaryColor }: SignatureHead
 const TAB_LABELS: Record<PanelTab, string> = {
   topology: 'Topology', blueprints: 'Blueprints', packets: 'Packets', managed: 'Managed',
   connections: 'Connections', traffic: 'Traffic',
-  routes: 'Routes', scenario: 'Scenario', analysis: 'Analysis', events: 'Events', cost: 'Cost', config: 'Config',
+  routes: 'Routes', scenario: 'Scenario', analysis: 'Analysis', events: 'Events', cost: 'Cost', compare: 'Compare', config: 'Config',
 }
 
 export interface WorldPanelProps {

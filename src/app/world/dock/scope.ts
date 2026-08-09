@@ -61,7 +61,7 @@ export function deriveScope(nav: NavSnapshot, selectedServerId: string | null, d
 // the tabs that describe a specific wiring (managed/connections/traffic/routes).
 // FEAT-003 Task 20: 'scenario' sits after 'routes' — the scenario timeline is a world-only
 // authoring surface (like routes/traffic), not a per-scope config concern.
-const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'packets', 'managed', 'connections', 'traffic', 'routes', 'scenario', 'analysis', 'events', 'cost']
+const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'packets', 'managed', 'connections', 'traffic', 'routes', 'scenario', 'analysis', 'events', 'cost', 'compare']
 const SCOPED_TABS: PanelTab[] = ['config', 'analysis', 'events', 'cost']
 
 export function scopeTabs(scope: DockScope): PanelTab[] {

@@ -84,7 +84,7 @@ describe('scopeTabs', () => {
   it('returns the world tab ids, in the current dock order, for world scope', () => {
     expect(scopeTabs({ kind: 'world' })).toEqual([
       'topology', 'blueprints', 'packets', 'managed', 'connections', 'traffic', 'routes', 'scenario',
-      'analysis', 'events', 'cost',
+      'analysis', 'events', 'cost', 'compare',
     ])
   })
 
@@ -106,5 +106,10 @@ describe('scopeTabs', () => {
     const b = scopeTabs({ kind: 'world' })
     expect(a).not.toBe(b)
     expect(a).toEqual(b)
+  })
+
+  it("scopeTabs includes 'compare' at world scope only", () => {
+    expect(scopeTabs({ kind: 'world' })).toContain('compare')
+    expect(scopeTabs({ kind: 'region', regionId: 'r1' })).not.toContain('compare')
   })
 })
