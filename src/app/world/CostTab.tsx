@@ -73,6 +73,9 @@ export function CostTab() {
       <div style={row}><span style={{ flex: 1 }}>Internet</span><span style={{ color: 'var(--color-price)' }}>${cost.egress.internetUsd.toFixed(2)}</span></div>
 
       <div style={sectionLabel}>Price this world as…</div>
+      <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 8 }}>
+        Only unpinned managed services reprice; server and network costs are provider-flat in this model.
+      </div>
       {providerComparison.map(p => (
         <div key={p.provider} style={row}>
           <span style={{ flex: 1 }}>{PROVIDER_LABEL[p.provider]}</span>

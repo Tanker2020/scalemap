@@ -64,4 +64,23 @@ describe('CostTab', () => {
     expect(rowValues).toHaveLength(3)
     for (const el of rowValues) expect(el).toHaveStyle({ color: 'var(--color-price)' })
   })
+
+  // Fix round 1: the degenerate all-identical test above proves the row renders, but a world with
+  // an unpinned ('generic') managed service is actually eligible for repricing, so its three
+  // totals must genuinely diverge — this is what would catch a regression where providerOverride
+  // stops being threaded through to computeWorldCost.
+  it('a world with an unpinned managed service reprices differently under aws/gcp/azure', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    // provider omitted -> defaults to 'generic', i.e. unpinned and eligible for providerOverride.
+    useWorldStore.getState().addManagedService('objectStorage', 'Object store', { kind: 'region', regionId }, 443, undefined, {
+      storageGb: 500, storageTierId: 'standard',
+    })
+    render(<CostTab />)
+    const rowValues = screen.getAllByText(/^\$\d+\.\d{2}\/mo$/)
+    expect(rowValues).toHaveLength(3)
+    const totals = rowValues.map(el => el.textContent)
+    expect(new Set(totals).size).toBeGreaterThan(1)
+  })
 })

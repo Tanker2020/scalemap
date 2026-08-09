@@ -20,7 +20,14 @@ const DB_STORAGE_FALLBACK_USD_PER_GB_MONTH = 0.115
 // `providerOverride` undefined (every pre-existing call site), this is the exact identity
 // `ms.provider` always was — byte-identical default behavior.
 function resolveProvider(explicit: CloudProvider, override: RealProvider | undefined): CloudProvider {
-  if (explicit !== 'generic') return explicit
+  // Widened from `explicit !== 'generic'` (fix round 1): a hand-authored/malformed .scalemap
+  // could carry `provider: undefined` even though ManagedService['provider'] is a required
+  // CloudProvider field at the type level — without the `explicit &&` guard that value would
+  // fall through to `return explicit` (undefined) and reach an unguarded
+  // `PROVIDER_EGRESS[undefined]`/`getServiceSpec(..., undefined)` lookup downstream. Every
+  // currently-valid CloudProvider value ('generic'/'aws'/'gcp'/'azure') is truthy, so this is a
+  // no-op for any well-formed document.
+  if (explicit && explicit !== 'generic') return explicit
   return override ?? explicit
 }
 

@@ -411,6 +411,13 @@ describe('computeWorldCost — providerOverride ("price this world as…", Task 
     expect(pinnedOnlyOverridden.monthlyUsd).toBeCloseTo(pinnedOnlyBase.monthlyUsd, 6)
   })
 
+  it('two different overrides on the same doc produce different totals', () => {
+    const withServices = docWithTwoManagedServices()
+    const asGcp = computeWorldCost(withServices, null, null, 'gcp')
+    const asAzure = computeWorldCost(withServices, null, null, 'azure')
+    expect(asGcp.monthlyUsd).not.toBe(asAzure.monthlyUsd)
+  })
+
   it('every existing call shape (no providerOverride argument) is byte-identical to pre-Task-12 behavior', () => {
     const { doc } = twoServerWorld()
     doc.managedServices['ms-1'] = {
