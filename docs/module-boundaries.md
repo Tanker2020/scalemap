@@ -5977,3 +5977,77 @@ test asserts a change to `0.1` instead.
 (4 new: default-primary render, canary switch reveals+sets `canaryWeight`, role-away clears
 `canaryWeight`, edit-lock). `npx tsc --noEmit` clean. Full suite: `npx vitest run` — 156 files /
 2093 tests, all green.
+
+---
+
+## Wave 5 Task 15 — `src/app/keymap.ts`: one keybinding registry replacing two independent listeners
+
+The app had two independent, hand-rolled `window` `keydown` listeners: `App.tsx` owned `⌘N` (no
+focused-input guard — a real, if minor, pre-existing bug), and `WorldShell.tsx` owned `⌘Z`/
+`⇧⌘Z`/`Escape` (with the guard, plus the `placeMode`-disarms-before-`nav.up()` priority from
+Polish 4 T7). This task consolidates both into one registry-driven listener, and is deliberately
+the seam later ergonomics-pack tasks (a command palette, a keyboard-map overlay) build on — both
+will read `REGISTRY`/`Binding`/`CommandContext` from here rather than re-deriving bindings.
+
+**`src/app/keymap.ts` (new)** exports `CommandContext` (a plain bag of function references —
+`running`, `newWorld`/`goGlobe`/`setFilePath`/`setShowHome`/`undo`/`redo`/`goUp`/`exitPlaceMode`/
+`isInPlaceMode` — no React/hook dependency, so the file is unit-testable headlessly), `Binding`
+(`{ id, keys, label, group: 'file'|'navigate'|'author'|'chaos'|'view', when?: 'always'|'running'|
+'stopped', run: (ctx) => void }`), `REGISTRY: Binding[]` (the 4 bindings: `new-world` ⌘N always,
+`undo` ⌘Z when stopped, `redo` ⇧⌘Z when stopped, `escape` Escape always — `escape`'s `run` checks
+`ctx.isInPlaceMode()` first and disarms before falling through to `ctx.goUp()`, preserving Polish
+4 T7's priority), `matchBinding(e, registry)` (pure `KeyboardEvent` → `Binding | null` matcher —
+`metaKey || ctrlKey` for `⌘`, exact `shiftKey` match, `Escape` matched on `e.key` alone regardless
+of modifiers), `isEnabled(binding, running)` (pure `when` gate), and `installKeymap(registry,
+getCtx)` — the ONE `window.addEventListener('keydown', ...)` call site, applying the
+INPUT/TEXTAREA/SELECT/`isContentEditable` focused-input guard uniformly to every binding (this is
+what closes the `App.tsx` gap — `⌘N` now gets the same guard `⌘Z`/`Escape` already had) before
+`matchBinding` → `isEnabled` → `e.preventDefault()` → `binding.run(ctx)`. Returns a cleanup
+function.
+
+**`src/app/store/ui.store.ts`** gained `placeMode: boolean` + `setPlaceMode` (accepts a value or
+an updater fn, mirroring `useState`'s setter shape so `WorldShell.tsx`'s existing `setPlaceMode(p
+=> !p)` call needed no change). This is a lift, not a new concept — `placeMode` was previously
+`WorldShell.tsx`-local `useState`, lifted here so `App.tsx`'s app-level `installKeymap` (which
+mounts above `WorldShell` and has no reachable prop path to its local state) can read/disarm the
+same "is the globe traffic-placement raycast armed" boolean the `Escape` binding needs. Preferred
+over installing the keymap from `WorldShell.tsx` instead (the brief's alternative (b)) because (a)
+keeps `⌘N` reachable even on the home screen, before any world is open, and (b) resolves the
+"where does UI modal state live" ambiguity the brief called out — `ui.store.ts` is already the
+home for exactly this kind of cross-sibling UI state (see `selectedServerId`'s identical
+lift-for-cross-component-reach precedent, same file).
+
+**`src/App.tsx`**: the old inline `⌘N` `useEffect` is replaced by `useEffect(() =>
+installKeymap(REGISTRY, () => ({ ... })), [])` — the context getter reads every store via
+`getState()` (not reactive selectors — the listener itself never needs to re-render), matching
+the pattern the deleted `WorldShell.tsx` listener already used.
+
+**`src/app/world/WorldShell.tsx`**: the `⌘Z`/`⇧⌘Z`/`Escape` `useEffect` (previously depending on
+`[placeMode]`) is deleted entirely; `placeMode`/`setPlaceMode` now come from `useUiStore` instead
+of local `useState` (see above) — every other read/write site (`GlobeView`'s `onExitPlaceMode`,
+`WorldPanel`'s `TrafficPanel` toggle, the globe-level auto-disarm effect) is unchanged, since they
+only ever touched `placeMode`/`setPlaceMode` through this component's own destructured names.
+
+**Test-file consequence:** `WorldShell.test.tsx` renders `<WorldShell/>` in isolation (no `<App/>`
+wrapper), so once the keymap moved to being installed once in `App.tsx`, that test file lost its
+own listener entirely. Fixed by having the test's `beforeEach` call `installKeymap(REGISTRY, ...)`
+itself (mirroring `App.tsx`'s exact context-getter shape) and `afterEach` uninstall it — this is
+the correct fix, not a workaround: it mirrors what `App.tsx` actually does in the real tree, and
+keeps `WorldShell.test.tsx` a valid regression guard for the `Escape`-disarms-before-`nav.up()`
+and running-gated-undo/redo behaviors. **`src/App.test.tsx` (new)** — this file didn't exist
+before; added to cover `⌘N`'s migrated behavior AND the focused-input-guard gap the migration
+closes (a text input focused, `⌘N` fired at it, must NOT reset the world — this would have fired
+under the old unguarded `App.tsx` listener).
+
+**Verification:** `npx vitest run src/app/keymap.test.ts` — 6 passed (new: `matchBinding`
+⌘/ctrl/shift matching, `Escape` modifier-independence, no-match, `isEnabled`'s 3 `when` states).
+`npx vitest run src/App.test.tsx src/app/world/WorldShell.test.tsx` — 2 + 7 passed, identical
+pass/fail shape to the pre-migration baseline run of `WorldShell.test.tsx` (`App.test.tsx` is
+new, no baseline existed). `npx tsc --noEmit` clean. Full suite: `npx vitest run` — 158 files /
+2101 tests, all green. Grepped `addEventListener\(['"]keydown['"]` across `src/`: `keymap.ts`'s
+`installKeymap` is the only APP-LEVEL global listener; the other ~16 hits are all pre-existing,
+unrelated, modal-scoped Escape-to-close listeners (`SettingsModal.tsx`, `FirewallRulesModal.tsx`,
+`PacketModal.tsx`, `ManagedServiceModal.tsx`, `BlueprintModal.tsx`, `ConnectionsView.tsx`,
+`AzConnectionsView.tsx`, `AssistantView.tsx`, `ServerView.tsx`'s capture-phase selection-Escape,
+plus each of those components' own test files exercising them directly) — out of this task's
+scope (the brief named specifically the `App.tsx`/`WorldShell.tsx` global pair).

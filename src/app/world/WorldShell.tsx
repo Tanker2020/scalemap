@@ -43,11 +43,13 @@ export function WorldShell() {
   const [chatOpen, setChatOpen] = useState(false)
   const [firewallRulesServerId, setFirewallRulesServerId] = useState<string | null>(null)
   const openFirewallRules = (serverId: string) => setFirewallRulesServerId(serverId)
-  // Lifted here (not into GlobeView) because GlobeView and WorldPanel are SIBLINGS in the flex
-  // row below, not parent/child — TrafficPanel (mounted inside WorldPanel) needs to flip the
-  // same placeMode boolean GlobeView's GlobeScene reads, so only their common ancestor can own
-  // it. No new store — per the skeleton's own constraint, this stays local component state.
-  const [placeMode, setPlaceMode] = useState(false)
+  // placeMode now lives in ui.store (lifted 2026-08-09, wave 5 task 15) rather than local
+  // useState: keymap.ts's app-level Escape binding needs to read/disarm the SAME "armed" globe
+  // traffic-placement mode from outside this component's tree (it's installed once in App.tsx,
+  // above WorldShell). GlobeView's own HUD button and WorldPanel's TrafficPanel toggle still both
+  // flip the same boolean, just via the store instead of a locally-lifted callback.
+  const placeMode = useUiStore(s => s.placeMode)
+  const setPlaceMode = useUiStore(s => s.setPlaceMode)
   const [selectedPopulationId, setSelectedPopulationId] = useState<string | null>(null)
 
   // Defensive UX, not a named requirement: disarm place-mode if the user navigates away from
@@ -78,35 +80,10 @@ export function WorldShell() {
     ;(window as unknown as { __scalemapDebug: unknown }).__scalemapDebug = { useWorldStore, useSimulationStore }
   }, [])
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.defaultPrevented) return
-      const t = e.target as HTMLElement
-      if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return
-
-      if (e.key === 'Escape') {
-        // Polish 4 T7 (spec D9): Escape disarms an armed placeMode BEFORE it climbs a nav
-        // level — otherwise a globe-level Esc (nav.up() is already a no-op there) would look
-        // like it did nothing, when the actually-visible thing to cancel is the placement mode.
-        if (placeMode) { setPlaceMode(false); return }
-        useNavStore.getState().up()
-        return
-      }
-      const meta = e.metaKey || e.ctrlKey
-      if (meta && e.key.toLowerCase() === 'z') {
-        e.preventDefault()
-        // Audit ISSUE-004: undo/redo mirrors the authoring edit-lock. Mid-run, swapping the doc
-        // desyncs every view from the engine (it keeps ticking the doc/compiled snapshotted at
-        // start(), so batch.instances would be keyed by ids the new doc no longer has).
-        if (useSimulationStore.getState().running) return
-        if (e.shiftKey) useWorldStore.getState().redo()
-        else useWorldStore.getState().undo()
-        return
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [placeMode])
+  // The ⌘Z/⇧⌘Z (undo/redo, gated on !running — audit ISSUE-004) and Escape (disarm placeMode
+  // before climbing a nav level — Polish 4 T7, spec D9) bindings that used to live in a
+  // component-local listener here now come from the single app-level registry installed once in
+  // App.tsx (src/app/keymap.ts's REGISTRY + installKeymap) — see that file for the exact behavior.
 
   // Two arms, one state (Polish 4 T7, spec D9): GlobeView's own HUD "+ traffic" button and
   // WorldPanel's TrafficPanel toggle both flip the SAME placeMode boolean via this one callback.

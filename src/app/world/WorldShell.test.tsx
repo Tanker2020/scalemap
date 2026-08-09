@@ -9,7 +9,7 @@
 // place-mode is armed via TrafficPanel's own "+ place on globe" toggle (the same `placeMode`
 // boolean GlobeScene's HUD button would flip, just reached through the dock instead — see
 // WorldShell.tsx's own comment on why the two share one lifted boolean).
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { WorldShell } from './WorldShell'
 import { useWorldStore } from '../store/world.store'
@@ -18,13 +18,36 @@ import { useUiStore } from '../store/ui.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { useFileStore } from '../store/file.store'
 import { getPreset } from '../../lib/world/instanceCatalog'
+import { REGISTRY, installKeymap } from '../keymap'
+
+// The ⌘Z/⇧⌘Z/Escape bindings this file exercises now come from the single app-level registry
+// (src/app/keymap.ts), installed once in App.tsx above WorldShell — not from a listener owned by
+// WorldShell itself (wave 5 task 15). These tests render <WorldShell/> in isolation, so they
+// install the same registry here, mirroring what App.tsx does in the real tree.
+let uninstallKeymap: (() => void) | undefined
 
 beforeEach(() => {
   useWorldStore.getState().newWorld()
   useNavStore.setState({ level: 'globe', regionId: null, azId: null, serverId: null })
-  useUiStore.setState({ selectedServerId: null })
+  useUiStore.setState({ selectedServerId: null, placeMode: false })
   useSimulationStore.getState().resetSession()
   useFileStore.setState({ dirty: false })
+  uninstallKeymap = installKeymap(REGISTRY, () => ({
+    running: useSimulationStore.getState().running,
+    newWorld: () => useWorldStore.getState().newWorld(),
+    goGlobe: () => useNavStore.getState().goGlobe(),
+    setFilePath: (p) => useFileStore.getState().setFilePath(p),
+    setShowHome: (b) => useFileStore.getState().setShowHome(b),
+    undo: () => useWorldStore.getState().undo(),
+    redo: () => useWorldStore.getState().redo(),
+    goUp: () => useNavStore.getState().up(),
+    exitPlaceMode: () => useUiStore.getState().setPlaceMode(false),
+    isInPlaceMode: () => useUiStore.getState().placeMode,
+  }))
+})
+
+afterEach(() => {
+  uninstallKeymap?.()
 })
 
 describe('WorldShell — selection-clear effect (Polish 4 T1)', () => {

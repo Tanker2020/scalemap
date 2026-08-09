@@ -10,6 +10,8 @@ import { useFileStore } from './app/store/file.store'
 import { useWorldStore } from './app/store/world.store'
 import { useNavStore } from './app/store/nav.store'
 import { useUiStore } from './app/store/ui.store'
+import { useSimulationStore } from './app/store/simulation.store'
+import { REGISTRY, installKeymap } from './app/keymap'
 import { serializeWorld } from './lib/serializer'
 import styles from './App.module.css'
 
@@ -38,21 +40,24 @@ export default function App() {
   useThemeBootstrap()
   const showHome = useFileStore(s => s.showHome)
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const meta = e.metaKey || e.ctrlKey
-      if (meta && e.key === 'n') {
-        e.preventDefault()
-        useWorldStore.getState().newWorld()
-        useNavStore.getState().goGlobe()
-        useFileStore.getState().setFilePath(null)
-        // Matches the header New button: a new world starts from the home screen.
-        useFileStore.getState().setShowHome(true)
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [])
+  // Single app-level keymap install (wave 5 task 15) — replaces this component's own ad-hoc ⌘N
+  // listener AND WorldShell.tsx's separate ⌘Z/⇧⌘Z/Escape listener with ONE window `keydown`
+  // listener (src/app/keymap.ts's installKeymap). Installed here, above WorldShell, so it's live
+  // even on the home screen (⌘N works whether or not a world is currently open). Consolidating
+  // also closes a real gap: this handler previously had NO focused-input guard (unlike
+  // WorldShell's old one) — installKeymap applies that guard uniformly to every binding now.
+  useEffect(() => installKeymap(REGISTRY, () => ({
+    running: useSimulationStore.getState().running,
+    newWorld: () => useWorldStore.getState().newWorld(),
+    goGlobe: () => useNavStore.getState().goGlobe(),
+    setFilePath: (p) => useFileStore.getState().setFilePath(p),
+    setShowHome: (b) => useFileStore.getState().setShowHome(b),
+    undo: () => useWorldStore.getState().undo(),
+    redo: () => useWorldStore.getState().redo(),
+    goUp: () => useNavStore.getState().up(),
+    exitPlaceMode: () => useUiStore.getState().setPlaceMode(false),
+    isInPlaceMode: () => useUiStore.getState().placeMode,
+  })), [])
 
   useEffect(() => {
     const id = setInterval(() => {

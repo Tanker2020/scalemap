@@ -46,6 +46,12 @@ interface UiStore {
   setSceneOverlay: (o: SceneOverlayTarget | null) => void
   selectedServerId: ServerId | null
   setSelectedServerId: (id: ServerId | null) => void
+  // 2026-08-09 (wave 5 ergonomics, task 15): lifted out of WorldShell's local useState so the
+  // app-level keymap.ts registry (installed once, above WorldShell) can read/toggle the SAME
+  // "armed" globe traffic-placement mode Escape needs to disarm. GlobeView's own HUD button and
+  // WorldPanel's TrafficPanel toggle both flip this one boolean, same as before the lift.
+  placeMode: boolean
+  setPlaceMode: (v: boolean | ((prev: boolean) => boolean)) => void
 }
 
 export const useUiStore = create<UiStore>((set) => ({
@@ -60,4 +66,6 @@ export const useUiStore = create<UiStore>((set) => ({
   setSceneOverlay: (o) => set({ sceneOverlay: o }),
   selectedServerId: null,
   setSelectedServerId: (id) => set({ selectedServerId: id }),
+  placeMode: false,
+  setPlaceMode: (v) => set(s => ({ placeMode: typeof v === 'function' ? v(s.placeMode) : v })),
 }))
