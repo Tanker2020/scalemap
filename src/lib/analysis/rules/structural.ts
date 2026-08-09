@@ -393,7 +393,64 @@ const replicationLagExceedsRpo: AnalysisRule = {
   },
 }
 
+// Wave 5 (Task 14): a `canaryWeight` canary placement is only useful if its error behavior is
+// actually watched against its primary sibling. Compares a canary ServiceInstance's PUBLISHED
+// errorRate (lastBatch.instances[id].errorRate) against its primary sibling's — same blueprintId
+// + regionId, mirroring splitBrainRisk/replicationLagExceedsRpo's own cluster-key convention
+// above. "Sustained over a window" needs no new state here: like every other lastBatch-reading
+// rule in this file, it trusts the value it's given — and InstanceMetrics.errorRate is already
+// EMA'd (α=0.3) by metrics.ts's buildBatch, not a raw per-step sample, so a one-step blip barely
+// moves the published number while a genuinely sustained spike converges the EMA toward the true
+// rate over several steps. A plain delta threshold on that already-smoothed value is therefore
+// enough to tell "sustained" from "blip" — the same shape capacity.ts's burstable-sustained-load
+// uses (a plain mean-vs-baseline threshold, no rolling window of its own). Uses the STATIC
+// authored role (inst.role), not effectiveRole: canary is an authoring-time A/B designation, not
+// a live promotion state like splitBrainRisk's primary/replica.
+const CANARY_ERROR_DELTA = 0.15   // absolute errorRate points the canary must exceed its primary by
+
+const canaryFailing: AnalysisRule = {
+  id: 'canary-failing', family: 'structural',
+  run: ({ doc, compiled, lastBatch }) => {
+    const published = lastBatch?.instances
+    if (!published) return []
+    const byClusterCanaries = new Map<string, ServiceInstance[]>()
+    const byClusterPrimaries = new Map<string, ServiceInstance[]>()
+    for (const inst of Object.values(compiled.instances)) {
+      const key = `${inst.blueprintId}|${inst.regionId}`
+      if (inst.role === 'canary') {
+        const l = byClusterCanaries.get(key) ?? []; l.push(inst); byClusterCanaries.set(key, l)
+      } else if (inst.role === 'primary') {
+        const l = byClusterPrimaries.get(key) ?? []; l.push(inst); byClusterPrimaries.set(key, l)
+      }
+    }
+    const out: AnalysisFinding[] = []
+    for (const [key, canaries] of byClusterCanaries) {
+      const primaries = byClusterPrimaries.get(key) ?? []
+      if (primaries.length === 0) continue
+      const primaryRates = primaries
+        .map(p => published[p.id]?.errorRate)
+        .filter((r): r is number => r != null)
+      if (primaryRates.length === 0) continue
+      const primaryErrorRate = primaryRates.reduce((a, b) => a + b, 0) / primaryRates.length
+      for (const canary of canaries) {
+        const canaryErrorRate = published[canary.id]?.errorRate
+        if (canaryErrorRate == null) continue
+        if (canaryErrorRate - primaryErrorRate <= CANARY_ERROR_DELTA) continue
+        const bp = doc.blueprints[canary.blueprintId]
+        out.push({
+          id: `canary-failing:${canary.id}`, ruleId: 'canary-failing', family: 'structural', severity: 'warning',
+          title: 'Canary error rate elevated',
+          why: `Canary instance of ${bp?.name ?? canary.blueprintId} in region ${canary.regionId} is erroring at ${(canaryErrorRate * 100).toFixed(0)}% vs its primary's ${(primaryErrorRate * 100).toFixed(0)}%, sustained — this canary looks unhealthy.`,
+          fix: `Roll back this canary placement (set canaryWeight to 0 or remove it) until the error rate is fixed (Placement drawer).`,
+          affected: [canary.id, ...primaries.map(p => p.id)],
+        })
+      }
+    }
+    return out
+  },
+}
+
 export const structuralRules: AnalysisRule[] = [
   singleAzRegion, noFailoverRegion, replicasColocated, dependencyCycle, deepSyncChain, unusedManagedService,
-  danglingDependencyNoTargets, splitBrainRisk, replicationLagExceedsRpo,
+  danglingDependencyNoTargets, splitBrainRisk, replicationLagExceedsRpo, canaryFailing,
 ]

@@ -477,6 +477,85 @@ describe('structural: replication-lag-exceeds-rpo', () => {
   })
 })
 
+// Wave 5 Task 14: canary-failing — compares a canary instance's published (EMA-smoothed,
+// metrics.ts) errorRate against its primary sibling's (same blueprintId + regionId). The
+// "sustained over a window" requirement is satisfied by the SAME mechanism every other
+// lastBatch-reading rule in this file already trusts (see split-brain-risk/replication-lag-
+// exceeds-rpo above, and capacity.ts's burstable-sustained-load): InstanceMetrics.errorRate is
+// EMA'd (α=0.3, metrics.ts) at buildBatch time, not a raw instantaneous per-step sample — a
+// single bad step barely moves the published value, while a genuinely sustained spike converges
+// the EMA toward the true rate over several steps. That means this rule needs no NEW
+// windowing/consecutive-batch state of its own (unlike autoscale-thrash, which the file comment
+// there explains needed an engine-published rolling counter specifically because
+// recentScaleEventCount has no smoothed equivalent) — a plain threshold on the published
+// errorRate already distinguishes "sustained" from "blip", exactly as burstable-sustained-load's
+// plain mean-vs-baseline check does. `emaConverge` below reproduces metrics.ts's exact EMA
+// formula to build realistic fixture values for N simulated steps, rather than hand-picking
+// arbitrary errorRate numbers.
+describe('structural: canary-failing', () => {
+  const buildCanaryWorld = () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const bp = s.blueprint('web')
+    const primary = s.placement(bp.id, s.server(az.id).id)   // primary by default
+    const canary = s.placement(bp.id, s.server(az.id).id)
+    canary.role = 'canary'; canary.canaryWeight = 0.05
+    const compiled = s.compile()
+    const primaryInstanceId = Object.values(compiled.instances).find(i => i.placementId === primary.id)!.id
+    const canaryInstanceId = Object.values(compiled.instances).find(i => i.placementId === canary.id)!.id
+    return { s, compiled, primaryInstanceId, canaryInstanceId }
+  }
+
+  // Mirrors metrics.ts's `ema()` exactly: EMA_ALPHA = 0.3, blended from an already-converged
+  // pre-spike baseline (both primary and canary ran healthy before the spike started, so their
+  // prior EMA state is that baseline — NOT metrics.ts's cold-start "seed directly" case, which
+  // only applies to an instance's very first-ever published sample).
+  const emaConverge = (baseline: number, windowValue: number, steps: number): number => {
+    let prev = baseline
+    for (let i = 0; i < steps; i++) prev = 0.3 * windowValue + 0.7 * prev
+    return prev
+  }
+
+  const buildMetricsWithCanaryErrorSpike = (
+    primaryInstanceId: string, canaryInstanceId: string,
+    { primaryErrorRate, canaryErrorRate, sustainedSteps }: { primaryErrorRate: number; canaryErrorRate: number; sustainedSteps: number },
+  ): MetricsBatch => ({
+    instances: {
+      // Primary stays steady the whole time — no spike, so its EMA sits right on its baseline.
+      [primaryInstanceId]: { errorRate: primaryErrorRate },
+      // Canary's published errorRate is what `sustainedSteps` steps of the spike would have
+      // EMA'd it to, starting from the same healthy baseline — sustainedSteps=1 barely moves off
+      // baseline; sustainedSteps=10 has mostly converged on the true spike rate.
+      [canaryInstanceId]: { errorRate: emaConverge(primaryErrorRate, canaryErrorRate, sustainedSteps) },
+    },
+  } as unknown as MetricsBatch)
+
+  it('fires when a canary instance error rate materially exceeds its primary sibling, sustained', () => {
+    const { s, compiled, primaryInstanceId, canaryInstanceId } = buildCanaryWorld()
+    const batch = buildMetricsWithCanaryErrorSpike(primaryInstanceId, canaryInstanceId, { primaryErrorRate: 0.01, canaryErrorRate: 0.3, sustainedSteps: 10 })
+    const findings = ids(runAnalysis(s.doc, compiled, batch), 'canary-failing')
+    expect(findings).toHaveLength(1)
+    expect(findings[0].affected).toEqual(expect.arrayContaining([canaryInstanceId, primaryInstanceId]))
+  })
+
+  it('does not fire on a transient one-step blip', () => {
+    const { s, compiled, primaryInstanceId, canaryInstanceId } = buildCanaryWorld()
+    const batch = buildMetricsWithCanaryErrorSpike(primaryInstanceId, canaryInstanceId, { primaryErrorRate: 0.01, canaryErrorRate: 0.3, sustainedSteps: 1 })
+    expect(ids(runAnalysis(s.doc, compiled, batch), 'canary-failing')).toHaveLength(0)
+  })
+
+  it('is silent with no lastBatch at all', () => {
+    const { s, compiled } = buildCanaryWorld()
+    expect(ids(runAnalysis(s.doc, compiled, null), 'canary-failing')).toHaveLength(0)
+  })
+
+  it('is silent when the canary and primary error rates are close', () => {
+    const { s, compiled, primaryInstanceId, canaryInstanceId } = buildCanaryWorld()
+    const batch = buildMetricsWithCanaryErrorSpike(primaryInstanceId, canaryInstanceId, { primaryErrorRate: 0.02, canaryErrorRate: 0.03, sustainedSteps: 20 })
+    expect(ids(runAnalysis(s.doc, compiled, batch), 'canary-failing')).toHaveLength(0)
+  })
+})
+
 describe('runAnalysis ordering + id stability', () => {
   it('orders by severity then family', () => {
     const s = scenario()

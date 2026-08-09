@@ -362,3 +362,44 @@ describe('ServicesDrawer — authoring the AutoscalePolicy (FEAT-008 Task 21)', 
     expect(screen.getByLabelText('max count')).toBeDisabled()
   })
 })
+
+// Wave 5 (Task 14): authoring a canary placement's canaryWeight — the 0..1 authored regional
+// traffic fraction routingRuntime.ts's canary routing reads (`Placement.canaryWeight`, meaningful
+// only when `role === 'canary'`).
+describe('ServicesDrawer — authoring canaryWeight (Wave 5 Task 14)', () => {
+  it('does not render a canary weight field for a non-canary (default primary) placement', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    useWorldStore.getState().addPlacement(bpId, serverId)
+    render(<ServicesDrawer server={currentServer(serverId)} doc={currentDoc()} compiled={compileWorld(currentDoc())} running={false} />)
+    expect(screen.queryByLabelText('canary weight')).toBeNull()
+  })
+
+  it('renders a canary weight number input for a role: canary placement', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    useWorldStore.getState().updatePlacement(plId, { role: 'canary', canaryWeight: 0.05 })
+    render(<ServicesDrawer server={currentServer(serverId)} doc={currentDoc()} compiled={compileWorld(currentDoc())} running={false} />)
+    expect(screen.getByLabelText('canary weight')).toHaveValue(0.05)
+  })
+
+  it('editing the field dispatches updatePlacement({ canaryWeight }) live', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    useWorldStore.getState().updatePlacement(plId, { role: 'canary', canaryWeight: 0.05 })
+    render(<ReactiveDrawer serverId={serverId} running={false} />)
+    fireEvent.change(screen.getByLabelText('canary weight'), { target: { value: '0.2' } })
+    expect(currentDoc().placements[plId].canaryWeight).toBe(0.2)
+  })
+
+  it('is edit-locked while running', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    useWorldStore.getState().updatePlacement(plId, { role: 'canary', canaryWeight: 0.05 })
+    render(<ServicesDrawer server={currentServer(serverId)} doc={currentDoc()} compiled={compileWorld(currentDoc())} running />)
+    expect(screen.getByLabelText('canary weight')).toBeDisabled()
+  })
+})

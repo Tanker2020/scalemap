@@ -5877,3 +5877,58 @@ pre-existing + 2 new). `npx tsc --noEmit` clean. `npx vitest run src --exclude "
 line after the fix (~7.7-8.0ms on this session's specific, unusually loaded machine — see the perf
 finding above for why the raw number reads high; the AUTOSCALE-attributable component of it is
 what was actually being guarded, and that component is now small).
+
+---
+
+## Wave 5 Task 14 — `canary-failing` analysis rule + `canaryWeight` authoring UI
+
+**`src/lib/analysis/rules/structural.ts`** — new `canaryFailing` rule (registered in
+`structuralRules`, so `ANALYSIS_RULES` in `runAnalysis.ts` picked it up automatically with no
+edit there needed). Compares a canary `ServiceInstance`'s published `errorRate`
+(`lastBatch.instances[id].errorRate`) against its primary sibling's, clustered by
+`${blueprintId}|${regionId}` (the same key convention `splitBrainRisk`/`replicationLagExceedsRpo`
+already use in this file). Fires when `canaryErrorRate - primaryErrorRate > 0.15`
+(`CANARY_ERROR_DELTA`).
+
+**"Sustained over a window" needed no new mechanism.** Analysis rules see exactly one
+`MetricsBatch` snapshot per call (no rolling history — `capacity.ts`'s `autoscale-thrash` rule
+comment spells this out explicitly, and is why THAT rule instead reads an engine-published
+rolling counter, `MetricsBatch.recentScaleEventCount`). `canary-failing` doesn't need an engine
+change to get the same effect: `InstanceMetrics.errorRate` is already EMA-smoothed by
+`metrics.ts`'s `buildBatch` (`EMA_ALPHA = 0.3`, "EMA-smoothed" per `worldEngine/types.ts`'s own
+section comment) BEFORE it's ever published — a one-step error blip barely moves the published
+value off baseline, while a genuinely sustained spike converges the EMA toward the true rate over
+several steps. A plain threshold on that already-smoothed value is therefore enough to
+distinguish "sustained" from "blip", the same shape `capacity.ts`'s `burstable-sustained-load`
+already uses (plain mean-vs-baseline, no rolling window of its own). Uses the placement's STATIC
+authored `role` (`inst.role`), not `effectiveRole` — canary is an authoring-time A/B designation,
+not a live promotion state.
+
+Test fixture convention (`structural.test.ts`'s new `describe('structural: canary-failing')`):
+`emaConverge(baseline, windowValue, steps)` reproduces `metrics.ts`'s exact EMA formula so the
+"sustained 10 steps" vs "one-step blip" fixtures are realistic published values, not hand-picked
+numbers — `sustainedSteps: 1` converges to ~0.097 (doesn't cross the 0.15-delta bar over a 0.01
+primary baseline), `sustainedSteps: 10` converges to ~0.29 (does).
+
+**`src/app/world/dock/drawers/CanaryWeightControl.tsx` (new)** — authors a placement's
+`canaryWeight` (0..1, already read by `routingRuntime.ts`'s canary routing since before this
+task), mounted in `ServicesDrawer.tsx`'s per-placement chip body right beside
+`AutoscaleControl`. Renders `null` unless `placement.role === 'canary'` (canaryWeight is
+meaningless otherwise, per its own doc comment on `Placement` in `world/types.ts`). A single
+`<input type="number">` (0..1, step 0.01) live-dispatching `updatePlacement(id, { canaryWeight
+})` — `updatePlacement` already accepted a generic `Partial<Placement>` patch, so no new store
+action was needed. Edit-locked while `running`, mirroring every other field in this drawer.
+Deliberately inlines the label/input JSX rather than reusing `AutoscaleControl`'s internal
+`numberField()` helper (that helper is private to `AutoscaleControl.tsx`, not exported) — one
+field doesn't warrant extracting/sharing that helper.
+
+**Scope note:** there is still no UI path to actually SET a placement's `role` to `'canary'` in
+the first place (role is authored-only via `createPlacement`/direct store calls today — the
+`ServicesDrawer` chip line has only ever rendered `role` as read-only text, for every role value,
+not just canary). Out of scope for this task per its brief (Step 5 only asked for the
+`canaryWeight` field, gated on an already-canary placement); a role-authoring control is a
+separate, not-yet-scoped follow-up.
+
+**Verification:** `npx vitest run src/lib/analysis/rules/structural.test.ts` — 39 passed (4 new).
+`npx vitest run src/app/world/dock/drawers/ServicesDrawer.test.tsx` — 27 passed (4 new). `npx tsc
+--noEmit` clean. Full suite: `npx vitest run` — 156 files / 2089 tests, all green.
