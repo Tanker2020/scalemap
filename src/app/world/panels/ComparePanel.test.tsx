@@ -3,11 +3,19 @@
 // selected RunSummary captures aren't a sound comparison (different scenario/seed); direction-aware
 // deltas color lower-is-better metrics (latency, cost) so a "worse" run reads red regardless of
 // whether the raw number went up or down.
-import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { ComparePanel } from './ComparePanel'
 import { useBaselineStore } from '../../store/baseline.store'
 import type { RunSummary } from '../../../lib/runSummary'
+import { saveFileDialog, saveDiagram, openFileDialog, loadDiagram } from '../../../lib/tauri'
+
+vi.mock('../../../lib/tauri', () => ({
+  saveFileDialog: vi.fn(),
+  saveDiagram: vi.fn(),
+  openFileDialog: vi.fn(),
+  loadDiagram: vi.fn(),
+}))
 
 function runSummaryFixture(partial: Partial<RunSummary> = {}): RunSummary {
   return {
@@ -30,6 +38,10 @@ function runSummaryFixture(partial: Partial<RunSummary> = {}): RunSummary {
 
 beforeEach(() => {
   useBaselineStore.setState({ summaries: [], compareA: null, compareB: null })
+  vi.mocked(saveFileDialog).mockReset()
+  vi.mocked(saveDiagram).mockReset()
+  vi.mocked(openFileDialog).mockReset()
+  vi.mocked(loadDiagram).mockReset()
 })
 
 describe('ComparePanel', () => {
@@ -90,5 +102,51 @@ describe('ComparePanel', () => {
 
     const costTotalNode = screen.getByText(/cost total/i) // decreased ($100 -> $80)
     expect(costTotalNode).toHaveStyle({ color: 'var(--color-price)' })
+  })
+
+  it('Export calls saveFileDialog then saveDiagram with the store JSON; Import calls openFileDialog then loadDiagram and merges', async () => {
+    vi.mocked(saveFileDialog).mockResolvedValue('/x/runs.json')
+    vi.mocked(saveDiagram).mockResolvedValue(undefined)
+    vi.mocked(openFileDialog).mockResolvedValue('/x/runs.json')
+    vi.mocked(loadDiagram).mockResolvedValue(JSON.stringify({ summaries: [runSummaryFixture({ id: 'imported' })] }))
+    useBaselineStore.setState({ summaries: [runSummaryFixture({ id: 'existing' })], compareA: null, compareB: null })
+    render(<ComparePanel />)
+
+    fireEvent.click(screen.getByRole('button', { name: /export/i }))
+    await waitFor(() => expect(saveDiagram).toHaveBeenCalledWith('/x/runs.json', expect.stringContaining('existing')))
+
+    fireEvent.click(screen.getByRole('button', { name: /import/i }))
+    await waitFor(() => expect(useBaselineStore.getState().summaries.map(s => s.id)).toEqual(['existing', 'imported']))
+  })
+
+  it('Export no-ops when the save dialog is cancelled', async () => {
+    vi.mocked(saveFileDialog).mockResolvedValue(null)
+    useBaselineStore.setState({ summaries: [runSummaryFixture({ id: 'existing' })], compareA: null, compareB: null })
+    render(<ComparePanel />)
+
+    fireEvent.click(screen.getByRole('button', { name: /export/i }))
+    await waitFor(() => expect(saveFileDialog).toHaveBeenCalled())
+    expect(saveDiagram).not.toHaveBeenCalled()
+  })
+
+  it('Import no-ops when the open dialog is cancelled', async () => {
+    vi.mocked(openFileDialog).mockResolvedValue(null)
+    useBaselineStore.setState({ summaries: [runSummaryFixture({ id: 'existing' })], compareA: null, compareB: null })
+    render(<ComparePanel />)
+
+    fireEvent.click(screen.getByRole('button', { name: /import/i }))
+    await waitFor(() => expect(openFileDialog).toHaveBeenCalled())
+    expect(loadDiagram).not.toHaveBeenCalled()
+    expect(useBaselineStore.getState().summaries.map(s => s.id)).toEqual(['existing'])
+  })
+
+  it('shows an error message when import fails to parse', async () => {
+    vi.mocked(openFileDialog).mockResolvedValue('/x/bad.json')
+    vi.mocked(loadDiagram).mockResolvedValue('not json')
+    useBaselineStore.setState({ summaries: [], compareA: null, compareB: null })
+    render(<ComparePanel />)
+
+    fireEvent.click(screen.getByRole('button', { name: /import/i }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/import failed/i))
   })
 })

@@ -10,8 +10,10 @@
 // renders in var(--color-price), never recolored to success/danger (the price-law constraint —
 // a dollar figure must never double as a status/health signal), with direction conveyed only via
 // the +/− sign and percentage in the text.
+import { useState } from 'react'
 import { useBaselineStore } from '../../store/baseline.store'
 import { sectionLabel, field, smallBtn, dangerBtn, row } from './panelStyles'
+import { saveFileDialog, saveDiagram, openFileDialog, loadDiagram } from '../../../lib/tauri'
 
 // Deltas below this magnitude render as "no change" rather than a misleadingly precise +1%/-1%
 // on what's really measurement noise between two runs of the same scenario.
@@ -57,6 +59,8 @@ export function ComparePanel() {
   const setCompareB = useBaselineStore(s => s.setCompareB)
   const remove = useBaselineStore(s => s.remove)
   const exportJson = useBaselineStore(s => s.exportJson)
+  const importJson = useBaselineStore(s => s.importJson)
+  const [fileError, setFileError] = useState<string | null>(null)
 
   const a = summaries.find(s => s.id === compareA) ?? null
   const b = summaries.find(s => s.id === compareB) ?? null
@@ -120,13 +124,40 @@ export function ComparePanel() {
           <button type="button" style={dangerBtn} onClick={() => remove(s.id)}>remove</button>
         </div>
       ))}
-      <button
-        type="button"
-        style={{ ...smallBtn, marginTop: 8 }}
-        onClick={() => { const blob = exportJson(); void blob /* wired to a Tauri save dialog in Task 7 */ }}
-      >
-        Export
-      </button>
+      {fileError && (
+        <div role="alert" style={{ color: 'var(--color-danger)', marginTop: 8, marginBottom: 8 }}>
+          {fileError} <button type="button" style={{ ...smallBtn, padding: '0 6px' }} onClick={() => setFileError(null)}>dismiss</button>
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <button
+          type="button"
+          style={smallBtn}
+          onClick={() => {
+            (async () => {
+              const path = await saveFileDialog()
+              if (!path) return
+              await saveDiagram(path, exportJson())
+            })().catch(() => setFileError('Export failed — could not write the baseline file.'))
+          }}
+        >
+          Export
+        </button>
+        <button
+          type="button"
+          style={smallBtn}
+          onClick={() => {
+            (async () => {
+              const path = await openFileDialog()
+              if (!path) return
+              const json = await loadDiagram(path)
+              importJson(json)
+            })().catch(() => setFileError('Import failed — file is not a valid baseline export.'))
+          }}
+        >
+          Import
+        </button>
+      </div>
     </div>
   )
 }
