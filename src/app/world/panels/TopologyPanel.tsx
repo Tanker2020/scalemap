@@ -9,7 +9,7 @@ import { useSimulationStore } from '../../store/simulation.store'
 import { WORLD_REGIONS } from '../../../lib/regionConfig'
 import { INSTANCE_CATALOG, getPreset, type InstancePreset } from '../../../lib/world/instanceCatalog'
 import { nextWorldId } from '../../../lib/world/factories'
-import type { Region, Server, ManagedService } from '../../../lib/world/types'
+import type { Region, Server, ManagedService, Environment } from '../../../lib/world/types'
 import { SectionHeader, EdgeRow, ChipValue, MicroBars, PresetCardGrid, type EdgeRowStatus } from '../ui/kit'
 import { field, smallBtn, dangerBtn, row } from './panelStyles'
 import { healthWord } from '../ui/derived'
@@ -201,6 +201,85 @@ export function TopologyPanel() {
           </div>
         )
       })}
+
+      <EnvironmentsSection />
+    </div>
+  )
+}
+
+// Comparison environments (Wave 5, Task 11): named what-if overlays authored here, applied at
+// compile time by `applyEnvironment` (src/lib/world/environments.ts) — this section is pure
+// CRUD over `doc.environments`/`activeEnvironmentId`/`cloudProfile`, mirroring the region/AZ
+// list-with-inline-edit-row convention above (label input + factor inputs + a × delete button,
+// same `field`/`row`/`smallBtn`/`dangerBtn` primitives). Lives inside TopologyPanel so it rides
+// the SAME running-disabled `<fieldset>` WorldPanel.tsx already wraps the whole topology tab in —
+// no new gating code needed (see WorldPanel.tsx's `<fieldset disabled={running && tab !==
+// 'events'}>`).
+function EnvironmentsSection() {
+  const doc = useWorldStore(s => s.doc)
+  const store = useWorldStore.getState()
+  const environments = Object.values(doc.environments ?? {})
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <SectionHeader label="▸ ENVIRONMENTS" />
+      <div style={row}>
+        <select aria-label="active-environment-select" style={{ ...field, marginBottom: 0, flex: 1 }}
+          value={doc.activeEnvironmentId ?? ''}
+          onChange={e => store.setActiveEnvironment(e.target.value || null)}>
+          <option value="">(base world)</option>
+          {environments.map(env => <option key={env.id} value={env.id}>{env.label}</option>)}
+        </select>
+        <select aria-label="cloud-profile-select" style={{ ...field, width: 90, marginBottom: 0 }}
+          value={doc.cloudProfile ?? 'generic'}
+          onChange={e => store.setCloudProfile(e.target.value as NonNullable<typeof doc.cloudProfile>)}>
+          <option value="generic">generic</option>
+          <option value="aws">aws</option>
+          <option value="gcp">gcp</option>
+          <option value="azure">azure</option>
+        </select>
+      </div>
+
+      {environments.map(env => <EnvironmentRow key={env.id} env={env} isActive={doc.activeEnvironmentId === env.id} />)}
+
+      <button className="kit-press" style={smallBtn} onClick={() => store.addEnvironment(`Environment ${environments.length + 1}`)}>
+        + Environment
+      </button>
+    </div>
+  )
+}
+
+function EnvironmentRow({ env, isActive }: { env: Environment; isActive: boolean }) {
+  const store = useWorldStore.getState()
+  const upd = (patch: Partial<Environment>) => store.updateEnvironment(env.id, patch)
+
+  return (
+    <div style={{
+      marginBottom: 6, padding: '4px 6px', borderRadius: 4,
+      border: `1px solid ${isActive ? 'var(--color-warning)' : 'var(--color-node-border)'}`,
+    }}>
+      <div style={row}>
+        <input style={{ ...field, marginBottom: 0, flex: 1 }} value={env.label} aria-label={`env-label-${env.id}`}
+          onChange={e => upd({ label: e.target.value })} />
+        <button className="kit-press" style={dangerBtn} data-testid={`env-delete-${env.id}`}
+          onClick={() => store.removeEnvironment(env.id)}>×</button>
+      </div>
+      <div style={{ ...row, flexWrap: 'wrap' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9.5, color: 'var(--color-text-muted)' }}>
+          server ×
+          <input type="number" step="0.1" style={{ ...field, width: 56, marginBottom: 0 }}
+            aria-label={`env-server-factor-${env.id}`}
+            value={env.serverCountFactor ?? ''}
+            onChange={e => upd({ serverCountFactor: e.target.value === '' ? undefined : Number(e.target.value) })} />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9.5, color: 'var(--color-text-muted)' }}>
+          rps ×
+          <input type="number" step="0.1" style={{ ...field, width: 56, marginBottom: 0 }}
+            aria-label={`env-rps-factor-${env.id}`}
+            value={env.populationRpsFactor ?? ''}
+            onChange={e => upd({ populationRpsFactor: e.target.value === '' ? undefined : Number(e.target.value) })} />
+        </label>
+      </div>
     </div>
   )
 }

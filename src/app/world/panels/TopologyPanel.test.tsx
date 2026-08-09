@@ -175,3 +175,47 @@ describe('TopologyPanel — instrument restyle', () => {
     expect(screen.getByTestId(`topology-managed-${regionMs}`).textContent).toContain('region-wide')
   })
 })
+
+describe('TopologyPanel — Environments (Wave 5)', () => {
+  it('adds a new environment via the add button', () => {
+    render(<TopologyPanel />)
+    fireEvent.click(screen.getByText('+ Environment'))
+    const envs = Object.values(useWorldStore.getState().doc.environments ?? {})
+    expect(envs).toHaveLength(1)
+  })
+
+  it('edits an environment label and factors', () => {
+    useWorldStore.getState().addEnvironment('Staging')
+    const id = Object.keys(useWorldStore.getState().doc.environments ?? {})[0]
+    render(<TopologyPanel />)
+    fireEvent.change(screen.getByLabelText(`env-label-${id}`), { target: { value: 'QA' } })
+    fireEvent.change(screen.getByLabelText(`env-server-factor-${id}`), { target: { value: '0.1' } })
+    fireEvent.change(screen.getByLabelText(`env-rps-factor-${id}`), { target: { value: '0.2' } })
+    const env = useWorldStore.getState().doc.environments?.[id]
+    expect(env?.label).toBe('QA')
+    expect(env?.serverCountFactor).toBe(0.1)
+    expect(env?.populationRpsFactor).toBe(0.2)
+  })
+
+  it('deletes an environment', () => {
+    useWorldStore.getState().addEnvironment('Staging')
+    const id = Object.keys(useWorldStore.getState().doc.environments ?? {})[0]
+    render(<TopologyPanel />)
+    fireEvent.click(screen.getByTestId(`env-delete-${id}`))
+    expect(useWorldStore.getState().doc.environments?.[id]).toBeUndefined()
+  })
+
+  it('activates an environment via the active-environment select', () => {
+    useWorldStore.getState().addEnvironment('Staging')
+    const id = Object.keys(useWorldStore.getState().doc.environments ?? {})[0]
+    render(<TopologyPanel />)
+    fireEvent.change(screen.getByLabelText('active-environment-select'), { target: { value: id } })
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBe(id)
+  })
+
+  it('sets the cloud profile via the cloud-profile select', () => {
+    render(<TopologyPanel />)
+    fireEvent.change(screen.getByLabelText('cloud-profile-select'), { target: { value: 'aws' } })
+    expect(useWorldStore.getState().doc.cloudProfile).toBe('aws')
+  })
+})
