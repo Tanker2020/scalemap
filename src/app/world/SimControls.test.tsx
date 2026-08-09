@@ -4,10 +4,12 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { SimControls } from './SimControls'
 import { useSimulationStore } from '../store/simulation.store'
 import { useWorldStore } from '../store/world.store'
+import { useBaselineStore } from '../store/baseline.store'
 
 beforeEach(() => {
   useWorldStore.getState().newWorld()
-  useSimulationStore.setState({ running: false, paused: false, timeScale: 1 })
+  useSimulationStore.setState({ running: false, paused: false, timeScale: 1, latestBatch: null })
+  useBaselineStore.setState({ summaries: [], compareA: null, compareB: null })
 })
 
 describe('SimControls', () => {
@@ -79,6 +81,39 @@ describe('SimControls', () => {
     useSimulationStore.setState({ running: false, warmupBatchesRemaining: 5 })
     render(<SimControls />)
     expect(screen.queryByText(/warming up/)).toBeNull()
+  })
+
+  describe('Capture baseline', () => {
+    it('is disabled with no replay frames yet', () => {
+      render(<SimControls />)
+      const btn = screen.getByRole('button', { name: /capture baseline/i })
+      expect(btn).toBeDisabled()
+    })
+
+    it('becomes enabled once a batch has landed (frames available), and captures a RunSummary from the current replay buffer on click', () => {
+      const fakeFrames = [{ simMs: 1000, batch: {}, events: [] }] as never
+      const framesSpy = vi.spyOn(useSimulationStore.getState(), 'getReplayFrames').mockReturnValue(fakeFrames)
+      const captureSpy = vi.spyOn(useBaselineStore.getState(), 'capture').mockImplementation(() => {})
+
+      const { rerender } = render(<SimControls />)
+      let btn = screen.getByRole('button', { name: /capture baseline/i })
+      expect(btn).toBeDisabled()
+
+      // A landed metrics batch is the reactive signal the button uses to know frames exist.
+      useSimulationStore.setState({ latestBatch: { simMs: 1000 } as never })
+      rerender(<SimControls />)
+      btn = screen.getByRole('button', { name: /capture baseline/i })
+      expect(btn).not.toBeDisabled()
+
+      fireEvent.click(btn)
+      expect(captureSpy).toHaveBeenCalledTimes(1)
+      const [frames, doc, compiled, label] = captureSpy.mock.calls[0]
+      expect(frames).toBe(fakeFrames)
+      expect(doc).toBe(useWorldStore.getState().doc)
+      expect(compiled.instances).toEqual({})
+      expect(label).toMatch(/^Run /)
+      expect(framesSpy).toHaveBeenCalled()
+    })
   })
 
   // FEAT-003 Task 20: "running a scenario" IS running the engine — start() already applies
