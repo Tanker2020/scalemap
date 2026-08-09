@@ -67,7 +67,7 @@ describe('applyEnvironment', () => {
     expect(applyEnvironment(doc2)).toBe(doc2)
   })
 
-  it('instanceClassOverrides swaps a server catalogId', () => {
+  it('instanceClassOverrides swaps a server catalogId AND re-resolves specs/hourlyUsd (not just the label)', () => {
     const doc = buildDocWithOnePlacement({ count: 1 })
     const serverId = Object.keys(doc.servers)[0]
     const doc2 = {
@@ -76,6 +76,53 @@ describe('applyEnvironment', () => {
       activeEnvironmentId: 's',
     }
     const result = applyEnvironment(doc2)
+    const preset = getPreset('vps-large')!
     expect(result.servers[serverId].catalogId).toBe('vps-large')
+    expect(result.servers[serverId].specs).toEqual(preset.specs)
+    expect(result.servers[serverId].hourlyUsd).toBe(preset.hourlyUsd)
+  })
+
+  it('instanceClassOverrides leaves the server unchanged when the catalog id does not resolve', () => {
+    const doc = buildDocWithOnePlacement({ count: 1 })
+    const serverId = Object.keys(doc.servers)[0]
+    const original = doc.servers[serverId]
+    const doc2 = {
+      ...doc,
+      environments: { s: { id: 's', label: 'S', instanceClassOverrides: { [serverId]: 'not-a-real-preset' } } },
+      activeEnvironmentId: 's',
+    }
+    const result = applyEnvironment(doc2)
+    expect(result.servers[serverId]).toEqual(original)
+  })
+
+  it('serverCountFactor scales an autoscaled placement\'s minCount/maxCount envelope, not just count', () => {
+    const doc = buildDocWithOnePlacement({ count: 4 })
+    doc.placements.p1.autoscale = {
+      minCount: 2, maxCount: 10, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300,
+    }
+    const doc2 = { ...doc, environments: { s: { id: 's', label: 'S', serverCountFactor: 0.5 } }, activeEnvironmentId: 's' }
+    const result = applyEnvironment(doc2)
+    expect(result.placements.p1.count).toBe(2)
+    expect(result.placements.p1.autoscale).toEqual({
+      minCount: 1, maxCount: 5, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300,
+    })
+  })
+
+  it('placementCountOverrides scales an autoscaled placement\'s envelope proportionally and clamps minCount <= maxCount', () => {
+    const doc = buildDocWithOnePlacement({ count: 4 })
+    doc.placements.p1.autoscale = {
+      minCount: 3, maxCount: 4, targetCpuPercent: 60, scaleUpCooldownSec: 30, scaleDownCooldownSec: 300,
+    }
+    const doc2 = {
+      ...doc,
+      environments: { s: { id: 's', label: 'S', placementCountOverrides: { p1: 2 } } },
+      activeEnvironmentId: 's',
+    }
+    const result = applyEnvironment(doc2)
+    expect(result.placements.p1.count).toBe(2)
+    // factor = 2/4 = 0.5 -> maxCount round(4*0.5)=2, minCount round(3*0.5)=2 (already <= maxCount)
+    expect(result.placements.p1.autoscale!.maxCount).toBe(2)
+    expect(result.placements.p1.autoscale!.minCount).toBe(2)
+    expect(result.placements.p1.autoscale!.minCount).toBeLessThanOrEqual(result.placements.p1.autoscale!.maxCount)
   })
 })

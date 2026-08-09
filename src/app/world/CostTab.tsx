@@ -3,6 +3,7 @@
 import { useWorldStore } from '../store/world.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { computeWorldCost } from '../../lib/costModelV2'
+import { applyEnvironment } from '../../lib/world/environments'
 import { sectionLabel, row } from './panels/panelStyles'
 
 export function CostTab() {
@@ -15,7 +16,11 @@ export function CostTab() {
   // maxCount envelope instead of by live running-instance share, and this number never moves as
   // the fleet scales.
   const worldForCost = batch?.world ? { ...batch.world, runningByPlacement: batch.runningByPlacement } : null
-  const cost = computeWorldCost(doc, worldForCost, batch?.managedServices ?? null)
+  // computeWorldCost reads doc.servers/doc.placements directly (hourlyUsd, count) -- an active
+  // environment's instanceClassOverrides/serverCountFactor/placementCountOverrides must be
+  // overlaid here too, or the Cost tab silently shows base-world pricing while Simulate uses the
+  // scaled/overridden one.
+  const cost = computeWorldCost(applyEnvironment(doc), worldForCost, batch?.managedServices ?? null)
 
   return (
     <div>
