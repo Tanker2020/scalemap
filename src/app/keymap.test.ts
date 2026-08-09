@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
-import { matchBinding, isEnabled, type Binding } from './keymap'
+import { matchBinding, isEnabled, installKeymap, REGISTRY, type Binding, type CommandContext } from './keymap'
 
 describe('keymap', () => {
   const undoBinding: Binding = { id: 'undo', keys: '⌘Z', label: 'Undo', group: 'author', when: 'stopped', run: vi.fn() }
@@ -45,5 +45,58 @@ describe('keymap', () => {
     const alwaysBinding: Binding = { ...undoBinding, when: 'always' }
     expect(isEnabled(alwaysBinding, true)).toBe(true)
     expect(isEnabled(alwaysBinding, false)).toBe(true)
+  })
+
+  // Fix round 1 (task 15 review): preventDefault timing must match the two pre-migration
+  // listeners exactly, not just app-state outcomes — see keymap.ts's `Binding.preventDefault`
+  // doc comment for the three timings this covers.
+  describe('preventDefault timing matches pre-migration handlers', () => {
+    function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
+      return {
+        running: false,
+        newWorld: vi.fn(),
+        goGlobe: vi.fn(),
+        setFilePath: vi.fn(),
+        setShowHome: vi.fn(),
+        undo: vi.fn(),
+        redo: vi.fn(),
+        goUp: vi.fn(),
+        exitPlaceMode: vi.fn(),
+        isInPlaceMode: () => false,
+        ...overrides,
+      }
+    }
+
+    it('Escape never calls preventDefault, matching old WorldShell.tsx (which had no such call)', () => {
+      const ctx = makeCtx()
+      const uninstall = installKeymap(REGISTRY, () => ctx)
+      const e = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })
+      window.dispatchEvent(e)
+      expect(e.defaultPrevented).toBe(false)
+      expect(ctx.goUp).toHaveBeenCalledTimes(1)
+      uninstall()
+    })
+
+    it('⌘Z calls preventDefault even while running (gated off), matching old WorldShell.tsx timing', () => {
+      const ctx = makeCtx({ running: true })
+      const uninstall = installKeymap(REGISTRY, () => ctx)
+      const e = new KeyboardEvent('keydown', { key: 'z', metaKey: true, cancelable: true })
+      window.dispatchEvent(e)
+      // The old handler called e.preventDefault() as soon as meta+Z matched, BEFORE checking
+      // `running` — so the browser default was suppressed even though undo() itself is skipped.
+      expect(e.defaultPrevented).toBe(true)
+      expect(ctx.undo).not.toHaveBeenCalled()
+      uninstall()
+    })
+
+    it('⌘Z calls preventDefault and runs undo() when stopped', () => {
+      const ctx = makeCtx({ running: false })
+      const uninstall = installKeymap(REGISTRY, () => ctx)
+      const e = new KeyboardEvent('keydown', { key: 'z', metaKey: true, cancelable: true })
+      window.dispatchEvent(e)
+      expect(e.defaultPrevented).toBe(true)
+      expect(ctx.undo).toHaveBeenCalledTimes(1)
+      uninstall()
+    })
   })
 })

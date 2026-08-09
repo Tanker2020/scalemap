@@ -28,6 +28,18 @@ export interface Binding {
   label: string
   group: 'file' | 'navigate' | 'author' | 'chaos' | 'view'
   when?: 'always' | 'running' | 'stopped'
+  // Controls WHEN (if at all) installKeymap calls e.preventDefault() for this binding, matching
+  // the exact per-handler timing of the two pre-migration listeners this file replaces (see
+  // task-15-report.md's "Fix round 1" section):
+  //   - 'match'   — as soon as the key combo matches, BEFORE the `when`/isEnabled gate. This is
+  //                 the old WorldShell.tsx ⌘Z/⇧⌘Z behavior: the browser default was suppressed
+  //                 even when the running-gate skipped the actual undo/redo.
+  //   - 'enabled' (default) — after the binding passes isEnabled, matching old App.tsx's ⌘N
+  //                 (which had no gate, so 'match' and 'enabled' are equivalent for it).
+  //   - 'never'   — old WorldShell.tsx's Escape branch NEVER called preventDefault; the escape
+  //                 binding uses this to reproduce that exactly (leaves the browser's native
+  //                 Escape default action — e.g. exiting fullscreen — untouched, as before).
+  preventDefault?: 'match' | 'enabled' | 'never'
   run: (ctx: CommandContext) => void
 }
 
@@ -69,10 +81,10 @@ export const REGISTRY: Binding[] = [
       ctx.setShowHome(true)
     },
   },
-  { id: 'undo', keys: '⌘Z', label: 'Undo', group: 'author', when: 'stopped', run: ctx => ctx.undo() },
-  { id: 'redo', keys: '⇧⌘Z', label: 'Redo', group: 'author', when: 'stopped', run: ctx => ctx.redo() },
+  { id: 'undo', keys: '⌘Z', label: 'Undo', group: 'author', when: 'stopped', preventDefault: 'match', run: ctx => ctx.undo() },
+  { id: 'redo', keys: '⇧⌘Z', label: 'Redo', group: 'author', when: 'stopped', preventDefault: 'match', run: ctx => ctx.redo() },
   {
-    id: 'escape', keys: 'Escape', label: 'Back / exit place mode', group: 'navigate', when: 'always',
+    id: 'escape', keys: 'Escape', label: 'Back / exit place mode', group: 'navigate', when: 'always', preventDefault: 'never',
     run: ctx => {
       // Escape disarms an armed placeMode BEFORE it climbs a nav level — otherwise a globe-level
       // Esc (nav.up() is already a no-op there) would look like it did nothing, when the
@@ -93,9 +105,11 @@ export function installKeymap(registry: Binding[], getCtx: () => CommandContext)
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return
     const binding = matchBinding(e, registry)
     if (!binding) return
+    const pd = binding.preventDefault ?? 'enabled'
+    if (pd === 'match') e.preventDefault()
     const ctx = getCtx()
     if (!isEnabled(binding, ctx.running)) return
-    e.preventDefault()
+    if (pd === 'enabled') e.preventDefault()
     binding.run(ctx)
   }
   window.addEventListener('keydown', handler)
