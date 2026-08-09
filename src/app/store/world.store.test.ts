@@ -859,3 +859,70 @@ describe('world.store — Scenario CRUD', () => {
     expect(useWorldStore.getState().doc.scenario?.steps).toHaveLength(0)
   })
 })
+
+describe('world.store — Environment CRUD (Wave 5)', () => {
+  it('addEnvironment/setActiveEnvironment/removeEnvironment go through mutate (one undo step each)', () => {
+    const before = useWorldStore.getState().doc
+    useWorldStore.getState().addEnvironment('staging')
+    const [id] = Object.keys(useWorldStore.getState().doc.environments!)
+    expect(useWorldStore.getState().doc.environments![id].label).toBe('staging')
+
+    useWorldStore.getState().setActiveEnvironment(id)
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBe(id)
+
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBeUndefined()
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc.environments).toEqual(before.environments ?? {})
+  })
+
+  it('updateEnvironment patches an existing environment and no-ops on an unknown id', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    const [id] = Object.keys(useWorldStore.getState().doc.environments!)
+
+    useWorldStore.getState().updateEnvironment(id, { serverCountFactor: 0.5 })
+    expect(useWorldStore.getState().doc.environments![id].serverCountFactor).toBe(0.5)
+
+    const before = useWorldStore.getState().doc
+    useWorldStore.getState().updateEnvironment('nope', { serverCountFactor: 2 })
+    expect(useWorldStore.getState().doc).toBe(before)
+  })
+
+  it('removeEnvironment clears activeEnvironmentId when removing the active environment', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    const [id] = Object.keys(useWorldStore.getState().doc.environments!)
+    useWorldStore.getState().setActiveEnvironment(id)
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBe(id)
+
+    useWorldStore.getState().removeEnvironment(id)
+    expect(useWorldStore.getState().doc.environments![id]).toBeUndefined()
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBeUndefined()
+  })
+
+  it('removeEnvironment leaves activeEnvironmentId untouched when removing a non-active environment', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    useWorldStore.getState().addEnvironment('canary')
+    const ids = Object.keys(useWorldStore.getState().doc.environments!)
+    useWorldStore.getState().setActiveEnvironment(ids[0])
+
+    useWorldStore.getState().removeEnvironment(ids[1])
+    expect(useWorldStore.getState().doc.environments![ids[1]]).toBeUndefined()
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBe(ids[0])
+  })
+
+  it('setActiveEnvironment(null) clears the active environment', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    const [id] = Object.keys(useWorldStore.getState().doc.environments!)
+    useWorldStore.getState().setActiveEnvironment(id)
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBe(id)
+
+    useWorldStore.getState().setActiveEnvironment(null)
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBeUndefined()
+  })
+
+  it('setCloudProfile updates doc.cloudProfile', () => {
+    expect(useWorldStore.getState().doc.cloudProfile).toBeUndefined()
+    useWorldStore.getState().setCloudProfile('aws')
+    expect(useWorldStore.getState().doc.cloudProfile).toBe('aws')
+  })
+})
