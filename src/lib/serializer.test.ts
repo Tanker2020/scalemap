@@ -342,4 +342,23 @@ describe('scalemap v3 serializer', () => {
     expect(parsed.world.servers[server.id].rack).toBeNull()
     expect(parsed.world).toEqual(world)
   })
+
+  it('round-trips slo targets and defaults to undefined when absent', () => {
+    const world = createWorld()
+    world.slo = { p99Ms: 300, errorRate: 0.01 }
+    const raw = serializeWorld(world, 'with-slo', '2026-07-08T00:00:00.000Z')
+    const parsed = deserializeWorld(raw)
+    expect(parsed.world.slo).toEqual({ p99Ms: 300, errorRate: 0.01 })
+
+    const legacyV3 = JSON.stringify({
+      version: '3',
+      meta: { name: 'legacy-no-slo', created: '2026-07-08T00:00:00.000Z', modified: '2026-07-08T00:00:00.000Z' },
+      world: {
+        routing: { policy: 'latency', weights: {}, priorityOrder: [], healthCheckIntervalMs: 10_000, healthCheckFailureThreshold: 3, dnsTtlSec: 30 },
+        populations: {}, regions: {}, azs: {}, servers: {}, blueprints: {}, placements: {}, managedServices: {},
+      },
+    })
+    const parsedLegacy = deserializeWorld(legacyV3)
+    expect(parsedLegacy.world.slo).toBeUndefined()
+  })
 })

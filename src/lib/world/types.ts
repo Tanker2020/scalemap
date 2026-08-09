@@ -423,6 +423,13 @@ export interface Scenario {
   steps: ScenarioStep[]
 }
 
+export interface SloTargets {
+  p99Ms?: number
+  errorRate?: number              // 0..1
+  availabilityPercent?: number
+  monthlyUsdBudget?: number
+}
+
 export interface WorldDoc {
   routing: RoutingConfig
   populations: Record<PopulationId, ClientPopulation>
@@ -447,6 +454,9 @@ export interface WorldDoc {
   // Scenario timeline (FEAT-003). Optional; absent ⇒ no scenario defined. Drives the scenario
   // timeline UI and deterministic action replay during simulation.
   scenario?: Scenario
+  // SLO targets (Wave 5). Optional; absent ⇒ no SLO targets defined. Drives the SLO UI and
+  // comparison environment ergonomics.
+  slo?: SloTargets
 }
 
 export interface NodeLayout { x: number; y: number }
