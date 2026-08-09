@@ -280,14 +280,23 @@ export function distributeToTargets(input: DistributeInput): void {
         // localShare === rps here (this split IS already region-wide) -> regionalCanaryWeight is
         // the identity function; kept for consistency with the other two branches below.
         const { main: mainShare, canary: canaryShare } = canaryShares(rps, regionalCanaryWeight(canaryWeight, rps, rps))
+        // main/canary are already health-filtered (targets was built from healthy instances only
+        // above), so an empty group here means "genuinely nothing healthy in that group" —
+        // redirect its whole share to the other group when it's non-empty, rather than dropping
+        // traffic the other group could serve (Important #1's crossZone-on mirror case: a down
+        // primary with a healthy canary in the same region must not drop the primary's share).
+        let mainAlloc = mainShare
+        let canaryAlloc = canaryShare
+        if (mainAlloc > 0 && main.length === 0 && canary.length > 0) { canaryAlloc += mainAlloc; mainAlloc = 0 }
+        else if (canaryAlloc > 0 && canary.length === 0 && main.length > 0) { mainAlloc += canaryAlloc; canaryAlloc = 0 }
         if (main.length > 0) {
-          const perMain = mainShare / main.length
+          const perMain = mainAlloc / main.length
           for (const iid of main) into[iid] = (into[iid] ?? 0) + perMain
-        } else drop(null, mainShare)
+        } else if (mainAlloc > 0) drop(null, mainAlloc)
         if (canary.length > 0) {
-          const perCanary = canaryShare / canary.length
+          const perCanary = canaryAlloc / canary.length
           for (const iid of canary) into[iid] = (into[iid] ?? 0) + perCanary
-        } else drop(null, canaryShare)
+        } else if (canaryAlloc > 0) drop(null, canaryAlloc)
         return
       }
       const per = rps / targets.length
@@ -310,21 +319,41 @@ export function distributeToTargets(input: DistributeInput): void {
     }
     if (byAz.length === 0) { drop(null, rps); return }
     const shares = azShares(byAz.map(x => x.azId), rps, weighted, azWeights)
-    for (const { azId, targets } of byAz) {
-      const azShare = shares.get(azId) ?? 0
-      const { main, canary, canaryWeight } = splitIntoCanaryGroups(targets, roleOf, canaryWeightOf)
+    // Pre-pass (Important #3): a canary group can be replicated across several AZs (a normal HA
+    // canary deployment) — the authored canaryWeight is a fraction of the REGIONAL rps, so its
+    // conservation has to be enforced across ALL canary-hosting AZ slices at once, not
+    // independently per AZ (which would deliver canaryWeight × rps to EACH hosting AZ and sum to
+    // N× the authored fraction). Aggregate the local share of every AZ that hosts this group's
+    // canary subset first, then every hosting AZ's local weight derives off that aggregate.
+    const azSplits = byAz.map(({ azId, targets }) => ({
+      azId,
+      targets,
+      azShare: shares.get(azId) ?? 0,
+      split: splitIntoCanaryGroups(targets, roleOf, canaryWeightOf),
+    }))
+    const aggregateCanaryShare = azSplits.reduce(
+      (sum, x) => sum + (x.split.canaryWeight !== null ? x.azShare : 0), 0)
+    for (const { azId, targets, azShare, split: { main, canary, canaryWeight } } of azSplits) {
       if (canaryWeight !== null) {
-        // azShare is only THIS AZ's slice of the region's rps -> normalize so canaryWeight still
-        // means "fraction of regional rps" once composed with the AZ split above (Important #3).
-        const { main: mainShare, canary: canaryShare } = canaryShares(azShare, regionalCanaryWeight(canaryWeight, azShare, rps))
+        const { main: mainShare, canary: canaryShare } = canaryShares(
+          azShare, regionalCanaryWeight(canaryWeight, aggregateCanaryShare, rps))
+        // main/canary are already health-filtered (targets was built from healthy instances only
+        // above), so an empty group here means "genuinely nothing healthy in that group" —
+        // redirect its whole share to the other group when it's non-empty (Important #1's
+        // crossZone-on mirror case: a down primary with a healthy canary in the same AZ must not
+        // drop the primary's share).
+        let mainAlloc = mainShare
+        let canaryAlloc = canaryShare
+        if (mainAlloc > 0 && main.length === 0 && canary.length > 0) { canaryAlloc += mainAlloc; mainAlloc = 0 }
+        else if (canaryAlloc > 0 && canary.length === 0 && main.length > 0) { mainAlloc += canaryAlloc; canaryAlloc = 0 }
         if (main.length > 0) {
-          const perMain = mainShare / main.length
+          const perMain = mainAlloc / main.length
           for (const iid of main) into[iid] = (into[iid] ?? 0) + perMain
-        } else drop(azId, mainShare)
+        } else if (mainAlloc > 0) drop(azId, mainAlloc)
         if (canary.length > 0) {
-          const perCanary = canaryShare / canary.length
+          const perCanary = canaryAlloc / canary.length
           for (const iid of canary) into[iid] = (into[iid] ?? 0) + perCanary
-        } else drop(azId, canaryShare)
+        } else if (canaryAlloc > 0) drop(azId, canaryAlloc)
         continue
       }
       const per = azShare / targets.length
@@ -349,20 +378,48 @@ export function distributeToTargets(input: DistributeInput): void {
   // to one. (A single empty AZ no longer drops — it just left the split above.)
   if (serving.length === 0) { drop(null, rps); return }
   const shares = azShares(serving.map(x => x.azId), rps, weighted, azWeights)
+  // Pre-pass (Important #3): same multi-AZ conservation fix as the crossZone-on weighted branch
+  // above, scoped per blueprint (each blueprint's canary group is normalized independently) —
+  // aggregate the local (az, blueprint) share carried by every serving-AZ slice that hosts THAT
+  // blueprint's canary subset, across however many AZs replicate it, before deriving any one
+  // slice's local canary weight. Cache the (raw, health-unfiltered) split per (az, bpId) so the
+  // pre-pass and the main loop below agree and neither recomputes it twice.
+  const splitCache = new Map<string, ReturnType<typeof splitIntoCanaryGroups>>()
+  const splitFor = (azId: AzId, bpId: BlueprintId): ReturnType<typeof splitIntoCanaryGroups> => {
+    const key = `${azId}:${bpId}`
+    let cached = splitCache.get(key)
+    if (!cached) {
+      cached = splitIntoCanaryGroups(azBlueprintTargets[azId]?.[bpId] ?? [], roleOf, canaryWeightOf)
+      splitCache.set(key, cached)
+    }
+    return cached
+  }
+  const aggregateCanaryShareByBp = new Map<BlueprintId, number>()
+  for (const { azId, targetsHere } of serving) {
+    const perBp = (shares.get(azId) ?? 0) / targetsHere.length
+    for (const bpId of targetsHere) {
+      if (splitFor(azId, bpId).canaryWeight !== null) {
+        aggregateCanaryShareByBp.set(bpId, (aggregateCanaryShareByBp.get(bpId) ?? 0) + perBp)
+      }
+    }
+  }
   for (const { azId, byBp, targetsHere } of serving) {
     const perBp = (shares.get(azId) ?? 0) / targetsHere.length
     for (const bpId of targetsHere) {
-      const { main, canary, canaryWeight } = splitIntoCanaryGroups(byBp[bpId], roleOf, canaryWeightOf)
+      const { main, canary, canaryWeight } = splitFor(azId, bpId)
       if (canaryWeight !== null) {
-        // perBp is only this AZ+blueprint's slice of the region's rps -> normalize so canaryWeight
-        // still means "fraction of regional rps" once composed with the AZ/blueprint splits above
-        // (Important #3). Note `byBp[bpId]` (fed into splitIntoCanaryGroups above) is the RAW,
-        // health-unfiltered placement list — unlike targetsHere's health-filtered check a few lines
-        // up — so `main`/`canary` here may each contain zero healthy instances; the fallback below
-        // (Important #1) is what keeps a down canary (or down primaries) from silently dropping
-        // traffic that the OTHER group could still serve, matching the "redistribute rather than
-        // fail" philosophy documented atop this function's crossZone-false branch.
-        const { main: mainShare, canary: canaryShare } = canaryShares(perBp, regionalCanaryWeight(canaryWeight, perBp, rps))
+        // perBp is only this AZ+blueprint's slice of the region's rps -> normalize against the
+        // AGGREGATE share of every serving AZ that hosts this blueprint's canary subset (not just
+        // this one slice), so the authored canaryWeight is conserved at the regional total even
+        // when the canary group is replicated across multiple AZs (Important #3). Note
+        // `byBp[bpId]` (fed into splitFor above) is the RAW, health-unfiltered placement list —
+        // unlike targetsHere's health-filtered check a few lines up — so `main`/`canary` here may
+        // each contain zero healthy instances; the fallback below (Important #1) is what keeps a
+        // down canary (or down primaries) from silently dropping traffic that the OTHER group
+        // could still serve, matching the "redistribute rather than fail" philosophy documented
+        // atop this function's crossZone-false branch.
+        const aggregateShare = aggregateCanaryShareByBp.get(bpId) ?? perBp
+        const { main: mainShare, canary: canaryShare } = canaryShares(perBp, regionalCanaryWeight(canaryWeight, aggregateShare, rps))
         const mainHealthy = main.some(iid => healthOfInstance(iid) !== 'down')
         const canaryHealthy = canary.some(iid => healthOfInstance(iid) !== 'down')
         let mainAlloc = mainShare
