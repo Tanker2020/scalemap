@@ -708,6 +708,15 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     const routingHealthOfInstance = (iid: InstanceId): HealthState =>
       (s.autoscaledInstanceIds.has(iid) && (!s.runningSet(iid) || s.drainUntilByInstance.has(iid)))
         ? 'down' : healthOfInstance(iid)
+    // Canary routing (Task 13): consult the SAME effectiveRoleResolver failover's promotion logic
+    // uses (s.roleResolver, refreshed above step 3 every step) — never a second, independent role
+    // check — so canary classification and promotion state can never disagree.
+    const roleOfInstance = (iid: InstanceId): PlacementRole => s.roleResolver?.(iid) ?? 'primary'
+    const canaryWeightOfInstance = (iid: InstanceId): number | undefined => {
+      const inst = s.compiled.instances[iid]
+      if (!inst) return undefined
+      return s.doc.placements[inst.placementId]?.canaryWeight
+    }
     for (const { routeId, rps } of routeDemands) {
       if (rps <= 0) continue
       const path = routeId != null ? s.routePathById.get(routeId) : null
@@ -725,6 +734,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         droppedByAz,
         weighted: lb.algorithm === 'weighted',
         azWeights: lb.azWeights,
+        roleOf: roleOfInstance,
+        canaryWeightOf: canaryWeightOfInstance,
       })
       if (weightAccum && target !== into) {
         const wb = (routeId != null ? s.routeBytesById.get(routeId) : undefined) ?? DEFAULT_ROUTE_WIRE_BYTES
@@ -1109,6 +1120,24 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     // global behavior in the common no-partition case).
     const regionSeesRegionDown = (observerId: RegionId, targetId: RegionId): boolean =>
       checkFailedById.get(regionPairScopeId(observerId, targetId)) ?? checkFailedById.get(targetId) ?? false
+
+    // Effective roles carry the promotion overlay committed at the END of a PRIOR step
+    // (promoteReplicas below), so once a primary has failed over, this step's writes route to the
+    // promoted replica. Built from engine state only — the doc is never touched. Memoized on
+    // promotedAt's contents (audit ISSUE-079): after a promotion the resolver rescans all
+    // instances, so rebuild it only when the overlay actually changes.
+    // Hoisted above step 3 (Task 13, canary routing): distributeViaLb below needs the SAME
+    // resolver failover's promoteReplicas/failbackPromotions use, so canary-vs-primary/replica
+    // classification and promotion state can never disagree (CLAUDE.md's effectiveRoleResolver
+    // invariant). promotedAt only reflects the PRIOR step's promotions at this point regardless of
+    // where in this step the resolver is built, so hoisting is behavior-neutral for everything
+    // that already read it in the (now-later) flows section.
+    const promoKey = s.failover.promotedAt.size === 0 ? '' : [...s.failover.promotedAt.keys()].sort().join('|')
+    if (!s.roleResolver || s.roleResolverKey !== promoKey) {
+      s.roleResolver = effectiveRoleResolver(compiled, s.failover.promotedAt)
+      s.roleResolverKey = promoKey
+    }
+    const roleOf = s.roleResolver
 
     // ── 3. routing: resolve + build entry demand ──
     const populationRoutes: RoutingSnapshot['populationRoutes'] = []
@@ -1708,17 +1737,6 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       transition(b, simMs)
       return !admitRequest(b, simMs)
     }
-    // Effective roles carry the promotion overlay committed at the END of a PRIOR step
-    // (promoteReplicas below), so once a primary has failed over, this step's writes route to the
-    // promoted replica. Built from engine state only — the doc is never touched. Memoized on
-    // promotedAt's contents (audit ISSUE-079): after a promotion the resolver rescans all
-    // instances, so rebuild it only when the overlay actually changes.
-    const promoKey = s.failover.promotedAt.size === 0 ? '' : [...s.failover.promotedAt.keys()].sort().join('|')
-    if (!s.roleResolver || s.roleResolverKey !== promoKey) {
-      s.roleResolver = effectiveRoleResolver(compiled, s.failover.promotedAt)
-      s.roleResolverKey = promoKey
-    }
-    const roleOf = s.roleResolver
     // Managed-DB failure model (node-model Phase 5.4) from the PREVIOUS step's flows. Queueing
     // latency, Little's-law connections and the timeout fraction are all functions of a DB's
     // AGGREGATE load, which the solver's per-dependency loop cannot see — so it is computed once

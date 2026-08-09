@@ -2,7 +2,7 @@
 // AZ/instance targeting (region LB -> AZ split -> round-robin instance pick).
 // Spec decision 5 (traffic & routing) + decision 7 (failover: TTL lag is the observable
 // delay), docs/superpowers/specs/2026-07-08-phase2-substrate-engine-design.md.
-import type { RegionId, AzId, PopulationId, BlueprintId, InstanceId, RoutingConfig } from '../world/types'
+import type { RegionId, AzId, PopulationId, BlueprintId, InstanceId, RoutingConfig, PlacementRole } from '../world/types'
 import type { HealthState } from './types'
 import type { Rng } from './rng'
 
@@ -145,6 +145,15 @@ export interface DistributeInput {
   // rotation and its share redistributed to the serving AZs (see the crossZone-false path), not
   // failed. Optional accumulator (mutated), mirroring `into`; absent ⇒ drops go uncounted.
   droppedByAz?: Record<AzId, number>
+  // Canary routing (Task 13, both optional; absent ⇒ byte-identical to pre-canary behavior — the
+  // regression floor). When both are supplied and a target list contains at least one instance
+  // `roleOf` classifies as 'canary' whose placement carries a `canaryWeightOf` value, that
+  // fraction of the list's share routes to the canary subset instead of being split evenly across
+  // canary and primary/replica instances alike. `roleOf` MUST be the engine's
+  // `effectiveRoleResolver` output (failover.ts) — never a second, independent role check — so
+  // canary classification and promotion state can never disagree.
+  roleOf?: (id: InstanceId) => PlacementRole
+  canaryWeightOf?: (id: InstanceId) => number | undefined
 }
 
 // Distributes `rps` across a target group per the regional LB's cross-zone setting. This is the
@@ -179,9 +188,44 @@ function azShares(azIds: AzId[], total: number, weighted: boolean | undefined, a
   return shares
 }
 
+// Canary partition (Task 13): splits a target-instance list into its 'canary'-role subset and
+// everything else (primary/replica), reading a single shared weight off the first canary
+// instance found (canary placements in one blueprint|region cluster are expected to share one
+// authored weight). Returns `canaryWeight: null` — meaning "do not split, keep the list as one
+// group" — whenever `roleOf`/`canaryWeightOf` are absent, no instance in the list is canary, or
+// the canary instance's placement has no `canaryWeight` authored: all three collapse to the
+// EXACT pre-Task-13 behavior (the list flows through unmodified to whichever equal-split/
+// round-robin logic already existed).
+function splitIntoCanaryGroups(
+  targets: InstanceId[],
+  roleOf: ((id: InstanceId) => PlacementRole) | undefined,
+  canaryWeightOf: ((id: InstanceId) => number | undefined) | undefined,
+): { main: InstanceId[]; canary: InstanceId[]; canaryWeight: number | null } {
+  if (!roleOf || !canaryWeightOf) return { main: targets, canary: [], canaryWeight: null }
+  const canary: InstanceId[] = []
+  const main: InstanceId[] = []
+  for (const id of targets) {
+    if (roleOf(id) === 'canary') canary.push(id)
+    else main.push(id)
+  }
+  if (canary.length === 0) return { main: targets, canary: [], canaryWeight: null }
+  const w = canaryWeightOf(canary[0])
+  if (w === undefined || !(w > 0)) return { main: targets, canary: [], canaryWeight: null }
+  return { main, canary, canaryWeight: Math.min(1, w) }
+}
+
+// Splits `total` between the canary and main (primary+replica) subsets of a target list,
+// proportional to `canaryWeight` — the SAME weighted-share formula as `azShares` above (invoked
+// directly, not re-derived), just applied to a two-member 'main'/'canary' group instead of a set
+// of AZ ids.
+function canaryShares(total: number, canaryWeight: number): { main: number; canary: number } {
+  const shares = azShares(['main', 'canary'], total, true, { main: 1 - canaryWeight, canary: canaryWeight })
+  return { main: shares.get('main') ?? 0, canary: shares.get('canary') ?? 0 }
+}
+
 export function distributeToTargets(input: DistributeInput): void {
   const { targetBlueprintIds, rps, crossZone, regionAzSpread, azBlueprintTargets,
-    healthOfScope, healthOfInstance, cursors, into, droppedByAz, weighted, azWeights } = input
+    healthOfScope, healthOfInstance, cursors, into, droppedByAz, weighted, azWeights, roleOf, canaryWeightOf } = input
   if (rps <= 0) return
   // Credit undeliverable `amount` to `azId` (or spread across the region's AZs when the drop isn't
   // attributable to one AZ — e.g. an empty target group or an all-down region).
@@ -210,6 +254,19 @@ export function distributeToTargets(input: DistributeInput): void {
         }
       }
       if (targets.length === 0) { drop(null, rps); return }
+      const { main, canary, canaryWeight } = splitIntoCanaryGroups(targets, roleOf, canaryWeightOf)
+      if (canaryWeight !== null) {
+        const { main: mainShare, canary: canaryShare } = canaryShares(rps, canaryWeight)
+        if (main.length > 0) {
+          const perMain = mainShare / main.length
+          for (const iid of main) into[iid] = (into[iid] ?? 0) + perMain
+        } else drop(null, mainShare)
+        if (canary.length > 0) {
+          const perCanary = canaryShare / canary.length
+          for (const iid of canary) into[iid] = (into[iid] ?? 0) + perCanary
+        } else drop(null, canaryShare)
+        return
+      }
       const per = rps / targets.length
       for (const iid of targets) into[iid] = (into[iid] ?? 0) + per
       return
@@ -231,7 +288,21 @@ export function distributeToTargets(input: DistributeInput): void {
     if (byAz.length === 0) { drop(null, rps); return }
     const shares = azShares(byAz.map(x => x.azId), rps, weighted, azWeights)
     for (const { azId, targets } of byAz) {
-      const per = (shares.get(azId) ?? 0) / targets.length
+      const azShare = shares.get(azId) ?? 0
+      const { main, canary, canaryWeight } = splitIntoCanaryGroups(targets, roleOf, canaryWeightOf)
+      if (canaryWeight !== null) {
+        const { main: mainShare, canary: canaryShare } = canaryShares(azShare, canaryWeight)
+        if (main.length > 0) {
+          const perMain = mainShare / main.length
+          for (const iid of main) into[iid] = (into[iid] ?? 0) + perMain
+        } else drop(azId, mainShare)
+        if (canary.length > 0) {
+          const perCanary = canaryShare / canary.length
+          for (const iid of canary) into[iid] = (into[iid] ?? 0) + perCanary
+        } else drop(azId, canaryShare)
+        continue
+      }
+      const per = azShare / targets.length
       for (const iid of targets) into[iid] = (into[iid] ?? 0) + per
     }
     return
@@ -256,6 +327,23 @@ export function distributeToTargets(input: DistributeInput): void {
   for (const { azId, byBp, targetsHere } of serving) {
     const perBp = (shares.get(azId) ?? 0) / targetsHere.length
     for (const bpId of targetsHere) {
+      const { main, canary, canaryWeight } = splitIntoCanaryGroups(byBp[bpId], roleOf, canaryWeightOf)
+      if (canaryWeight !== null) {
+        const { main: mainShare, canary: canaryShare } = canaryShares(perBp, canaryWeight)
+        if (mainShare > 0) {
+          const inst = pickInstance(cursors, azId, bpId, main, healthOfInstance)
+          if (inst) into[inst] = (into[inst] ?? 0) + mainShare
+          else drop(azId, mainShare)
+        }
+        if (canaryShare > 0) {
+          // Own cursor key (`${bpId}:canary`) so canary rotation never shares state with the
+          // main group's — pickInstance keys purely off (azId, blueprintId).
+          const inst = pickInstance(cursors, azId, `${bpId}:canary`, canary, healthOfInstance)
+          if (inst) into[inst] = (into[inst] ?? 0) + canaryShare
+          else drop(azId, canaryShare)
+        }
+        continue
+      }
       const inst = pickInstance(cursors, azId, bpId, byBp[bpId], healthOfInstance)
       // targetsHere guarantees ≥1 healthy instance of bpId here, so pickInstance won't return null;
       // the drop is defensive belt-and-braces that keeps the accounting closed.

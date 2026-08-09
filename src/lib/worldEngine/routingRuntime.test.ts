@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { createRoutingState, resolveRegion, runHealthChecks, azSplit, pickInstance, distributeToTargets } from './routingRuntime'
 import { createRng } from './rng'
-import type { RoutingConfig } from '../world/types'
+import type { RoutingConfig, PlacementRole } from '../world/types'
 import type { HealthState } from './types'
 
 const basePolicy = (overrides: Partial<RoutingConfig> = {}): RoutingConfig => ({
@@ -134,6 +134,126 @@ describe('distributeToTargets (regional LB distribution)', () => {
     })
     expect(into['i-a0']).toBe(50)
     expect(into['i-b0']).toBe(50)
+  })
+})
+
+// Task 13: canaryWeight activation. `roleOf`/`canaryWeightOf` are both optional trailing inputs —
+// every test above never passes them, which is itself the regression-floor proof (those tests are
+// untouched and still pass byte-for-byte). This block covers the canary-aware behavior directly.
+describe('distributeToTargets — canary routing (Task 13)', () => {
+  const healthy = () => 'healthy' as HealthState
+  const roleOf = (id: string): PlacementRole => (id.includes('canary') ? 'canary' : 'primary')
+  const canaryWeightOf = (weight: number) => (id: string): number | undefined =>
+    id.includes('canary') ? weight : undefined
+
+  it('a target list with no canary-role instance is byte-identical whether or not roleOf/canaryWeightOf are supplied (regression floor)', () => {
+    const azBlueprintTargets = { az1: { bp: ['i-a0', 'i-a1'] }, az2: { bp: ['i-b0'] } }
+    const withoutCanaryFns: Record<string, number> = {}
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 100, crossZone: false,
+      regionAzSpread: ['az1', 'az2'], azBlueprintTargets,
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into: withoutCanaryFns,
+    })
+    const withCanaryFns: Record<string, number> = {}
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 100, crossZone: false,
+      regionAzSpread: ['az1', 'az2'], azBlueprintTargets,
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into: withCanaryFns,
+      roleOf, canaryWeightOf: canaryWeightOf(0.05),
+    })
+    expect(withCanaryFns).toEqual(withoutCanaryFns)
+  })
+
+  it('crossZone off: a single-call split assigns exactly canaryWeight of a blueprint/AZ share to the canary instance', () => {
+    const into: Record<string, number> = {}
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 1000, crossZone: false,
+      regionAzSpread: ['az1'],
+      azBlueprintTargets: { az1: { bp: ['i-a0', 'i-a1', 'i-a2', 'i-a3', 'i-canary'] } },
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into,
+      roleOf, canaryWeightOf: canaryWeightOf(0.05),
+    })
+    expect(into['i-canary']).toBe(50)
+    const mainTotal = Object.entries(into).filter(([k]) => k !== 'i-canary').reduce((sum, [, v]) => sum + v, 0)
+    expect(mainTotal).toBe(950)
+  })
+
+  it('crossZone off: repeated calls round-robin the main group and the canary group on independent cursors', () => {
+    const into: Record<string, number> = {}
+    const cursors = createRoutingState()
+    const targets = { az1: { bp: ['i-a0', 'i-a1', 'i-canary0', 'i-canary1'] } }
+    for (let i = 0; i < 8; i++) {
+      distributeToTargets({
+        targetBlueprintIds: ['bp'], rps: 100, crossZone: false,
+        regionAzSpread: ['az1'], azBlueprintTargets: targets,
+        healthOfScope: healthy, healthOfInstance: healthy, cursors, into,
+        roleOf, canaryWeightOf: canaryWeightOf(0.5),
+      })
+    }
+    // 8 calls x (main=50, canary=50): main alternates i-a0/i-a1 (4 hits each x50=200), canary
+    // alternates i-canary0/i-canary1 (4 hits each x50=200) — independent round-robin cursors.
+    expect(into).toEqual({ 'i-a0': 200, 'i-a1': 200, 'i-canary0': 200, 'i-canary1': 200 })
+  })
+
+  it('crossZone on (unweighted): the flat region-wide split routes canaryWeight of rps to the canary subset', () => {
+    const into: Record<string, number> = {}
+    const azBlueprintTargets = {
+      az1: { bp: ['i-a0', 'i-a1'] },
+      az2: { bp: ['i-b0', 'i-canary'] },
+    }
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 1000, crossZone: true,
+      regionAzSpread: ['az1', 'az2'], azBlueprintTargets,
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into,
+      roleOf, canaryWeightOf: canaryWeightOf(0.05),
+    })
+    expect(into['i-canary']).toBe(50)
+    // Remaining 950 split evenly across the 3 main instances.
+    expect(into['i-a0']).toBeCloseTo(950 / 3, 6)
+    expect(into['i-a1']).toBeCloseTo(950 / 3, 6)
+    expect(into['i-b0']).toBeCloseTo(950 / 3, 6)
+  })
+
+  it('crossZone on + weighted AZ split: canary partition applies within each AZ after its own AZ-weight share', () => {
+    const into: Record<string, number> = {}
+    const azBlueprintTargets = {
+      az1: { bp: ['i-a0', 'i-canary'] },
+      az2: { bp: ['i-b0'] },
+    }
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 1000, crossZone: true, weighted: true,
+      azWeights: { az1: 1, az2: 1 },
+      regionAzSpread: ['az1', 'az2'], azBlueprintTargets,
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into,
+      roleOf, canaryWeightOf: canaryWeightOf(0.1),
+    })
+    // az1 gets 500 (equal AZ weights); its own canary split takes 10% = 50 for i-canary, 450 for i-a0.
+    expect(into['i-canary']).toBe(50)
+    expect(into['i-a0']).toBe(450)
+    expect(into['i-b0']).toBe(500) // az2 has no canary — untouched
+  })
+
+  it('no canary placement present (canaryWeightOf returns undefined for everyone) leaves behavior unchanged', () => {
+    const into: Record<string, number> = {}
+    const azBlueprintTargets = { az1: { bp: ['i-a0', 'i-a1'] } }
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 100, crossZone: true, azBlueprintTargets,
+      regionAzSpread: ['az1'],
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into,
+      roleOf: () => 'primary', canaryWeightOf: () => undefined,
+    })
+    expect(into).toEqual({ 'i-a0': 50, 'i-a1': 50 })
+  })
+})
+
+describe('pickInstance — canary cursor key (Task 13)', () => {
+  it('a canary-suffixed blueprint key round-robins independently of the plain blueprint key', () => {
+    const state = createRoutingState()
+    const healthyOf = (): HealthState => 'healthy'
+    expect(pickInstance(state, 'az-1', 'bp-1', ['i-1', 'i-2'], healthyOf)).toBe('i-1')
+    expect(pickInstance(state, 'az-1', 'bp-1:canary', ['i-c1', 'i-c2'], healthyOf)).toBe('i-c1')
+    expect(pickInstance(state, 'az-1', 'bp-1', ['i-1', 'i-2'], healthyOf)).toBe('i-2') // own cursor advanced
+    expect(pickInstance(state, 'az-1', 'bp-1:canary', ['i-c1', 'i-c2'], healthyOf)).toBe('i-c2')
   })
 })
 
