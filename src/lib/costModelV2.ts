@@ -13,10 +13,22 @@ import { managedDbEngine } from './world/types'
 // provider.
 const DB_STORAGE_FALLBACK_USD_PER_GB_MONTH = 0.115
 
+// Task 12 (wave 5, "price this world as…"): the ONE resolution point for "which provider prices
+// this entity" — every call site below that used to read `ms.provider` directly now goes through
+// this instead. A service's own explicit, non-generic provider pin ALWAYS wins; `providerOverride`
+// only fills in when the service has no pin of its own (provider === 'generic'). Called with
+// `providerOverride` undefined (every pre-existing call site), this is the exact identity
+// `ms.provider` always was — byte-identical default behavior.
+function resolveProvider(explicit: CloudProvider, override: RealProvider | undefined): CloudProvider {
+  if (explicit !== 'generic') return explicit
+  return override ?? explicit
+}
+
 // Provider-correct $/GB-month for a managed DB's provisioned storage (audit ISSUE-022): the
 // registry entry for this nodeType+provider carries the rate (flat single-tier for DBs).
-function dbStorageRate(ms: ManagedService): number {
-  const spec = getServiceSpec(MANAGED_TYPE_ALIASES[ms.nodeType] ?? ms.nodeType, ms.provider)
+function dbStorageRate(ms: ManagedService, providerOverride?: RealProvider): number {
+  const provider = resolveProvider(ms.provider, providerOverride)
+  const spec = getServiceSpec(MANAGED_TYPE_ALIASES[ms.nodeType] ?? ms.nodeType, provider)
   const storageComponent = spec?.pricing.find(c => c.kind === 'storageGbMonth')
   if (storageComponent?.kind !== 'storageGbMonth') return DB_STORAGE_FALLBACK_USD_PER_GB_MONTH
   const tier = storageComponent.tiers.find(t => t.id === ms.storageTierId) ?? storageComponent.tiers[0]
@@ -114,7 +126,7 @@ const SERVERLESS_USD_PER_MILLION_REQUESTS = 0.25
 const MANAGED_COMPUTE_DEFAULT_VCPU = 2
 const MANAGED_COMPUTE_DEFAULT_RAM_GIB = 4
 
-function managedServiceMonthlyUsd(ms: ManagedService, rps = 0): number {
+function managedServiceMonthlyUsd(ms: ManagedService, rps = 0, providerOverride?: RealProvider): number {
   // Cloud-managed DB with a chosen instance class (node-model Phase 3): the class fixes the base
   // hourly, replicas add proportional cost, and provisioned storage is billed per GB. This wins
   // over the registry's flat rate because the class IS the sizing decision.
@@ -125,7 +137,7 @@ function managedServiceMonthlyUsd(ms: ManagedService, rps = 0): number {
   const dbClass = managedDbEngine(ms.nodeType) ? getDbInstanceClass(ms.instanceClassId) : undefined
   if (dbClass) {
     const instances = 1 + (ms.replicaCount ?? 0) + (ms.multiAz ? 1 : 0)   // primary + replicas + standby
-    const storage = (ms.storageGb ?? 0) * dbStorageRate(ms)   // provider-correct rate (ISSUE-022)
+    const storage = (ms.storageGb ?? 0) * dbStorageRate(ms, providerOverride)   // provider-correct rate (ISSUE-022)
       // Provisioned IOPS above the free baseline (audit ISSUE-059) — 0 when the knob is unset.
       + Math.max(0, (ms.provisionedIops ?? 0) - DB_IOPS_FREE) * DB_IOPS_USD_PER_IOPS_MONTH
     // Phase 5.4 — capacity mode decides the SHAPE of the compute bill:
@@ -141,8 +153,8 @@ function managedServiceMonthlyUsd(ms: ManagedService, rps = 0): number {
     return compute + storage
   }
 
-  const spec = getServiceSpec(MANAGED_TYPE_ALIASES[ms.nodeType] ?? ms.nodeType, ms.provider)
-  if (!spec) return 0   // 'generic' provider or unmapped nodeType — documented Phase-2 $0
+  const spec = getServiceSpec(MANAGED_TYPE_ALIASES[ms.nodeType] ?? ms.nodeType, resolveProvider(ms.provider, providerOverride))
+  if (!spec) return 0   // 'generic' provider (no override) or unmapped nodeType — documented Phase-2 $0
   let usd = 0
   for (const c of spec.pricing) {
     if (c.kind === 'instanceHourly') usd += c.defaultRateUsdHr * c.defaultCount * HOURS_PER_MONTH
@@ -176,9 +188,10 @@ function managedServiceMonthlyUsd(ms: ManagedService, rps = 0): number {
 // free-egress-per-stored-GB grant (the Backblaze model — 0 for aws/gcp/azure today) × provisioned
 // storage. Priced at the service's OWN provider schedule (fixing the world line's aws-for-all
 // simplification for these services). 0 for a generic-provider or zero-traffic service.
-function managedEgressUsd(ms: ManagedService, egressBytesPerSec: number): number {
-  if (ms.provider === 'generic' || egressBytesPerSec <= 0) return 0
-  const provider = ms.provider as RealProvider
+function managedEgressUsd(ms: ManagedService, egressBytesPerSec: number, providerOverride?: RealProvider): number {
+  const resolved = resolveProvider(ms.provider, providerOverride)
+  if (resolved === 'generic' || egressBytesPerSec <= 0) return 0
+  const provider = resolved
   const gbMonth = (egressBytesPerSec * SECONDS_PER_MONTH) / BYTES_PER_GB
   const storageFreeGb = PROVIDER_EGRESS[provider].freeEgressPerStoredGb * (ms.storageGb ?? 0)
   // egressMonthlyCost subtracts the provider's base freeGbMonth itself; pre-subtract the
@@ -195,6 +208,12 @@ export function computeWorldCost(
   // existing `WorldMetrics`-shaped caller remains structurally assignable unchanged.
   world: (WorldMetrics & { runningByPlacement?: Record<PlacementId, number> }) | null,
   managed: Record<ManagedServiceId, ManagedServiceMetrics> | null = null,
+  // Task 12 (wave 5): the "price this world as…" comparison row's fallback default provider —
+  // fills in for any managed service that has NOT pinned its own provider (provider === 'generic').
+  // A service with an explicit pin is unaffected; see `resolveProvider` above. Optional, defaults
+  // to undefined, which resolveProvider treats as a no-op — every existing call site (CostTab,
+  // scopeData, TopologyPanel, RegionView, runSummary) is byte-identical when omitted.
+  providerOverride?: RealProvider,
 ): WorldCostResult {
   const byRegionMap = new Map<RegionId, number>()
   const byAzMap = new Map<AzId, number>()
@@ -242,10 +261,10 @@ export function computeWorldCost(
   }
 
   for (const ms of Object.values(doc.managedServices)) {
-    const egr = managed ? managedEgressUsd(ms, managed[ms.id]?.egressBytesPerSec ?? 0) : 0
+    const egr = managed ? managedEgressUsd(ms, managed[ms.id]?.egressBytesPerSec ?? 0, providerOverride) : 0
     managedEgressTotal += egr
     // Live rps feeds serverless per-request pricing (Phase 5.4); ignored for provisioned classes.
-    const usd = managedServiceMonthlyUsd(ms, managed?.[ms.id]?.rps ?? 0) + egr
+    const usd = managedServiceMonthlyUsd(ms, managed?.[ms.id]?.rps ?? 0, providerOverride) + egr
     // Now that request-volume pricing is billed (ISSUE-003), this skip only drops services that
     // genuinely cost $0 this month (generic provider, or zero-traffic pure-request services) —
     // bumping 0 into the maps would be a no-op anyway.

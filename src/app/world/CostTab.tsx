@@ -4,7 +4,15 @@ import { useWorldStore } from '../store/world.store'
 import { useSimulationStore } from '../store/simulation.store'
 import { computeWorldCost } from '../../lib/costModelV2'
 import { applyEnvironment } from '../../lib/world/environments'
+import type { RealProvider } from '../../lib/cloudRegistry'
 import { sectionLabel, row } from './panels/panelStyles'
+
+// Task 12 (wave 5): "price this world as…" comparison row — the same compiled world/metrics,
+// repriced under each real provider's registry rates via computeWorldCost's providerOverride.
+// Purely a display-time reprojection (no store writes, no per-tick cost) — a service with its
+// own explicit provider pin still prices at that pin regardless of which row is being shown.
+const COMPARISON_PROVIDERS: RealProvider[] = ['aws', 'gcp', 'azure']
+const PROVIDER_LABEL: Record<RealProvider, string> = { aws: 'AWS', gcp: 'GCP', azure: 'Azure' }
 
 export function CostTab() {
   const doc = useWorldStore(s => s.doc)
@@ -20,7 +28,14 @@ export function CostTab() {
   // environment's instanceClassOverrides/serverCountFactor/placementCountOverrides must be
   // overlaid here too, or the Cost tab silently shows base-world pricing while Simulate uses the
   // scaled/overridden one.
-  const cost = computeWorldCost(applyEnvironment(doc), worldForCost, batch?.managedServices ?? null)
+  const compiledDoc = applyEnvironment(doc)
+  const cost = computeWorldCost(compiledDoc, worldForCost, batch?.managedServices ?? null)
+  // Computed fresh on this render (not per simulation tick) — CostTab already only re-renders on
+  // the 1Hz metrics batch (or a scrub step), so this is cheap and always in sync with `cost` above.
+  const providerComparison = COMPARISON_PROVIDERS.map(provider => ({
+    provider,
+    monthlyUsd: computeWorldCost(compiledDoc, worldForCost, batch?.managedServices ?? null, provider).monthlyUsd,
+  }))
 
   return (
     <div>
@@ -56,6 +71,18 @@ export function CostTab() {
       <div style={row}><span style={{ flex: 1 }}>Cross-AZ</span><span style={{ color: 'var(--color-price)' }}>${cost.egress.crossAzUsd.toFixed(2)}</span></div>
       <div style={row}><span style={{ flex: 1 }}>Cross-region</span><span style={{ color: 'var(--color-price)' }}>${cost.egress.crossRegionUsd.toFixed(2)}</span></div>
       <div style={row}><span style={{ flex: 1 }}>Internet</span><span style={{ color: 'var(--color-price)' }}>${cost.egress.internetUsd.toFixed(2)}</span></div>
+
+      <div style={sectionLabel}>Price this world as…</div>
+      {providerComparison.map(p => (
+        <div key={p.provider} style={row}>
+          <span style={{ flex: 1 }}>{PROVIDER_LABEL[p.provider]}</span>
+          {/* Deliberately "$X/mo" (no space) — a distinct text node from the top total's "$X /mo"
+              and the by-region/by-AZ rows' bare "$X", so this row never collides with those
+              existing getByText/getAllByText queries even when every provider prices identically
+              (a server-only world with no managed services, the common case). */}
+          <span style={{ color: 'var(--color-price)' }}>${p.monthlyUsd.toFixed(2)}/mo</span>
+        </div>
+      ))}
     </div>
   )
 }

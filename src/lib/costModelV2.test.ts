@@ -379,6 +379,51 @@ describe('computeWorldCost — orphaned-AZ completeness (ISSUE-024)', () => {
   })
 })
 
+// Task 12 (wave 5): the "price this world as…" comparison row's providerOverride — a fallback
+// default for services that have NOT pinned their own provider, never a win over an explicit pin.
+describe('computeWorldCost — providerOverride ("price this world as…", Task 12)', () => {
+  function docWithTwoManagedServices() {
+    const { doc, azId, regionId } = twoServerWorld()
+    doc.managedServices['pinned'] = {
+      id: 'pinned', label: 'gcp-pinned', nodeType: 'objectStorage', provider: 'gcp',
+      scope: { kind: 'az', azId }, port: 443, storageGb: 100, storageTierId: 'standard',
+    }
+    doc.managedServices['unpinned'] = {
+      id: 'unpinned', label: 'no-pin', nodeType: 'objectStorage', provider: 'generic',
+      scope: { kind: 'region', regionId }, port: 443, storageGb: 100, storageTierId: 'standard',
+    }
+    return doc
+  }
+
+  it('reprices an unpinned service under providerOverride but leaves an explicitly-pinned service untouched', () => {
+    const withServices = docWithTwoManagedServices()
+
+    const generic = computeWorldCost(withServices, null)
+    const asAws = computeWorldCost(withServices, null, null, 'aws')
+    // The unpinned (generic) service billed $0 before, now bills aws objectStorage storage — total changes.
+    expect(asAws.monthlyUsd).not.toBe(generic.monthlyUsd)
+    expect(asAws.monthlyUsd).toBeGreaterThan(generic.monthlyUsd)
+
+    // Isolate the pinned-only service: its price must be identical with or without the override.
+    const pinnedOnlyDoc = { ...withServices, managedServices: { pinned: withServices.managedServices['pinned'] } }
+    const pinnedOnlyBase = computeWorldCost(pinnedOnlyDoc, null)
+    const pinnedOnlyOverridden = computeWorldCost(pinnedOnlyDoc, null, null, 'aws')
+    expect(pinnedOnlyOverridden.monthlyUsd).toBeCloseTo(pinnedOnlyBase.monthlyUsd, 6)
+  })
+
+  it('every existing call shape (no providerOverride argument) is byte-identical to pre-Task-12 behavior', () => {
+    const { doc } = twoServerWorld()
+    doc.managedServices['ms-1'] = {
+      id: 'ms-1', label: 'db', nodeType: 'dbSql', provider: 'aws',
+      scope: { kind: 'az', azId: Object.keys(doc.azs)[0] }, port: 5432,
+      instanceClassId: 'sql.small', storageGb: 50,
+    }
+    const withThreeArgs = computeWorldCost(doc, null, null)
+    const withFourArgsUndefined = computeWorldCost(doc, null, null, undefined)
+    expect(withFourArgsUndefined).toEqual(withThreeArgs)
+  })
+})
+
 // Audit ISSUE-022: DB provisioned storage bills the PROVIDER's registry rate, not a hardcoded
 // AWS constant (GCP Cloud SQL storage is $0.17/GB-month vs AWS/Azure $0.115).
 describe('computeWorldCost — provider-correct DB storage rate (ISSUE-022)', () => {
