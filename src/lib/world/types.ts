@@ -560,6 +560,7 @@ export interface CompileFinding {
   // hold, WAL amplification — all derived from the mix) can silently show two different stories.
   kind: 'blocked-path' | 'stateful-without-volume' | 'missing-volume' | 'protocol-mismatch'
     | 'autoscale-invalid-range' | 'autoscale-count-out-of-range' | 'autoscale-invalid-target-cpu'
+    | 'missing-environment'
   message: string
   affected: string[]   // entity ids (instance/server/blueprint/placement ids)
 }

@@ -69,6 +69,54 @@ describe('compileWorld — instance expansion', () => {
   })
 })
 
+// ─── Comparison Environments overlay (Wave 5, Task 9) ────────────────────────
+// applyEnvironment (./environments.ts) is called as compileWorld's very first step, so every
+// downstream consumer sees the scaled/overridden doc automatically. This regression-floor test
+// establishes the baseline BEFORE any environments are in play; it must keep passing after the
+// overlay is wired in (it would catch a wiring mistake that mutates behavior for the no-op case).
+describe('compileWorld — Comparison Environments overlay (Wave 5)', () => {
+  it('a doc with no environments compiles identically to a doc without the field at all', () => {
+    const { doc: baseDoc, bp, server } = tinyWorld()
+    const pl = { ...createPlacement(bp.id, server.id), id: 'p1' }
+    baseDoc.placements[pl.id] = pl
+
+    const withField: WorldDoc = { ...baseDoc, environments: {}, activeEnvironmentId: undefined }
+    const withoutField = baseDoc
+
+    expect(compileWorld(withField)).toEqual(compileWorld(withoutField))
+  })
+
+  it('emits a missing-environment finding when activeEnvironmentId names a nonexistent environment', () => {
+    const { doc } = tinyWorld()
+    doc.environments = {}
+    doc.activeEnvironmentId = 'does-not-exist'
+
+    const compiled = compileWorld(doc)
+    const found = compiled.findings.filter(f => f.kind === 'missing-environment')
+    expect(found).toHaveLength(1)
+    expect(found[0].severity).toBe('warning')
+  })
+
+  it('does not emit a missing-environment finding when activeEnvironmentId is absent', () => {
+    const { doc } = tinyWorld()
+    const compiled = compileWorld(doc)
+    expect(compiled.findings.some(f => f.kind === 'missing-environment')).toBe(false)
+  })
+
+  it('scales placement count via serverCountFactor before instance expansion', () => {
+    const { doc, bp, server } = tinyWorld()
+    const pl = { ...createPlacement(bp.id, server.id), id: 'p1' }
+    pl.count = 4
+    doc.placements[pl.id] = pl
+    doc.environments = { s: { id: 's', label: 'S', serverCountFactor: 0.5 } }
+    doc.activeEnvironmentId = 's'
+
+    const compiled = compileWorld(doc)
+    const instances = Object.values(compiled.instances).filter(i => i.placementId === pl.id)
+    expect(instances).toHaveLength(2)
+  })
+})
+
 // ─── Autoscale envelope expansion + compile findings (FEAT-008) ──────────────
 // Task 10 added Placement.autoscale?: AutoscalePolicy. A placement with autoscale authored
 // compiles to its maxCount envelope, not its authored count -- the spec's one sanctioned
