@@ -114,10 +114,12 @@ describe('buildRunSummary — time-weighted latency', () => {
     const frames = [...calmFrames, ...spikeFrames]
 
     const summary = buildRunSummary(frames, doc, compiled, 'test')
-    // naive mean-of-frames would be (290*40 + 10*2000)/300 ~= 105.7ms; because only ~1% of any
-    // given frame's requests actually see its p99Ms value, the spike's true share of the run's
-    // total REQUEST volume is far below 1%, so the run-level p99 should stay close to the calm
-    // value (40) rather than being dragged toward the naive frame-count average.
+    // naive mean-of-frames would be (290*40 + 10*2000)/300 ~= 105.7ms. The run-level p99 is a
+    // request-weighted quantile over all frames (weight = rps * dt per frame), not a mean or a
+    // frame-count average: with every frame carrying equal weight here (same constant rps), the
+    // spike frames are only 10/300 ~= 3.3% of the total request mass, so the weighted-quantile
+    // cutoff falls well inside the calm frames and the run-level p99 stays close to the calm
+    // value (40) rather than being dragged toward the spike value.
     expect(summary.latency.p99Ms).toBeLessThan(70)
     expect(summary.latency.p99Ms).toBeGreaterThan(38)
   })
@@ -131,16 +133,22 @@ describe('buildRunSummary — time-weighted latency', () => {
       ...buildFrames({ count: 10, p50Ms: 20, p99Ms: 2000, startMs: 290_000 }),
     ]
     const manySpikeFrames = [
-      ...buildFrames({ count: 150, p50Ms: 20, p99Ms: 40 }),
-      ...buildFrames({ count: 150, p50Ms: 20, p99Ms: 2000, startMs: 150_000 }),
+      ...buildFrames({ count: 100, p50Ms: 20, p99Ms: 40 }),
+      ...buildFrames({ count: 200, p50Ms: 20, p99Ms: 2000, startMs: 100_000 }),
     ]
 
     const fewSpikeSummary = buildRunSummary(fewSpikeFrames, doc, compiled, 'few-spikes')
     const manySpikeSummary = buildRunSummary(manySpikeFrames, doc, compiled, 'many-spikes')
 
-    // The whole point of a request-weighted rollup: a run that spent half its seconds spiking
-    // must summarize materially worse than one that spent 3.3% of its seconds spiking, given the
-    // same spike magnitude. (The prior bulk/tail-split implementation reported 40ms for BOTH.)
+    // The whole point of a request-weighted rollup: a run that spent two-thirds of its seconds
+    // spiking must summarize materially worse than one that spent 3.3% of its seconds spiking,
+    // given the same spike magnitude. (The prior bulk/tail-split implementation reported 40ms for
+    // BOTH.) The split here (200/300 spike frames, well clear of the 50/50 mass boundary) is
+    // deliberately NOT exactly balanced: weightedQuantile's cum > threshold comparison decides
+    // ties at exact 50/50 mass splits by floating-point exactness of the accumulated weights, so
+    // a fixture sitting on that boundary would pass or fail by luck rather than by the rollup
+    // actually weighting spike-frame requests correctly. With spike frames holding a clear
+    // request-mass majority, the p99 must land on the spike side regardless of any FP rounding.
     expect(manySpikeSummary.latency.p99Ms).toBeGreaterThan(fewSpikeSummary.latency.p99Ms + 500)
   })
 })
