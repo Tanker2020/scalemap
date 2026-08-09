@@ -403,3 +403,56 @@ describe('ServicesDrawer — authoring canaryWeight (Wave 5 Task 14)', () => {
     expect(screen.getByLabelText('canary weight')).toBeDisabled()
   })
 })
+
+// Wave 5 (Task 14b): authoring a placement's `role` — until this task there was NO UI path to
+// ever set `role: 'canary'`, making CanaryWeightControl above and the canary-failing analysis
+// rule unreachable in practice.
+describe('ServicesDrawer — authoring role (Wave 5 Task 14b)', () => {
+  it('renders a role selector defaulted to "primary" for a freshly-mounted placement', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    useWorldStore.getState().addPlacement(bpId, serverId)
+    render(<ServicesDrawer server={currentServer(serverId)} doc={currentDoc()} compiled={compileWorld(currentDoc())} running={false} />)
+    expect(screen.getByLabelText('role')).toHaveValue('primary')
+  })
+
+  it('switching role to canary dispatches updatePlacement and reveals the canary weight field', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    render(<ReactiveDrawer serverId={serverId} running={false} />)
+    expect(screen.queryByLabelText('canary weight')).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('role'), { target: { value: 'canary' } })
+
+    expect(currentDoc().placements[plId].role).toBe('canary')
+    expect(screen.getByLabelText('canary weight')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('canary weight'), { target: { value: '0.1' } })
+    expect(currentDoc().placements[plId].role).toBe('canary')
+    expect(currentDoc().placements[plId].canaryWeight).toBe(0.1)
+  })
+
+  it('switching role away from canary clears canaryWeight (mirrors AutoscaleControl dropping autoscale on mode switch)', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    useWorldStore.getState().updatePlacement(plId, { role: 'canary', canaryWeight: 0.2 })
+    render(<ReactiveDrawer serverId={serverId} running={false} />)
+
+    fireEvent.change(screen.getByLabelText('role'), { target: { value: 'replica' } })
+
+    expect(currentDoc().placements[plId].role).toBe('replica')
+    expect(currentDoc().placements[plId].canaryWeight).toBeUndefined()
+    expect(screen.queryByLabelText('canary weight')).toBeNull()
+  })
+
+  it('is edit-locked while running', () => {
+    const serverId = seedServer()
+    const bpId = useWorldStore.getState().addBlueprint('web')
+    const plId = useWorldStore.getState().addPlacement(bpId, serverId)
+    void plId
+    render(<ServicesDrawer server={currentServer(serverId)} doc={currentDoc()} compiled={compileWorld(currentDoc())} running />)
+    expect(screen.getByLabelText('role')).toBeDisabled()
+  })
+})
