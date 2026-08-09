@@ -156,6 +156,9 @@ export function deserializeWorld(raw: string): ScalemapFileV3 {
     connectionLayout: src.world.connectionLayout ?? {},
     scenario: src.world.scenario ?? undefined,
     slo: src.world.slo ?? undefined,
+    environments: src.world.environments ?? {},
+    activeEnvironmentId: src.world.activeEnvironmentId ?? undefined,
+    cloudProfile: src.world.cloudProfile ?? undefined,
   }
   return {
     version: '3',

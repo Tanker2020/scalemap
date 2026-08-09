@@ -361,4 +361,29 @@ describe('scalemap v3 serializer', () => {
     const parsedLegacy = deserializeWorld(legacyV3)
     expect(parsedLegacy.world.slo).toBeUndefined()
   })
+
+  it('round-trips environments/activeEnvironmentId/cloudProfile and defaults when absent', () => {
+    const world = createWorld()
+    world.environments = { staging: { id: 'staging', label: 'Staging', serverCountFactor: 0.1 } }
+    world.activeEnvironmentId = 'staging'
+    world.cloudProfile = 'aws'
+    const raw = serializeWorld(world, 'with-environments', '2026-07-08T00:00:00.000Z')
+    const parsed = deserializeWorld(raw)
+    expect(parsed.world.environments).toEqual(world.environments)
+    expect(parsed.world.activeEnvironmentId).toBe('staging')
+    expect(parsed.world.cloudProfile).toBe('aws')
+
+    const legacyV3 = JSON.stringify({
+      version: '3',
+      meta: { name: 'legacy-no-environments', created: '2026-07-08T00:00:00.000Z', modified: '2026-07-08T00:00:00.000Z' },
+      world: {
+        routing: { policy: 'latency', weights: {}, priorityOrder: [], healthCheckIntervalMs: 10_000, healthCheckFailureThreshold: 3, dnsTtlSec: 30 },
+        populations: {}, regions: {}, azs: {}, servers: {}, blueprints: {}, placements: {}, managedServices: {},
+      },
+    })
+    const parsedLegacy = deserializeWorld(legacyV3)
+    expect(parsedLegacy.world.environments).toEqual({})
+    expect(parsedLegacy.world.activeEnvironmentId).toBeUndefined()
+    expect(parsedLegacy.world.cloudProfile).toBeUndefined()
+  })
 })
