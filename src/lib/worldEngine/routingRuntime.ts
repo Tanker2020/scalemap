@@ -210,8 +210,29 @@ function splitIntoCanaryGroups(
   }
   if (canary.length === 0) return { main: targets, canary: [], canaryWeight: null }
   const w = canaryWeightOf(canary[0])
-  if (w === undefined || !(w > 0)) return { main: targets, canary: [], canaryWeight: null }
+  // `undefined`/`null` means "nothing authored" -> pre-Task-13 behavior (fall through, undifferentiated
+  // pool). An explicit `0` IS a meaningful authored value (Placement.canaryWeight is a 0..1 fraction) —
+  // it must still route through the split below so the canary group's share collapses to zero rather
+  // than falling back into the undifferentiated pool and getting an accidental ~1/N share.
+  if (w === undefined || w === null || Number.isNaN(w) || w < 0) return { main: targets, canary: [], canaryWeight: null }
   return { main, canary, canaryWeight: Math.min(1, w) }
+}
+
+// Normalizes an authored `canaryWeight` (always a fraction of the blueprint's REGIONAL rps, per its
+// doc comment on DistributeInput) into the LOCAL weight to hand to `canaryShares` when the split is
+// being applied to only a sub-portion (`localShare`) of the full regional total (`totalRps`) — e.g.
+// one AZ's share in the weighted cross-zone-on branch, or one AZ+blueprint's share in the
+// cross-zone-off branch. Without this, `canaryWeight: 0.05` would silently mean "5% of THIS AZ's
+// share" instead of "5% of the region" whenever the canary's AZ carries less than the full regional
+// total (the common multi-AZ case) — a canary weight authored as 5% would actually receive roughly
+// 5% * azShareOfRegion. Clamped to [0, 1]. When `localShare` already IS the full regional total (the
+// crossZone-on unweighted branch, which splits the region-wide target list directly), this reduces
+// to the identity function.
+function regionalCanaryWeight(canaryWeight: number, localShare: number, totalRps: number): number {
+  if (localShare <= 0 || totalRps <= 0) return canaryWeight
+  const localFraction = localShare / totalRps
+  if (localFraction <= 0) return canaryWeight
+  return Math.min(1, canaryWeight / localFraction)
 }
 
 // Splits `total` between the canary and main (primary+replica) subsets of a target list,
@@ -256,7 +277,9 @@ export function distributeToTargets(input: DistributeInput): void {
       if (targets.length === 0) { drop(null, rps); return }
       const { main, canary, canaryWeight } = splitIntoCanaryGroups(targets, roleOf, canaryWeightOf)
       if (canaryWeight !== null) {
-        const { main: mainShare, canary: canaryShare } = canaryShares(rps, canaryWeight)
+        // localShare === rps here (this split IS already region-wide) -> regionalCanaryWeight is
+        // the identity function; kept for consistency with the other two branches below.
+        const { main: mainShare, canary: canaryShare } = canaryShares(rps, regionalCanaryWeight(canaryWeight, rps, rps))
         if (main.length > 0) {
           const perMain = mainShare / main.length
           for (const iid of main) into[iid] = (into[iid] ?? 0) + perMain
@@ -291,7 +314,9 @@ export function distributeToTargets(input: DistributeInput): void {
       const azShare = shares.get(azId) ?? 0
       const { main, canary, canaryWeight } = splitIntoCanaryGroups(targets, roleOf, canaryWeightOf)
       if (canaryWeight !== null) {
-        const { main: mainShare, canary: canaryShare } = canaryShares(azShare, canaryWeight)
+        // azShare is only THIS AZ's slice of the region's rps -> normalize so canaryWeight still
+        // means "fraction of regional rps" once composed with the AZ split above (Important #3).
+        const { main: mainShare, canary: canaryShare } = canaryShares(azShare, regionalCanaryWeight(canaryWeight, azShare, rps))
         if (main.length > 0) {
           const perMain = mainShare / main.length
           for (const iid of main) into[iid] = (into[iid] ?? 0) + perMain
@@ -329,18 +354,32 @@ export function distributeToTargets(input: DistributeInput): void {
     for (const bpId of targetsHere) {
       const { main, canary, canaryWeight } = splitIntoCanaryGroups(byBp[bpId], roleOf, canaryWeightOf)
       if (canaryWeight !== null) {
-        const { main: mainShare, canary: canaryShare } = canaryShares(perBp, canaryWeight)
-        if (mainShare > 0) {
+        // perBp is only this AZ+blueprint's slice of the region's rps -> normalize so canaryWeight
+        // still means "fraction of regional rps" once composed with the AZ/blueprint splits above
+        // (Important #3). Note `byBp[bpId]` (fed into splitIntoCanaryGroups above) is the RAW,
+        // health-unfiltered placement list — unlike targetsHere's health-filtered check a few lines
+        // up — so `main`/`canary` here may each contain zero healthy instances; the fallback below
+        // (Important #1) is what keeps a down canary (or down primaries) from silently dropping
+        // traffic that the OTHER group could still serve, matching the "redistribute rather than
+        // fail" philosophy documented atop this function's crossZone-false branch.
+        const { main: mainShare, canary: canaryShare } = canaryShares(perBp, regionalCanaryWeight(canaryWeight, perBp, rps))
+        const mainHealthy = main.some(iid => healthOfInstance(iid) !== 'down')
+        const canaryHealthy = canary.some(iid => healthOfInstance(iid) !== 'down')
+        let mainAlloc = mainShare
+        let canaryAlloc = canaryShare
+        if (mainAlloc > 0 && !mainHealthy && canaryHealthy) { canaryAlloc += mainAlloc; mainAlloc = 0 }
+        else if (canaryAlloc > 0 && !canaryHealthy && mainHealthy) { mainAlloc += canaryAlloc; canaryAlloc = 0 }
+        if (mainAlloc > 0) {
           const inst = pickInstance(cursors, azId, bpId, main, healthOfInstance)
-          if (inst) into[inst] = (into[inst] ?? 0) + mainShare
-          else drop(azId, mainShare)
+          if (inst) into[inst] = (into[inst] ?? 0) + mainAlloc
+          else drop(azId, mainAlloc)
         }
-        if (canaryShare > 0) {
+        if (canaryAlloc > 0) {
           // Own cursor key (`${bpId}:canary`) so canary rotation never shares state with the
           // main group's — pickInstance keys purely off (azId, blueprintId).
           const inst = pickInstance(cursors, azId, `${bpId}:canary`, canary, healthOfInstance)
-          if (inst) into[inst] = (into[inst] ?? 0) + canaryShare
-          else drop(azId, canaryShare)
+          if (inst) into[inst] = (into[inst] ?? 0) + canaryAlloc
+          else drop(azId, canaryAlloc)
         }
         continue
       }

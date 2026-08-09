@@ -214,7 +214,7 @@ describe('distributeToTargets — canary routing (Task 13)', () => {
     expect(into['i-b0']).toBeCloseTo(950 / 3, 6)
   })
 
-  it('crossZone on + weighted AZ split: canary partition applies within each AZ after its own AZ-weight share', () => {
+  it('crossZone on + weighted AZ split: canaryWeight is normalized to mean a fraction of REGIONAL rps, not of the AZ share it lives in', () => {
     const into: Record<string, number> = {}
     const azBlueprintTargets = {
       az1: { bp: ['i-a0', 'i-canary'] },
@@ -227,10 +227,107 @@ describe('distributeToTargets — canary routing (Task 13)', () => {
       healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into,
       roleOf, canaryWeightOf: canaryWeightOf(0.1),
     })
-    // az1 gets 500 (equal AZ weights); its own canary split takes 10% = 50 for i-canary, 450 for i-a0.
-    expect(into['i-canary']).toBe(50)
-    expect(into['i-a0']).toBe(450)
+    // az1 gets 500 (equal AZ weights) — half the region's rps. Applying the authored 10%
+    // REGIONAL canary weight directly to that 500 would only route 50 to the canary (5% of the
+    // 1000 regional total) — under-delivering the authored weight by half. Normalized so the
+    // canary instead receives 10% of the full 1000 regional rps (100), regardless of which AZ it
+    // happens to live in (Important #3).
+    expect(into['i-canary']).toBe(100)
+    expect(into['i-a0']).toBe(400)
     expect(into['i-b0']).toBe(500) // az2 has no canary — untouched
+  })
+
+  it('crossZone off: a DOWN canary redirects its whole share to the (healthy) primaries instead of dropping it (Important #1)', () => {
+    const into: Record<string, number> = {}
+    const droppedByAz: Record<string, number> = {}
+    const instHealth = (id: string): HealthState => (id === 'i-canary' ? 'down' : 'healthy')
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 1000, crossZone: false,
+      regionAzSpread: ['az1'],
+      azBlueprintTargets: { az1: { bp: ['i-a0', 'i-a1', 'i-canary'] } },
+      healthOfScope: healthy, healthOfInstance: instHealth, cursors: createRoutingState(), into, droppedByAz,
+      roleOf, canaryWeightOf: canaryWeightOf(0.05),
+    })
+    // The canary's 5% share (50) is NOT dropped — it falls back entirely to the healthy primaries,
+    // which round-robin-pick a single instance for the whole 1000.
+    expect(into['i-canary'] ?? 0).toBe(0)
+    expect(into['i-a0']).toBe(1000)
+    expect(Object.values(droppedByAz).reduce((a, b) => a + b, 0)).toBe(0)
+  })
+
+  it('crossZone off: DOWN primaries (canary healthy) redirects the whole share to the canary instead of dropping it (Important #1, mirror case)', () => {
+    const into: Record<string, number> = {}
+    const droppedByAz: Record<string, number> = {}
+    const instHealth = (id: string): HealthState => (id === 'i-canary' ? 'healthy' : 'down')
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 1000, crossZone: false,
+      regionAzSpread: ['az1'],
+      azBlueprintTargets: { az1: { bp: ['i-a0', 'i-a1', 'i-canary'] } },
+      healthOfScope: healthy, healthOfInstance: instHealth, cursors: createRoutingState(), into, droppedByAz,
+      roleOf, canaryWeightOf: canaryWeightOf(0.05),
+    })
+    // Primaries' 95% share (950) is NOT dropped — it falls back entirely to the healthy canary,
+    // which ends up serving the whole 1000.
+    expect(into['i-canary']).toBe(1000)
+    expect(into['i-a0'] ?? 0).toBe(0)
+    expect(into['i-a1'] ?? 0).toBe(0)
+    expect(Object.values(droppedByAz).reduce((a, b) => a + b, 0)).toBe(0)
+  })
+
+  it('an explicit canaryWeight: 0 routes NOTHING to the canary (distinct from undefined, which leaves the undifferentiated-pool behavior) (Important #2)', () => {
+    const into: Record<string, number> = {}
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 1000, crossZone: false,
+      regionAzSpread: ['az1'],
+      azBlueprintTargets: { az1: { bp: ['i-a0', 'i-a1', 'i-canary'] } },
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into,
+      roleOf, canaryWeightOf: canaryWeightOf(0),
+    })
+    expect(into['i-canary'] ?? 0).toBe(0)
+    const mainTotal = Object.entries(into).filter(([k]) => k !== 'i-canary').reduce((sum, [, v]) => sum + v, 0)
+    expect(mainTotal).toBe(1000)
+  })
+
+  it('undefined canaryWeight (nothing authored) still falls through to the pre-Task-13 undifferentiated pool, giving the canary instance roughly 1/N (Important #2 contrast)', () => {
+    const into: Record<string, number> = {}
+    const cursors = createRoutingState()
+    // undifferentiated pool round-robins i-a0, i-a1, i-canary, i-a0, ... across repeated calls
+    for (let i = 0; i < 3; i++) {
+      distributeToTargets({
+        targetBlueprintIds: ['bp'], rps: 300, crossZone: false,
+        regionAzSpread: ['az1'],
+        azBlueprintTargets: { az1: { bp: ['i-a0', 'i-a1', 'i-canary'] } },
+        healthOfScope: healthy, healthOfInstance: healthy, cursors, into,
+        roleOf, canaryWeightOf: () => undefined,
+      })
+    }
+    expect(into['i-canary']).toBe(300) // 1 of the 3 round-robin slots, same as pre-canary behavior
+  })
+
+  // Important #3: canaryWeight must mean "fraction of the blueprint's REGIONAL rps" identically
+  // whether the canary lives alone in a small-share AZ or a large-share one — a realistic 3-AZ
+  // region, weighted AZ split, cross-zone off (the branch most exposed to per-AZ under-delivery
+  // since perBp is a per-AZ-per-blueprint slice, not the AZ total).
+  it('crossZone off, weighted, 3 AZs: the canary\'s aggregate share across the WHOLE region lands at the authored canaryWeight, not at canaryWeight * azShareOfRegion', () => {
+    const into: Record<string, number> = {}
+    // az3 is deliberately the SMALLEST AZ share (weight 1 of 6 total) and hosts the canary — the
+    // scenario where the old per-AZ-local semantics under-delivered the most.
+    const azBlueprintTargets = {
+      az1: { bp: ['i-a0', 'i-a1'] },
+      az2: { bp: ['i-b0', 'i-b1'] },
+      az3: { bp: ['i-c0', 'i-canary'] },
+    }
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 10_000, crossZone: false, weighted: true,
+      azWeights: { az1: 3, az2: 2, az3: 1 },
+      regionAzSpread: ['az1', 'az2', 'az3'], azBlueprintTargets,
+      healthOfScope: healthy, healthOfInstance: healthy, cursors: createRoutingState(), into,
+      roleOf, canaryWeightOf: canaryWeightOf(0.05),
+    })
+    const total = Object.values(into).reduce((a, b) => a + b, 0)
+    expect(total).toBeCloseTo(10_000, 6)
+    const regionalCanaryFraction = (into['i-canary'] ?? 0) / total
+    expect(regionalCanaryFraction).toBeCloseTo(0.05, 6) // authored canaryWeight, not 0.05 * (1/6) az3 share
   })
 
   it('no canary placement present (canaryWeightOf returns undefined for everyone) leaves behavior unchanged', () => {
