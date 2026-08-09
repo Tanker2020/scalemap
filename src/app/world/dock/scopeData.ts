@@ -7,6 +7,7 @@
 import type { WorldDoc } from '../../../lib/world/types'
 import type { WorldMetrics, ManagedServiceMetrics } from '../../../lib/worldEngine/types'
 import { computeWorldCost, HOURS_PER_MONTH } from '../../../lib/costModelV2'
+import { applyEnvironment } from '../../../lib/world/environments'
 import type { DockScope } from './scope'
 
 // scopeEntityIds/scopedEvents/scopedFindings moved verbatim to src/lib/world/scopeFilters.ts
@@ -30,12 +31,18 @@ export function scopedCost(
   world: (WorldMetrics & { runningByPlacement?: Record<string, number> }) | null,
   managed: Record<string, ManagedServiceMetrics> | null = null,
 ): { hourlyUsd: number; monthlyUsd: number; egressNote: string | null } {
+  // computeWorldCost/direct hourlyUsd reads both read doc.servers/doc.placements directly -- an
+  // active environment's instanceClassOverrides/serverCountFactor/placementCountOverrides must be
+  // overlaid here too, or the dock's server faceplate price and region/AZ/world rollups silently
+  // diverge from CostTab.tsx's (which already overlays), showing contradictory numbers for the
+  // same world depending which view is open.
+  const overlaid = applyEnvironment(doc)
   if (scope.kind === 'server') {
-    const hourlyUsd = doc.servers[scope.serverId]?.hourlyUsd ?? 0
+    const hourlyUsd = overlaid.servers[scope.serverId]?.hourlyUsd ?? 0
     return { hourlyUsd, monthlyUsd: hourlyUsd * HOURS_PER_MONTH, egressNote: 'egress is attributed at the AZ level' }
   }
 
-  const cost = computeWorldCost(doc, world, managed)
+  const cost = computeWorldCost(overlaid, world, managed)
   if (scope.kind === 'world') {
     return { hourlyUsd: cost.monthlyUsd / HOURS_PER_MONTH, monthlyUsd: cost.monthlyUsd, egressNote: null }
   }

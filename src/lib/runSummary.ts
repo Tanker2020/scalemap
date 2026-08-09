@@ -7,6 +7,7 @@
 import type { WorldDoc, CompiledWorld, CompiledPath, SloTargets } from './world/types'
 import type { ReplayFrame, MetricsBatch } from './worldEngine/types'
 import { computeWorldCost, HOURS_PER_MONTH } from './costModelV2'
+import { applyEnvironment } from './world/environments'
 
 export interface RunSummary {
   id: string
@@ -110,6 +111,13 @@ export function buildRunSummary(
   label: string,
 ): RunSummary {
   if (frames.length === 0) throw new Error('buildRunSummary: no frames to summarize')
+  // computeWorldCost below reads doc.servers/doc.placements directly -- an active environment's
+  // instanceClassOverrides/serverCountFactor/placementCountOverrides must be overlaid here too,
+  // or a captured RunSummary's cost figures silently disagree with every other view's (CostTab,
+  // TopologyPanel, RegionView, scopeData) once an environment is active. applyEnvironment(doc)
+  // always returns the same result for the same `doc`, so it's computed once per call rather than
+  // once per frame in the loop below.
+  const overlaidDoc = applyEnvironment(doc)
   const sorted = [...frames].sort((a, b) => a.simMs - b.simMs)
   const durationMs = sorted[sorted.length - 1].simMs - sorted[0].simMs
 
@@ -152,7 +160,7 @@ export function buildRunSummary(
   // monthlyUsd, not an hourly figure, so hourlyUsd is derived via HOURS_PER_MONTH (the same basis
   // computeWorldCost itself bills against) rather than inventing a parallel cost field.
   const frameHourlyUsds = sorted.map(f =>
-    computeWorldCost(doc, f.batch.world, f.batch.managedServices ?? null).monthlyUsd / HOURS_PER_MONTH,
+    computeWorldCost(overlaidDoc, f.batch.world, f.batch.managedServices ?? null).monthlyUsd / HOURS_PER_MONTH,
   )
   const meanHourlyUsd = wMean(i => frameHourlyUsds[i])
   const peakHourlyUsd = Math.max(0, ...frameHourlyUsds)

@@ -12,6 +12,7 @@ import { useSimulationStore, selectLive } from '../store/simulation.store'
 import { useCompiledWorld } from './useCompiledWorld'
 import { WORLD_REGIONS } from '../../lib/regionConfig'
 import { computeWorldCost } from '../../lib/costModelV2'
+import { applyEnvironment } from '../../lib/world/environments'
 import type { RoutingPolicyKind, ServerId } from '../../lib/world/types'
 import { azShares, ribbonAlert, replicaRailPairs, regionManagedServices } from './region/regionData'
 import { AlertRibbon } from './region/AlertRibbon'
@@ -78,8 +79,13 @@ export function RegionView() {
   const worldMetrics = useMemo(
     () => batch?.world ? { ...batch.world, runningByPlacement: batch.runningByPlacement } : null,
     [batch?.world, batch?.runningByPlacement])
+  // computeWorldCost reads doc.servers/doc.placements directly -- an active environment's
+  // instanceClassOverrides/serverCountFactor/placementCountOverrides must be overlaid here too,
+  // or this region's cost rollup silently disagrees with CostTab.tsx's total. applyEnvironment is
+  // pure and only reads fields already inside `doc`, so keying the memo on `doc` alone (as
+  // before) still recomputes correctly whenever the active environment changes.
   const costs = useMemo(
-    () => computeWorldCost(doc, worldMetrics, managedMetrics),
+    () => computeWorldCost(applyEnvironment(doc), worldMetrics, managedMetrics),
     [doc, worldMetrics, managedMetrics])
   // node-model Phase 5.1/5.2: cloud-managed services have no hardware, so they never appear among
   // the servers below. AZ-scoped ones now show in their AZ card (regionAzManaged); this strip is for

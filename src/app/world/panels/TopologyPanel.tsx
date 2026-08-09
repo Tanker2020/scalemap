@@ -14,6 +14,7 @@ import { SectionHeader, EdgeRow, ChipValue, MicroBars, PresetCardGrid, type Edge
 import { field, smallBtn, dangerBtn, row } from './panelStyles'
 import { healthWord } from '../ui/derived'
 import { computeWorldCost, HOURS_PER_MONTH } from '../../../lib/costModelV2'
+import { applyEnvironment } from '../../../lib/world/environments'
 
 const HEALTH_COLOR: Record<'healthy' | 'degraded' | 'down', string> = {
   healthy: 'var(--color-success)',
@@ -76,7 +77,10 @@ export function TopologyPanel() {
   // Task 16) into the `world` arg — same fix as CostTab.tsx's — so this panel's per-region
   // $/hr readout tracks an autoscaled placement's live running share, not its full envelope.
   const worldForCost = displayBatch?.world ? { ...displayBatch.world, runningByPlacement: displayBatch.runningByPlacement } : null
-  const worldCost = computeWorldCost(doc, worldForCost, displayBatch?.managedServices ?? null)
+  // computeWorldCost reads doc.servers/doc.placements directly -- an active environment's
+  // instanceClassOverrides/serverCountFactor/placementCountOverrides must be overlaid here too,
+  // or this panel's per-region $/hr meta line silently disagrees with CostTab.tsx's total.
+  const worldCost = computeWorldCost(applyEnvironment(doc), worldForCost, displayBatch?.managedServices ?? null)
 
   const nextAzLabel = (catalogId: string, regionId: string) => {
     const count = Object.values(doc.azs).filter(a => a.regionId === regionId).length

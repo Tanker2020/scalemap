@@ -181,6 +181,41 @@ describe('buildRunSummary — SLO breach evaluation', () => {
   })
 })
 
+// ─── buildRunSummary: active-environment cost overlay ──────────────────────────
+
+describe('buildRunSummary — active-environment cost overlay', () => {
+  it('reports higher cost when the active environment swaps a server to a pricier instance class', () => {
+    // costModelV2's computeWorldCost bills a server's hourlyUsd flat per box (not per placement
+    // count, unless autoscaled) -- so instanceClassOverrides (which rewrites hourlyUsd via
+    // getPreset, see environments.ts) is the reliable lever to prove the overlay is applied,
+    // where serverCountFactor alone would not move recorded cost for a non-autoscaled placement.
+    const { doc, webServer } = buildTwoTierWorld()
+    const compiled = compileWorld(doc)
+    const frames = buildFrames({ count: 5, p50Ms: 20, p99Ms: 40 })
+    const baseline = buildRunSummary(frames, doc, compiled, 'baseline')
+
+    // vps-medium (webServer's preset) is 0.036/hr; dedicated-32 is 1.32/hr -- a large, unmissable
+    // delta if the overlay is applied, and a zero delta (test failure) if it silently isn't.
+    const scaledDoc: WorldDoc = {
+      ...doc,
+      environments: {
+        env1: { id: 'env1', label: 'Upsized', instanceClassOverrides: { [webServer.id]: 'dedicated-32' } },
+      },
+      activeEnvironmentId: 'env1',
+    }
+    const scaledCompiled = compileWorld(scaledDoc)
+    const scaled = buildRunSummary(frames, scaledDoc, scaledCompiled, 'scaled')
+
+    // Sanity: the raw doc's server was left untouched by constructing scaledDoc (applyEnvironment
+    // returns a NEW doc/servers map, never mutates the input) -- otherwise this test could pass
+    // for the wrong reason (mutating shared fixture state) instead of the overlay actually working.
+    expect(webServer.catalogId).not.toBe('dedicated-32')
+
+    expect(scaled.cost.meanHourlyUsd).toBeGreaterThan(baseline.cost.meanHourlyUsd)
+    expect(scaled.cost.peakHourlyUsd).toBeGreaterThan(baseline.cost.peakHourlyUsd)
+  })
+})
+
 // ─── buildRunSummary: determinism (the feature's core precondition) ───────────
 
 describe('buildRunSummary — determinism', () => {
