@@ -5932,3 +5932,48 @@ separate, not-yet-scoped follow-up.
 **Verification:** `npx vitest run src/lib/analysis/rules/structural.test.ts` — 39 passed (4 new).
 `npx vitest run src/app/world/dock/drawers/ServicesDrawer.test.tsx` — 27 passed (4 new). `npx tsc
 --noEmit` clean. Full suite: `npx vitest run` — 156 files / 2089 tests, all green.
+
+---
+
+## Wave 5 Task 14b (supplementary) — placement role authoring, closing the canary-reachability gap
+
+Closes the Scope note directly above: Task 14 built `canaryWeight` authoring and the
+`canary-failing` rule, but nothing in the app could ever SET a placement's `role` to `'canary'` in
+the first place — `ServicesDrawer.tsx`'s chip line only ever rendered `role` as read-only
+interpolated text. This left the whole canary feature functionally unreachable by a user.
+
+**`src/app/world/dock/drawers/RoleControl.tsx` (new)** — authors a placement's `role`
+(`'primary' | 'replica' | 'canary'`), mounted in `ServicesDrawer.tsx`'s per-placement chip body
+directly ABOVE `CanaryWeightControl`, so switching to `'canary'` here reveals that field
+immediately in the same drawer (it already gates on `placement.role === 'canary'` — no change
+needed there). A single `<select>` live-dispatching `updatePlacement(id, { role })` —
+`updatePlacement`'s existing `Partial<Placement>` patch signature needed no change, mirroring
+Task 14's own note that no new store action was required. Edit-locked while `running`, same as
+every other field in this drawer. Reuses `CanaryWeightControl`'s exact `fieldRow`/`fieldLabel`/
+`fieldInput` style constants (each file keeps its own copy, matching how `CanaryWeightControl`
+itself didn't import `AutoscaleControl`'s private `numberField()` helper — one field per file
+doesn't warrant a shared style module).
+
+**Role-change-clears-canaryWeight decision:** switching a placement's role AWAY from `'canary'`
+now sets `canaryWeight: undefined` in the same patch, rather than leaving it set-but-hidden. This
+mirrors the one precedent already in this drawer for a mode-switch clearing a field:
+`AutoscaleControl.tsx`'s `pickStatic()` drops the placement's entire `autoscale` policy (not just
+empties its fields) when switching back to a static count, making `count` authoritative again
+without a stale policy lingering. Same reasoning applies here — a primary/replica placement
+should never carry a set-but-meaningless `canaryWeight` a later switch back to `'canary'` could
+unexpectedly resurrect (surprising the user with a stale weight instead of the field's own
+`DEFAULT_CANARY_WEIGHT` fallback). `updatePlacement`'s `{ ...existing, ...patch, id }` merge
+accepts an explicit `undefined` in the patch the same way `AutoscaleControl`'s
+`autoscale: undefined` and `scaleStep: v > 0 ? v : undefined` already do — it's a pre-existing,
+established convention in this store, not a new one.
+
+**Test note:** `ServicesDrawer.test.tsx`'s "switching role to canary" test had to author a
+canary-weight value DIFFERENT from `CanaryWeightControl`'s own `DEFAULT_CANARY_WEIGHT` (0.05) —
+`fireEvent.change` to a value equal to the currently-rendered DOM value doesn't fire React's
+`onChange` (a documented React/testing-library value-tracker quirk on controlled inputs), so the
+test asserts a change to `0.1` instead.
+
+**Verification:** `npx vitest run src/app/world/dock/drawers/ServicesDrawer.test.tsx` — 31 passed
+(4 new: default-primary render, canary switch reveals+sets `canaryWeight`, role-away clears
+`canaryWeight`, edit-lock). `npx tsc --noEmit` clean. Full suite: `npx vitest run` — 156 files /
+2093 tests, all green.
