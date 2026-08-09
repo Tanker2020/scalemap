@@ -4,9 +4,12 @@
 // shape/rng means a latency or cost delta says nothing about the change under test), plus a
 // softer note when the pair's structural fingerprint is identical (nothing to compare). Every
 // per-metric row renders as ONE text node (label + values + delta together) so its color can
-// flip direction-aware — lower latency/error-rate/cost is "good" (green), lower peak rps is
-// "bad" (throughput regression) — without a second element splitting the sentence a screen
-// reader (or a test) would have to stitch back together.
+// flip direction-aware — lower latency/error-rate is "good" (green), lower peak rps is "bad"
+// (throughput regression) — without a second element splitting the sentence a screen reader (or
+// a test) would have to stitch back together. Cost rows are the one exception: money always
+// renders in var(--color-price), never recolored to success/danger (the price-law constraint —
+// a dollar figure must never double as a status/health signal), with direction conveyed only via
+// the +/− sign and percentage in the text.
 import { useBaselineStore } from '../../store/baseline.store'
 import { sectionLabel, field, smallBtn, dangerBtn, row } from './panelStyles'
 
@@ -25,13 +28,19 @@ interface MetricRowProps {
   b: number
   lowerIsBetter: boolean
   format: (n: number) => string
+  // Money rows always render in var(--color-price) regardless of direction — the price-law
+  // constraint says a dollar figure must never read as a status/health signal via success/danger
+  // recoloring. Direction is still conveyed via the +/− sign and percentage in the text.
+  isMoney?: boolean
 }
 
-function MetricRow({ label, a, b, lowerIsBetter, format }: MetricRowProps) {
+function MetricRow({ label, a, b, lowerIsBetter, format, isMoney }: MetricRowProps) {
   const delta = pctDelta(a, b)
   const noChange = delta === null || Math.abs(delta) < NOISE_FLOOR
   const good = !noChange && (lowerIsBetter ? delta! < 0 : delta! > 0)
-  const color = noChange ? 'var(--color-text-secondary)' : good ? 'var(--color-success)' : 'var(--color-danger)'
+  const color = isMoney
+    ? 'var(--color-price)'
+    : noChange ? 'var(--color-text-secondary)' : good ? 'var(--color-success)' : 'var(--color-danger)'
   const pctText = noChange ? 'no change' : `${delta! < 0 ? '−' : '+'}${Math.abs(Math.round(delta! * 100))}%`
   return (
     <div style={row}>
@@ -92,9 +101,9 @@ export function ComparePanel() {
           <MetricRow label="peak rps" a={a.peakRps} b={b.peakRps} lowerIsBetter={false} format={n => n.toFixed(0)} />
 
           <div style={sectionLabel}>Cost</div>
-          <MetricRow label="cost mean $/hr" a={a.cost.meanHourlyUsd} b={b.cost.meanHourlyUsd} lowerIsBetter format={n => `$${n.toFixed(2)}`} />
-          <MetricRow label="cost peak $/hr" a={a.cost.peakHourlyUsd} b={b.cost.peakHourlyUsd} lowerIsBetter format={n => `$${n.toFixed(2)}`} />
-          <MetricRow label="cost total" a={a.cost.totalUsd} b={b.cost.totalUsd} lowerIsBetter format={n => `$${n.toFixed(2)}`} />
+          <MetricRow label="cost mean $/hr" a={a.cost.meanHourlyUsd} b={b.cost.meanHourlyUsd} lowerIsBetter format={n => `$${n.toFixed(2)}`} isMoney />
+          <MetricRow label="cost peak $/hr" a={a.cost.peakHourlyUsd} b={b.cost.peakHourlyUsd} lowerIsBetter format={n => `$${n.toFixed(2)}`} isMoney />
+          <MetricRow label="cost total" a={a.cost.totalUsd} b={b.cost.totalUsd} lowerIsBetter format={n => `$${n.toFixed(2)}`} isMoney />
 
           <div style={sectionLabel}>SLO breaches</div>
           <div style={row}>

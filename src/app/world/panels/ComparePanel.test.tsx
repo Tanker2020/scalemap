@@ -68,4 +68,27 @@ describe('ComparePanel', () => {
     expect(screen.getByText(/p99.*(-38|down 38|−38)/i)).toBeInTheDocument()
     expect(screen.getByText(/cost.*(\+22|up 22)/i)).toBeInTheDocument()
   })
+
+  it('colors a non-money row (p99 latency) success/danger by direction, but never recolors cost rows', () => {
+    useBaselineStore.setState({
+      summaries: [
+        // p99 improves (100 -> 62, lower is better -> good/success). cost mean increases
+        // (5 -> 6.1) and cost total DECREASES (100 -> 80) — opposite directions, both must
+        // still render in var(--color-price), never success/danger.
+        runSummaryFixture({ id: 'a', latency: { p50Ms: 10, p90Ms: 20, p99Ms: 100 }, cost: { meanHourlyUsd: 5, totalUsd: 100, peakHourlyUsd: 8 } }),
+        runSummaryFixture({ id: 'b', latency: { p50Ms: 10, p90Ms: 20, p99Ms: 62 }, cost: { meanHourlyUsd: 6.1, totalUsd: 80, peakHourlyUsd: 9 } }),
+      ],
+      compareA: 'a', compareB: 'b',
+    })
+    render(<ComparePanel />)
+
+    const p99Node = screen.getByText(/p99/i)
+    expect(p99Node).toHaveStyle({ color: 'var(--color-success)' })
+
+    const costMeanNode = screen.getByText(/cost mean/i) // increased ($5 -> $6.1)
+    expect(costMeanNode).toHaveStyle({ color: 'var(--color-price)' })
+
+    const costTotalNode = screen.getByText(/cost total/i) // decreased ($100 -> $80)
+    expect(costTotalNode).toHaveStyle({ color: 'var(--color-price)' })
+  })
 })
