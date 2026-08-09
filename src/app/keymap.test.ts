@@ -63,6 +63,7 @@ describe('keymap', () => {
         goUp: vi.fn(),
         exitPlaceMode: vi.fn(),
         isInPlaceMode: () => false,
+        togglePalette: vi.fn(),
         ...overrides,
       }
     }
@@ -98,5 +99,31 @@ describe('keymap', () => {
       expect(ctx.undo).toHaveBeenCalledTimes(1)
       uninstall()
     })
+  })
+
+  // wave 5 task 16 — the ⌘K command-palette binding added to REGISTRY.
+  it('⌘K calls togglePalette regardless of running state (when: always)', () => {
+    function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
+      return {
+        running: false,
+        newWorld: vi.fn(),
+        goGlobe: vi.fn(),
+        setFilePath: vi.fn(),
+        setShowHome: vi.fn(),
+        undo: vi.fn(),
+        redo: vi.fn(),
+        goUp: vi.fn(),
+        exitPlaceMode: vi.fn(),
+        isInPlaceMode: () => false,
+        togglePalette: vi.fn(),
+        ...overrides,
+      }
+    }
+    const ctx = makeCtx({ running: true })
+    const uninstall = installKeymap(REGISTRY, () => ctx)
+    const e = new KeyboardEvent('keydown', { key: 'k', metaKey: true, cancelable: true })
+    window.dispatchEvent(e)
+    expect(ctx.togglePalette).toHaveBeenCalledTimes(1)
+    uninstall()
   })
 })

@@ -20,6 +20,9 @@ export interface CommandContext {
   goUp: () => void
   exitPlaceMode: () => void
   isInPlaceMode: () => boolean
+  // wave 5 task 16 — toggles the command palette's ui.store-backed open state (see ui.store.ts's
+  // paletteOpen for why it isn't WorldShell-local).
+  togglePalette: () => void
 }
 
 export interface Binding {
@@ -83,6 +86,10 @@ export const REGISTRY: Binding[] = [
   },
   { id: 'undo', keys: '⌘Z', label: 'Undo', group: 'author', when: 'stopped', preventDefault: 'match', run: ctx => ctx.undo() },
   { id: 'redo', keys: '⇧⌘Z', label: 'Redo', group: 'author', when: 'stopped', preventDefault: 'match', run: ctx => ctx.redo() },
+  {
+    id: 'toggle-palette', keys: '⌘K', label: 'Command palette', group: 'view', when: 'always',
+    run: ctx => ctx.togglePalette(),
+  },
   {
     id: 'escape', keys: 'Escape', label: 'Back / exit place mode', group: 'navigate', when: 'always', preventDefault: 'never',
     run: ctx => {

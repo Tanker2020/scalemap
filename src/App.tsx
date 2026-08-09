@@ -57,6 +57,7 @@ export default function App() {
     goUp: () => useNavStore.getState().up(),
     exitPlaceMode: () => useUiStore.getState().setPlaceMode(false),
     isInPlaceMode: () => useUiStore.getState().placeMode,
+    togglePalette: () => useUiStore.getState().setPaletteOpen(o => !o),
   })), [])
 
   useEffect(() => {

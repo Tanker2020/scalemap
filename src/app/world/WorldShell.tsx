@@ -21,6 +21,11 @@ import { SettingsModal } from './SettingsModal'
 import { ConnectionsView } from './connections/ConnectionsView'
 import { FirewallRulesModal } from './server/FirewallRulesModal'
 import { AssistantView } from './ai/AssistantView'
+import { CommandPalette } from './CommandPalette'
+import { buildCommands, type PaletteContext } from './commands'
+import { useCompiledWorld } from './useCompiledWorld'
+import { WORLD_REGIONS } from '../../lib/regionConfig'
+import { getPreset } from '../../lib/world/instanceCatalog'
 
 const hdrBtn: CSSProperties = {
   background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
@@ -51,6 +56,13 @@ export function WorldShell() {
   const placeMode = useUiStore(s => s.placeMode)
   const setPlaceMode = useUiStore(s => s.setPlaceMode)
   const [selectedPopulationId, setSelectedPopulationId] = useState<string | null>(null)
+  // The command palette's open state (wave 5 task 16) — lives in ui.store, not a local useState,
+  // because keymap.ts's app-level ⌘K binding is installed in App.tsx, above this component; see
+  // ui.store.ts's paletteOpen doc comment.
+  const paletteOpen = useUiStore(s => s.paletteOpen)
+  const setPaletteOpen = useUiStore(s => s.setPaletteOpen)
+  const doc = useWorldStore(s => s.doc)
+  const compiled = useCompiledWorld()
 
   // Defensive UX, not a named requirement: disarm place-mode if the user navigates away from
   // the globe level while it's armed, so it can't silently stay "armed" somewhere it has no
@@ -88,6 +100,36 @@ export function WorldShell() {
   // Two arms, one state (Polish 4 T7, spec D9): GlobeView's own HUD "+ traffic" button and
   // WorldPanel's TrafficPanel toggle both flip the SAME placeMode boolean via this one callback.
   const onTogglePlaceMode = () => setPlaceMode(p => !p)
+
+  // Command palette context (wave 5 task 16). addServer/addRegion in world.store both take real
+  // args (`addServer(azId, preset)` / `addRegion(catalogId)` — there is no bare "quick add"
+  // action anywhere in the app; TopologyPanel's own "+ Region" button and the VPS door both pick
+  // a target first). These closures supply the SAME kind of default a palette invocation implies
+  // ("just add one") rather than inventing a UI to pick a target inline: add-region picks the
+  // first catalog region not already in the doc (no-op if every WORLD_REGIONS entry is used),
+  // add-server targets the currently-focused AZ if one exists, else the first AZ in the doc (no-op
+  // if the world has no AZ yet) with the same 'vps-medium' default AddServiceForm reaches for.
+  const paletteCtx: PaletteContext = {
+    doc,
+    compiled,
+    nav: { goRegion: nav.goRegion, goAz: nav.goAz, goServer: nav.goServer },
+    focusedServerId: nav.serverId,
+    addServer: () => {
+      const azId = nav.azId ?? Object.keys(doc.azs)[0]
+      const preset = getPreset('vps-medium')
+      if (!azId || !preset) return
+      useWorldStore.getState().addServer(azId, preset)
+    },
+    addRegion: () => {
+      const used = new Set(Object.values(doc.regions).map(r => r.catalogId))
+      const next = WORLD_REGIONS.find(w => !used.has(w.id))
+      if (!next) return
+      useWorldStore.getState().addRegion(next.id)
+    },
+    undo: () => useWorldStore.getState().undo(),
+    redo: () => useWorldStore.getState().redo(),
+    setPendingTab: (tab) => useUiStore.getState().setPendingPanelTab(tab),
+  }
 
   const view =
     nav.level === 'globe' ? (
@@ -157,6 +199,12 @@ export function WorldShell() {
           openFirewallRules={openFirewallRules}
         />
       </div>
+      <CommandPalette
+        open={paletteOpen}
+        commands={buildCommands(paletteCtx)}
+        onClose={() => setPaletteOpen(false)}
+        running={running}
+      />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <ConnectionsView open={connectionsOpen} onClose={() => setConnectionsOpen(false)} />
       <AssistantView open={chatOpen} onClose={() => setChatOpen(false)} openSettings={() => setSettingsOpen(true)} />

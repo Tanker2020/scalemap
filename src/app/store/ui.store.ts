@@ -52,6 +52,12 @@ interface UiStore {
   // WorldPanel's TrafficPanel toggle both flip this one boolean, same as before the lift.
   placeMode: boolean
   setPlaceMode: (v: boolean | ((prev: boolean) => boolean)) => void
+  // 2026-08-09 (wave 5 ergonomics, task 16): the command palette's open/closed state, lifted the
+  // SAME way placeMode was one task earlier — keymap.ts's app-level ⌘K binding is installed in
+  // App.tsx, above WorldShell, so its `run` needs a store-backed toggle it can reach; a
+  // WorldShell-local useState would be invisible to that closure.
+  paletteOpen: boolean
+  setPaletteOpen: (v: boolean | ((prev: boolean) => boolean)) => void
 }
 
 export const useUiStore = create<UiStore>((set) => ({
@@ -68,4 +74,6 @@ export const useUiStore = create<UiStore>((set) => ({
   setSelectedServerId: (id) => set({ selectedServerId: id }),
   placeMode: false,
   setPlaceMode: (v) => set(s => ({ placeMode: typeof v === 'function' ? v(s.placeMode) : v })),
+  paletteOpen: false,
+  setPaletteOpen: (v) => set(s => ({ paletteOpen: typeof v === 'function' ? v(s.paletteOpen) : v })),
 }))
