@@ -56,21 +56,30 @@ function fnv1a(str: string): string {
 
 // ─── Time-weighted rollup ──────────────────────────────────────────────────────
 
-// The fraction of a frame's admitted requests its published p99Ms is meant to represent (by
-// definition: 99% of requests land at/below p50-ish territory, the top 1% land up near p99Ms).
 // No per-request latency histogram exists anywhere in the engine — MetricsBatch publishes only
 // EMA-smoothed p50Ms/p99Ms per instance, one pair per 1Hz frame. Naively time-averaging those
 // per-frame p99Ms readings across the whole run lets a brief spike (rare in TIME) dominate the
-// reported run-level p99, even though it represents a much smaller share of actual REQUESTS (a
-// 10-of-300-second spike is 3.3% of time, but its own p99 tail is only the top 1% of THAT window's
-// requests — under 0.04% of the run's total request volume). To avoid that distortion, each
-// frame's reading is modeled as two weighted request-count samples — the bulk of its requests at
-// p50Ms, and its top-1% tail at p99Ms — merged across every frame and every instance (weighted by
-// rps × frame-duration), then the run's p50/p90/p99 are read off that merged weighted distribution
-// via weightedQuantile. This keeps a rare tail rare in the rollup instead of letting frame-count
-// alone decide its weight.
-const P99_TAIL_FRACTION = 0.01
-
+// reported run-level p99, even though a spike second still only carries its own share of the
+// run's REQUEST volume (a 10-of-300-second spike is 3.3% of time and, weighted by requests, should
+// move the reported figure only a little unless it represents a large fraction of total requests).
+//
+// A prior version of this file modeled each frame as two weighted samples (a p50-valued "bulk" at
+// 99% of the frame's request weight and a p99-valued "tail" at 1%) and read the run p50/p99 off
+// the merged distribution. That construction put the p99 query point exactly ON the bulk/tail mass
+// boundary (99% of TOTAL weight, by construction) — so in exact arithmetic weightedQuantile(0.99)
+// always returned the *minimum* per-frame p99 reading (zero sensitivity to how much of the run was
+// spiking), and under real floating-point rps/dt values the boundary could tip either way,
+// sometimes silently returning a p50 value from the p99 field. Both are unacceptable for a feature
+// whose whole point is discriminating a worse run from a better one.
+//
+// Fixed shape: treat each frame's own p50Ms/p99Ms reading as ONE sample of the corresponding
+// population, weighted by that frame's request count (rps × frame-duration-ms). The run's reported
+// p50/p99 is the weighted MEDIAN of each population — i.e. "the p99 reading experienced by the
+// median request in this run," which moves continuously as a spike's share of total requests grows
+// instead of being pinned to an exact mass fraction. p90Ms has no engine counterpart at all (only
+// p50Ms/p99Ms are published), so it is computed as an explicit, documented linear interpolation
+// between each frame's own p50Ms and p99Ms readings (p50 + 0.8 × (p99 − p50)) — an approximation
+// of a 90th percentile, not a measured one — weighted and aggregated the same way.
 function frameInstanceLatency(batch: MetricsBatch): { p50Ms: number; p99Ms: number; rps: number } {
   const instances = Object.values(batch.instances)
   const totalRps = instances.reduce((sum, i) => sum + i.rps, 0)
@@ -117,18 +126,21 @@ export function buildRunSummary(
 
   const frameLatencies = sorted.map(f => frameInstanceLatency(f.batch))
 
-  const latencySamples: { value: number; weight: number }[] = []
+  const p50Samples: { value: number; weight: number }[] = []
+  const p99Samples: { value: number; weight: number }[] = []
+  const p90Samples: { value: number; weight: number }[] = []
   sorted.forEach((_f, i) => {
     const { p50Ms, p99Ms, rps } = frameLatencies[i]
     const requestWeight = rps * weights[i]
     if (requestWeight <= 0) return
-    latencySamples.push({ value: p50Ms, weight: requestWeight * (1 - P99_TAIL_FRACTION) })
-    latencySamples.push({ value: p99Ms, weight: requestWeight * P99_TAIL_FRACTION })
+    p50Samples.push({ value: p50Ms, weight: requestWeight })
+    p99Samples.push({ value: p99Ms, weight: requestWeight })
+    p90Samples.push({ value: p50Ms + 0.8 * (p99Ms - p50Ms), weight: requestWeight })
   })
   const latency = {
-    p50Ms: weightedQuantile(latencySamples, 0.5),
-    p90Ms: weightedQuantile(latencySamples, 0.9),
-    p99Ms: weightedQuantile(latencySamples, 0.99),
+    p50Ms: weightedQuantile(p50Samples, 0.5),
+    p90Ms: weightedQuantile(p90Samples, 0.5),
+    p99Ms: weightedQuantile(p99Samples, 0.5),
   }
 
   const errorRate = wMean(i => sorted[i].batch.world.errorRate)

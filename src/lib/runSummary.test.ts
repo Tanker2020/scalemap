@@ -121,6 +121,28 @@ describe('buildRunSummary — time-weighted latency', () => {
     expect(summary.latency.p99Ms).toBeLessThan(70)
     expect(summary.latency.p99Ms).toBeGreaterThan(38)
   })
+
+  it('a run with more spike-seconds reports a materially worse p99 than one with fewer', () => {
+    const { doc } = buildTwoTierWorld()
+    const compiled = compileWorld(doc)
+
+    const fewSpikeFrames = [
+      ...buildFrames({ count: 290, p50Ms: 20, p99Ms: 40 }),
+      ...buildFrames({ count: 10, p50Ms: 20, p99Ms: 2000, startMs: 290_000 }),
+    ]
+    const manySpikeFrames = [
+      ...buildFrames({ count: 150, p50Ms: 20, p99Ms: 40 }),
+      ...buildFrames({ count: 150, p50Ms: 20, p99Ms: 2000, startMs: 150_000 }),
+    ]
+
+    const fewSpikeSummary = buildRunSummary(fewSpikeFrames, doc, compiled, 'few-spikes')
+    const manySpikeSummary = buildRunSummary(manySpikeFrames, doc, compiled, 'many-spikes')
+
+    // The whole point of a request-weighted rollup: a run that spent half its seconds spiking
+    // must summarize materially worse than one that spent 3.3% of its seconds spiking, given the
+    // same spike magnitude. (The prior bulk/tail-split implementation reported 40ms for BOTH.)
+    expect(manySpikeSummary.latency.p99Ms).toBeGreaterThan(fewSpikeSummary.latency.p99Ms + 500)
+  })
 })
 
 // ─── buildRunSummary: SLO breach evaluation ────────────────────────────────────
