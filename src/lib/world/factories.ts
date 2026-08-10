@@ -36,6 +36,12 @@ export function createWorld(): WorldDoc {
     racks: {},
     packets: emptyPacketRegistry(),
     connectionLayout: {},
+    vpcs: {},
+    subnets: {},
+    routeTables: {},
+    internetGateways: {},
+    natGateways: {},
+    securityGroups: {},
   }
 }
 
