@@ -111,6 +111,8 @@ interface WorldStore {
   addServiceToServer: (serverId: string, draft: ServiceDraft) =>
     { blueprintId: string; placementId: string }
   updateServer: (id: string, patch: Partial<Server>) => void
+  /** Applies the SAME patch to N servers as a single undo step (Wave 5 batch editing). */
+  batchUpdateServers: (ids: string[], patch: Partial<Server>) => void
   removeServer: (id: string) => void
   addBlueprint: (name: string) => string
   updateBlueprint: (id: string, patch: Partial<ServiceBlueprint>) => void
@@ -317,6 +319,18 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       const existing = d.servers[id]
       if (!existing) return d
       return { ...d, servers: { ...d.servers, [id]: { ...existing, ...patch, id } } }
+    }),
+    // Wave 5 (Task 18): applies the SAME patch to every targeted server in ONE mutate() — one
+    // undo step for the whole batch, not one per server (mirrors addDbServer/spreadBlueprint's
+    // "one user action, one history entry" convention above). A missing id is silently skipped
+    // (same defensiveness as updateServer's single-id guard) rather than aborting the batch.
+    batchUpdateServers: (ids, patch) => mutate(d => {
+      const servers = { ...d.servers }
+      for (const id of ids) {
+        const existing = servers[id]
+        if (existing) servers[id] = { ...existing, ...patch, id }
+      }
+      return { ...d, servers }
     }),
     removeServer: (id) => mutate(d => withoutServer(d, id)),
 

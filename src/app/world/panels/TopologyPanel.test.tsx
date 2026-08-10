@@ -4,10 +4,14 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { TopologyPanel } from './TopologyPanel'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
+import { useUiStore } from '../../store/ui.store'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import type { MetricsBatch } from '../../../lib/worldEngine/types'
 
-beforeEach(() => useWorldStore.getState().newWorld())
+beforeEach(() => {
+  useWorldStore.getState().newWorld()
+  useUiStore.getState().clearSelection()
+})
 
 describe('TopologyPanel', () => {
   it('adds a region from the catalog select', () => {
@@ -217,5 +221,41 @@ describe('TopologyPanel — Environments (Wave 5)', () => {
     render(<TopologyPanel />)
     fireEvent.change(screen.getByLabelText('cloud-profile-select'), { target: { value: 'aws' } })
     expect(useWorldStore.getState().doc.cloudProfile).toBe('aws')
+  })
+})
+
+describe('TopologyPanel — batch edit (Wave 5, Task 18)', () => {
+  function seedThreeServers() {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    return [0, 1, 2].map(() => useWorldStore.getState().addServer(azId, getPreset('vps-medium')!))
+  }
+
+  it('is hidden with no selection or a single server selected', () => {
+    const ids = seedThreeServers()
+    render(<TopologyPanel />)
+    expect(screen.queryByTestId('batch-edit-bar')).not.toBeInTheDocument()
+
+    useUiStore.getState().setSelectedEntityIds(new Set([ids[0]]))
+    expect(screen.queryByTestId('batch-edit-bar')).not.toBeInTheDocument()
+  })
+
+  it('appears once 2+ servers are selected, and applying a class change batch-updates all of them in one undo step', () => {
+    const ids = seedThreeServers()
+    useUiStore.getState().setSelectedEntityIds(new Set(ids))
+    render(<TopologyPanel />)
+
+    expect(screen.getByTestId('batch-edit-bar')).toBeInTheDocument()
+    expect(screen.getByText('3 selected')).toBeInTheDocument()
+
+    const historyBefore = useWorldStore.getState().history.length
+    fireEvent.change(screen.getByLabelText('batch instance class'), { target: { value: 'dedicated-8' } })
+
+    const doc = useWorldStore.getState().doc
+    ids.forEach(id => expect(doc.servers[id].catalogId).toBe('dedicated-8'))
+    expect(useWorldStore.getState().history.length).toBe(historyBefore + 1)   // one undo step
+
+    useWorldStore.getState().undo()
+    ids.forEach(id => expect(useWorldStore.getState().doc.servers[id].catalogId).not.toBe('dedicated-8'))
   })
 })

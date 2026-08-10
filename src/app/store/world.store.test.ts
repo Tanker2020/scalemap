@@ -988,3 +988,54 @@ describe('world.store — Environment CRUD (Wave 5)', () => {
     expect(useWorldStore.getState().doc.environments![blueId].label).toBe('blue')
   })
 })
+
+describe('world.store — batchUpdateServers (Wave 5, Task 18)', () => {
+  function seedThreeServers() {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const ids = [0, 1, 2].map(() => useWorldStore.getState().addServer(azId, getPreset('vps-medium')!))
+    return { azId, ids }
+  }
+
+  it('applies the patch to all targeted servers in ONE undo step', () => {
+    const { ids } = seedThreeServers()
+    const before = useWorldStore.getState().doc.servers
+    const historyBefore = useWorldStore.getState().history.length
+
+    useWorldStore.getState().batchUpdateServers(ids, { catalogId: 'c5.large' })
+
+    ids.forEach(id => expect(useWorldStore.getState().doc.servers[id].catalogId).toBe('c5.large'))
+    expect(useWorldStore.getState().history.length).toBe(historyBefore + 1)   // one undo step
+
+    useWorldStore.getState().undo()   // a SINGLE undo, not one per server
+    ids.forEach(id => expect(useWorldStore.getState().doc.servers[id]).toEqual(before[id]))
+  })
+
+  it('preserves each server id and leaves untargeted servers untouched', () => {
+    const { azId, ids } = seedThreeServers()
+    const other = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+
+    useWorldStore.getState().batchUpdateServers(ids.slice(0, 2), { catalogId: 'dedicated-8' })
+
+    const doc = useWorldStore.getState().doc
+    expect(doc.servers[ids[0]].id).toBe(ids[0])
+    expect(doc.servers[ids[0]].catalogId).toBe('dedicated-8')
+    expect(doc.servers[ids[1]].catalogId).toBe('dedicated-8')
+    expect(doc.servers[ids[2]].catalogId).not.toBe('dedicated-8')   // untargeted, untouched
+    expect(doc.servers[other].catalogId).not.toBe('dedicated-8')
+  })
+
+  it('skips unknown ids without throwing and still applies to the known ones', () => {
+    const { ids } = seedThreeServers()
+    expect(() => useWorldStore.getState().batchUpdateServers([...ids, 'nope'], { catalogId: 'dedicated-8' }))
+      .not.toThrow()
+    ids.forEach(id => expect(useWorldStore.getState().doc.servers[id].catalogId).toBe('dedicated-8'))
+  })
+
+  it('marks the file dirty', () => {
+    const { ids } = seedThreeServers()
+    useFileStore.getState().setDirty(false)
+    useWorldStore.getState().batchUpdateServers(ids, { catalogId: 'dedicated-8' })
+    expect(useFileStore.getState().dirty).toBe(true)
+  })
+})

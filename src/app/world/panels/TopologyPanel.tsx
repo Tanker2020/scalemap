@@ -6,6 +6,7 @@ import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
 import { useFileStore } from '../../store/file.store'
 import { useSimulationStore } from '../../store/simulation.store'
+import { useUiStore } from '../../store/ui.store'
 import { WORLD_REGIONS } from '../../../lib/regionConfig'
 import { INSTANCE_CATALOG, getPreset, type InstancePreset } from '../../../lib/world/instanceCatalog'
 import { nextWorldId } from '../../../lib/world/factories'
@@ -56,6 +57,47 @@ const unstyledButton = {
   font: 'inherit', color: 'inherit', cursor: 'pointer',
 } as const
 
+// Wave 5 (Task 18): a batch-edit affordance, visible only when 2+ servers are multi-selected
+// on the AZ floor (`ui.store.ts`'s `selectedEntityIds` — server ids only, since the floor's
+// marquee/click/⌘-click/⇧-click selection targets servers exclusively; see Task 17). Applying
+// an instance-class change here dispatches ONE `batchUpdateServers([...ids], patch)` call — one
+// undo step for the whole batch, mirroring HardwareDrawer.tsx's single-server `commit`'s patch
+// shape (catalogId + the full specs/hourlyUsd/oversubscriptionRatio/burstable set, so the plate
+// price and specs never drift apart for any of the targeted servers).
+function BatchEditBar() {
+  const selectedEntityIds = useUiStore(s => s.selectedEntityIds)
+  const doc = useWorldStore(s => s.doc)
+  const store = useWorldStore.getState()
+  const selectedServerIds = [...selectedEntityIds].filter(id => doc.servers[id])
+
+  if (selectedServerIds.length < 2) return null
+
+  const applyClass = (presetId: string) => {
+    const p = getPreset(presetId)
+    if (!p) return
+    store.batchUpdateServers(selectedServerIds, {
+      catalogId: p.id, specs: { ...p.specs }, hourlyUsd: p.hourlyUsd,
+      oversubscriptionRatio: p.oversubscriptionRatio, burstable: p.burstable,
+    })
+  }
+
+  return (
+    <div data-testid="batch-edit-bar" style={{
+      display: 'flex', alignItems: 'center', gap: 6, margin: '2px 0 8px', padding: '4px 6px',
+      borderRadius: 4, border: '1px dashed var(--kit-accent)',
+    }}>
+      <span style={{ fontSize: 9.5, color: 'var(--color-text-secondary)' }}>
+        {selectedServerIds.length} selected
+      </span>
+      <select aria-label="batch instance class" style={{ ...field, flex: 1, marginBottom: 0 }}
+        defaultValue="" onChange={e => { if (e.target.value) applyClass(e.target.value) }}>
+        <option value="" disabled>apply instance class to all…</option>
+        {INSTANCE_CATALOG.map(p => <option key={p.id} value={p.id}>{p.id}</option>)}
+      </select>
+    </div>
+  )
+}
+
 export function TopologyPanel() {
   const doc = useWorldStore(s => s.doc)
   const store = useWorldStore.getState()
@@ -98,6 +140,8 @@ export function TopologyPanel() {
         <button className="kit-press" style={smallBtn} disabled={available.length === 0}
           onClick={() => store.addRegion(newRegion)}>+ Region</button>
       </div>
+
+      <BatchEditBar />
 
       {Object.values(doc.regions).map(region => {
         const regionHealth = displayBatch?.regions[region.id]?.health ?? null
