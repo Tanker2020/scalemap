@@ -27,6 +27,7 @@
 // opener button; all editing (add/reorder/remove/per-field edits) now lives in the modal.
 import { type ReactElement } from 'react'
 import { ruleSourceWords, rulePortPhrase } from '../../server/ruleSentence'
+import { SecurityGroupPicker } from './SecurityGroupPicker'
 import type { Server } from '../../../../lib/world/types'
 
 export function firewallPv(server: Server, liveAllowedRps?: number | null): string {
@@ -47,6 +48,18 @@ export interface FirewallDrawerProps {
 const SENTENCE_ID_COLOR = 'var(--kit-accent)'
 
 export function FirewallDrawer({ server, running, onOpenRules }: FirewallDrawerProps): ReactElement {
+  // Task 13 (network-topology): a networked server (subnetId set) is governed by security
+  // groups scoped to its subnet's VPC instead of the legacy flat firewall rule list below — the
+  // un-networked branch (subnetId absent) is completely unchanged, the regression floor for
+  // existing worlds/tests.
+  if (server.subnetId) {
+    return (
+      <div data-testid="firewall-drawer-body">
+        <SecurityGroupPicker server={server} />
+      </div>
+    )
+  }
+
   return (
     <div data-testid="firewall-drawer-body">
       {server.firewall.map((r, i) => (
