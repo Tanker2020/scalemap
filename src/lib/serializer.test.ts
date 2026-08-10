@@ -342,4 +342,22 @@ describe('scalemap v3 serializer', () => {
     expect(parsed.world.servers[server.id].rack).toBeNull()
     expect(parsed.world).toEqual(world)
   })
+
+  it('a pre-feature v3 file with no network-topology collections loads with them defaulted to empty', () => {
+    const legacy = {
+      version: '3',
+      meta: { name: 'x', created: '', modified: '' },
+      world: {
+        routing: { policy: 'latency', weights: {}, priorityOrder: [], healthCheckIntervalMs: 10000, healthCheckFailureThreshold: 3, dnsTtlSec: 30 },
+        populations: {}, regions: {}, azs: {}, servers: {}, blueprints: {}, placements: {}, managedServices: {},
+      },
+    }
+    const doc = deserializeWorld(JSON.stringify(legacy)).world
+    expect(doc.vpcs).toEqual({})
+    expect(doc.subnets).toEqual({})
+    expect(doc.routeTables).toEqual({})
+    expect(doc.internetGateways).toEqual({})
+    expect(doc.natGateways).toEqual({})
+    expect(doc.securityGroups).toEqual({})
+  })
 })
