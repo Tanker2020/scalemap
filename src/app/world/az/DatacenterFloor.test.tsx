@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { DatacenterFloor } from './DatacenterFloor'
-import { isoBox } from './iso'
+import { isoBox, VIEW_W, VIEW_H } from './iso'
 import { POD_HEIGHT_PX } from './FreePoolPod'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
@@ -562,7 +562,37 @@ describe('DatacenterFloor — multi-select (wave 5 ergonomics, task 17)', () => 
     expect(useUiStore.getState().selectedServerId).toBeNull()
   })
 
-  it('marquee selection selects exactly the servers whose floor layout rects intersect the marquee', () => {
+  // Task 17 review round 1 (Important #3): the only prior ⇧-click test clicked an EARLIER item
+  // then a LATER one (ascending anchor->target). Prove the `[lo, hi]` swap in `handleSelect`
+  // resolves correctly in the opposite direction too — click the LATER item first, then an
+  // EARLIER one with ⇧ held, and confirm the range still covers everything between them.
+  it('⇧-click range-selects backward (later item clicked first, earlier item ⇧-clicked) the same as forward', () => {
+    const { azId } = seedAz()
+    const s1 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const s2 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const s3 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<DatacenterFloor />)
+    const pod1 = screen.getByTestId(`free-pod-${s1}`)
+    const pod3 = screen.getByTestId(`free-pod-${s3}`)
+
+    // Anchor on the LATER item (s3) first...
+    fireEvent.pointerDown(pod3, { clientX: 30, clientY: 30, button: 0, pointerId: 1 })
+    fireEvent.pointerUp(pod3, { clientX: 30, clientY: 30, pointerId: 1 })
+    expect(useUiStore.getState().selectedEntityIds).toEqual(new Set([s3]))
+    // ...then ⇧-click the EARLIER item (s1) — the range must still resolve to [s1, s2, s3].
+    fireEvent.pointerDown(pod1, { clientX: 10, clientY: 10, button: 0, pointerId: 2, shiftKey: true })
+    fireEvent.pointerUp(pod1, { clientX: 10, clientY: 10, pointerId: 2, shiftKey: true })
+
+    expect(useUiStore.getState().selectedEntityIds).toEqual(new Set([s1, s2, s3]))
+    expect(useUiStore.getState().selectedServerId).toBeNull()
+  })
+
+  // Task 17 review round 1 (Important #1): marquee is now wired on floor-viewport's OWN pointer
+  // handlers (the same element/event family the camera pan already owns), gated behind ⇧+drag so
+  // a plain background drag stays pan (unchanged default) and the two gestures can never both be
+  // live for one physical press. See DatacenterFloor.tsx's marqueeStartRef comment for the two
+  // real-browser failure modes (moving coordinate frame + pointer-capture retargeting) this fixes.
+  it('⇧+drag marquee selects exactly the servers whose floor layout rects intersect the marquee', () => {
     const { azId } = seedAz()
     // Two free-pool servers, created in order so 'server'-then-id sort (createServer's shared
     // 'server' label falls back to id ordering) puts s1 at pod grid cell (0,0) and s2 at (1,0) —
@@ -571,7 +601,7 @@ describe('DatacenterFloor — multi-select (wave 5 ergonomics, task 17)', () => 
     const s2 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
 
     render(<DatacenterFloor />)
-    const svg = screen.getByTestId('datacenter-floor-svg')
+    const viewport = screen.getByTestId('floor-viewport')
 
     // Compute the EXPECTED geometry from the same iso-projection primitives the component
     // itself uses (iso.ts's isoBox) rather than asserting against approximate pixel guesses.
@@ -581,21 +611,21 @@ describe('DatacenterFloor — multi-select (wave 5 ergonomics, task 17)', () => 
     const x0 = box0.roofSW.x + 5
     const y0 = box0.roofNW.y + 5
 
-    fireEvent.mouseDown(svg, { clientX: x0, clientY: y0 })
-    fireEvent.mouseMove(svg, { clientX: x0 + 10, clientY: y0 + 10 })
-    fireEvent.mouseUp(svg, { clientX: x0 + 10, clientY: y0 + 10 })
+    fireEvent.pointerDown(viewport, { clientX: x0, clientY: y0, button: 0, pointerId: 1, shiftKey: true })
+    fireEvent.pointerMove(viewport, { clientX: x0 + 10, clientY: y0 + 10, pointerId: 1, shiftKey: true })
+    fireEvent.pointerUp(viewport, { clientX: x0 + 10, clientY: y0 + 10, pointerId: 1, shiftKey: true })
 
     expect(useUiStore.getState().selectedEntityIds).toEqual(new Set([s1]))
     expect(useUiStore.getState().selectedEntityIds.has(s2)).toBe(false)
   })
 
-  it('marquee selection covering both pods selects both servers', () => {
+  it('⇧+drag marquee covering both pods selects both servers', () => {
     const { azId } = seedAz()
     const s1 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
     const s2 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
 
     render(<DatacenterFloor />)
-    const svg = screen.getByTestId('datacenter-floor-svg')
+    const viewport = screen.getByTestId('floor-viewport')
 
     const cols = 4
     const box0 = isoBox(0, 0, cols, POD_HEIGHT_PX, 0.52)
@@ -605,10 +635,100 @@ describe('DatacenterFloor — multi-select (wave 5 ergonomics, task 17)', () => 
     const maxX = Math.max(box0.roofNE.x, box1.roofNE.x) + 5
     const maxY = Math.max(box0.floorSE.y, box1.floorSE.y) + 5
 
-    fireEvent.mouseDown(svg, { clientX: minX, clientY: minY })
-    fireEvent.mouseMove(svg, { clientX: maxX, clientY: maxY })
-    fireEvent.mouseUp(svg, { clientX: maxX, clientY: maxY })
+    fireEvent.pointerDown(viewport, { clientX: minX, clientY: minY, button: 0, pointerId: 1, shiftKey: true })
+    fireEvent.pointerMove(viewport, { clientX: maxX, clientY: maxY, pointerId: 1, shiftKey: true })
+    fireEvent.pointerUp(viewport, { clientX: maxX, clientY: maxY, pointerId: 1, shiftKey: true })
 
     expect(useUiStore.getState().selectedEntityIds).toEqual(new Set([s1, s2]))
+  })
+
+  // Task 17 review round 1 (Important #1): a background drag with NO shift key must stay a plain
+  // camera pan — never also start a marquee — proving the two gestures are mutually exclusive at
+  // pointerdown, not just "functionally non-conflicting" by accident.
+  it('a plain (non-shift) background drag pans the camera and starts no marquee', () => {
+    const { azId } = seedAz()
+    const s1 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<DatacenterFloor />)
+    const viewport = screen.getByTestId('floor-viewport')
+
+    fireEvent.pointerDown(viewport, { clientX: 50, clientY: 50, button: 0, pointerId: 1 })
+    fireEvent.pointerMove(viewport, { clientX: 90, clientY: 90, pointerId: 1 })
+    fireEvent.pointerUp(viewport, { clientX: 90, clientY: 90, pointerId: 1 })
+
+    // No marquee rect should have been rendered mid-drag, and no selection should result from it.
+    expect(screen.queryByTestId('floor-marquee')).toBeNull()
+    expect(useUiStore.getState().selectedEntityIds.has(s1)).toBe(false)
+  })
+
+  // Task 17 review round 1 (Important #1): the svg's bounding rect must be snapshotted ONCE at
+  // marquee drag-start and reused for every move/up conversion in that drag — NOT recomputed on
+  // every move. Simulate a rect that changes mid-drag (as a real camera pan would move the on-
+  // screen svg) and confirm the marquee still resolves against the DRAG-START frame, matching
+  // exactly what the same gesture would select if the rect had never changed.
+  it('marquee coordinates stay pinned to the drag-start bounding-rect snapshot even if the rect changes mid-drag', () => {
+    const { azId } = seedAz()
+    const s1 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)   // s2, deliberately unused
+
+    render(<DatacenterFloor />)
+    const viewport = screen.getByTestId('floor-viewport')
+
+    const cols = 4
+    const box0 = isoBox(0, 0, cols, POD_HEIGHT_PX, 0.52)
+    const x0 = box0.roofSW.x + 5
+    const y0 = box0.roofNW.y + 5
+
+    const mkRect = (over: Partial<DOMRect>): DOMRect => ({
+      left: 0, top: 0, right: VIEW_W, bottom: VIEW_H, width: VIEW_W, height: VIEW_H,
+      x: 0, y: 0, toJSON: () => ({}), ...over,
+    })
+    // Drag-start rect: identity mapping (content px === screen px, since width === VIEW_W).
+    const rectStart = mkRect({})
+    const spy = vi
+      .spyOn(SVGSVGElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue(rectStart)
+
+    fireEvent.pointerDown(viewport, { clientX: x0, clientY: y0, button: 0, pointerId: 1, shiftKey: true })
+
+    // Mid-drag, the rect changes (simulating the svg's on-screen position having moved, e.g. from
+    // a pan). A buggy implementation that re-queries the rect on every move/up would now convert
+    // the SAME client coordinates against this shifted frame, landing far outside pod 0's box and
+    // missing the selection entirely.
+    spy.mockReturnValue(mkRect({ left: -500, top: -500, right: VIEW_W - 500, bottom: VIEW_H - 500 }))
+
+    fireEvent.pointerMove(viewport, { clientX: x0 + 10, clientY: y0 + 10, pointerId: 1, shiftKey: true })
+    fireEvent.pointerUp(viewport, { clientX: x0 + 10, clientY: y0 + 10, pointerId: 1, shiftKey: true })
+
+    spy.mockRestore()
+
+    // The fix (cached rect) keeps resolving against rectStart throughout the drag, so this must
+    // match the SAME small-marquee-inside-pod-0 result as the unchanging-rect test above.
+    expect(useUiStore.getState().selectedEntityIds).toEqual(new Set([s1]))
+  })
+
+  // Task 17 review round 1 (Important #2): the background click-to-deselect guard used to check
+  // only `selectedServerId`, which is null by design for a 2+-member selection (the store's
+  // consistency invariant) — so clicking empty background could never clear a multi-select.
+  it('clicking empty background clears a 2+-member selection (not just a single selectedServerId)', () => {
+    const { azId } = seedAz()
+    const s1 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const s2 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<DatacenterFloor />)
+    const pod1 = screen.getByTestId(`free-pod-${s1}`)
+    const pod2 = screen.getByTestId(`free-pod-${s2}`)
+
+    fireEvent.pointerDown(pod1, { clientX: 10, clientY: 10, button: 0, pointerId: 1 })
+    fireEvent.pointerUp(pod1, { clientX: 10, clientY: 10, pointerId: 1 })
+    fireEvent.pointerDown(pod2, { clientX: 20, clientY: 20, button: 0, pointerId: 2, metaKey: true })
+    fireEvent.pointerUp(pod2, { clientX: 20, clientY: 20, pointerId: 2, metaKey: true })
+    expect(useUiStore.getState().selectedEntityIds).toEqual(new Set([s1, s2]))
+    expect(useUiStore.getState().selectedServerId).toBeNull()   // the pre-existing bug's blind spot
+
+    const viewport = screen.getByTestId('floor-viewport')
+    fireEvent.pointerDown(viewport, { clientX: 400, clientY: 400, button: 0, pointerId: 3 })
+    fireEvent.pointerUp(viewport, { clientX: 401, clientY: 402, pointerId: 3 })
+
+    expect(useUiStore.getState().selectedEntityIds.size).toBe(0)
+    expect(useUiStore.getState().selectedServerId).toBeNull()
   })
 })
