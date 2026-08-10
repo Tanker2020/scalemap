@@ -11,10 +11,11 @@ import { MAX_GLOBE_ARCS } from './types'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
   ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole, BlueprintDependency,
-  ScenarioAction, ScenarioStep, CacheConfig, DbConfig, PlacementId,
+  ScenarioAction, ScenarioStep, CacheConfig, DbConfig, PlacementId, NatGatewayId,
 } from '../world/types'
 import { effectiveMissFraction } from './cache'
 import { managedDbEngine } from '../world/types'
+import { resolveRoute } from '../world/network'
 import { routeMatchesPattern, listRoutes } from '../nodeConfig'
 import { pickPacketByIndex, resolveWireSize, routeIngressBytes, buildPickTable, resolveMixProtocol, type WireSize, type PickTable } from '../packetResolve'
 import {
@@ -33,7 +34,10 @@ import {
 } from './routingRuntime'
 import { stepHost, diskIoDemandFor, diskWaitFor, resolveDiskIopsCeiling, warmthOf, type InstanceLoad, type HostStepResult, type WarmingEntry } from './hostScheduler'
 import { createVpsState, stepVps, type VpsState } from './vpsModel'
-import { createNicState, addNicBytes, settleNic, NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES, type NicState } from './networkRuntime'
+import {
+  createNicState, addNicBytes, settleNic, NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES, type NicState,
+  createNatGatewayState, settleNatGateway, type NatGatewayState,
+} from './networkRuntime'
 import { sampleSizeMultiplier } from './latency'
 import {
   getBreaker, recordWeighted, transition, admitRequest, pathKey, type Breaker,
@@ -95,6 +99,10 @@ function recordScaleEvent(history: Map<PlacementId, number[]>, placementId: Plac
 }
 const MIN_HEALTH_SIGNAL_RPS = 0.5            // below this offered rps, errorRate carries no signal
 const DEGRADE_THRESHOLD_MS = 4               // spec decision 9 / Global Constraints
+// FEAT-014 (Task 9): NatGateway carries no authorable nicMbps of its own (Task 1's type) — a
+// fixed 10 Gbps baseline (real AWS NAT Gateway line rate) stands in until a follow-up feature
+// authors one. Applies to every NAT gateway in a doc uniformly.
+const NAT_GATEWAY_NIC_MBPS = 10_000
 const DEGRADE_WINDOW_STEPS = 30              // 3s of 100ms steps
 const DEGRADED_STEP_MS = 200
 const RENDER_PROGRESS_PER_MS = 1 / 1200      // particle sweeps a pair in ~1.2s wall-time
@@ -131,6 +139,31 @@ function groupInstancesByServer(compiled: CompiledWorld): Map<ServerId, ServiceI
 function buildRoutePathById(doc: WorldDoc): Map<string, string> {
   const m = new Map<string, string>()
   for (const route of listRoutes(doc.packets)) m.set(String(route.id), route.path)
+  return m
+}
+
+// FEAT-014 (Task 9): "which NAT gateway (if any) does this server's subnet route cross-region
+// egress through" -- resolved once at start() from the frozen doc, exactly mirroring
+// compileWorld.ts's own fromSubnet/fromRouteTable/resolveRoute(routeTable, needsEgress) call
+// (network.ts's resolveRoute), so a server never disagrees at runtime with what the compiler
+// already decided its egress route target is. needsEgress is passed `true` unconditionally here
+// (rather than compileWorld's `hopClass === 'cross-region'` gate) because this index is keyed
+// purely by SOURCE server -- the model has one route table per subnet with at most one non-local
+// egress route, so "does this server's subnet resolve to a natGateway" has a single fixed answer
+// independent of which destination a given hop happens to be going to; the per-step call site
+// (the internal-hop loop below) still only consults this map for hops it already knows are
+// cross-region, reproducing compileWorld's gate at the point of use instead of here.
+function buildNatGatewayIdByServer(doc: WorldDoc): Map<ServerId, NatGatewayId> {
+  const m = new Map<ServerId, NatGatewayId>()
+  for (const server of Object.values(doc.servers)) {
+    if (!server.subnetId) continue
+    const subnet = doc.subnets[server.subnetId]
+    if (!subnet) continue
+    const routeTable = doc.routeTables[subnet.routeTableId]
+    if (!routeTable) continue
+    const target = resolveRoute(routeTable, true)
+    if (target?.kind === 'natGateway' && doc.natGateways[target.id]) m.set(server.id, target.id)
+  }
   return m
 }
 
@@ -433,6 +466,14 @@ interface EngineState {
   nics: Map<ServerId, NicState>
   nicDeliveredFraction: Map<ServerId, number>
   nicQueuedLatencyMs: Map<ServerId, number>
+  // FEAT-014 (Task 9): one NatGatewayState per doc.natGateways entry, built once at start() —
+  // empty for a doc with no NAT gateways, mirroring `nics`' per-server shape but keyed by
+  // gateway id. `natGatewayIdByServer` is the start()-time-resolved "which gateway (if any) does
+  // this server's subnet route cross-region egress through" index (mirrors serversByAz/
+  // azsByRegion's own start()-time-index pattern) so the per-step hop loop pays only a Map
+  // lookup, never a route-table walk.
+  natGatewayStates: Map<NatGatewayId, NatGatewayState>
+  natGatewayIdByServer: Map<ServerId, NatGatewayId>
   breakers: Map<string, Breaker>
   // Persistent per-instance request queues (audit ISSUE-013): carried across ticks, mutated by
   // solveFlows. THE backpressure/damping state — served = min(capacity, arrivals + backlog).
@@ -443,7 +484,14 @@ interface EngineState {
   tracer: Tracer
 
   prevFlows: Record<InstanceId, InstanceFlow>
-  windowTotals: { crossAzBytes: number; crossRegionBytes: number; internetBytes: number; managedEgressBytes: Record<string, number> }
+  windowTotals: {
+    crossAzBytes: number; crossRegionBytes: number; internetBytes: number
+    managedEgressBytes: Record<string, number>
+    // FEAT-014 (Task 9): per-NAT-gateway step bytes (in+out), accumulated the same way
+    // managedEgressBytes accumulates per-managed-service bytes -- stays `{}` for a doc with no
+    // NAT gateways, so buildBatch's natGatewayBytesPerSec loop is zero iterations.
+    natGatewayBytes: Record<string, number>
+  }
   lastRoutingSnapshot: RoutingSnapshot
   popRegion: Map<PopulationId, RegionId>
   pendingFailover: Map<PopulationId, RegionId>
@@ -1979,6 +2027,18 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         const toId = row.toInstanceId
         const toNic = toId != null ? nicByServer[compiled.instances[toId]?.serverId ?? ''] : undefined
         if (toNic) addNicBytes(toNic, req, resp)   // callee: request in, response out
+
+        // FEAT-014 (Task 9): the SAME req/resp bytes just booked against the caller's own NIC
+        // above, ADDITIONALLY fed into the caller's NAT gateway state when its subnet resolves
+        // one for cross-region egress (buildNatGatewayIdByServer, start()-time-resolved) — never
+        // a second independent byte computation (plan Cross-Cutting Constraint 6). Gated on
+        // `s.natGatewayIdByServer.size > 0` so a doc with zero NAT gateways pays only that one
+        // cheap size check per row, never a Map lookup.
+        if (s.natGatewayIdByServer.size > 0 && row.hopClass === 'cross-region') {
+          const natId = s.natGatewayIdByServer.get(inst.serverId)
+          const natState = natId ? s.natGatewayStates.get(natId) : undefined
+          if (natState) addNicBytes(natState, resp, req)
+        }
       }
     }
 
@@ -2205,6 +2265,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       s.nicDeliveredFraction.set(server.id, settled.deliveredFraction)
       s.nicQueuedLatencyMs.set(server.id, settled.queuedLatencyMs)
     }
+    // FEAT-014 (Task 9): NAT gateway settlement, same "read the step's raw counters into the
+    // window BEFORE they're reset" ordering as accumulateStep/settleNic above -- zero iterations
+    // for a doc with no NAT gateways (natGatewayStates built empty at start()).
+    for (const [natId, natState] of s.natGatewayStates) {
+      s.windowTotals.natGatewayBytes[natId] =
+        (s.windowTotals.natGatewayBytes[natId] ?? 0) + natState.inBytesThisStep + natState.outBytesThisStep
+      settleNatGateway(natState, NAT_GATEWAY_NIC_MBPS, stepMs)
+    }
     s.windowTotals.crossAzBytes += totals.crossAzBytes * stepSec
     s.windowTotals.crossRegionBytes += totals.crossRegionBytes * stepSec
     s.windowTotals.internetBytes += totals.internetBytes * stepSec
@@ -2285,7 +2353,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
       s.tracer.sample(flows, compiled, doc, simMs, entryId => populationsForEntry(entryId), managedDbRt)
-      s.windowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} }
+      s.windowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {}, natGatewayBytes: {} }
     }
   }
 
@@ -2656,9 +2724,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         vpsFactor: new Map(),
         nics: new Map(Object.values(doc.servers).map(sv => [sv.id, createNicState()])),
         nicDeliveredFraction: new Map(), nicQueuedLatencyMs: new Map(),
+        natGatewayStates: new Map(Object.values(doc.natGateways).map(nat => [nat.id, createNatGatewayState()])),
+        natGatewayIdByServer: buildNatGatewayIdByServer(doc),
         breakers: new Map(), queueDepth: new Map(), metrics: createMetricsState(),
         events: createEventRing(500), replay: createReplayBuffer(300), tracer: createTracer(createRng(effectiveSeed ^ 0x1234)),
-        prevFlows: {}, windowTotals: { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} },
+        prevFlows: {}, windowTotals: { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {}, natGatewayBytes: {} },
         lastRoutingSnapshot: { populationRoutes: [] }, popRegion: new Map(), pendingFailover: new Map(),
         popPrevRegion: new Map(),
         checkFailedPrev: new Map(), probePrev: new Map(), instanceHealth: new Map(), oomRestartAt: new Map(), refusedRateLimit: new Map(),

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { createWorldEngine, buildImpairmentMemo } from './index'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, createPopulation,
-  createLoadBalancer,
+  createLoadBalancer, createVpc, createSubnet, createRouteTable, createNatGateway,
 } from '../world/factories'
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
@@ -4647,5 +4647,128 @@ describe('FEAT-008/FEAT-007 Task 22: wave-close integration tests', () => {
     expect(warm.scaledOut).toBe(true)
     expect(warm.scaledIn).toBe(false)
     expect(warm.p99At10s).toBeLessThan(cold.p99At10s) // instant capacity recovers meaningfully more
+  })
+})
+
+// ─── FEAT-014 (Task 9): NAT gateway byte accounting ────────────────────────────
+describe('FEAT-014 (Task 9): NAT gateway byte accounting', () => {
+  // One VPC in region A with a single private subnet whose route table's ONLY non-local route
+  // targets a NAT gateway (mirrors compileWorld.test.ts's crossRegionSubnetWorld fixture, minus
+  // the block-then-unblock steps -- here the NAT route is present from the start). Each entry in
+  // `apiSpecs` gets its OWN public entry blueprint + its OWN cross-region target blueprint (so
+  // each source server's demand is independently controllable), but every entry's SERVER is
+  // placed in the SAME private subnet -- so every one of them resolves (buildNatGatewayIdByServer)
+  // to the SAME shared NatGatewayState.
+  function natGatewayWorld(apiSpecs: { peakRps: number }[]) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const regionA = createRegion('us-east-1')
+    const regionB = createRegion('eu-west-1')
+    const azA = createAz(regionA.id, 'us-east-1a')
+    const azB = createAz(regionB.id, 'eu-west-1a')
+    Object.assign(doc.regions, { [regionA.id]: regionA, [regionB.id]: regionB })
+    Object.assign(doc.azs, { [azA.id]: azA, [azB.id]: azB })
+
+    const vpc = createVpc(regionA.id)
+    const routeTable = createRouteTable(vpc.id)
+    const subnet = createSubnet(vpc.id, azA.id, 'private', routeTable.id)
+    const nat = createNatGateway(subnet.id)
+    doc.vpcs[vpc.id] = vpc
+    doc.routeTables[routeTable.id] = routeTable
+    doc.subnets[subnet.id] = subnet
+    doc.natGateways[nat.id] = nat
+    routeTable.routes.push({ destinationCidr: '0.0.0.0/0', target: { kind: 'natGateway', id: nat.id } })
+
+    apiSpecs.forEach((spec, i) => {
+      const serverA = createServer(azA.id, getPreset('dedicated-8')!)
+      serverA.subnetId = subnet.id   // private-subnet server -- its cross-region egress routes via `nat`
+      const serverB = createServer(azB.id, getPreset('dedicated-8')!)
+      doc.servers[serverA.id] = serverA
+      doc.servers[serverB.id] = serverB
+
+      const api = publicBlueprint(`api${i}`, i)
+      const target = createBlueprint(`target${i}`, i + 10)
+      api.dependencies = [{
+        id: `dep${i}`, target: { kind: 'blueprint', blueprintId: target.id },
+        port: 8080, protocol: 'http', packetTemplateId: null,
+      }]
+      doc.blueprints[api.id] = api
+      doc.blueprints[target.id] = target
+      const plApi = createPlacement(api.id, serverA.id); doc.placements[plApi.id] = plApi
+      const plTarget = createPlacement(target.id, serverB.id); doc.placements[plTarget.id] = plTarget
+
+      const pop = createPopulation(`pop${i}`, 40.7, -74.0)   // near us-east-1 (region A)
+      pop.peakRps = spec.peakRps
+      doc.populations[pop.id] = pop
+    })
+
+    return { doc, nat }
+  }
+
+  it('a doc with NAT gateways accounts bytes routed through the gateway and publishes natGatewayBytesPerSec', () => {
+    const { doc, nat } = natGatewayWorld([{ peakRps: 200 }])
+    const compiled = compileWorld(doc)
+    const sim = drive(doc, compiled)
+    sim.stepFor(5)
+    const batch = sim.latest()
+    expect(batch.world.natGatewayBytesPerSec?.[nat.id]).toBeGreaterThan(0)
+    sim.engine.stop()
+  })
+
+  // Adapted from the plan's original wording ("two servers... get roughly half its cap when both
+  // saturate it, mirrors per-server NIC shedding"): Task 9's own Step 4 pseudocode never threads
+  // settleNatGateway's deliveredFraction/queuedLatencyMs result into flow admission anywhere (it
+  // is computed and then simply discarded, exactly like the accounting loop's addNicBytes calls
+  // here) -- unlike a per-server NIC, whose settleNic result feeds admittedScaleByServer/
+  // extraLatencyMsByServer THE NEXT STEP (index.ts's stepHost loop). Wiring an admission-side
+  // throttle for NAT gateways would mean threading a new per-server-or-gateway signal into
+  // flows.ts's queue-mode inputs -- a materially bigger, separate change or Task 9's own listed
+  // file scope (index.ts/metrics.ts/types.ts only), so it is left as a follow-up rather than
+  // guessed at here (see task-9-report.md). What Task 9 DOES guarantee -- and what this test
+  // verifies instead -- is that the byte accounting itself is genuinely SHARED per gateway: two
+  // servers whose subnets both resolve to the same NatGatewayState must have their bytes summed
+  // into ONE published rate, not overwritten/last-write-wins or tracked only for one of them.
+  it('two servers sharing one NAT gateway both contribute additively to its published byte rate', () => {
+    const alone1 = natGatewayWorld([{ peakRps: 200 }])
+    const sim1 = drive(alone1.doc, compileWorld(alone1.doc))
+    sim1.stepFor(8)
+    const bytes1 = sim1.latest().world.natGatewayBytesPerSec?.[alone1.nat.id] ?? 0
+    sim1.engine.stop()
+
+    const alone2 = natGatewayWorld([{ peakRps: 150 }])
+    const sim2 = drive(alone2.doc, compileWorld(alone2.doc))
+    sim2.stepFor(8)
+    const bytes2 = sim2.latest().world.natGatewayBytesPerSec?.[alone2.nat.id] ?? 0
+    sim2.engine.stop()
+
+    const combined = natGatewayWorld([{ peakRps: 200 }, { peakRps: 150 }])
+    const simC = drive(combined.doc, compileWorld(combined.doc))
+    simC.stepFor(8)
+    const bytesC = simC.latest().world.natGatewayBytesPerSec?.[combined.nat.id] ?? 0
+    simC.engine.stop()
+
+    expect(bytes1).toBeGreaterThan(0)
+    expect(bytes2).toBeGreaterThan(0)
+    // The combined run's shared-gateway rate must sit meaningfully above EITHER contributor alone
+    // (ruling out a keying bug that only ever tracks the last-touched server) and land close to
+    // their sum (ruling out silent double-counting or dropped contributions).
+    expect(bytesC).toBeGreaterThan(bytes1 * 1.3)
+    expect(bytesC).toBeGreaterThan(bytes2 * 1.3)
+    expect(bytesC).toBeGreaterThan((bytes1 + bytes2) * 0.7)
+    expect(bytesC).toBeLessThan((bytes1 + bytes2) * 1.3)
+  })
+
+  it('a doc with zero natGateways produces byte-identical engine output for a fixed seed (regression floor)', () => {
+    const f = e2eFixture()
+    const simA = drive(f.doc, f.compiled)
+    simA.stepFor(20)
+    const simB = drive(f.doc, f.compiled)
+    simB.stepFor(20)
+    expect(simB.latest()).toEqual(simA.latest())
+    // Absent, not present-and-empty (Cross-Cutting Constraint 3 / the additive-optional-omission
+    // convention every other MetricsBatch optional field already follows).
+    expect(simA.latest().world.natGatewayBytesPerSec).toBeUndefined()
+    simA.engine.stop()
+    simB.engine.stop()
   })
 })

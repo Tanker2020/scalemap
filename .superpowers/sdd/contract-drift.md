@@ -525,3 +525,75 @@ switch, so they compile unchanged; they will show a servers-lookup label for a `
 `natGateway` endpoint until later network-topology tasks (NetworkPanel.tsx, Task 12) give
 partition authoring UI awareness of the two new kinds. Out of this task's scope per the brief's
 file list (`types.ts`/`faults.ts`/`faults.test.ts`/this file only).
+
+## 2026-08-10 — Task 9: `WorldMetrics.natGatewayBytesPerSec` (FEAT-014)
+
+Additive-optional field: `WorldMetrics` (`worldEngine/types.ts`) gained `natGatewayBytesPerSec?:
+Record<string, number>`, keyed by `NatGatewayId`, EMA'd bytes/sec per NAT gateway — absent
+(never present-and-empty) for a doc with zero `doc.natGateways`, matching every other optional
+`MetricsBatch`/`WorldMetrics` field's "additive by omission" convention.
+
+Wiring, `worldEngine/index.ts`:
+- `EngineState` gained `natGatewayStates: Map<NatGatewayId, NatGatewayState>` (one per
+  `doc.natGateways` entry, built at `start()`) and `natGatewayIdByServer: Map<ServerId,
+  NatGatewayId>` — a new start()-time index (`buildNatGatewayIdByServer`, mirrors the
+  `serversByAz`/`azsByRegion` precedent) resolving, once per server per run, which NAT gateway (if
+  any) its subnet's route table sends cross-region egress through. It calls the SAME
+  `resolveRoute` (`world/network.ts`) compileWorld.ts already uses to decide a path's verdict, so
+  a server can never disagree at runtime with what the compiler decided its egress route target
+  is.
+- `EngineState.windowTotals` gained a `natGatewayBytes: Record<string, number>` field, accumulated
+  and reset every 1 Hz batch exactly like the existing `managedEgressBytes` sibling.
+- Byte accounting hooks into the EXISTING internal-hop NIC loop (index.ts's step 7, "Internal hops
+  this instance ORIGINATES") rather than a new pass: for a `row.hopClass === 'cross-region'` row
+  whose caller resolves to a NAT gateway (`natGatewayIdByServer` lookup), the SAME `req`/`resp`
+  byte values already computed for that row's own NIC booking (`addNicBytes(nic, resp, req)`,
+  two lines above) are additionally fed into the gateway's `NatGatewayState` via `addNicBytes` —
+  never a second independent byte computation (plan Cross-Cutting Constraint 6). Gated on
+  `natGatewayIdByServer.size > 0` so a doc with zero NAT gateways pays only one cheap size check
+  per row, never a Map lookup.
+- Settlement (`settleNatGateway`, Task 8's `NicState`-shaped alias) runs in a new loop placed
+  beside the existing per-server `settleNic` loop (index.ts's step 9) — zero iterations for a doc
+  with no NAT gateways. The step's raw `inBytesThisStep + outBytesThisStep` is captured into
+  `windowTotals.natGatewayBytes` BEFORE settlement resets the counters, mirroring how
+  `accumulateStep` reads a server NIC's counters before `settleNic` resets them.
+- `metrics.ts`'s `buildBatch` gained an optional `natGatewayBytes?: Record<string, number>` sibling
+  field on its existing `totals` parameter (not a new positional param) — reached through the SAME
+  `{ ...s.windowTotals }` spread the call site already passes. Built into `world.natGatewayBytesPerSec`
+  by a small `ema(...)` loop over `Object.entries(totals.natGatewayBytes ?? {})`, mirroring the
+  per-managed-service `egressBytesPerSec` loop already in this file — omitted from the `world`
+  object entirely (spread-conditional) when the resulting record is empty.
+
+`NAT_GATEWAY_NIC_MBPS = 10_000` (10 Gbps) is a fixed engine constant (`index.ts`, beside
+`DEGRADE_THRESHOLD_MS`) standing in for `NatGateway` having no authorable `nicMbps` of its own
+(Task 1's type) — explicitly out of this task's scope per the plan.
+
+Deviation from the plan's Step 4 pseudocode: the brief's snippet used `applyNatGatewayCap` (which
+accumulates AND evaluates in one call) at the per-row accounting site. This implementation uses
+plain `addNicBytes` there instead (evaluating only once, at settlement) to mirror the EXISTING
+per-server NIC loop immediately above it, which already uses the same accumulate-then-settle
+split (`addNicBytes` per row, `settleNic` once at end of step) rather than evaluating on every
+row — avoiding redundant per-row cap evaluation for no behavioral difference.
+
+Deviation/scope note: `settleNatGateway`'s returned `deliveredFraction`/`queuedLatencyMs` is
+computed and discarded, same as the per-row accounting above — nothing in this task threads a
+NAT-gateway saturation signal into flow admission (the way a per-server NIC's `settleNic` result
+feeds `admittedScaleByServer`/`extraLatencyMsByServer` the following step). Wiring that would mean
+teaching `flows.ts`'s queue-mode inputs about a NAT-gateway-level cap — a materially larger change
+than this task's stated file scope (`index.ts`/`metrics.ts`/`types.ts`/test only) and not
+attempted here; flagged as a candidate follow-up. No new `EngineEventKind` was added — nothing in
+this task's acceptance criteria needed one, and speculatively adding a `nat_gateway_saturated`
+event with no consumer would be exactly the "preemptive" case the brief said to avoid.
+
+Regression floor: `src/lib/worldEngine/index.test.ts`'s `FEAT-014 (Task 9)` describe block. "a
+doc with zero natGateways produces byte-identical engine output for a fixed seed" runs the
+existing `e2eFixture()` (unmodified, no NAT gateways authored) twice and asserts
+`toEqual` on the full `MetricsBatch`, plus asserts `world.natGatewayBytesPerSec` is `undefined`
+(not `{}`). `npx tsc --noEmit` clean. Full `src/lib/worldEngine` suite: 23 files / 536 tests
+passing (incl. all `DIVERGENCE GUARD` tests, unaffected — this task adds no RAM/connection-load
+path). `npm run bench`'s `enginePerf.bench.test.ts` (zero NAT gateways in its synthetic fixture)
+measured ~7.35–7.65ms median across three runs post-change vs. ~7.63ms median on the same machine
+with this task's changes `git stash`ed — statistically identical, both comfortably inside the
+existing 3.9–7.5ms machine-load variance this file's own header documents; the 4ms soft-budget
+warning fires in both cases (ambient machine load on this box, not a regression) and the 8ms
+hard-fail assertion passes in both.

@@ -148,6 +148,11 @@ export interface WorldMetrics {
   crossAzBytesPerSec: number
   crossRegionBytesPerSec: number
   internetEgressBytesPerSec: number
+  // Additive-optional (frozen-contract rule, FEAT-014 Task 9): per-NAT-gateway byte rate
+  // (bytes/sec, EMA), keyed by NatGatewayId. Absent when the doc has zero NAT gateways (the
+  // regression floor) or omitted by an older/test-built batch -- read as
+  // `batch.world.natGatewayBytesPerSec?.[natGatewayId]`. See contract-drift.md §FEAT-014.
+  natGatewayBytesPerSec?: Record<string, number>
 }
 
 // Live traffic REACHING a cloud-managed service (node-model Phase 5.1). Managed services have no
