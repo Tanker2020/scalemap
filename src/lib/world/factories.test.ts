@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, createRack, createDbServer, BLUEPRINT_COLORS } from './factories'
+import { createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, createRack, createDbServer, BLUEPRINT_COLORS, createVpc, createSubnet, createRouteTable, createInternetGateway, createNatGateway, createSecurityGroup } from './factories'
 import { RACK_CAPACITY_DEFAULT } from './rackModel'
 import { getPreset } from './instanceCatalog'
 
@@ -116,5 +116,41 @@ describe('world factories', () => {
     expect(rack.label).toBe('rack-1')
     expect(rack.capacityU).toBe(RACK_CAPACITY_DEFAULT)
     expect(createRack('az-1').label).toBe('rack')
+  })
+})
+
+describe('network topology factories', () => {
+  it('createVpc produces a labeled VPC scoped to a region with a CIDR block', () => {
+    const vpc = createVpc('region-1')
+    expect(vpc.regionId).toBe('region-1')
+    expect(vpc.cidrBlock).toMatch(/^\d+\.\d+\.\d+\.\d+\/\d+$/)
+    expect(vpc.id).toBeTruthy()
+  })
+
+  it('createSubnet defaults to a local route and carries its AZ/VPC/kind', () => {
+    const rt = createRouteTable('vpc-1')
+    const subnet = createSubnet('vpc-1', 'az-1', 'private', rt.id)
+    expect(subnet.vpcId).toBe('vpc-1')
+    expect(subnet.azId).toBe('az-1')
+    expect(subnet.kind).toBe('private')
+    expect(subnet.routeTableId).toBe(rt.id)
+  })
+
+  it('createRouteTable starts with an empty routes array', () => {
+    const rt = createRouteTable('vpc-1')
+    expect(rt.routes).toEqual([])
+  })
+
+  it('createInternetGateway and createNatGateway scope to a VPC/subnet respectively', () => {
+    const igw = createInternetGateway('vpc-1')
+    expect(igw.vpcId).toBe('vpc-1')
+    const nat = createNatGateway('subnet-1')
+    expect(nat.subnetId).toBe('subnet-1')
+  })
+
+  it('createSecurityGroup starts with an empty allow-list', () => {
+    const sg = createSecurityGroup('vpc-1')
+    expect(sg.rules).toEqual([])
+    expect(sg.vpcId).toBe('vpc-1')
   })
 })

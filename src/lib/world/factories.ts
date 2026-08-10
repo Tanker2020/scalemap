@@ -1,6 +1,7 @@
 import type {
   WorldDoc, Region, AvailabilityZone, Server, ServiceBlueprint, Placement,
   ServerKind, ServerSpecs, ClientPopulation, AzId, Rack, LoadBalancer, DbEngine,
+  Vpc, Subnet, RouteTable, InternetGateway, NatGateway, SecurityGroup, VpcId, SubnetId, RouteTableId,
 } from './types'
 import { RACK_CAPACITY_DEFAULT } from './rackModel'
 import { emptyPacketRegistry } from '../nodeConfig'
@@ -76,6 +77,42 @@ export function createServer(azId: string, preset: InstancePresetLike): Server {
 
 export function createRack(azId: AzId, label?: string): Rack {
   return { id: nextWorldId('rack'), azId, label: label ?? 'rack', capacityU: RACK_CAPACITY_DEFAULT }
+}
+
+export function createVpc(regionId: string, label?: string): Vpc {
+  return { id: nextWorldId('vpc'), regionId, label: label ?? 'vpc', cidrBlock: '10.0.0.0/16' }
+}
+
+export function createSubnet(
+  vpcId: VpcId,
+  azId: AzId,
+  kind: 'public' | 'private',
+  routeTableId: RouteTableId,
+): Subnet {
+  return {
+    id: nextWorldId('subnet'),
+    vpcId,
+    azId,
+    kind,
+    cidrBlock: kind === 'public' ? '10.0.1.0/24' : '10.0.2.0/24',
+    routeTableId,
+  }
+}
+
+export function createRouteTable(vpcId: VpcId): RouteTable {
+  return { id: nextWorldId('rtb'), vpcId, routes: [] }
+}
+
+export function createInternetGateway(vpcId: VpcId): InternetGateway {
+  return { id: nextWorldId('igw'), vpcId }
+}
+
+export function createNatGateway(subnetId: SubnetId, label?: string): NatGateway {
+  return { id: nextWorldId('nat'), subnetId, label: label ?? 'nat' }
+}
+
+export function createSecurityGroup(vpcId: VpcId, label?: string): SecurityGroup {
+  return { id: nextWorldId('sg'), vpcId, label: label ?? 'sg', rules: [] }
 }
 
 export function createBlueprint(name: string, colorIndex: number): ServiceBlueprint {
