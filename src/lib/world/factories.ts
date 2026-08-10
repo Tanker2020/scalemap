@@ -1,7 +1,7 @@
 import type {
   WorldDoc, Region, AvailabilityZone, Server, ServiceBlueprint, Placement,
   ServerKind, ServerSpecs, ClientPopulation, AzId, Rack, LoadBalancer, DbEngine,
-  Vpc, Subnet, RouteTable, InternetGateway, NatGateway, SecurityGroup, VpcId, SubnetId, RouteTableId,
+  Vpc, Subnet, RouteTable, InternetGateway, NatGateway, SecurityGroup, VpcId, SubnetId, RouteTableId, RegionId,
 } from './types'
 import { RACK_CAPACITY_DEFAULT } from './rackModel'
 import { emptyPacketRegistry } from '../nodeConfig'
@@ -79,7 +79,7 @@ export function createRack(azId: AzId, label?: string): Rack {
   return { id: nextWorldId('rack'), azId, label: label ?? 'rack', capacityU: RACK_CAPACITY_DEFAULT }
 }
 
-export function createVpc(regionId: string, label?: string): Vpc {
+export function createVpc(regionId: RegionId, label?: string): Vpc {
   return { id: nextWorldId('vpc'), regionId, label: label ?? 'vpc', cidrBlock: '10.0.0.0/16' }
 }
 
