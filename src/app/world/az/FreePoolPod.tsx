@@ -15,7 +15,7 @@ import { useHoldTap } from './useHoldTap'
 import { HoldRing } from '../ui/HoldToEnter'
 import type { Server, ServerId } from '../../../lib/world/types'
 import type { MetricsBatch, HealthState } from '../../../lib/worldEngine/types'
-import type { CacheHitInfo, ReplicaLagInfo } from './RackCabinet'
+import type { CacheHitInfo, ReplicaLagInfo, SelectModifiers } from './RackCabinet'
 
 export const POD_HEIGHT_PX = 40
 const POD_SCALE = 0.52
@@ -55,17 +55,23 @@ export interface FreePoolPodProps {
    *  or null once warm/absent. */
   warmth: number | null
   selectedServerId: ServerId | null
+  // C1 fix (final wave-5 review): same multi-select highlight fix as RackCabinet.tsx's matching
+  // comment — a free-pool pod previously had no visual feedback for being part of a 2+ selection.
+  selectedEntityIds: ReadonlySet<ServerId>
   isNew: boolean
   animatedLed: boolean
   reducedMotion: boolean
-  onSelect: (id: ServerId) => void
+  onSelect: (id: ServerId, modifiers: SelectModifiers) => void
   onEnter: (id: ServerId) => void
 }
 
 export function FreePoolPod({
-  server, cell, cols, batch, accents, cacheHit, replicaLag, warmth, selectedServerId, isNew, animatedLed, reducedMotion, onSelect, onEnter,
+  server, cell, cols, batch, accents, cacheHit, replicaLag, warmth, selectedServerId, selectedEntityIds, isNew, animatedLed, reducedMotion, onSelect, onEnter,
 }: FreePoolPodProps): ReactElement {
-  const { handlers, progressRef } = useHoldTap(() => onSelect(server.id), () => onEnter(server.id))
+  const { handlers, progressRef } = useHoldTap(
+    e => onSelect(server.id, { metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey }),
+    () => onEnter(server.id),
+  )
   const box = isoBox(cell.x, cell.y, cols, POD_HEIGHT_PX, POD_SCALE)
   const { led } = isoSlat(box, POD_HEIGHT_PX * 0.35, POD_HEIGHT_PX * 0.65)
   const cpuMean = meanUtilization(batch?.servers[server.id]?.coreUtilization)
@@ -77,7 +83,7 @@ export function FreePoolPod({
   const ledColor = health === 'down' ? 'var(--color-danger)'
     : warmth != null ? `color-mix(in srgb, var(--color-warning) ${Math.round((1 - warmth) * 100)}%, var(--color-success) ${Math.round(warmth * 100)}%)`
       : LED_COLOR[color]
-  const selected = selectedServerId === server.id
+  const selected = selectedServerId === server.id || selectedEntityIds.has(server.id)
   const blinking = lit > 0 && animatedLed && !reducedMotion
 
   // IsoBox doesn't expose floorSW; it is roofSW dropped straight down by the box height.

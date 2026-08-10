@@ -18,6 +18,8 @@ import { healthWord } from '../ui/derived'
 import { scopedCost } from './scopeData'
 import { ChaosControl, isNonFatalFault, NON_FATAL_FAULT_ACCENT } from './ChaosControl'
 import { azConnectionGraph } from '../../../lib/world/connections'
+import { INSTANCE_CATALOG, getPreset } from '../../../lib/world/instanceCatalog'
+import { field } from '../panels/panelStyles'
 import type { RackId, Server, ServerId } from '../../../lib/world/types'
 import type { HealthState } from '../../../lib/worldEngine/types'
 import './floorPlanStyles'
@@ -44,6 +46,53 @@ function SectionRail({ label }: { label: string }): ReactElement {
         flex: 1, height: 3, minWidth: 8, borderRadius: 2,
         background: 'repeating-linear-gradient(-45deg, var(--color-node-border) 0 4px, transparent 4px 8px)',
       }} />
+    </div>
+  )
+}
+
+// C1 fix (final wave-5 review): the batch-edit affordance (originally Task 18, hosted only in
+// TopologyPanel.tsx, a world-scope-only tab) is unreachable in the running app — multi-select
+// only originates on this AZ's floor (`ui.store.ts`'s `selectedEntityIds`), and the ONLY way to
+// reach TopologyPanel is to navigate to world scope, which is the SAME navigation
+// (`WorldShell.tsx`'s nav-clear effect fires on any `nav.level` change) that empties the
+// selection before the world-scope tab ever mounts. This copy renders at AZ scope instead —
+// exactly where a multi-selection can actually exist (`dock/scope.ts`'s `deriveScope`: a 2+
+// selection keeps AZ scope, never narrows to server scope) — so it's reachable without leaving
+// the floor. TopologyPanel's own copy is left in place (harmless, still covered by its own
+// tests) rather than deleted, since removing it isn't required to fix reachability.
+function AzBatchEditBar({ azId }: { azId: string }) {
+  const selectedEntityIds = useUiStore(s => s.selectedEntityIds)
+  const doc = useWorldStore(s => s.doc)
+  const store = useWorldStore.getState()
+  // Scoped to THIS az's servers — a selection can't legitimately span AZs (the floor's
+  // marquee/click selection only ever targets servers physically on this floor), but this guard
+  // keeps a stale foreign id (if one ever slipped through) from being batch-edited here.
+  const selectedServerIds = [...selectedEntityIds].filter(id => doc.servers[id]?.azId === azId)
+
+  if (selectedServerIds.length < 2) return null
+
+  const applyClass = (presetId: string) => {
+    const p = getPreset(presetId)
+    if (!p) return
+    store.batchUpdateServers(selectedServerIds, {
+      catalogId: p.id, specs: { ...p.specs }, hourlyUsd: p.hourlyUsd,
+      oversubscriptionRatio: p.oversubscriptionRatio, burstable: p.burstable,
+    })
+  }
+
+  return (
+    <div data-testid="batch-edit-bar" style={{
+      display: 'flex', alignItems: 'center', gap: 6, margin: '2px 0 8px', padding: '4px 6px',
+      borderRadius: 4, border: '1px dashed var(--kit-accent)',
+    }}>
+      <span style={{ fontSize: 9.5, color: 'var(--color-text-secondary)' }}>
+        {selectedServerIds.length} selected
+      </span>
+      <select aria-label="batch instance class" style={{ ...field, flex: 1, marginBottom: 0 }}
+        defaultValue="" onChange={e => { if (e.target.value) applyClass(e.target.value) }}>
+        <option value="" disabled>apply instance class to all…</option>
+        {INSTANCE_CATALOG.map(p => <option key={p.id} value={p.id}>{p.id}</option>)}
+      </select>
     </div>
   )
 }
@@ -205,6 +254,7 @@ export function AzConfigTab({ azId }: AzConfigTabProps): ReactElement {
 
         <div style={{ flex: 1, minWidth: 0 }}>
           <SectionRail label="SERVERS — tap = select on floor" />
+          <AzBatchEditBar azId={azId} />
           {orderedServers.length === 0 && (
             <div style={{ color: 'var(--color-text-muted)', padding: '4px 2px 10px' }}>No servers yet in this AZ.</div>
           )}

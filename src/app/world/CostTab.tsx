@@ -6,16 +6,25 @@
 import { useMemo, useRef } from 'react'
 import { useWorldStore } from '../store/world.store'
 import { useSimulationStore } from '../store/simulation.store'
-import { computeWorldCost, attributeByBlueprint } from '../../lib/costModelV2'
+import { computeWorldCost, attributeByBlueprint, defaultProviderFromDoc } from '../../lib/costModelV2'
 import { costSeriesFor, incidentCost, createCostSeriesCache, type CostSeriesCache } from '../../lib/costSeries'
 import { downsample, type SeriesPoint } from './panels/signalsSeries'
 import { SignalChart } from './panels/SignalChart'
 import { useCompiledWorld } from './useCompiledWorld'
+import { applyEnvironment } from '../../lib/world/environments'
+import type { RealProvider } from '../../lib/cloudRegistry'
 import { sectionLabel, row } from './panels/panelStyles'
 import type { WorldDoc } from '../../lib/world/types'
 
 const SPARKLINE_WIDTH = 300
 const SPARKLINE_HEIGHT = 36
+
+// Task 12 (wave 5): "price this world as…" comparison row — the same compiled world/metrics,
+// repriced under each real provider's registry rates via computeWorldCost's providerOverride.
+// Purely a display-time reprojection (no store writes, no per-tick cost) — a service with its
+// own explicit provider pin still prices at that pin regardless of which row is being shown.
+const COMPARISON_PROVIDERS: RealProvider[] = ['aws', 'gcp', 'azure']
+const PROVIDER_LABEL: Record<RealProvider, string> = { aws: 'AWS', gcp: 'GCP', azure: 'Azure' }
 
 export function CostTab() {
   const doc = useWorldStore(s => s.doc)
@@ -43,7 +52,23 @@ export function CostTab() {
   // maxCount envelope instead of by live running-instance share, and this number never moves as
   // the fleet scales.
   const worldForCost = batch?.world ? { ...batch.world, runningByPlacement: batch.runningByPlacement } : null
-  const cost = computeWorldCost(doc, worldForCost, batch?.managedServices ?? null)
+  // computeWorldCost reads doc.servers/doc.placements directly (hourlyUsd, count) -- an active
+  // environment's instanceClassOverrides/serverCountFactor/placementCountOverrides must be
+  // overlaid here too, or the Cost tab silently shows base-world pricing while Simulate uses the
+  // scaled/overridden one.
+  const compiledDoc = applyEnvironment(doc)
+  // I3 fix (final wave-5 review): the headline "this world's own cost" figure now defaults any
+  // unpinned managed service's provider to `doc.cloudProfile` (when set to something other than
+  // 'generic') — previously the only reader of `cloudProfile` was the dropdown that WRITES it.
+  // The three-way comparison row below deliberately does NOT read it: it explicitly reprices
+  // under aws/gcp/azure regardless of the world's own profile, which is the whole point of that row.
+  const cost = computeWorldCost(compiledDoc, worldForCost, batch?.managedServices ?? null, defaultProviderFromDoc(doc))
+  // Computed fresh on this render (not per simulation tick) — CostTab already only re-renders on
+  // the 1Hz metrics batch (or a scrub step), so this is cheap and always in sync with `cost` above.
+  const providerComparison = COMPARISON_PROVIDERS.map(provider => ({
+    provider,
+    monthlyUsd: computeWorldCost(compiledDoc, worldForCost, batch?.managedServices ?? null, provider).monthlyUsd,
+  }))
 
   // simMs-keyed cost memo (Task 8; re-keyed off array index in the Wave 4 final review, Critical
   // #1 -- the replay ring is a ROLLING 300-frame window, not append-only, so an array index does
@@ -137,7 +162,7 @@ export function CostTab() {
       {cost.loadBalancerCount > 0 && (
         <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 12 }}>
           includes {cost.loadBalancerCount} load balancer{cost.loadBalancerCount === 1 ? '' : 's'} ·{' '}
-          <span style={{ color: 'var(--color-price)' }}>${cost.loadBalancerUsd.toFixed(2)}/mo</span>
+          <span data-testid="lb-hours-amount" style={{ color: 'var(--color-price)' }}>${cost.loadBalancerUsd.toFixed(2)}/mo</span>
           {' '}LB-hours (in the region totals below)
         </div>
       )}
@@ -164,6 +189,21 @@ export function CostTab() {
       <div style={row}><span style={{ flex: 1 }}>Cross-AZ</span><span style={{ color: 'var(--color-price)' }}>${cost.egress.crossAzUsd.toFixed(2)}</span></div>
       <div style={row}><span style={{ flex: 1 }}>Cross-region</span><span style={{ color: 'var(--color-price)' }}>${cost.egress.crossRegionUsd.toFixed(2)}</span></div>
       <div style={row}><span style={{ flex: 1 }}>Internet</span><span style={{ color: 'var(--color-price)' }}>${cost.egress.internetUsd.toFixed(2)}</span></div>
+
+      <div style={sectionLabel}>Price this world as…</div>
+      <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 8 }}>
+        Only unpinned managed services reprice; server and network costs are provider-flat in this model.
+      </div>
+      {providerComparison.map(p => (
+        <div key={p.provider} style={row}>
+          <span style={{ flex: 1 }}>{PROVIDER_LABEL[p.provider]}</span>
+          {/* Deliberately "$X/mo" (no space) — a distinct text node from the top total's "$X /mo"
+              and the by-region/by-AZ rows' bare "$X", so this row never collides with those
+              existing getByText/getAllByText queries even when every provider prices identically
+              (a server-only world with no managed services, the common case). */}
+          <span style={{ color: 'var(--color-price)' }}>${p.monthlyUsd.toFixed(2)}/mo</span>
+        </div>
+      ))}
     </div>
   )
 }

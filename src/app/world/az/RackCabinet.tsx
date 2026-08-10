@@ -29,6 +29,23 @@ export function cabinetHeightPx(usedU: number): number {
   return Math.max(MIN_DISPLAY_U, usedU) * (SLOT_PX + SLOT_GAP) + CAB_PAD * 2
 }
 
+// 2026-08-09 (wave 5 ergonomics, task 17): the same top-to-bottom slot stacking `RackCabinet`
+// uses to lay out its `RackSlot`s, extracted so `DatacenterFloor`'s marquee hit-test can compute
+// the SAME per-server vertical ranges (relative to the cabinet box's roofline) without
+// duplicating the U-height/gap math — one source of truth for "where does this resident's slat
+// sit inside the cabinet."
+export function rackSlotLayout(residents: Server[]): { server: Server; yTop: number; yBottom: number }[] {
+  let cursorY = CAB_PAD
+  return residents.map(server => {
+    const heightU = serverHeightU(server)
+    const slatH = heightU * SLOT_PX + (heightU - 1) * SLOT_GAP
+    const yTop = cursorY
+    const yBottom = yTop + slatH
+    cursorY = yBottom + SLOT_GAP
+    return { server, yTop, yBottom }
+  })
+}
+
 const HEALTH_STROKE: Record<HealthState, string> = {
   healthy: '#2b3342', degraded: 'var(--color-warning)', down: 'var(--color-danger)',
 }
@@ -43,6 +60,12 @@ export interface CacheHitInfo { ratio: number; warming: boolean }
 // FEAT-005 (Task 15): the floor's mirror of ServiceChip's live replication-lag readout — same
 // "first resolvable instance on this server" representativeness call as CacheHitInfo above.
 export interface ReplicaLagInfo { lagSec: number; overRpo: boolean }
+
+// 2026-08-09 (wave 5 ergonomics, task 17): the pointerup event's modifier keys, threaded through
+// `useHoldTap`'s onTap so DatacenterFloor's click handler can distinguish a plain click
+// (single-select) from ⌘/ctrl-click (toggle) and ⇧-click (range-select) without either slot/pod
+// component owning any selection POLICY itself — they just report "tapped, here are the keys."
+export interface SelectModifiers { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }
 
 interface RackSlotProps {
   server: Server
@@ -62,14 +85,17 @@ interface RackSlotProps {
   isNew: boolean
   animatedLed: boolean
   reducedMotion: boolean
-  onSelect: (id: ServerId) => void
+  onSelect: (id: ServerId, modifiers: SelectModifiers) => void
   onEnter: (id: ServerId) => void
 }
 
 function RackSlot({
   server, box, yTop, yBottom, cpuMean, health, accents, cacheHit, replicaLag, warmth, selected, isNew, animatedLed, reducedMotion, onSelect, onEnter,
 }: RackSlotProps): ReactElement {
-  const { handlers, progressRef } = useHoldTap(() => onSelect(server.id), () => onEnter(server.id))
+  const { handlers, progressRef } = useHoldTap(
+    e => onSelect(server.id, { metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey }),
+    () => onEnter(server.id),
+  )
   const { poly: slatPoly, led } = isoSlat(box, yTop, yBottom)
   const { lit, color } = ledParams(cpuMean)
   // FEAT-007 (Task 8): a warming resident gets a distinct LED — neither the ordinary cpu-driven
@@ -179,15 +205,20 @@ export interface RackCabinetProps {
   lagByServer: ReadonlyMap<ServerId, ReplicaLagInfo>   // FEAT-005 live replication-lag readout per server
   warmthByServer: ReadonlyMap<ServerId, number>   // FEAT-007 live cold-start ramp per server
   selectedServerId: ServerId | null
+  // C1 fix (final wave-5 review): the floor's multi-selection (`ui.store.ts`'s `selectedEntityIds`)
+  // previously had ZERO visual representation here — only the single-select degenerate case
+  // (`selectedServerId`) drove the highlight, so selecting 2+ servers looked identical to
+  // selecting none. A slat now highlights if it's the single selection OR a member of the set.
+  selectedEntityIds: ReadonlySet<ServerId>
   newServerIds: ReadonlySet<ServerId>
   animatedLedIds: ReadonlySet<ServerId>
   reducedMotion: boolean
-  onSelect: (id: ServerId) => void
+  onSelect: (id: ServerId, modifiers: SelectModifiers) => void
   onEnter: (id: ServerId) => void
 }
 
 export function RackCabinet({
-  rack, cell, cols, residents, usedU, batch, accentsByServer, cacheByServer, lagByServer, warmthByServer, selectedServerId, newServerIds, animatedLedIds, reducedMotion, onSelect, onEnter,
+  rack, cell, cols, residents, usedU, batch, accentsByServer, cacheByServer, lagByServer, warmthByServer, selectedServerId, selectedEntityIds, newServerIds, animatedLedIds, reducedMotion, onSelect, onEnter,
 }: RackCabinetProps): ReactElement {
   const heightPx = cabinetHeightPx(usedU)
   const box = isoBox(cell.x, cell.y, cols, heightPx)
@@ -200,15 +231,7 @@ export function RackCabinet({
     return HEALTH_RANK[h] > HEALTH_RANK[worst] ? h : worst
   }, 'healthy')
 
-  let cursorY = CAB_PAD
-  const slots = residents.map(server => {
-    const heightU = serverHeightU(server)
-    const slatH = heightU * SLOT_PX + (heightU - 1) * SLOT_GAP
-    const yTop = cursorY
-    const yBottom = yTop + slatH
-    cursorY = yBottom + SLOT_GAP
-    return { server, yTop, yBottom }
-  })
+  const slots = rackSlotLayout(residents)
 
   return (
     <g className="az-rack3" data-testid={`rack-cabinet-${rack.id}`}>
@@ -227,7 +250,7 @@ export function RackCabinet({
             cacheHit={cacheByServer.get(server.id) ?? null}
             replicaLag={lagByServer.get(server.id) ?? null}
             warmth={warmthByServer.get(server.id) ?? null}
-            selected={selectedServerId === server.id}
+            selected={selectedServerId === server.id || selectedEntityIds.has(server.id)}
             isNew={newServerIds.has(server.id)}
             animatedLed={animatedLedIds.has(server.id)}
             reducedMotion={reducedMotion}

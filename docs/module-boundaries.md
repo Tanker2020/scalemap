@@ -6026,3 +6026,805 @@ s.getReplayFrames())` directly.
 `costModelV2.test.ts` carries the new billed-fraction-divergence regression case, and
 `SignalsPanel.test.tsx`/`SignalChart.test.tsx`/`signalsSeries.test.ts`/`costSeries.test.ts`/
 `CostTab.test.tsx` cover the new modules and both real-bug fixes above.
+---
+
+## Wave 5 Task 1 — `SloTargets` schema + serializer normalization
+
+Foundation for the whole wave: `src/lib/world/types.ts` gained `SloTargets` (`p99Ms?`/
+`errorRate?`/`availabilityPercent?`/`monthlyUsdBudget?`, all optional) and `WorldDoc.slo?:
+SloTargets`, placed directly after `scenario?: Scenario`. `src/lib/serializer.ts`'s
+`deserializeWorld` normalizes it with `slo: src.world.slo ?? undefined` — the same
+additive-optional pattern as `scenario`, so a pre-feature v3 file loads with `slo: undefined` and
+round-trips unchanged. Schema-only; no UI, engine, or compiler consumer yet (Task 2 is the first
+reader). `src/lib/serializer.test.ts` gained one round-trip + legacy-default test.
+**Verification:** `npx vitest run src/lib/serializer.test.ts` — 28 passed. `npx tsc --noEmit`
+clean.
+
+---
+
+## Wave 5 Task 2 — `src/lib/runSummary.ts`: `docFingerprint` + time-weighted `RunSummary` capture
+
+A new pure module (`src/lib/runSummary.ts`, zero store/engine imports — only `world/types`/
+`worldEngine/types` as `import type` plus `costModelV2`) exporting `docFingerprint(compiled)` (a
+structural hash of instance/path shape, ignoring cosmetic labels) and `buildRunSummary(frames,
+doc, compiled, label)`, which folds a `ReplayFrame[]` into one `RunSummary` — time-weighted
+`latency`/`errorRate`/`cost`, `slo` breach evaluation against `doc.slo` (Task 1), and
+`eventCounts`. This is the data model both baseline capture (Task 3-4) and the Compare tab (Task
+6) are built on.
+
+**Percentile aggregation — the one real algorithmic decision.** `MetricsBatch.world` publishes no
+percentile fields at all (only `totalRps`/`errorRate`/byte-rate fields); latency percentiles exist
+only per-instance (`InstanceMetrics.p50Ms`/`.p99Ms`, no `p90Ms` anywhere in the engine). A run's
+`p50Ms`/`p99Ms` is computed by treating each frame's own composed p50/p99 reading as ONE sample
+(weighted by that frame's request count, `rps × dt`) in its respective population, then reading the
+run's reported value as the weighted MEDIAN of that population (`weightedQuantile(samples, 0.5)`)
+— i.e. "the reading experienced by the median request in the run," which moves continuously as a
+spike's request-share grows rather than snapping discontinuously at an exact mass threshold (an
+earlier bulk/tail-per-frame-split design was rejected in review — see Fix rounds below).  `p90Ms`
+is an explicit, documented linear interpolation (`p50 + 0.8 × (p99 − p50)`) per frame, sampled and
+weighted the same way — there is no measured p90 anywhere in the engine to read instead.
+`availabilityPercent`/`monthlyUsdBudget` SLO breaches are derived (`(1-errorRate)×100`; per-frame
+`hourlyUsd` projected via `HOURS_PER_MONTH`), since no direct fields exist for either.
+
+**Fix round 1 (Critical):** the original bulk/tail decomposition (99%/1% split per frame) put the
+run's total bulk mass at *exactly* 99% of total weight — precisely `weightedQuantile`'s own
+threshold — making the output degenerate to `min(per-frame p99)` in exact arithmetic, or flip to
+`p50` under floating-point rounding (~49% of realistic runs). Replaced by the weighted-median-of-
+per-frame-readings scheme above. **Fix round 2:** the round-1 discriminating test itself sat on an
+exact 50/50 mass boundary (150/300 spike frames with FP-exact per-frame weights); moved to a
+200/300 split with clear margin either side of any rounding.
+
+**Verification:** `npx vitest run src/lib/runSummary.test.ts` — 6 passed (docFingerprint
+stability, latency time-weighting, 2 SLO-breach cases, scenario+seed determinism via the real
+`worldEngine` facade, the spike-severity discriminating case). `npx tsc --noEmit` clean.
+
+---
+
+## Wave 5 Task 3 — `src/app/store/baseline.store.ts`: session-scoped capture/compare storage
+
+A small Zustand store — `summaries: RunSummary[]`, `compareA`/`compareB: string | null`,
+`capture(frames, doc, compiled, label)` (calls `buildRunSummary`, appends), `remove(id)` (also
+clears a matching `compareA`/`compareB`), `setCompareA`/`setCompareB`, `exportJson()`/
+`importJson(json)` (pretty-JSON round-trip; import is ADDITIVE — merges into `summaries`, never
+replaces). **Deliberately never imported by `serializer.ts` or `world.store.ts`** (verified by
+grep) — baselines are session-scoped and derived, never persisted into `.scalemap` (Cross-Cutting
+Constraint 15). Export/import instead ride the existing Tauri file-dialog plumbing (wired in Task
+7) as a separate, opt-in JSON file, not the world document.
+
+**Verification:** `npx vitest run src/app/store/baseline.store.test.ts` — 2 passed (capture→
+export→clear→re-import byte-identical round trip; `remove()` drops the targeted summary and
+clears a dangling compare selection). `npx tsc --noEmit` clean.
+
+---
+
+## Wave 5 Task 4 — "Capture baseline" action in `SimControls.tsx`
+
+A new button beside the existing Simulate/Pause/Resume/End cluster, disabled until the replay
+buffer has frames, calling `useBaselineStore`'s `capture(getReplayFrames(), doc, compiled, "Run
+<time>")` on click. The disabled-state derivation is the interesting part:
+`simulation.store.ts`'s `getReplayFrames()` is a plain passthrough
+(`() => worldEngine.getReplayFrames()`), NOT a Zustand-subscribed selector, so reading it once at
+mount would freeze the disabled state forever. Fixed by using `latestBatch` (a genuinely
+subscribed field, updated every 1 Hz via `onMetrics`) purely as the re-render TRIGGER, then
+re-reading `getReplayFrames().length` off it each time `latestBatch` changes — `stop()`/
+`resetSession()` null out `latestBatch` (button re-disables for free), `pause()` preserves it
+(button correctly stays enabled on a frozen run, since the ring still holds captured frames).
+
+**Verification:** `npx vitest run src/app/world/SimControls.test.tsx` — 12 passed (10
+pre-existing + 2 new: disabled-with-no-frames, enables-and-captures-on-click). `npx tsc --noEmit`
+clean.
+
+---
+
+## Wave 5 Task 5 — `'compare'` `PanelTab` plumbing
+
+Registers the `'compare'` tab id across the three places every world-scope tab must appear:
+`ui.store.ts`'s `PanelTab` union, `dock/scope.ts`'s `WORLD_TABS` (world-scope only — NOT in
+`SCOPED_TABS`, so region/AZ/server scopes don't show it), and `WorldPanel.tsx`'s `TAB_LABELS`
+record (`Record<PanelTab, string>` requires an entry for every tab — `tsc --noEmit` caught the
+omission, one line added: `compare: 'Compare'`). No panel body yet — `ComparePanel.tsx` is Task 6.
+
+**Verification:** `npx vitest run src/app/world/dock/scope.test.ts` — 15 passed. `npx tsc
+--noEmit` clean.
+
+---
+
+## Wave 5 Task 6 — `src/app/world/panels/ComparePanel.tsx`: A/B diff of two captured baselines
+
+The Compare tab body: two `<select>`s bound to `compareA`/`compareB` off `useBaselineStore`, a
+validity banner (mismatched `scenarioId`/`seed` or `docFingerprint` — comparing runs of different
+worlds/scenarios is flagged, not blocked), and a per-metric diff table (`p50`/`p90`/`p99` latency,
+error rate, peak rps, 3 cost rows) via a `MetricRow` component. Each row renders as ONE `<span>`
+containing label+both-values+delta as a single text node (`"p99 100ms → 62ms (−38%)"`) — a
+deliberate structural choice, not the two-`<td>`/nested-`<span>` shape naive markup would use: RTL
+`getByText`'s default matcher only inspects an element's own direct text-node children, so a split
+label/value structure can never satisfy a single-regex assertion spanning both.
+
+**Fix round 1 (Critical, price law):** cost delta rows (`cost mean $/hr`, `cost peak $/hr`,
+`cost total`) were direction-colored `--color-success`/`--color-danger` like every other row, which
+recolors money — a price-law violation the tests never caught (they assert text only). Fixed by
+giving `MetricRow` an `isMoney?: boolean` prop that fixes the color to `var(--color-price)`
+unconditionally for the three cost rows regardless of delta direction; every latency/error/rps row
+is unaffected (still direction-aware). A dedicated color-assertion test now covers both cases.
+`eventCounts` is deliberately not rendered — no "direction" semantics were specified for an
+arbitrary event-kind count.
+
+**Verification:** `npx vitest run src/app/world/panels/ComparePanel.test.tsx` — 3 passed
+(post-fix). `npx vitest run src/app/world/panels/WorldPanel.test.tsx` — 26 passed, zero
+regression. `npx tsc --noEmit` clean.
+
+---
+
+## Wave 5 Task 7 — Baseline JSON export/import via existing Tauri file dialogs
+
+`ComparePanel.tsx`'s Export button now calls `saveFileDialog()` → `saveDiagram(path,
+exportJson())`; a new Import button calls `openFileDialog()` → `loadDiagram(path)` →
+`importJson(json)` (already additive-merge, Task 3). Both reuse `src/lib/tauri.ts` verbatim — no
+new Tauri commands — and mirror `fileOps.ts`/`WorldShell.tsx`'s established convention exactly:
+dialog cancellation (`path === null`) is a silent no-op, failures are caught at the call site into
+a local `fileError` state rendered as a dismissible `role="alert"` banner. Unlike `WorldShell.tsx`
+(which surfaces `deserializeWorld`'s own curated error messages), this panel uses fixed,
+generic-failure copy for both actions, since `importJson`'s failure mode is a raw `JSON.parse`
+SyntaxError with no user-meaningful text to relay.
+
+**Verification:** `npx vitest run src/app/world/panels/ComparePanel.test.tsx` — 7 passed (3
+pre-existing + happy-path export/import, cancel-is-no-op ×2, malformed-import-shows-error). `npx
+tsc --noEmit` clean. **`=== FEAT-011 (Tasks 1-7) complete ===`**
+
+---
+
+## Wave 5 Task 8 — `Environment`/`cloudProfile`/`canaryWeight` schema (FEAT-012 kickoff)
+
+Schema-only groundwork for Comparison Environments and canary A/B, mirroring Task 1's shape.
+`src/lib/world/types.ts` gained: `Placement.canaryWeight?: number` (meaningful only when `role ===
+'canary'`, inert until Task 13 wires routing to read it); `WorldDoc.environments?:
+Record<string, Environment>` / `activeEnvironmentId?: string` / `cloudProfile?: 'generic' | 'aws'
+| 'gcp' | 'azure'`; and the new `Environment` interface (`id`, `label`, `serverCountFactor?`,
+`populationRpsFactor?`, `placementCountOverrides?: Record<PlacementId, number>`,
+`instanceClassOverrides?: Record<ServerId, string>`). `serializer.ts` normalizes all three
+`WorldDoc` fields additively (`environments ?? {}`, the other two `?? undefined`).
+`factories.ts`'s `createWorld()` gained `environments: {}` (needed once the serializer started
+defaulting a present `{}` — an absent key and `{}` are NOT `toEqual`-equivalent, unlike
+`scenario`/`slo`'s `undefined` defaulting, which needed no factory change). No compiler/engine/
+store/UI wiring yet — that's Tasks 9-13.
+
+**Verification:** `npx vitest run src/lib/serializer.test.ts` — 29 passed. `npx vitest run
+src/lib/world` — 703 passed (39 files), no regressions from the factory change. `npx tsc
+--noEmit` clean.
+
+---
+
+## Wave 5 Task 9 — `src/lib/world/environments.ts`: `applyEnvironment` overlay + `compileWorld.ts` wiring
+
+`applyEnvironment(doc): WorldDoc` is a pure resolver: given `doc.activeEnvironmentId` and the
+matching `Environment`, it returns a NEW doc with placement counts scaled by
+`placementCountOverrides` (wins) or `serverCountFactor`, population `peakRps` scaled by
+`populationRpsFactor`, and server `catalogId`/`specs`/`hourlyUsd` swapped via
+`instanceClassOverrides` (re-resolved through `instanceCatalog.ts`'s `getPreset`, not just a
+cosmetic `catalogId` label swap). Missing/unresolvable ids fall back silently to the untouched
+value — no throw. `compileWorld(rawDoc)` calls `applyEnvironment(rawDoc)` as its very first line,
+binding the result to the same local `doc` name every subsequent line already used — this is the
+correct, minimal insertion point because `compileWorld` is the ONE gate every downstream consumer
+(engine, all four nav-level views, every analysis rule, cost model) reads through, per CLAUDE.md's
+own Key Architecture Decision; nothing downstream needed to change. A new `CompileFinding.kind:
+'missing-environment'` (`severity: 'warning'`) fires when `activeEnvironmentId` names a
+nonexistent entry, falling back to compiling the unscaled base world.
+
+**Fix round 1 (Important ×3):** `CompiledWorld` carries no `populations`/`servers` fields, so
+`populationRpsFactor`/`instanceClassOverrides` never reached anything reading the RAW doc —
+`simulation.store.ts`'s `start` action was passing the raw (not overlaid) `doc` to
+`worldEngine.start()`, and `CostTab.tsx`'s `computeWorldCost(doc, ...)` call read the raw doc too.
+Fixed by calling `applyEnvironment(doc)` at both call sites. Also: `instanceClassOverrides` only
+swapped the `catalogId` label, never re-resolving `specs`/`hourlyUsd` — fixed via `getPreset`.
+Also: an autoscaled placement's ENVELOPE (`autoscale.maxCount`, which `compileWorld.ts` — not
+`pl.count` — uses for a scaled placement's compiled instance count) wasn't scaled at all — fixed
+with a new `scaleAutoscale(autoscale, factor)` helper that scales `minCount`/`maxCount` by the
+same per-placement factor, clamped `minCount ≤ maxCount`.
+
+**Fix round 2 (Important):** the Task-9-round-1 `CostTab.tsx` overlay was the only one of FIVE cost
+call sites reading the raw doc — `dock/scopeData.ts`'s `scopedCost()`, `panels/TopologyPanel.tsx`'s
+per-region $/hr line, `RegionView.tsx`'s region rollup (inside its existing `useMemo`), and
+`lib/runSummary.ts`'s per-frame cost loop (overlaid ONCE up front, not per-frame — `applyEnvironment`
+is deterministic per `doc`) all still read unoverlaid, producing contradictory $/hr figures across
+views while an environment was active. All four now overlay `applyEnvironment(doc)` consistently.
+
+**Verification:** `npx vitest run src/lib/world/environments.test.ts
+src/lib/world/compileWorld.test.ts src/app/store/simulation.store.test.ts` — 46 passed. Full
+suite after round 2: `npx vitest run` — 156 files / 2041 tests, all green. `npx tsc --noEmit`
+clean throughout.
+
+---
+
+## Wave 5 Task 10 — Environment CRUD + switcher actions in `world.store.ts`
+
+`addEnvironment(label)`/`updateEnvironment(id, patch)`/`removeEnvironment(id)`/
+`setActiveEnvironment(id | null)`/`setCloudProfile(profile)`, all routed through the existing
+`mutate()` helper (one undo step each, dirty-marking for free). `removeEnvironment` clears
+`activeEnvironmentId` in the SAME `mutate()` call if it pointed at the entry being removed — the
+same one-step-cascade pattern `removeRack` already uses for dangling `server.rack` references.
+`updateEnvironment`/`removeEnvironment` no-op (return the doc unchanged) on an unknown id, mirroring
+the scenario-step CRUD's not-found guard.
+
+**Fix round 1 (Important, id-collision data loss):** `addEnvironment` originally minted ids as
+`` `env-${count+1}` `` off the CURRENT map size — NOT a monotonic counter (unlike `addRack`, whose
+count-derived string is only the rack's human-readable LABEL; `Rack.id` actually comes from
+`nextWorldId('rack')`). An add/remove/add cycle could silently collide and overwrite a surviving
+environment (add "staging"→`env-1`; add "canary"→`env-2`; remove "staging"; add "blue"→`env-2`
+again, overwriting "canary"). Fixed by switching to `nextWorldId('env')`, the same monotonic
+counter+timestamp scheme `createRack` uses for `Rack.id`. A regression test
+(`addEnvironment never reuses an id after an add/remove/add cycle`) and three additional
+undo-step tests (`removeEnvironment`/`updateEnvironment`/`setCloudProfile`) were added.
+
+**Verification:** `npx vitest run src/app/store/world.store.test.ts` — 78 passed. `npx tsc
+--noEmit` clean.
+
+---
+
+## Wave 5 Task 11 — Environment authoring UI + breadcrumb indicator
+
+Two additions, both wired directly to Task 10's store actions (no new store code needed):
+
+1. **`src/app/world/Breadcrumb.tsx`** — a `▸ <Label>` chip appended after the existing lineage
+   segments whenever `doc.activeEnvironmentId`/`doc.environments` resolve to an entry. Styled with
+   a new `envChip` style const using `var(--color-warning)` (border + text) — deliberately applied
+   to EVERY named environment, not just "non-production" ones (there's no reserved "production" id
+   in the schema to special-case as safe); the whole point is making it hard to mistake a scaled
+   overlay for the real world. `data-testid="env-chip"` for a stable negative-assertion hook.
+2. **`src/app/world/panels/TopologyPanel.tsx`**'s new `EnvironmentsSection` — rendered once at the
+   bottom of the world-scope tree (already inside `WorldPanel.tsx`'s running-edit-lock `<fieldset>`
+   for free), with an active-environment `<select>` + cloud-profile `<select>`, one `EnvironmentRow`
+   per environment (label input, `×` delete, `server ×`/`rps ×` factor number inputs — empty input
+   clears the factor to `undefined`, not `0`), and a `+ Environment` button (auto-numbered default
+   label, mirroring the file's "+ Region"/"+ AZ" no-modal convention). The active row gets the
+   same `var(--color-warning)` border as the breadcrumb chip for at-a-glance "which one is live" in
+   the editor too.
+
+**Verification:** `npx vitest run src/app/world/Breadcrumb.test.tsx
+src/app/world/panels/TopologyPanel.test.tsx` — 22 passed (4 + 18, 7 new across both). `npx tsc
+--noEmit` clean. **`=== FEAT-012 environments (Tasks 8-12) done except canary; continuing to Task
+13 ===`**
+
+---
+
+## Wave 5 Task 12 — `cloudProfile` "price this world as…" comparison row
+
+`computeWorldCost` (`src/lib/costModelV2.ts`) gained a 4th, optional parameter,
+`providerOverride?: RealProvider`, byte-identical to before when omitted (all five pre-existing
+call sites unchanged). A new `resolveProvider(explicit: CloudProvider, override:
+RealProvider | undefined)` helper is now the ONE place any managed-service pricing/egress lookup
+resolves "which provider prices this" — a service's own explicit, non-`'generic'` `provider`
+always wins; `providerOverride` only fills in for a `'generic'` (unpinned) service. Threaded
+through the three previously-scattered inline `ms.provider` reads (`dbStorageRate`,
+`managedServiceMonthlyUsd`, `managedEgressUsd`). Deliberately OUT of scope: server `hourlyUsd` and
+the world-level cross-AZ/cross-region/internet-egress lines carry no provider field at all
+(pre-existing, documented simplification) — the comparison row only reprices managed services.
+
+`CostTab.tsx`'s new "Price this world as…" section calls `computeWorldCost` three times (aws/gcp/
+azure) against the same `compiledDoc`/`worldForCost`/`batch?.managedServices` the existing `cost`
+computation uses, varying only `providerOverride`.
+
+**Fix round 1 (Important ×2):** for most real worlds (server-only, or all managed services
+already provider-pinned) the three rows render identically, silently implying "cloud choice is
+free" — fixed with a muted caption ("Only unpinned managed services reprice; server and network
+costs are provider-flat in this model.") directly under the section label. The shipped test also
+only proved the degenerate all-identical case — a new test with one unpinned `objectStorage`
+service asserts the three totals genuinely diverge (`new Set(totals).size > 1`). Also hardened
+`resolveProvider`'s guard from `explicit !== 'generic'` to `explicit && explicit !== 'generic'`
+(closes a pre-existing hole for a malformed `.scalemap` with `provider: undefined`).
+
+**Verification:** `npx vitest run src/lib/costModelV2.test.ts src/app/world/CostTab.test.tsx` —
+41 passed. `npx tsc --noEmit` clean.
+
+---
+
+## Wave 5 Task 13 — Activating `canaryWeight` in `routingRuntime.ts`'s target selection
+
+`Placement.canaryWeight` goes live: when a blueprint has both primary/replica and canary-role
+placements in the same LB call, `canaryWeight` fraction of traffic routes to the canary instead of
+mixing evenly, across all three `distributeToTargets` LB modes (crossZone off, crossZone-on
+unweighted, crossZone-on weighted-AZ). New helpers in `routingRuntime.ts`:
+`splitIntoCanaryGroups()` (partitions a target list into main/canary via an injected `roleOf`) and
+`canaryShares()` — a thin wrapper reusing `azShares`, the file's EXISTING deterministic weighted-
+share formula, deliberately NOT a new rng draw (an rng draw anywhere in the step path shifts the
+seeded stream for every subsequent draw that step — see CLAUDE.md's determinism warnings; a
+canary-free world therefore behaves byte-identically, verified by a dedicated regression test).
+Role classification reads the SAME `effectiveRoleResolver(compiled, promotedAt)` output
+`failover.ts`'s promotion logic already consults — no second, independent `role === 'canary'`
+check. `src/lib/worldEngine/index.ts`'s `roleResolver` memoization block was hoisted earlier in the
+step (was step 6 "flows", now available before step 3 "routing") so it's ready in time for canary
+routing; behavior-neutral since the resolver only reads state already finalized from the prior
+step.
+
+**Fix round 1 (Important ×3):** (1) a down/faulted canary in the crossZone-off branch dropped its
+share instead of failing over to a healthy primary (and the mirror case) — fixed by redirecting an
+unhealthy group's entire share to the other, healthy group before picking. (2) `canaryWeight: 0`
+(explicitly authored, "pause the canary") was indistinguishable from `undefined` (unauthored) —
+fixed by narrowing the fallthrough guard to `undefined | null | NaN | negative` only, so `0`
+genuinely delivers zero canary traffic. (3) `canaryWeight` meant different fractions across LB
+modes — region-wide in crossZone-on-unweighted, but a fraction of the AZ's LOCAL share in the other
+two (so a 3-equal-AZ world under-delivered an authored 5% down to ~1.67%) — fixed with
+`regionalCanaryWeight(canaryWeight, localShare, totalRps)`, normalizing every branch to mean
+"fraction of the blueprint's REGIONAL rps."
+
+**Fix round 2 (Important ×2, same two findings, deeper gaps):** round 1's health-redirect fix only
+covered the crossZone-off branch — both crossZone-on branches still dropped traffic in the
+down-primary/healthy-canary mirror case (their target lists are pre-health-filtered, so an all-down
+group there is legitimately empty, but the "redirect to the other healthy group" logic hadn't been
+applied). Fixed by applying the same redirect pattern to both crossZone-on call sites. Separately,
+round 1's `regionalCanaryWeight` normalized each AZ slice INDEPENDENTLY, so a canary replicated
+across N AZs over-delivered by Nx (2 AZs at 5% each delivered 10% regionally, not 5%). Fixed by
+feeding `regionalCanaryWeight` the AGGREGATE local share of every canary-hosting slice for a
+blueprint (`S_C = Σ s_i`), computed via a pre-pass in both the crossZone-off (per-blueprint,
+`aggregateCanaryShareByBp`, sharing a `splitFor` cache with the main loop) and crossZone-on-weighted
+(`azSplits`) branches — reduces to round 1's exact single-AZ formula when only one slice hosts the
+canary.
+
+**Verification:** `npx vitest run src/lib/worldEngine/routingRuntime.test.ts` — 42 passed (23
+pre-existing + 19 new across both fix rounds, including the DIVERGENCE-GUARD-adjacent regression-
+floor case). `npx vitest run src/lib/worldEngine/index.test.ts` — 145 passed, including DIVERGENCE
+GUARD, unaffected (no canary fixtures in that suite). `npm run bench` passed (7.19ms median, no
+canary placements — confirms zero regression on the common zero-canary path). Full suite: `npx
+vitest run` — 156 files / 2081 tests, all green. `npx tsc --noEmit` clean throughout.
+
+---
+
+## Wave 5 Task 14 — `canary-failing` analysis rule + `canaryWeight` authoring UI
+
+**`src/lib/analysis/rules/structural.ts`** — new `canaryFailing` rule (registered in
+`structuralRules`, so `ANALYSIS_RULES` in `runAnalysis.ts` picked it up automatically with no
+edit there needed). Compares a canary `ServiceInstance`'s published `errorRate`
+(`lastBatch.instances[id].errorRate`) against its primary sibling's, clustered by
+`${blueprintId}|${regionId}` (the same key convention `splitBrainRisk`/`replicationLagExceedsRpo`
+already use in this file). Fires when `canaryErrorRate - primaryErrorRate > 0.15`
+(`CANARY_ERROR_DELTA`).
+
+**"Sustained over a window" needed no new mechanism.** Analysis rules see exactly one
+`MetricsBatch` snapshot per call (no rolling history — `capacity.ts`'s `autoscale-thrash` rule
+comment spells this out explicitly, and is why THAT rule instead reads an engine-published
+rolling counter, `MetricsBatch.recentScaleEventCount`). `canary-failing` doesn't need an engine
+change to get the same effect: `InstanceMetrics.errorRate` is already EMA-smoothed by
+`metrics.ts`'s `buildBatch` (`EMA_ALPHA = 0.3`, "EMA-smoothed" per `worldEngine/types.ts`'s own
+section comment) BEFORE it's ever published — a one-step error blip barely moves the published
+value off baseline, while a genuinely sustained spike converges the EMA toward the true rate over
+several steps. A plain threshold on that already-smoothed value is therefore enough to
+distinguish "sustained" from "blip", the same shape `capacity.ts`'s `burstable-sustained-load`
+already uses (plain mean-vs-baseline, no rolling window of its own). Uses the placement's STATIC
+authored `role` (`inst.role`), not `effectiveRole` — canary is an authoring-time A/B designation,
+not a live promotion state.
+
+Test fixture convention (`structural.test.ts`'s new `describe('structural: canary-failing')`):
+`emaConverge(baseline, windowValue, steps)` reproduces `metrics.ts`'s exact EMA formula so the
+"sustained 10 steps" vs "one-step blip" fixtures are realistic published values, not hand-picked
+numbers — `sustainedSteps: 1` converges to ~0.097 (doesn't cross the 0.15-delta bar over a 0.01
+primary baseline), `sustainedSteps: 10` converges to ~0.29 (does).
+
+**`src/app/world/dock/drawers/CanaryWeightControl.tsx` (new)** — authors a placement's
+`canaryWeight` (0..1, already read by `routingRuntime.ts`'s canary routing since before this
+task), mounted in `ServicesDrawer.tsx`'s per-placement chip body right beside
+`AutoscaleControl`. Renders `null` unless `placement.role === 'canary'` (canaryWeight is
+meaningless otherwise, per its own doc comment on `Placement` in `world/types.ts`). A single
+`<input type="number">` (0..1, step 0.01) live-dispatching `updatePlacement(id, { canaryWeight
+})` — `updatePlacement` already accepted a generic `Partial<Placement>` patch, so no new store
+action was needed. Edit-locked while `running`, mirroring every other field in this drawer.
+Deliberately inlines the label/input JSX rather than reusing `AutoscaleControl`'s internal
+`numberField()` helper (that helper is private to `AutoscaleControl.tsx`, not exported) — one
+field doesn't warrant extracting/sharing that helper.
+
+**Scope note:** there is still no UI path to actually SET a placement's `role` to `'canary'` in
+the first place (role is authored-only via `createPlacement`/direct store calls today — the
+`ServicesDrawer` chip line has only ever rendered `role` as read-only text, for every role value,
+not just canary). Out of scope for this task per its brief (Step 5 only asked for the
+`canaryWeight` field, gated on an already-canary placement); a role-authoring control is a
+separate, not-yet-scoped follow-up.
+
+**Verification:** `npx vitest run src/lib/analysis/rules/structural.test.ts` — 39 passed (4 new).
+`npx vitest run src/app/world/dock/drawers/ServicesDrawer.test.tsx` — 27 passed (4 new). `npx tsc
+--noEmit` clean. Full suite: `npx vitest run` — 156 files / 2089 tests, all green.
+
+---
+
+## Wave 5 Task 14b (supplementary) — placement role authoring, closing the canary-reachability gap
+
+Closes the Scope note directly above: Task 14 built `canaryWeight` authoring and the
+`canary-failing` rule, but nothing in the app could ever SET a placement's `role` to `'canary'` in
+the first place — `ServicesDrawer.tsx`'s chip line only ever rendered `role` as read-only
+interpolated text. This left the whole canary feature functionally unreachable by a user.
+
+**`src/app/world/dock/drawers/RoleControl.tsx` (new)** — authors a placement's `role`
+(`'primary' | 'replica' | 'canary'`), mounted in `ServicesDrawer.tsx`'s per-placement chip body
+directly ABOVE `CanaryWeightControl`, so switching to `'canary'` here reveals that field
+immediately in the same drawer (it already gates on `placement.role === 'canary'` — no change
+needed there). A single `<select>` live-dispatching `updatePlacement(id, { role })` —
+`updatePlacement`'s existing `Partial<Placement>` patch signature needed no change, mirroring
+Task 14's own note that no new store action was required. Edit-locked while `running`, same as
+every other field in this drawer. Reuses `CanaryWeightControl`'s exact `fieldRow`/`fieldLabel`/
+`fieldInput` style constants (each file keeps its own copy, matching how `CanaryWeightControl`
+itself didn't import `AutoscaleControl`'s private `numberField()` helper — one field per file
+doesn't warrant a shared style module).
+
+**Role-change-clears-canaryWeight decision:** switching a placement's role AWAY from `'canary'`
+now sets `canaryWeight: undefined` in the same patch, rather than leaving it set-but-hidden. This
+mirrors the one precedent already in this drawer for a mode-switch clearing a field:
+`AutoscaleControl.tsx`'s `pickStatic()` drops the placement's entire `autoscale` policy (not just
+empties its fields) when switching back to a static count, making `count` authoritative again
+without a stale policy lingering. Same reasoning applies here — a primary/replica placement
+should never carry a set-but-meaningless `canaryWeight` a later switch back to `'canary'` could
+unexpectedly resurrect (surprising the user with a stale weight instead of the field's own
+`DEFAULT_CANARY_WEIGHT` fallback). `updatePlacement`'s `{ ...existing, ...patch, id }` merge
+accepts an explicit `undefined` in the patch the same way `AutoscaleControl`'s
+`autoscale: undefined` and `scaleStep: v > 0 ? v : undefined` already do — it's a pre-existing,
+established convention in this store, not a new one.
+
+**Test note:** `ServicesDrawer.test.tsx`'s "switching role to canary" test had to author a
+canary-weight value DIFFERENT from `CanaryWeightControl`'s own `DEFAULT_CANARY_WEIGHT` (0.05) —
+`fireEvent.change` to a value equal to the currently-rendered DOM value doesn't fire React's
+`onChange` (a documented React/testing-library value-tracker quirk on controlled inputs), so the
+test asserts a change to `0.1` instead.
+
+**Verification:** `npx vitest run src/app/world/dock/drawers/ServicesDrawer.test.tsx` — 31 passed
+(4 new: default-primary render, canary switch reveals+sets `canaryWeight`, role-away clears
+`canaryWeight`, edit-lock). `npx tsc --noEmit` clean. Full suite: `npx vitest run` — 156 files /
+2093 tests, all green.
+
+---
+
+## Wave 5 Task 15 — `src/app/keymap.ts`: one keybinding registry replacing two independent listeners
+
+The app had two independent, hand-rolled `window` `keydown` listeners: `App.tsx` owned `⌘N` (no
+focused-input guard — a real, if minor, pre-existing bug), and `WorldShell.tsx` owned `⌘Z`/
+`⇧⌘Z`/`Escape` (with the guard, plus the `placeMode`-disarms-before-`nav.up()` priority from
+Polish 4 T7). This task consolidates both into one registry-driven listener, and is deliberately
+the seam later ergonomics-pack tasks (a command palette, a keyboard-map overlay) build on — both
+will read `REGISTRY`/`Binding`/`CommandContext` from here rather than re-deriving bindings.
+
+**`src/app/keymap.ts` (new)** exports `CommandContext` (a plain bag of function references —
+`running`, `newWorld`/`goGlobe`/`setFilePath`/`setShowHome`/`undo`/`redo`/`goUp`/`exitPlaceMode`/
+`isInPlaceMode` — no React/hook dependency, so the file is unit-testable headlessly), `Binding`
+(`{ id, keys, label, group: 'file'|'navigate'|'author'|'chaos'|'view', when?: 'always'|'running'|
+'stopped', run: (ctx) => void }`), `REGISTRY: Binding[]` (the 4 bindings: `new-world` ⌘N always,
+`undo` ⌘Z when stopped, `redo` ⇧⌘Z when stopped, `escape` Escape always — `escape`'s `run` checks
+`ctx.isInPlaceMode()` first and disarms before falling through to `ctx.goUp()`, preserving Polish
+4 T7's priority), `matchBinding(e, registry)` (pure `KeyboardEvent` → `Binding | null` matcher —
+`metaKey || ctrlKey` for `⌘`, exact `shiftKey` match, `Escape` matched on `e.key` alone regardless
+of modifiers), `isEnabled(binding, running)` (pure `when` gate), and `installKeymap(registry,
+getCtx)` — the ONE `window.addEventListener('keydown', ...)` call site, applying the
+INPUT/TEXTAREA/SELECT/`isContentEditable` focused-input guard uniformly to every binding (this is
+what closes the `App.tsx` gap — `⌘N` now gets the same guard `⌘Z`/`Escape` already had) before
+`matchBinding` → `isEnabled` → `e.preventDefault()` → `binding.run(ctx)`. Returns a cleanup
+function.
+
+**`src/app/store/ui.store.ts`** gained `placeMode: boolean` + `setPlaceMode` (accepts a value or
+an updater fn, mirroring `useState`'s setter shape so `WorldShell.tsx`'s existing `setPlaceMode(p
+=> !p)` call needed no change). This is a lift, not a new concept — `placeMode` was previously
+`WorldShell.tsx`-local `useState`, lifted here so `App.tsx`'s app-level `installKeymap` (which
+mounts above `WorldShell` and has no reachable prop path to its local state) can read/disarm the
+same "is the globe traffic-placement raycast armed" boolean the `Escape` binding needs. Preferred
+over installing the keymap from `WorldShell.tsx` instead (the brief's alternative (b)) because (a)
+keeps `⌘N` reachable even on the home screen, before any world is open, and (b) resolves the
+"where does UI modal state live" ambiguity the brief called out — `ui.store.ts` is already the
+home for exactly this kind of cross-sibling UI state (see `selectedServerId`'s identical
+lift-for-cross-component-reach precedent, same file).
+
+**`src/App.tsx`**: the old inline `⌘N` `useEffect` is replaced by `useEffect(() =>
+installKeymap(REGISTRY, () => ({ ... })), [])` — the context getter reads every store via
+`getState()` (not reactive selectors — the listener itself never needs to re-render), matching
+the pattern the deleted `WorldShell.tsx` listener already used.
+
+**`src/app/world/WorldShell.tsx`**: the `⌘Z`/`⇧⌘Z`/`Escape` `useEffect` (previously depending on
+`[placeMode]`) is deleted entirely; `placeMode`/`setPlaceMode` now come from `useUiStore` instead
+of local `useState` (see above) — every other read/write site (`GlobeView`'s `onExitPlaceMode`,
+`WorldPanel`'s `TrafficPanel` toggle, the globe-level auto-disarm effect) is unchanged, since they
+only ever touched `placeMode`/`setPlaceMode` through this component's own destructured names.
+
+**Test-file consequence:** `WorldShell.test.tsx` renders `<WorldShell/>` in isolation (no `<App/>`
+wrapper), so once the keymap moved to being installed once in `App.tsx`, that test file lost its
+own listener entirely. Fixed by having the test's `beforeEach` call `installKeymap(REGISTRY, ...)`
+itself (mirroring `App.tsx`'s exact context-getter shape) and `afterEach` uninstall it — this is
+the correct fix, not a workaround: it mirrors what `App.tsx` actually does in the real tree, and
+keeps `WorldShell.test.tsx` a valid regression guard for the `Escape`-disarms-before-`nav.up()`
+and running-gated-undo/redo behaviors. **`src/App.test.tsx` (new)** — this file didn't exist
+before; added to cover `⌘N`'s migrated behavior AND the focused-input-guard gap the migration
+closes (a text input focused, `⌘N` fired at it, must NOT reset the world — this would have fired
+under the old unguarded `App.tsx` listener).
+
+**Verification:** `npx vitest run src/app/keymap.test.ts` — 6 passed (new: `matchBinding`
+⌘/ctrl/shift matching, `Escape` modifier-independence, no-match, `isEnabled`'s 3 `when` states).
+`npx vitest run src/App.test.tsx src/app/world/WorldShell.test.tsx` — 2 + 7 passed, identical
+pass/fail shape to the pre-migration baseline run of `WorldShell.test.tsx` (`App.test.tsx` is
+new, no baseline existed). `npx tsc --noEmit` clean. Full suite: `npx vitest run` — 158 files /
+2101 tests, all green. Grepped `addEventListener\(['"]keydown['"]` across `src/`: `keymap.ts`'s
+`installKeymap` is the only APP-LEVEL global listener; the other ~16 hits are all pre-existing,
+unrelated, modal-scoped Escape-to-close listeners (`SettingsModal.tsx`, `FirewallRulesModal.tsx`,
+`PacketModal.tsx`, `ManagedServiceModal.tsx`, `BlueprintModal.tsx`, `ConnectionsView.tsx`,
+`AzConnectionsView.tsx`, `AssistantView.tsx`, `ServerView.tsx`'s capture-phase selection-Escape,
+plus each of those components' own test files exercising them directly) — out of this task's
+scope (the brief named specifically the `App.tsx`/`WorldShell.tsx` global pair).
+
+---
+
+## Wave 5 Task 16 — `src/app/world/commands.ts` + `CommandPalette.tsx`: command palette (⌘K)
+
+`commands.ts` exports `PaletteContext` (`doc`/`compiled`/`nav`/`focusedServerId`/`addServer`/
+`addRegion`/`undo`/`redo`/`setPendingTab`) and `buildCommands(ctx): PaletteCommand[]` — each
+command reuses `keymap.ts`'s own `Binding['group']`/`Binding['when']` types rather than
+re-declaring them. `buildCommands` returns static commands (`add-server`/`add-region`/`undo`/
+`redo`, `goto-cost`/`goto-compare`, one chaos command killing the nav-focused server) plus dynamic
+`nav-<id>` commands (one per region/server in `doc`, via the same `entityNav.ts` resolution
+helpers `AnalysisTab`/`AiReviewSection` already use). `CommandPalette.tsx` is the filterable UI —
+`rank(query, label)` is a plain `indexOf`-based substring rank (cheap and sufficient at palette
+scale, matches nothing fancier than the file's own convention), disabled-but-relevant commands
+render dimmed with a standardized tooltip (`STOPPED_TOOLTIP`/`RUNNING_TOOLTIP` constants, mirroring
+`KeymapOverlay`'s later dimmed-disabled convention) rather than being hidden, `createPortal`'d to
+`document.body` matching `SettingsModal.tsx`'s overlay pattern.
+
+`keymap.ts` gained `CommandContext.togglePalette` + a `toggle-palette` (⌘K, `group: 'view', when:
+'always'`) binding — additive, doesn't touch Task 15's existing 4 bindings. `paletteOpen`/
+`setPaletteOpen` live in `ui.store.ts` (NOT `WorldShell`-local `useState`) for the identical reason
+Task 15's `placeMode` does: `App.tsx`'s app-level `installKeymap` context is built above
+`WorldShell` in the tree and has no reachable prop path to component-local state.
+
+**Deviation:** `world.store.ts` has no bare no-arg "quick add" action (`addRegion(catalogId)`/
+`addServer(azId, preset)` both require arguments) — `commands.ts`'s `PaletteContext` keeps a
+`() => void` signature for both, and `WorldShell.tsx` supplies the defaulting policy in its
+closures (first not-yet-placed catalog region; the focused-or-first AZ with the `'vps-medium'`
+preset, no-op if there's no AZ yet).
+
+**Verification:** `npx vitest run src/app/world/commands.test.ts` — 5 passed. `npx vitest run
+src/app/world/CommandPalette.test.tsx` — 7 passed. `npx vitest run src/app/keymap.test.ts` — 10
+passed (incl. new ⌘K case). Full suite: `npx vitest run` — 160 files / 2117 tests, all green.
+`npx tsc --noEmit` clean.
+
+---
+
+## Wave 5 Task 17 — Multi-select: `ui.store.ts`'s `selectedEntityIds` + AZ floor click/⌘-click/⇧-click/marquee
+
+`ui.store.ts` gained `selectedEntityIds: Set<string>` plus `setSelectedEntityIds`/
+`toggleSelectedEntity`/`selectEntityRange`/`clearSelection` — all maintaining ONE consistency
+invariant with the pre-existing `selectedServerId`: `selectedServerId` mirrors the sole member of a
+1-entity selection, or `null` for 0 or 2+ members. `setSelectedServerId` itself now also syncs
+`selectedEntityIds` in the same `set()` call, so every existing single-click-to-inspect call site
+keeps working unmodified. `dock/scope.ts`'s `deriveScope` is untouched and unaffected — it only
+ever reads the plain `selectedServerId` string it's handed, which already degrades to "no scope
+override" on `null` (the same code path a manual deselect already exercised).
+
+`DatacenterFloor.tsx`: `RackCabinet`/`FreePoolPod`'s `onSelect` prop now receives the pointerup
+event's modifier keys (`useHoldTap.ts`'s `onTap` callback signature widened from `() => void` to
+`(e) => void`, additive for every other caller). Plain click → `setSelectedEntityIds(new
+Set([id]))`; ⌘/ctrl-click → `toggleSelectedEntity`; ⇧-click → range-select via `orderedServerIds`
+(row-major over the SAME sorted-racks-then-sorted-pool sequence `floorLayout.ts`'s own grid-cell
+assignment uses, so "next in layout order" and "next in range-select order" agree by construction),
+anchored at the last plain-clicked id (file-manager convention: each ⇧-click re-computes from the
+ORIGINAL anchor, not the previous ⇧-click's endpoint). Marquee hit-testing uses REAL projected
+geometry per entity kind — `RackCabinet.tsx`'s new exported `rackSlotLayout(residents)` (the same
+U-height/gap stacking the render loop uses, extracted to a single source of truth) for racked
+servers, the pre-existing `boxRect(isoBox(...))` helper (already used for label-collision
+obstacles) for free-pool servers and managed appliances.
+
+**Fix round 1 (Important ×3, all on the floor's primary navigation surface):** (1) marquee was
+originally wired to plain `onMouseDown/Move/Up` directly on the `<svg>`, while camera pan already
+owned `onPointerDown` with `setPointerCapture` on the ANCESTOR `floor-viewport` div for the SAME
+physical background-drag gesture — no mutual gating, and pointer-capture on an ancestor can
+retarget descendant `mousemove`/`mouseup` in real browsers (invisible to jsdom, which is why the
+original tests missed it). Fixed by merging marquee onto `floor-viewport`'s OWN
+`onPointerDown/Move/Up/Cancel` handlers, deciding mode once at pointerdown (`e.shiftKey` → marquee,
+snapshotting the svg's bounding rect into a ref and using it for the whole gesture; otherwise → the
+unchanged pan path) — marquee and pan are now mutually exclusive branches of one handler, so there
+is structurally no race. **This is the deliberate "marquee needs Shift+drag, not plain drag"
+deviation from the original plan, reviewed and accepted** (see `progress.md`'s Task 17 "parked"
+ruling) — the floor's pre-existing plain-drag-pans-camera gesture made a non-modifier
+disambiguation impossible given real-browser pointer-capture retargeting. (2) a 2+-member
+selection couldn't be cleared by clicking empty background — the deselect guard checked
+`selectedServerId` (always `null` for 2+ members); fixed to check `selectedServerId !== null ||
+selectedEntityIds.size > 0` and call `clearSelection()`. (3) backward-direction (later-then-
+earlier) ⇧-click range-select was untested — added, no production fix needed (the swap logic was
+already correct).
+
+**Verification:** `npx vitest run src/app/world/az/DatacenterFloor.test.tsx` — 30 passed (26 + 4
+new post-fix). Full suite: `npx vitest run` — 160 files / 2131 tests, all green. `npx tsc --noEmit`
+clean.
+
+---
+
+## Wave 5 Task 18 — Batch server edits as a single undo step
+
+`world.store.ts` gained `batchUpdateServers(ids: string[], patch: Partial<Server>)` — ONE
+`mutate()` call wrapping a loop over `ids` (`{ ...existing, ...patch, id }` per server, same
+identity-preserving spread order as `updateServer`'s single-id case; unknown ids silently skipped,
+mirroring `updateServer`'s own not-found guard), so the whole batch is exactly one `pushHistory()`/
+`set()`/`setDirty(true)` — one undo reverts every targeted server together, matching
+`addDbServer`/`addServiceToServer`/`spreadBlueprint`'s existing "one user action, one history
+entry" convention.
+
+`TopologyPanel.tsx`'s new `BatchEditBar` (rendered once at world scope, top of the panel body)
+reads `useUiStore(s => s.selectedEntityIds)` (Task 17) and renders `null` unless 2+ of the selected
+ids resolve to real servers in `doc.servers`. Its one control — an unfiltered `INSTANCE_CATALOG`
+`<select>` (same catalog id list the "+ Server" preset picker already uses, deliberately not
+restricted to the first-selected server's kind, so a mixed-kind selection can still target one
+class) — calls `batchUpdateServers` with the exact same `{catalogId, specs, hourlyUsd,
+oversubscriptionRatio, burstable}` patch shape `dock/drawers/HardwareDrawer.tsx`'s single-server
+commit already uses, so price and specs never drift apart for any targeted server.
+
+**Verification:** `npx vitest run src/app/store/world.store.test.ts` — 82 passed (4 new:
+batch-patches-all, untargeted-untouched, unknown-id-skip, one-undo-step). `npx vitest run
+src/app/world/panels/TopologyPanel.test.tsx` — 20 passed (2 new). Full suite: `npx vitest run` —
+160 files / 2137 tests, all green. `npx tsc --noEmit` clean. **`=== FEAT-013 ergonomics pack
+(Tasks 15-19) complete after Task 19 ===`**
+
+---
+
+## Wave 5 Task 19 — `src/app/world/KeymapOverlay.tsx`: self-maintaining keyboard-map overlay (`?`/`⌘/`)
+
+The last ergonomics-pack task: a help overlay that renders directly off `keymap.ts`'s `REGISTRY`
+(any `Binding[]`, actually — it's a pure prop) so a future binding needs zero changes to this
+component to appear in the help. Read-only; mirrors `CommandPalette.tsx`'s
+overlay/portal/reduced-motion pattern rather than inventing a new modal shape.
+
+**`src/app/world/KeymapOverlay.tsx` (new)** — `KeymapOverlay({ open, registry, running, onClose })`
+groups `registry` by `Binding['group']`, renders each group in a fixed `GROUP_ORDER` (`file` →
+`navigate` → `author` → `chaos` → `view`, not `Map` insertion order, so sections don't reshuffle
+as bindings are added/removed), and for each binding computes `enabled` via `keymap.ts`'s own
+`isEnabled(binding, running)` — NOT a re-derived copy of that rule, so a future `when` value or
+gating change in `keymap.ts` is reflected here for free. Disabled bindings render dimmed
+(`aria-disabled="true"`, `opacity: 0.5`). `createPortal`'d to `document.body`, backdrop
+click-to-close, `useReducedMotion()`-gated entrance, `data-testid="keymap-overlay"`.
+
+**`src/app/keymap.ts` changes:**
+- `CommandContext` gained `toggleHelp: () => void`, alongside `togglePalette` from Task 16 — same
+  lift pattern (`ui.store.ts`'s `helpOpen`/`setHelpOpen`, mirroring `paletteOpen`/`setPaletteOpen`).
+- `REGISTRY` gained two entries, both `group: 'view'`, `when: 'always'`, both calling
+  `ctx.toggleHelp()`: `toggle-help` (`keys: '⌘/'`) and `toggle-help-bare` (`keys: '?'`). Two
+  entries, not one binding with two key-strings, because `matchBinding` only ever parses a
+  single `keys` string per `Binding` — this keeps the overlay listing both ways to open it
+  (itself an instance of the self-maintaining property, not a special case).
+- **`matchBinding` fix (the actual bug this task's "confirm before assuming" step surfaced):**
+  `parseKeys('?')` already correctly produced `{ key: '?', meta: false, shift: false }` — the
+  brief's suspicion that `parseKeys` itself might need extending was unfounded. The real gap was
+  in `matchBinding`'s comparison against a REAL `KeyboardEvent`: pressing the only physical key
+  combo that ever produces `'?'` (Shift+`/`) sets `e.shiftKey = true`, but a bare `?` binding
+  parses to `shift: false` — the old `e.shiftKey === parsed.shift` check made a bare `?` binding
+  mathematically un-triggerable. Fixed by only requiring the exact `shiftKey` match for
+  alphanumeric single-char keys (where it's load-bearing — it's the only thing distinguishing
+  `⌘Z` from `⇧⌘Z`); symbol keys like `?` skip that check since Shift is already baked into `e.key`
+  by the browser. `⌘/`  is unaffected either way (`/` needs no Shift on a US keyboard, so
+  `parsed.shift` and the real `e.shiftKey` already agreed).
+
+**`src/app/store/ui.store.ts`** gained `helpOpen: boolean` + `setHelpOpen` (same updater-fn-or-value
+shape as `paletteOpen`/`setPaletteOpen`), for the identical reason: `App.tsx`'s app-level
+`installKeymap` context needs a store-backed toggle it can reach from outside `WorldShell`'s tree.
+
+**`src/App.tsx`**: the `installKeymap` context getter gained `toggleHelp: () =>
+useUiStore.getState().setHelpOpen(o => !o)`, alongside the existing `togglePalette`.
+
+**`src/app/world/WorldShell.tsx`**: imports `KeymapOverlay` + `REGISTRY`, reads
+`helpOpen`/`setHelpOpen` off `useUiStore`, and mounts `<KeymapOverlay open={helpOpen}
+registry={REGISTRY} running={running} onClose={() => setHelpOpen(false)} />` alongside the
+existing `<CommandPalette>` mount, both siblings of `<ScrubberV2/>` near the end of the render.
+
+**Test-file consequence:** `keymap.test.ts` and `WorldShell.test.tsx` both hand-construct
+`CommandContext` objects (for `installKeymap` calls exercising the registry directly) — adding a
+required `toggleHelp` field to the interface meant both needed a `toggleHelp: vi.fn()` /
+`toggleHelp: () => useUiStore.getState().setHelpOpen(o => !o)` addition to keep compiling; no
+existing test's behavior changed. `keymap.test.ts` also gained two new cases exercising the
+`matchBinding` fix directly: bare `?` (`{ key: '?', shiftKey: true }`) calling `toggleHelp`, and
+`⌘/` (`{ key: '/', metaKey: true }`) calling `toggleHelp` regardless of `running`.
+
+**Verification:** `npx vitest run src/app/world/KeymapOverlay.test.tsx` — 7 passed (closed-state
+no-render, grouped rendering, disabled/enabled `aria-disabled` reflection for `running`, the
+self-maintaining new-binding-appears-with-zero-component-changes case, REGISTRY's `toggle-help`
+entries rendering, backdrop click-to-close). `npx vitest run src/app/keymap.test.ts
+src/app/world/WorldShell.test.tsx src/app/world/CommandPalette.test.tsx` — 42 passed. `npx tsc
+--noEmit` clean. Full suite: `npx vitest run` — 161 files / 2146 tests, all green.
+
+---
+
+## Wave 5 — FINAL REVIEW FIX WAVE (C1, I1, I2, I3)
+
+Four findings from the whole-branch final review of the 21-task wave, fixed together (no second
+fix round follows this one — see `.superpowers/sdd/2026-08-09-wave5-comparison-environments-ergonomics/task-final-fix-report.md`
+for the full writeup with reasoning, exact diffs summarized, and every verification command's output).
+
+**C1 (critical) — batch-edit bar was unreachable; multi-select had no visual feedback.** Three
+facts composed into a dead feature: `BatchEditBar` (Task 18) rendered only inside
+`TopologyPanel.tsx`, a WORLD-scope-only tab (`dock/scope.ts`'s `WORLD_TABS`); multi-select
+(`ui.store.ts`'s `selectedEntityIds`, Task 17) can only originate on `DatacenterFloor.tsx`, i.e.
+at `nav.level === 'az'`; and `WorldShell.tsx`'s nav-clear effect wipes `selectedEntityIds` on
+every `nav.level`/`nav.azId` change — including the exact `az → world` navigation required to
+reach the batch bar's only host. Fix: a second `AzBatchEditBar` (same
+`batchUpdateServers`/`selectedEntityIds`/`INSTANCE_CATALOG` shape as the original, scoped to
+`doc.servers[id]?.azId === azId`) now renders inside `dock/AzConfigTab.tsx` — AZ scope, the SAME
+scope a multi-selection can actually exist in (`dock/scope.ts`'s `deriveScope`: a 2+ selection
+stays AZ scope, never narrows to server scope), so it's reachable without ever leaving the floor.
+`TopologyPanel.tsx`'s original copy was left in place (harmless dead code at world scope, still
+covered by its own Task 18 tests) rather than deleted. The nav-clear effect itself was read
+carefully and left UNCHANGED: its `[nav.level, nav.azId]` dependency array only fires on an
+actual level/AZ transition, never on a same-AZ floor selection, so it isn't independently
+over-aggressive once the batch bar no longer requires leaving the scope. Separately,
+`RackCabinet.tsx`/`FreePoolPod.tsx` gained a `selectedEntityIds: ReadonlySet<ServerId>` prop
+(alongside the existing `selectedServerId`) — a slat/pod now highlights on
+`selectedServerId === server.id || selectedEntityIds.has(server.id)`, so a multi-selection
+finally has on-screen feedback (previously ALWAYS false for 2+ selections, since the store's own
+invariant sets `selectedServerId` to `null` whenever `selectedEntityIds.size !== 1`).
+`DatacenterFloor.tsx` threads its already-read `selectedEntityIds` down to both. New test:
+`WorldShell.test.tsx`'s "C1 fix" describe block drives the REAL lifecycle end-to-end — mounts
+`<WorldShell/>`, navigates via `nav.store` the way a click would, multi-selects 3 servers via the
+floor's actual pointer handlers (not a store seed), asserts all 3 carry `data-selected="true"`,
+asserts the batch bar is visible in that same scope, applies a batch instance-class change, and
+confirms it's one undo step — this is the exact test gap (TopologyPanel.test.tsx bypassing the
+nav lifecycle entirely) that let C1 ship unnoticed.
+
+**I1 (important) — baseline import had no shape validation.** `baseline.store.ts`'s `importJson`
+pushed whatever `parsed.summaries` contained straight into the store; a well-formed-JSON,
+wrong-shape file rendered fine in the compare-panel picker, then threw uncaught inside
+`ComparePanel.tsx`'s `MetricRow` (`format(n) => n.toFixed(0)` on a non-number) the moment it was
+selected for comparison — a white-screen crash with no error boundary anywhere in the app. Fix:
+`isValidRunSummaryShape` (new, in `baseline.store.ts`) checks `id`/`label` are strings and
+`latency.{p50Ms,p90Ms,p99Ms}`/`cost.{meanHourlyUsd,totalUsd,peakHourlyUsd}` are all numbers —
+enough to guarantee everything `ComparePanel`'s render path actually dereferences. `importJson`
+now validates `Array.isArray(summaries) && summaries.every(isValidRunSummaryShape)` and THROWS
+(not silently no-ops) on a mismatch, before ever calling `set(...)` — so `summaries` is left
+byte-unchanged on failure, never partially corrupted. No new error UI: `ComparePanel.tsx`'s
+Import button already wraps the call in a try/catch routing into the existing `fileError` banner
+(Task 7), so the thrown error surfaces through the same path a parse failure already did. One
+pre-existing test fixture (`baseline.store.test.ts`'s `fakeFrames()`) had to be widened to a
+full `WorldMetrics` shape (`crossAzBytesPerSec`/`crossRegionBytesPerSec`/
+`internetEgressBytesPerSec`/`populationRoutes`) — the old partial shape produced a genuine `NaN`
+cost (missing fields read as `undefined` inside `costModelV2.ts`'s egress math), which
+`JSON.stringify` lossy-serializes to `null`, which the new validator (correctly) now rejects on
+re-import. New tests: `baseline.store.test.ts` (throws-and-leaves-summaries-unchanged for three
+malformed shapes, accepts a shape-valid array), `ComparePanel.test.tsx` (wrong-shape JSON surfaces
+through the SAME banner as a parse failure, `summaries` left untouched).
+
+**I2 (important) — `RunSummary`/compare validity banner was blind to environment/`cloudProfile`.**
+`docFingerprint` hashes instance/path SHAPE only (by design — its own comment says "structural,
+not a hash of the whole doc"); an environment whose only knob is `populationRpsFactor`, or a
+`cloudProfile` switch, changes neither, so two runs captured under different environments read as
+"identical fingerprint, nothing changed" even though the whole demand curve or pricing basis
+moved. **Architectural choice (judgment call, since the finding left this open):** rather than
+folding environment/profile into `docFingerprint` itself, `RunSummary` gained two new fields —
+`environmentId: string | null` / `cloudProfile: string | null` (populated in `buildRunSummary`
+from `doc.activeEnvironmentId ?? null` / `doc.cloudProfile ?? null`) — and `ComparePanel.tsx`
+compares them directly, alongside the existing `scenarioId`/`seed` check. Reasoning: folding a
+pure demand-volume or pricing-basis knob into a hash whose entire contract is "structural only"
+would make the fingerprint mean two different things depending on what changed, silently breaking
+the "identical fingerprint ⇒ nothing changed structurally" invariant the existing "identical" note
+already promises in its own copy. A dedicated comparison is also cheaper to reason about and test
+in isolation. `ComparePanel.tsx`'s banner logic: `isIdentical` is now gated on
+`fingerprintMatches && !envDiffers` (previously fingerprint alone); a NEW `isEnvNote` case (amber,
+`role="status"`, distinct from both the red "not sound" and the gray "identical" notes) fires when
+the fingerprint matches but `environmentId`/`cloudProfile` differ — "same architecture, different
+demand volume or pricing" is a materially different message from either "unsound comparison" or
+"nothing changed." New tests: `runSummary.test.ts` (`environmentId`/`cloudProfile` null for a
+base-world capture; two runs differing ONLY in `activeEnvironmentId`/`cloudProfile` share
+`docFingerprint` but are distinguishable via the new fields), `ComparePanel.test.tsx` (the env-note
+fires instead of the plain "identical" note when only environment/profile differ; the plain
+"identical" note still fires when everything matches).
+
+**I3 (important) — `WorldDoc.cloudProfile` was authored, persisted, and completely inert.** The
+only reader of `doc.cloudProfile` was the `TopologyPanel.tsx` dropdown that WRITES it; `CostTab.tsx`'s
+three-way "price this world as…" row hardcoded pricing all of aws/gcp/azure regardless of the
+world's own profile, so setting `cloudProfile` to `'aws'` changed nothing anywhere. Fix: a new
+exported `defaultProviderFromDoc(doc)` in `costModelV2.ts` — returns `undefined` when
+`cloudProfile` is absent/`'generic'` (byte-identical to every pre-existing call site), else the
+real provider — is now passed as `computeWorldCost`'s `providerOverride` at the FOUR "this
+world's own cost" call sites: `CostTab.tsx`'s headline total (NOT its comparison row, which keeps
+explicitly overriding aws/gcp/azure regardless of the world's profile — that's the whole point of
+the row), `dock/scopeData.ts`'s `scopedCost` (region/AZ/world rollups feeding the dock's Cost
+tab), `RegionView.tsx`'s region cost headline, `TopologyPanel.tsx`'s per-region `$/hr` meta line,
+and `runSummary.ts`'s captured-cost figures (so a `RunSummary`'s cost tracks the same provider the
+live views showed while the run was captured). `providerOverride` only fills in for a managed
+service that hasn't pinned its own provider (`resolveProvider`'s existing contract, Task 12,
+unchanged) — server hourly cost is flat/preset-driven and was never provider-sensitive to begin
+with. New tests: `costModelV2.test.ts` (`defaultProviderFromDoc` unit behavior; feeding it into
+`computeWorldCost` matches an explicit `providerOverride` of the same value and reprices an
+unpinned service), `CostTab.test.tsx` (setting `doc.cloudProfile` changes the headline `$X /mo`
+total for a world with an unpinned managed service).
+
+**Verification:** targeted files — `npx vitest run src/app/world/WorldShell.test.tsx
+src/app/world/dock/AzConfigTab.test.tsx src/app/world/az/DatacenterFloor.test.tsx
+src/app/world/panels/TopologyPanel.test.tsx src/app/store/baseline.store.test.ts
+src/app/world/panels/ComparePanel.test.tsx src/lib/runSummary.test.ts src/lib/costModelV2.test.ts
+src/app/world/CostTab.test.tsx src/app/world/RegionView.test.tsx
+src/app/world/dock/scopeData.test.ts` — all passed, zero regressions. `npx tsc --noEmit` — clean.
+Full suite: `npx vitest run` — 161 files / 2158 tests, all green (12 new tests added by this fix
+wave: 1 in `WorldShell.test.tsx`, 3 in `baseline.store.test.ts`, 3 in `ComparePanel.test.tsx`, 2 in
+`runSummary.test.ts`, 3 in `costModelV2.test.ts`, 1 in `CostTab.test.tsx`).

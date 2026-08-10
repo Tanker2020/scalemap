@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeWorldCost, attributeByBlueprint } from './costModelV2'
+import { computeWorldCost, attributeByBlueprint, defaultProviderFromDoc } from './costModelV2'
 import { createWorld, createRegion, createAz, createServer, createLoadBalancer, createBlueprint, createPlacement } from './world/factories'
 import { getPreset } from './world/instanceCatalog'
 import { useWorldStore } from '../app/store/world.store'
@@ -377,6 +377,91 @@ describe('computeWorldCost — orphaned-AZ completeness (ISSUE-024)', () => {
     const withMs = computeWorldCost(doc, null)
     const withoutMs = computeWorldCost({ ...doc, managedServices: {} }, null)
     expect(withMs.monthlyUsd).toBeGreaterThan(withoutMs.monthlyUsd)
+  })
+})
+
+// Task 12 (wave 5): the "price this world as…" comparison row's providerOverride — a fallback
+// default for services that have NOT pinned their own provider, never a win over an explicit pin.
+describe('computeWorldCost — providerOverride ("price this world as…", Task 12)', () => {
+  function docWithTwoManagedServices() {
+    const { doc, azId, regionId } = twoServerWorld()
+    doc.managedServices['pinned'] = {
+      id: 'pinned', label: 'gcp-pinned', nodeType: 'objectStorage', provider: 'gcp',
+      scope: { kind: 'az', azId }, port: 443, storageGb: 100, storageTierId: 'standard',
+    }
+    doc.managedServices['unpinned'] = {
+      id: 'unpinned', label: 'no-pin', nodeType: 'objectStorage', provider: 'generic',
+      scope: { kind: 'region', regionId }, port: 443, storageGb: 100, storageTierId: 'standard',
+    }
+    return doc
+  }
+
+  it('reprices an unpinned service under providerOverride but leaves an explicitly-pinned service untouched', () => {
+    const withServices = docWithTwoManagedServices()
+
+    const generic = computeWorldCost(withServices, null)
+    const asAws = computeWorldCost(withServices, null, null, 'aws')
+    // The unpinned (generic) service billed $0 before, now bills aws objectStorage storage — total changes.
+    expect(asAws.monthlyUsd).not.toBe(generic.monthlyUsd)
+    expect(asAws.monthlyUsd).toBeGreaterThan(generic.monthlyUsd)
+
+    // Isolate the pinned-only service: its price must be identical with or without the override.
+    const pinnedOnlyDoc = { ...withServices, managedServices: { pinned: withServices.managedServices['pinned'] } }
+    const pinnedOnlyBase = computeWorldCost(pinnedOnlyDoc, null)
+    const pinnedOnlyOverridden = computeWorldCost(pinnedOnlyDoc, null, null, 'aws')
+    expect(pinnedOnlyOverridden.monthlyUsd).toBeCloseTo(pinnedOnlyBase.monthlyUsd, 6)
+  })
+
+  it('two different overrides on the same doc produce different totals', () => {
+    const withServices = docWithTwoManagedServices()
+    const asGcp = computeWorldCost(withServices, null, null, 'gcp')
+    const asAzure = computeWorldCost(withServices, null, null, 'azure')
+    expect(asGcp.monthlyUsd).not.toBe(asAzure.monthlyUsd)
+  })
+
+  it('every existing call shape (no providerOverride argument) is byte-identical to pre-Task-12 behavior', () => {
+    const { doc } = twoServerWorld()
+    doc.managedServices['ms-1'] = {
+      id: 'ms-1', label: 'db', nodeType: 'dbSql', provider: 'aws',
+      scope: { kind: 'az', azId: Object.keys(doc.azs)[0] }, port: 5432,
+      instanceClassId: 'sql.small', storageGb: 50,
+    }
+    const withThreeArgs = computeWorldCost(doc, null, null)
+    const withFourArgsUndefined = computeWorldCost(doc, null, null, undefined)
+    expect(withFourArgsUndefined).toEqual(withThreeArgs)
+  })
+})
+
+// I3 fix (final wave-5 review): `doc.cloudProfile` used to be authored/persisted/read-back
+// but never consumed by anything. `defaultProviderFromDoc` is the ONE place a caller turns it
+// into `computeWorldCost`'s `providerOverride` — undefined/generic means "no default" (byte-
+// identical to every pre-existing call site), a real provider means "unpinned services default
+// to this provider," exactly mirroring providerOverride's own existing contract above.
+describe('defaultProviderFromDoc (I3 fix)', () => {
+  it('returns undefined when cloudProfile is absent or "generic"', () => {
+    const { doc } = twoServerWorld()
+    expect(defaultProviderFromDoc(doc)).toBeUndefined()
+    expect(defaultProviderFromDoc({ ...doc, cloudProfile: 'generic' })).toBeUndefined()
+  })
+
+  it('returns the real provider when cloudProfile is set to one', () => {
+    const { doc } = twoServerWorld()
+    expect(defaultProviderFromDoc({ ...doc, cloudProfile: 'aws' })).toBe('aws')
+    expect(defaultProviderFromDoc({ ...doc, cloudProfile: 'gcp' })).toBe('gcp')
+    expect(defaultProviderFromDoc({ ...doc, cloudProfile: 'azure' })).toBe('azure')
+  })
+
+  it('feeding it straight into computeWorldCost reprices an unpinned managed service, matching an explicit providerOverride of the same value', () => {
+    const { doc, regionId } = twoServerWorld()
+    doc.managedServices['unpinned'] = {
+      id: 'unpinned', label: 'no-pin', nodeType: 'objectStorage', provider: 'generic',
+      scope: { kind: 'region', regionId }, port: 443, storageGb: 100, storageTierId: 'standard',
+    }
+    const withCloudProfile: typeof doc = { ...doc, cloudProfile: 'aws' }
+    const viaCloudProfile = computeWorldCost(doc, null, null, defaultProviderFromDoc(withCloudProfile))
+    const viaExplicitOverride = computeWorldCost(doc, null, null, 'aws')
+    expect(viaCloudProfile).toEqual(viaExplicitOverride)
+    expect(viaCloudProfile.monthlyUsd).toBeGreaterThan(computeWorldCost(doc, null).monthlyUsd)
   })
 })
 

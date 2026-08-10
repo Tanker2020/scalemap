@@ -859,3 +859,183 @@ describe('world.store — Scenario CRUD', () => {
     expect(useWorldStore.getState().doc.scenario?.steps).toHaveLength(0)
   })
 })
+
+describe('world.store — Environment CRUD (Wave 5)', () => {
+  it('addEnvironment/setActiveEnvironment/removeEnvironment go through mutate (one undo step each)', () => {
+    const before = useWorldStore.getState().doc
+    useWorldStore.getState().addEnvironment('staging')
+    const [id] = Object.keys(useWorldStore.getState().doc.environments!)
+    expect(useWorldStore.getState().doc.environments![id].label).toBe('staging')
+
+    useWorldStore.getState().setActiveEnvironment(id)
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBe(id)
+
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBeUndefined()
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc.environments).toEqual(before.environments ?? {})
+  })
+
+  it('updateEnvironment patches an existing environment and no-ops on an unknown id', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    const [id] = Object.keys(useWorldStore.getState().doc.environments!)
+
+    useWorldStore.getState().updateEnvironment(id, { serverCountFactor: 0.5 })
+    expect(useWorldStore.getState().doc.environments![id].serverCountFactor).toBe(0.5)
+
+    const before = useWorldStore.getState().doc
+    useWorldStore.getState().updateEnvironment('nope', { serverCountFactor: 2 })
+    expect(useWorldStore.getState().doc).toBe(before)
+  })
+
+  it('removeEnvironment clears activeEnvironmentId when removing the active environment', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    const [id] = Object.keys(useWorldStore.getState().doc.environments!)
+    useWorldStore.getState().setActiveEnvironment(id)
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBe(id)
+
+    useWorldStore.getState().removeEnvironment(id)
+    expect(useWorldStore.getState().doc.environments![id]).toBeUndefined()
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBeUndefined()
+  })
+
+  it('removeEnvironment leaves activeEnvironmentId untouched when removing a non-active environment', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    useWorldStore.getState().addEnvironment('canary')
+    const ids = Object.keys(useWorldStore.getState().doc.environments!)
+    useWorldStore.getState().setActiveEnvironment(ids[0])
+
+    useWorldStore.getState().removeEnvironment(ids[1])
+    expect(useWorldStore.getState().doc.environments![ids[1]]).toBeUndefined()
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBe(ids[0])
+  })
+
+  it('setActiveEnvironment(null) clears the active environment', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    const [id] = Object.keys(useWorldStore.getState().doc.environments!)
+    useWorldStore.getState().setActiveEnvironment(id)
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBe(id)
+
+    useWorldStore.getState().setActiveEnvironment(null)
+    expect(useWorldStore.getState().doc.activeEnvironmentId).toBeUndefined()
+  })
+
+  it('setCloudProfile updates doc.cloudProfile', () => {
+    expect(useWorldStore.getState().doc.cloudProfile).toBeUndefined()
+    useWorldStore.getState().setCloudProfile('aws')
+    expect(useWorldStore.getState().doc.cloudProfile).toBe('aws')
+  })
+
+  it('removeEnvironment is one undo step', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    const [id] = Object.keys(useWorldStore.getState().doc.environments!)
+    const beforeRemove = useWorldStore.getState().doc
+
+    useWorldStore.getState().removeEnvironment(id)
+    expect(useWorldStore.getState().doc.environments![id]).toBeUndefined()
+
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc).toBe(beforeRemove)
+    expect(useWorldStore.getState().doc.environments![id].label).toBe('staging')
+  })
+
+  it('updateEnvironment is one undo step', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    const [id] = Object.keys(useWorldStore.getState().doc.environments!)
+    const beforeUpdate = useWorldStore.getState().doc
+
+    useWorldStore.getState().updateEnvironment(id, { serverCountFactor: 0.5 })
+    expect(useWorldStore.getState().doc.environments![id].serverCountFactor).toBe(0.5)
+
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc).toBe(beforeUpdate)
+    expect(useWorldStore.getState().doc.environments![id].serverCountFactor).toBeUndefined()
+  })
+
+  it('setCloudProfile is one undo step', () => {
+    const before = useWorldStore.getState().doc
+    useWorldStore.getState().setCloudProfile('aws')
+    expect(useWorldStore.getState().doc.cloudProfile).toBe('aws')
+
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc).toBe(before)
+    expect(useWorldStore.getState().doc.cloudProfile).toBeUndefined()
+  })
+
+  // Regression for the id-collision data-loss bug: addEnvironment used to derive its id from
+  // Object.keys(d.environments).length, which is not monotonic across add/remove cycles.
+  // add "staging" -> env-1; add "canary" -> env-2; remove env-1 -> only canary (env-2) left;
+  // add "blue" -> count is 1 again, so the new id collided with "canary"'s and silently
+  // overwrote it. addEnvironment now mints ids via nextWorldId('env'), which never repeats.
+  it('addEnvironment never reuses an id after an add/remove/add cycle', () => {
+    useWorldStore.getState().addEnvironment('staging')
+    useWorldStore.getState().addEnvironment('canary')
+    const [stagingId, canaryId] = Object.keys(useWorldStore.getState().doc.environments!)
+
+    useWorldStore.getState().removeEnvironment(stagingId)
+    expect(useWorldStore.getState().doc.environments![canaryId].label).toBe('canary')
+
+    useWorldStore.getState().addEnvironment('blue')
+    const ids = Object.keys(useWorldStore.getState().doc.environments!)
+    expect(ids).toHaveLength(2)
+    expect(new Set(ids).size).toBe(2)
+
+    // "canary" must survive untouched — this is the exact overwrite the bug caused.
+    expect(useWorldStore.getState().doc.environments![canaryId]).toBeDefined()
+    expect(useWorldStore.getState().doc.environments![canaryId].label).toBe('canary')
+
+    const blueId = ids.find(i => i !== canaryId)!
+    expect(useWorldStore.getState().doc.environments![blueId].label).toBe('blue')
+  })
+})
+
+describe('world.store — batchUpdateServers (Wave 5, Task 18)', () => {
+  function seedThreeServers() {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const ids = [0, 1, 2].map(() => useWorldStore.getState().addServer(azId, getPreset('vps-medium')!))
+    return { azId, ids }
+  }
+
+  it('applies the patch to all targeted servers in ONE undo step', () => {
+    const { ids } = seedThreeServers()
+    const before = useWorldStore.getState().doc.servers
+    const historyBefore = useWorldStore.getState().history.length
+
+    useWorldStore.getState().batchUpdateServers(ids, { catalogId: 'c5.large' })
+
+    ids.forEach(id => expect(useWorldStore.getState().doc.servers[id].catalogId).toBe('c5.large'))
+    expect(useWorldStore.getState().history.length).toBe(historyBefore + 1)   // one undo step
+
+    useWorldStore.getState().undo()   // a SINGLE undo, not one per server
+    ids.forEach(id => expect(useWorldStore.getState().doc.servers[id]).toEqual(before[id]))
+  })
+
+  it('preserves each server id and leaves untargeted servers untouched', () => {
+    const { azId, ids } = seedThreeServers()
+    const other = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+
+    useWorldStore.getState().batchUpdateServers(ids.slice(0, 2), { catalogId: 'dedicated-8' })
+
+    const doc = useWorldStore.getState().doc
+    expect(doc.servers[ids[0]].id).toBe(ids[0])
+    expect(doc.servers[ids[0]].catalogId).toBe('dedicated-8')
+    expect(doc.servers[ids[1]].catalogId).toBe('dedicated-8')
+    expect(doc.servers[ids[2]].catalogId).not.toBe('dedicated-8')   // untargeted, untouched
+    expect(doc.servers[other].catalogId).not.toBe('dedicated-8')
+  })
+
+  it('skips unknown ids without throwing and still applies to the known ones', () => {
+    const { ids } = seedThreeServers()
+    expect(() => useWorldStore.getState().batchUpdateServers([...ids, 'nope'], { catalogId: 'dedicated-8' }))
+      .not.toThrow()
+    ids.forEach(id => expect(useWorldStore.getState().doc.servers[id].catalogId).toBe('dedicated-8'))
+  })
+
+  it('marks the file dirty', () => {
+    const { ids } = seedThreeServers()
+    useFileStore.getState().setDirty(false)
+    useWorldStore.getState().batchUpdateServers(ids, { catalogId: 'dedicated-8' })
+    expect(useFileStore.getState().dirty).toBe(true)
+  })
+})

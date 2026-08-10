@@ -292,6 +292,9 @@ export interface Placement {
   role: PlacementRole
   runtime: PlacementRuntime
   autoscale?: AutoscalePolicy
+  // 0..1, meaningful only when role === 'canary' (Wave 5); Task 13 wires this up to canary
+  // routing. Absent ⇒ no canary weighting (pre-Wave-5 behavior).
+  canaryWeight?: number
 }
 
 export type ManagedScope =
@@ -423,6 +426,13 @@ export interface Scenario {
   steps: ScenarioStep[]
 }
 
+export interface SloTargets {
+  p99Ms?: number
+  errorRate?: number              // 0..1
+  availabilityPercent?: number
+  monthlyUsdBudget?: number
+}
+
 export interface WorldDoc {
   routing: RoutingConfig
   populations: Record<PopulationId, ClientPopulation>
@@ -447,6 +457,31 @@ export interface WorldDoc {
   // Scenario timeline (FEAT-003). Optional; absent ⇒ no scenario defined. Drives the scenario
   // timeline UI and deterministic action replay during simulation.
   scenario?: Scenario
+  // SLO targets (Wave 5). Optional; absent ⇒ no SLO targets defined. Drives the SLO UI and
+  // comparison environment ergonomics.
+  slo?: SloTargets
+  // Comparison environments (Wave 5) — named what-if overlays (e.g. "staging" vs "prod") that
+  // scale server count / population RPS / per-placement counts / per-server instance class
+  // without mutating the base world. Optional; absent ⇒ no environments defined. A later task
+  // in this wave (compile-time overlay resolver) is what actually applies these; this task is
+  // schema-only.
+  environments?: Record<string, Environment>
+  // Which entry in `environments` is currently active for compilation/simulation, if any.
+  // Absent ⇒ the base world (no overlay applied).
+  activeEnvironmentId?: string
+  // Which cloud's pricing/labeling conventions the world is authored against (Wave 5). Optional;
+  // absent ⇒ 'generic' behavior (pre-Wave-5 default).
+  cloudProfile?: 'generic' | 'aws' | 'gcp' | 'azure'
+}
+
+// A named what-if overlay (Wave 5 comparison environments). See `WorldDoc.environments`.
+export interface Environment {
+  id: string
+  label: string
+  serverCountFactor?: number
+  populationRpsFactor?: number
+  placementCountOverrides?: Record<PlacementId, number>
+  instanceClassOverrides?: Record<ServerId, string>
 }
 
 export interface NodeLayout { x: number; y: number }
@@ -525,6 +560,7 @@ export interface CompileFinding {
   // hold, WAL amplification — all derived from the mix) can silently show two different stories.
   kind: 'blocked-path' | 'stateful-without-volume' | 'missing-volume' | 'protocol-mismatch'
     | 'autoscale-invalid-range' | 'autoscale-count-out-of-range' | 'autoscale-invalid-target-cpu'
+    | 'missing-environment'
   message: string
   affected: string[]   // entity ids (instance/server/blueprint/placement ids)
 }

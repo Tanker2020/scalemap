@@ -7,12 +7,20 @@ import type {
 import { evaluateInstancePath } from './network'
 import { computeRouting, volumeFindings } from './routing'
 import { resolveMixProtocol } from '../packetResolve'
+import { applyEnvironment } from './environments'
 
 export function instanceId(placementId: string, index: number): InstanceId {
   return `${placementId}#${index}`
 }
 
-export function compileWorld(doc: WorldDoc): CompiledWorld {
+// `rawDoc` is the author's document as saved/edited; `doc` (below) is `rawDoc` with the active
+// Comparison Environment (Wave 5) overlay applied, if any. Every line after this point --
+// placement/instance expansion, path evaluation, routing, findings -- reads `doc`, never
+// `rawDoc`, so the scaled/overridden world propagates to every downstream consumer (engine,
+// every view, every analysis rule, cost model) automatically, with zero changes to any of them.
+// `rawDoc` is consulted only to detect and report an unresolvable `activeEnvironmentId` below.
+export function compileWorld(rawDoc: WorldDoc): CompiledWorld {
+  const doc = applyEnvironment(rawDoc)
   const instances: Record<InstanceId, ServiceInstance> = {}
 
   for (const pl of Object.values(doc.placements)) {
@@ -40,6 +48,16 @@ export function compileWorld(doc: WorldDoc): CompiledWorld {
 
   const paths: CompiledPath[] = []
   const findings: CompileFinding[] = []
+
+  if (rawDoc.activeEnvironmentId && !rawDoc.environments?.[rawDoc.activeEnvironmentId]) {
+    findings.push({
+      id: `finding-missing-environment-${rawDoc.activeEnvironmentId}`,
+      severity: 'warning',
+      kind: 'missing-environment',
+      message: `Active environment "${rawDoc.activeEnvironmentId}" was not found — compiling the base world unscaled`,
+      affected: [],
+    })
+  }
 
   for (const pl of Object.values(doc.placements)) {
     if (!pl.autoscale) continue

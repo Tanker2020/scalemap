@@ -5,7 +5,7 @@ import { create } from 'zustand'
 import type {
   WorldDoc, Server, ServiceBlueprint, Placement, ManagedScope, ManagedService, ClientPopulation,
   RoutingConfig, AzId, Rack, RackId, LoadBalancer, DependencyTarget, BlueprintDependency,
-  Scenario, ScenarioStep,
+  Scenario, ScenarioStep, Environment,
 } from '../../lib/world/types'
 import { planReachability, applyReachabilityPlan } from '../../lib/world/connections'
 import { planSpread } from '../../lib/world/spread'
@@ -111,6 +111,8 @@ interface WorldStore {
   addServiceToServer: (serverId: string, draft: ServiceDraft) =>
     { blueprintId: string; placementId: string }
   updateServer: (id: string, patch: Partial<Server>) => void
+  /** Applies the SAME patch to N servers as a single undo step (Wave 5 batch editing). */
+  batchUpdateServers: (ids: string[], patch: Partial<Server>) => void
   removeServer: (id: string) => void
   addBlueprint: (name: string) => string
   updateBlueprint: (id: string, patch: Partial<ServiceBlueprint>) => void
@@ -173,6 +175,17 @@ interface WorldStore {
   addScenarioStep: (step: ScenarioStep) => void
   removeScenarioStep: (index: number) => void
   updateScenarioStep: (index: number, step: ScenarioStep) => void
+  // Comparison environments (Wave 5): named what-if overlays. addEnvironment mints a
+  // monotonic id via nextWorldId('env') (same as createRack's `Rack.id`) so ids never
+  // collide across add/remove cycles, even though the count-derived string is still used
+  // for addRack's human-readable LABEL. Removing the active environment clears
+  // activeEnvironmentId too, so the doc never points at a deleted overlay (mirrors
+  // removeRack clearing dangling `server.rack` references).
+  addEnvironment: (label: string) => void
+  updateEnvironment: (id: string, patch: Partial<Environment>) => void
+  removeEnvironment: (id: string) => void
+  setActiveEnvironment: (id: string | null) => void
+  setCloudProfile: (profile: NonNullable<WorldDoc['cloudProfile']>) => void
   pushHistory: () => void
   undo: () => void
   redo: () => void
@@ -306,6 +319,18 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       const existing = d.servers[id]
       if (!existing) return d
       return { ...d, servers: { ...d.servers, [id]: { ...existing, ...patch, id } } }
+    }),
+    // Wave 5 (Task 18): applies the SAME patch to every targeted server in ONE mutate() — one
+    // undo step for the whole batch, not one per server (mirrors addDbServer/spreadBlueprint's
+    // "one user action, one history entry" convention above). A missing id is silently skipped
+    // (same defensiveness as updateServer's single-id guard) rather than aborting the batch.
+    batchUpdateServers: (ids, patch) => mutate(d => {
+      const servers = { ...d.servers }
+      for (const id of ids) {
+        const existing = servers[id]
+        if (existing) servers[id] = { ...existing, ...patch, id }
+      }
+      return { ...d, servers }
     }),
     removeServer: (id) => mutate(d => withoutServer(d, id)),
 
@@ -658,6 +683,28 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       if (!d.scenario) return d
       return { ...d, scenario: { ...d.scenario, steps: d.scenario.steps.map((s, i) => (i === index ? step : s)) } }
     }),
+
+    addEnvironment: (label) => mutate(d => {
+      const id = nextWorldId('env')
+      return { ...d, environments: { ...(d.environments ?? {}), [id]: { id, label } } }
+    }),
+    updateEnvironment: (id, patch) => mutate(d => {
+      const existing = d.environments?.[id]
+      if (!existing) return d
+      return { ...d, environments: { ...d.environments, [id]: { ...existing, ...patch, id } } }
+    }),
+    // Deleting the ACTIVE environment must also clear activeEnvironmentId — otherwise the doc
+    // is left pointing at an overlay that no longer exists, which compileWorld's applyEnvironment
+    // would silently no-op on (or worse, error) rather than falling back to the base world.
+    removeEnvironment: (id) => mutate(d => {
+      if (!d.environments?.[id]) return d
+      const environments = { ...d.environments }
+      delete environments[id]
+      const activeEnvironmentId = d.activeEnvironmentId === id ? undefined : d.activeEnvironmentId
+      return { ...d, environments, activeEnvironmentId }
+    }),
+    setActiveEnvironment: (id) => mutate(d => ({ ...d, activeEnvironmentId: id ?? undefined })),
+    setCloudProfile: (profile) => mutate(d => ({ ...d, cloudProfile: profile })),
 
     // Audit ISSUE-031: history/future hold doc REFERENCES, not JSON deep clones. Every mutation
     // already replaces `doc` wholesale with a new structurally-shared immutable value (mutate()'s

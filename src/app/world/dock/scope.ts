@@ -65,7 +65,9 @@ export function deriveScope(nav: NavSnapshot, selectedServerId: string | null, d
 // multiples tab is meaningful at every scope (it reads the replay ring scoped to wherever the
 // dock currently is), so it rides alongside Analysis/Events/Cost rather than folding into the
 // world-only authoring set.
-const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'packets', 'managed', 'connections', 'traffic', 'routes', 'scenario', 'signals', 'analysis', 'events', 'cost']
+// Wave 5 Task 5: 'compare' is world-only (a comparison is a whole-world statement), so it joins
+// WORLD_TABS alone, after the rest of the world-only authoring set.
+const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'packets', 'managed', 'connections', 'traffic', 'routes', 'scenario', 'signals', 'analysis', 'events', 'cost', 'compare']
 const SCOPED_TABS: PanelTab[] = ['config', 'signals', 'analysis', 'events', 'cost']
 
 export function scopeTabs(scope: DockScope): PanelTab[] {

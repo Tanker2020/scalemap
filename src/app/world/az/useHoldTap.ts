@@ -25,7 +25,12 @@ export interface UseHoldTap {
   progressRef: { current: number }
 }
 
-export function useHoldTap(onTap: () => void, onHoldComplete: () => void): UseHoldTap {
+// 2026-08-09 (wave 5 ergonomics, task 17): `onTap` now receives the pointerup event itself — the
+// floor's multi-select (click/⌘-click/⇧-click) needs the release event's modifier keys, and
+// pointerup is the ONE place this hook already decides "this was a tap" (see the module header).
+// Additive for every other caller: a `() => void` tap handler (RackCabinet's onEnter-style usage
+// elsewhere) still satisfies this type — TS allows fewer params than declared.
+export function useHoldTap(onTap: (e: ReactPointerEvent) => void, onHoldComplete: () => void): UseHoldTap {
   const progressRef = useRef(0)
   const startRef = useRef<number | null>(null)
   const startPosRef = useRef<{ x: number; y: number } | null>(null)
@@ -86,7 +91,7 @@ export function useHoldTap(onTap: () => void, onHoldComplete: () => void): UseHo
       if (start === null) return
       const pressedMs = performance.now() - start
       if (isAbortedHold(pressedMs)) return
-      onTap()
+      onTap(e)
     },
     onPointerLeave: () => {
       // Defensive fallback only — under real pointer capture this won't fire mid-hold, but it's

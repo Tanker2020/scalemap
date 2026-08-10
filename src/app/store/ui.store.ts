@@ -36,7 +36,9 @@ import type { ServerId } from '../../lib/world/types'
 // 2026-08-05 (FEAT-009 Task 5): gained 'signals' — the per-instance/AZ/region metric small-
 // multiples tab (SignalsPanel.tsx), reachable at EVERY scope (unlike 'scenario', which is
 // world-only) since it reads the replay ring scoped to wherever the dock currently is.
-export type PanelTab = 'topology' | 'blueprints' | 'packets' | 'managed' | 'connections' | 'traffic' | 'routes' | 'scenario' | 'signals' | 'analysis' | 'events' | 'cost' | 'config'
+// 2026-08-09 (wave 5 task 5): gained 'compare' — the A/B baseline-comparison tab, world scope
+// only (a comparison is a whole-world statement).
+export type PanelTab = 'topology' | 'blueprints' | 'packets' | 'managed' | 'connections' | 'traffic' | 'routes' | 'scenario' | 'signals' | 'analysis' | 'events' | 'cost' | 'compare' | 'config'
 
 export interface SceneOverlayTarget { kind: 'region' | 'population'; id: string }
 
@@ -49,6 +51,35 @@ interface UiStore {
   setSceneOverlay: (o: SceneOverlayTarget | null) => void
   selectedServerId: ServerId | null
   setSelectedServerId: (id: ServerId | null) => void
+  // 2026-08-09 (wave 5 ergonomics, task 17): the general multi-select surface for the AZ floor
+  // (click/⌘-click/⇧-click/marquee). `selectedServerId` is NOT a parallel concept — it is the
+  // single-select DEGENERATE CASE of this set, kept in sync by every setter below so
+  // `dock/scope.ts`'s `deriveScope` (which reads only `selectedServerId`) keeps resolving
+  // exactly as it did before this task: a 1-member selection narrows the dock to that server,
+  // a 0- or 2+-member selection widens it back to AZ scope, same as an explicit
+  // `setSelectedServerId(null)` always has.
+  selectedEntityIds: Set<string>
+  setSelectedEntityIds: (ids: Set<string>) => void
+  toggleSelectedEntity: (id: string) => void
+  selectEntityRange: (ids: string[]) => void
+  clearSelection: () => void
+  // 2026-08-09 (wave 5 ergonomics, task 15): lifted out of WorldShell's local useState so the
+  // app-level keymap.ts registry (installed once, above WorldShell) can read/toggle the SAME
+  // "armed" globe traffic-placement mode Escape needs to disarm. GlobeView's own HUD button and
+  // WorldPanel's TrafficPanel toggle both flip this one boolean, same as before the lift.
+  placeMode: boolean
+  setPlaceMode: (v: boolean | ((prev: boolean) => boolean)) => void
+  // 2026-08-09 (wave 5 ergonomics, task 16): the command palette's open/closed state, lifted the
+  // SAME way placeMode was one task earlier — keymap.ts's app-level ⌘K binding is installed in
+  // App.tsx, above WorldShell, so its `run` needs a store-backed toggle it can reach; a
+  // WorldShell-local useState would be invisible to that closure.
+  paletteOpen: boolean
+  setPaletteOpen: (v: boolean | ((prev: boolean) => boolean)) => void
+  // 2026-08-09 (wave 5 ergonomics, task 19): the keyboard-map overlay's open/closed state, lifted
+  // the SAME way paletteOpen was one task earlier — keymap.ts's app-level `?`/⌘/ bindings are
+  // installed in App.tsx, above WorldShell, so their `run` needs a store-backed toggle to reach.
+  helpOpen: boolean
+  setHelpOpen: (v: boolean | ((prev: boolean) => boolean)) => void
 }
 
 export const useUiStore = create<UiStore>((set) => ({
@@ -62,5 +93,31 @@ export const useUiStore = create<UiStore>((set) => ({
   sceneOverlay: null,
   setSceneOverlay: (o) => set({ sceneOverlay: o }),
   selectedServerId: null,
-  setSelectedServerId: (id) => set({ selectedServerId: id }),
+  // Kept in sync with selectedEntityIds (task 17) — a single-click-to-inspect flow elsewhere in
+  // the app (that doesn't go through the multi-select handlers below) must not leave the two
+  // disagreeing: selecting one id collapses selectedEntityIds to that single member; clearing
+  // collapses it to empty, same as clearSelection().
+  setSelectedServerId: (id) => set({ selectedServerId: id, selectedEntityIds: id ? new Set([id]) : new Set() }),
+  selectedEntityIds: new Set<string>(),
+  setSelectedEntityIds: (ids) => set({
+    selectedEntityIds: ids,
+    selectedServerId: ids.size === 1 ? [...ids][0] : null,
+  }),
+  toggleSelectedEntity: (id) => set(s => {
+    const next = new Set(s.selectedEntityIds)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    return { selectedEntityIds: next, selectedServerId: next.size === 1 ? [...next][0] : null }
+  }),
+  selectEntityRange: (ids) => set({
+    selectedEntityIds: new Set(ids),
+    selectedServerId: ids.length === 1 ? ids[0] : null,
+  }),
+  clearSelection: () => set({ selectedEntityIds: new Set(), selectedServerId: null }),
+  placeMode: false,
+  setPlaceMode: (v) => set(s => ({ placeMode: typeof v === 'function' ? v(s.placeMode) : v })),
+  paletteOpen: false,
+  setPaletteOpen: (v) => set(s => ({ paletteOpen: typeof v === 'function' ? v(s.paletteOpen) : v })),
+  helpOpen: false,
+  setHelpOpen: (v) => set(s => ({ helpOpen: typeof v === 'function' ? v(s.helpOpen) : v })),
 }))

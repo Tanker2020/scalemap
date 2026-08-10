@@ -4,7 +4,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useSimulationStore, pendingEventCount } from './simulation.store'
 import { worldEngine } from '../../lib/worldEngine'
-import { createWorld } from '../../lib/world/factories'
+import { createWorld, createPopulation } from '../../lib/world/factories'
 import { compileWorld } from '../../lib/world/compileWorld'
 import { eventLogAppend, eventLogBeginRun } from '../../lib/tauri'
 import type { EngineEvent, MetricsBatch } from '../../lib/worldEngine/types'
@@ -39,6 +39,28 @@ describe('simulation.store timeScale', () => {
     useSimulationStore.getState().setTimeScale(4)
     expect(scaleSpy).toHaveBeenCalledWith(4)
     expect(useSimulationStore.getState().timeScale).toBe(4)
+  })
+
+  // Wave 5 review round 1 (Important #1): populationRpsFactor/instanceClassOverrides are read by
+  // the engine directly off doc.populations/doc.servers -- compileWorld.ts's own applyEnvironment
+  // overlay only reaches `compiled`, which is computed and discarded before start() is called.
+  // Without re-applying the overlay to the doc passed into worldEngine.start, an active
+  // environment's rps/instance-class overrides would silently never reach the simulation.
+  it('passes an environment-overlaid doc (not the raw doc) to worldEngine.start', () => {
+    vi.spyOn(worldEngine, 'setTimeScale').mockImplementation(() => {})
+    const doc = createWorld()
+    const pop = createPopulation('users', 0, 0)
+    pop.peakRps = 1000
+    doc.populations[pop.id] = pop
+    doc.environments = { s: { id: 's', label: 'S', populationRpsFactor: 0.25 } }
+    doc.activeEnvironmentId = 's'
+
+    const startSpy = vi.spyOn(worldEngine, 'start').mockImplementation(() => {})
+    useSimulationStore.getState().start(doc, compileWorld(doc))
+
+    const passedDoc = startSpy.mock.calls[0][0]
+    expect(passedDoc).not.toBe(doc) // overlay returns a new doc, not the raw one
+    expect(Object.values(passedDoc.populations)[0].peakRps).toBe(250)
   })
 })
 

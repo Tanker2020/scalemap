@@ -35,6 +35,7 @@ export function createWorld(): WorldDoc {
     racks: {},
     packets: emptyPacketRegistry(),
     connectionLayout: {},
+    environments: {},
   }
 }
 

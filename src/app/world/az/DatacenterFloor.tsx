@@ -9,7 +9,7 @@
 // this component reads/writes the shared field instead of owning local state, so WorldPanel's
 // scope derivation sees the same selection live. Also owns a seen-ids ref driving the
 // boot-cascade animation for newly-added servers.
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
@@ -21,13 +21,13 @@ import { aggregateFlows, internetIngress, meanUtilization, serverAccents } from 
 import { placeLabels, estimateLabelSize, type LabelSpec, type Rect } from './labelLayout'
 import { rackUsedU } from '../../../lib/world/rackModel'
 import { getPreset } from '../../../lib/world/instanceCatalog'
-import { RackCabinet, cabinetHeightPx } from './RackCabinet'
+import { RackCabinet, cabinetHeightPx, rackSlotLayout, type SelectModifiers } from './RackCabinet'
 import { replicaClusterLagSec } from '../../../lib/world/replicaLag'
 import { FreePoolPod, POD_HEIGHT_PX } from './FreePoolPod'
 import { InspectorV2 } from '../InspectorV2'
 import { ChaosControl, isNonFatalFault, NON_FATAL_FAULT_ACCENT } from '../dock/ChaosControl'
 import { useFloorCamera, INTERACTIVE_SEL } from './useFloorCamera'
-import { VIEW_W, VIEW_H, floorOutline, tileOutline, tileCenter, isoBox, type IsoBox } from './iso'
+import { VIEW_W, VIEW_H, floorOutline, tileOutline, tileCenter, isoBox, type IsoBox, type Pt } from './iso'
 // FEAT-002 Task 14: impairmentFor is a pure predicate (no engine-runtime deps), safe to import
 // directly rather than reimplementing its forward/backward matching by hand.
 import { impairmentFor } from '../../../lib/worldEngine/faults'
@@ -108,13 +108,41 @@ export function DatacenterFloor() {
   // nav.level/nav.azId change (one shared effect covering every nav path in and out of the
   // floor, superseding this component's old azId-keyed local reset).
   const selectedServerId = useUiStore(s => s.selectedServerId)
-  const setSelectedServerId = useUiStore(s => s.setSelectedServerId)
+  const selectedEntityIds = useUiStore(s => s.selectedEntityIds)
+  const setSelectedEntityIds = useUiStore(s => s.setSelectedEntityIds)
+  const toggleSelectedEntity = useUiStore(s => s.toggleSelectedEntity)
+  const selectEntityRange = useUiStore(s => s.selectEntityRange)
+  const clearSelection = useUiStore(s => s.clearSelection)
 
   const [newIds, setNewIds] = useState<ReadonlySet<ServerId>>(new Set())
   const seenIdsRef = useRef<Set<ServerId> | null>(null)
   // A press that started on empty floor (candidate for click-to-deselect; null when the press
   // began on anything interactive). Cleared on release/cancel.
   const bgPressRef = useRef<{ x: number; y: number } | null>(null)
+  // Task 17 (wave 5 ergonomics): ⇧-click range-select anchors off the last id explicitly clicked
+  // (plain click OR ⌘-click), mirroring the file-manager convention everyone already knows.
+  const lastClickedIdRef = useRef<string | null>(null)
+  // Marquee drag state — content-space rect while dragging, null when idle. Task 17 review round
+  // 1 (Important #1): marquee used to be wired via plain `mouse*` events directly on the `<svg>`,
+  // racing the outer `floor-viewport` div's `pointer*`-driven camera pan for the SAME physical
+  // background press — both fired from one gesture, unguarded. In a real browser this had TWO
+  // failure modes neither jsdom test caught: (a) `marqueeToContent` re-queried the svg's
+  // `getBoundingClientRect()` on every move, so a pan happening mid-drag shifted the coordinate
+  // frame under the marquee mid-gesture; (b) the outer div's `setPointerCapture` on ANY background
+  // press retargets compatibility `mousemove`/`mouseup` away from the descendant svg per the
+  // Pointer Events spec (Chrome/Firefox implement this; jsdom does not), which could silently
+  // freeze the marquee mid-drag. Fixed by moving marquee entirely onto the SAME element/event
+  // family the camera already owns (`floor-viewport`'s pointer handlers below): a background press
+  // decides ONE mode at pointerdown — plain drag = pan (unchanged default), ⇧+drag = marquee — so
+  // the two gestures can never both be live for one physical drag, and the marquee's own capture
+  // (same element as the camera's) can't be retargeted away from itself. The svg's bounding rect is
+  // snapshotted ONCE at drag-start (`marqueeRectRef`) and reused for every move/up conversion in
+  // that drag, so a pan that happens to run before/after (never during, since they're now mutually
+  // exclusive) can't corrupt an in-flight marquee's coordinate frame either.
+  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
+  const marqueeStartRef = useRef<{ x: number; y: number } | null>(null)
+  const marqueeRectRef = useRef<DOMRect | null>(null)
+  const svgRef = useRef<SVGSVGElement | null>(null)
 
   const azServers = useMemo(
     () => Object.values(doc.servers).filter(s => s.azId === azId),
@@ -139,6 +167,39 @@ export function DatacenterFloor() {
     () => azServers.filter(s => s.rack === null).sort(byLabelThenId),
     [azServers],
   )
+  // Task 17: "layout order" for ⇧-click range-select — row-major over the floor grid (racks in
+  // their cabinet-cell order, each contributing its already-sorted residents together; then the
+  // free pool in its pod-cell order), matching `floorLayout.ts`'s own index assignment
+  // (`layoutFloor`'s `cabinets`/`pods` both walk the same sorted-racks-then-sorted-pool sequence
+  // into row-major `x/y` cells) so the visual "next tile" and the range-select "next id" agree.
+  const orderedServerIds = useMemo(() => {
+    const ids: ServerId[] = []
+    for (const rack of racks) for (const s of rackedByRack[rack.id] ?? []) ids.push(s.id)
+    for (const s of freePool) ids.push(s.id)
+    return ids
+  }, [racks, rackedByRack, freePool])
+
+  const handleSelect = (id: ServerId, modifiers: SelectModifiers) => {
+    if (modifiers.metaKey || modifiers.ctrlKey) {
+      toggleSelectedEntity(id)
+      lastClickedIdRef.current = id
+      return
+    }
+    if (modifiers.shiftKey && lastClickedIdRef.current) {
+      const from = orderedServerIds.indexOf(lastClickedIdRef.current)
+      const to = orderedServerIds.indexOf(id)
+      if (from !== -1 && to !== -1) {
+        const [lo, hi] = from <= to ? [from, to] : [to, from]
+        selectEntityRange(orderedServerIds.slice(lo, hi + 1))
+        // Anchor stays put (matches the file-manager convention: repeated ⇧-clicks extend/shrink
+        // the SAME range from the original anchor, not from the last-selected end).
+        return
+      }
+    }
+    setSelectedEntityIds(new Set([id]))
+    lastClickedIdRef.current = id
+  }
+
   const managed = useMemo(() => Object.values(doc.managedServices).filter(m =>
     (m.scope.kind === 'az' && m.scope.azId === azId) ||
     (m.scope.kind === 'region' && m.scope.regionId === regionId)), [doc.managedServices, azId, regionId])
@@ -451,31 +512,132 @@ export function DatacenterFloor() {
   if (showInet) obstacles.push(ISP.bounds)
   const placedLabels = placeLabels(labelSpecs, obstacles)
 
+  // Task 17 review round 1 (Important #1): marquee now lives entirely on `floor-viewport`'s own
+  // pointer handlers (below), the SAME element the camera already captures on for panning — see
+  // the `marqueeRectRef`/`marqueeStartRef` comment above for why. `contentFromClient` takes the
+  // bounding rect as a PARAMETER rather than querying `svgRef` itself, so every caller is forced
+  // to decide once (at drag-start) which rect snapshot it's converting against; jsdom's zero-sized
+  // rect falls back to raw clientX/clientY, which is exactly what a content-space assertion in a
+  // test needs.
+  const contentFromClient = (clientX: number, clientY: number, rect: DOMRect | null): Pt => {
+    if (!rect || rect.width === 0 || rect.height === 0) return { x: clientX, y: clientY }
+    return { x: (clientX - rect.left) * (VIEW_W / rect.width), y: (clientY - rect.top) * (VIEW_H / rect.height) }
+  }
+  const rectsIntersect = (a: Rect, b: { x0: number; y0: number; x1: number; y1: number }): boolean =>
+    a.x < b.x1 && a.x + a.w > b.x0 && a.y < b.y1 && a.y + a.h > b.y0
+  // Background press = potential pan, potential marquee, AND potential deselect — decided ONCE at
+  // pointerdown so the two drag gestures can never both be live for the same physical press (Task
+  // 17 review round 1, Important #1): plain drag = pan (unchanged default), ⇧+drag = marquee.
+  const onFloorPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const interactive = e.button !== 0 || !!(e.target as Element).closest?.(INTERACTIVE_SEL)
+    if (!interactive && e.shiftKey) {
+      const rect = svgRef.current?.getBoundingClientRect() ?? null
+      marqueeRectRef.current = rect
+      const p = contentFromClient(e.clientX, e.clientY, rect)
+      marqueeStartRef.current = p
+      setMarquee({ x0: p.x, y0: p.y, x1: p.x, y1: p.y })
+      bgPressRef.current = null
+      e.currentTarget.setPointerCapture?.(e.pointerId)
+      return   // marquee owns this drag — camera pan does NOT also start
+    }
+    bgPressRef.current = interactive ? null : { x: e.clientX, y: e.clientY }
+    camera.onPointerDown(e)
+  }
+  const onFloorPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const start = marqueeStartRef.current
+    if (start) {
+      const p = contentFromClient(e.clientX, e.clientY, marqueeRectRef.current)
+      setMarquee({ x0: start.x, y0: start.y, x1: p.x, y1: p.y })
+      return
+    }
+    camera.onPointerMove(e)
+  }
+  const finishMarquee = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const start = marqueeStartRef.current
+    marqueeStartRef.current = null
+    const rect = marqueeRectRef.current
+    marqueeRectRef.current = null
+    setMarquee(null)
+    if (!start) return
+    const p = contentFromClient(e.clientX, e.clientY, rect)
+    const box = {
+      x0: Math.min(start.x, p.x), x1: Math.max(start.x, p.x),
+      y0: Math.min(start.y, p.y), y1: Math.max(start.y, p.y),
+    }
+    // A drag under the slop radius is a click (⇧+click on empty background), not a marquee —
+    // fall through to the SAME "clear if anything is selected" behavior an ordinary background
+    // click gets (Task 17 review round 1, Important #2: this used to only check
+    // `selectedServerId`, which is null for a 2+ member selection, so a multi-select could never
+    // be cleared this way).
+    if (box.x1 - box.x0 < 4 && box.y1 - box.y0 < 4) {
+      if (selectedServerId !== null || selectedEntityIds.size > 0) clearSelection()
+      return
+    }
+    const hits: string[] = []
+    for (const rack of racks) {
+      const cell = plan.cabinets[rack.id]
+      if (!cell) continue
+      const cabBox = isoBox(cell.x, cell.y, plan.cols, cabinetHeightPx(rackUsedU(doc, rack.id)))
+      for (const { server, yTop, yBottom } of rackSlotLayout(rackedByRack[rack.id] ?? [])) {
+        const slotRect: Rect = {
+          x: cabBox.roofSW.x, y: cabBox.roofNW.y + yTop,
+          w: cabBox.roofNE.x - cabBox.roofSW.x, h: yBottom - yTop,
+        }
+        if (rectsIntersect(slotRect, box)) hits.push(server.id)
+      }
+    }
+    for (const server of freePool) {
+      const cell = plan.pods[server.id]
+      if (!cell) continue
+      if (rectsIntersect(boxRect(isoBox(cell.x, cell.y, plan.cols, POD_HEIGHT_PX, 0.52)), box)) hits.push(server.id)
+    }
+    for (const m of managed) {
+      const cell = plan.appliances[m.id]
+      if (!cell) continue
+      if (rectsIntersect(boxRect(isoBox(cell.x, cell.y, plan.cols, APPLIANCE_HEIGHT_PX, 0.5)), box)) hits.push(m.id)
+    }
+    selectEntityRange(hits)
+    lastClickedIdRef.current = hits.length > 0 ? hits[hits.length - 1] : null
+  }
+  const onFloorPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (marqueeStartRef.current) { finishMarquee(e); return }
+    const press = bgPressRef.current
+    bgPressRef.current = null
+    // Task 17 review round 1 (Important #2): a 2+-member selection has `selectedServerId === null`
+    // by design (the store's consistency invariant — see ui.store.ts), so gating this solely on
+    // `selectedServerId` meant "click empty background to deselect" silently no-opped for any
+    // multi-select. Check the actual selection set instead, and clear both pieces of state via
+    // `clearSelection()` (not just `setSelectedServerId(null)`) so they can't drift apart.
+    if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5 &&
+      (selectedServerId !== null || selectedEntityIds.size > 0)) {
+      clearSelection()
+    }
+    camera.onPointerUp(e)
+  }
+  const onFloorPointerCancel = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (marqueeStartRef.current) {
+      marqueeStartRef.current = null
+      marqueeRectRef.current = null
+      setMarquee(null)
+      return
+    }
+    bgPressRef.current = null
+    camera.onPointerUp(e)
+  }
+
   return (
     <div
       ref={camera.containerRef}
       data-testid="floor-viewport"
-      // Background press = potential pan AND potential deselect: if the pointer goes down on
-      // empty floor (nothing INTERACTIVE_SEL matches) and comes up within the slop radius —
-      // i.e. it never became a drag — clear the floor selection so the dock widens back to AZ
-      // scope (user report 2026-07-12: "once I click a server I can't view the rack level
-      // config again" — the scope-rail AZ pill already did this, but click-empty-floor is the
-      // gesture everyone actually tries first).
-      onPointerDown={(e) => {
-        bgPressRef.current = e.button !== 0 || (e.target as Element).closest?.(INTERACTIVE_SEL)
-          ? null : { x: e.clientX, y: e.clientY }
-        camera.onPointerDown(e)
-      }}
-      onPointerMove={camera.onPointerMove}
-      onPointerUp={(e) => {
-        const press = bgPressRef.current
-        bgPressRef.current = null
-        if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5 && selectedServerId) {
-          setSelectedServerId(null)
-        }
-        camera.onPointerUp(e)
-      }}
-      onPointerCancel={(e) => { bgPressRef.current = null; camera.onPointerUp(e) }}
+      // Background press = potential pan, potential marquee (⇧+drag), AND potential deselect —
+      // all three now decided by the SAME handler set below (Task 17 review round 1), so pan and
+      // marquee can never both be live for one physical drag, and click-to-deselect (user report
+      // 2026-07-12: "once I click a server I can't view the rack level config again") clears the
+      // WHOLE selection, single or multi.
+      onPointerDown={onFloorPointerDown}
+      onPointerMove={onFloorPointerMove}
+      onPointerUp={onFloorPointerUp}
+      onPointerCancel={onFloorPointerCancel}
       style={{
         width: '100%', height: '100%', overflow: 'hidden', position: 'relative',
         background: 'radial-gradient(ellipse 70% 55% at 50% 66%, #121722 0%, #0b0d11 78%)',
@@ -487,11 +649,16 @@ export function DatacenterFloor() {
         ▸ {azLabel.toUpperCase()} · FLOOR
       </div>
       <div style={{ position: 'absolute', left: 16, top: 30, font: '8.5px var(--font-mono)', color: 'var(--color-text-muted)', zIndex: 5, pointerEvents: 'none' }}>
-        {racks.length} rack{racks.length === 1 ? '' : 's'} · {azServers.length} server{azServers.length === 1 ? '' : 's'} · {ingressRps} rps entering · scroll = zoom · drag = pan
+        {racks.length} rack{racks.length === 1 ? '' : 's'} · {azServers.length} server{azServers.length === 1 ? '' : 's'} · {ingressRps} rps entering · scroll = zoom · drag = pan · ⇧+drag = select
       </div>
 
       <div style={camera.cameraStyle}>
-          <svg width={VIEW_W} height={VIEW_H} viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} style={{ position: 'absolute', inset: 0 }}>
+          <svg
+            ref={svgRef}
+            data-testid="datacenter-floor-svg"
+            width={VIEW_W} height={VIEW_H} viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+            style={{ position: 'absolute', inset: 0 }}
+          >
             <defs>
               <radialGradient id="az-floorglow" cx="50%" cy="50%"><stop offset="0%" stopColor="#7cffe908" /><stop offset="100%" stopColor="transparent" /></radialGradient>
               <linearGradient id="az-rackfront" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#20262f" /><stop offset="100%" stopColor="#14181f" /></linearGradient>
@@ -632,10 +799,11 @@ export function DatacenterFloor() {
                   lagByServer={lagByServer}
                   warmthByServer={warmthByServer}
                   selectedServerId={selectedServerId}
+                  selectedEntityIds={selectedEntityIds}
                   newServerIds={reducedMotion ? EMPTY_SERVER_ID_SET : newIds}
                   animatedLedIds={animatedLedIds}
                   reducedMotion={reducedMotion}
-                  onSelect={setSelectedServerId}
+                  onSelect={handleSelect}
                   onEnter={id => regionId && azId && goServer(regionId, azId, id)}
                 />
               )
@@ -653,10 +821,11 @@ export function DatacenterFloor() {
                   replicaLag={lagByServer.get(server.id) ?? null}
                   warmth={warmthByServer.get(server.id) ?? null}
                   selectedServerId={selectedServerId}
+                  selectedEntityIds={selectedEntityIds}
                   isNew={newIds.has(server.id) && !reducedMotion}
                   animatedLed={animatedLedIds.has(server.id)}
                   reducedMotion={reducedMotion}
-                  onSelect={setSelectedServerId}
+                  onSelect={handleSelect}
                   onEnter={id => regionId && azId && goServer(regionId, azId, id)}
                 />
               )
@@ -697,6 +866,16 @@ export function DatacenterFloor() {
                 </g>
               )
             })}
+
+            {marquee && (
+              <rect
+                data-testid="floor-marquee"
+                x={Math.min(marquee.x0, marquee.x1)} y={Math.min(marquee.y0, marquee.y1)}
+                width={Math.abs(marquee.x1 - marquee.x0)} height={Math.abs(marquee.y1 - marquee.y0)}
+                fill="var(--color-accent)" fillOpacity={0.12} stroke="var(--color-accent)" strokeWidth={1}
+                pointerEvents="none"
+              />
+            )}
           </svg>
 
           {/* Label layer — plain positioned divs as SVG siblings (mockup's own `.iso3 .lbl`

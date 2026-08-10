@@ -15,6 +15,8 @@
 import { useState, type ReactElement } from 'react'
 import { SpreadControl } from './SpreadControl'
 import { AutoscaleControl } from './AutoscaleControl'
+import { RoleControl } from './RoleControl'
+import { CanaryWeightControl } from './CanaryWeightControl'
 import { AddServiceForm } from './AddServiceForm'
 import { EditServiceForm } from './EditServiceForm'
 import { useWorldStore } from '../../../store/world.store'
@@ -218,6 +220,16 @@ export function ServicesDrawer({ server, doc, compiled, running, liveInstances, 
               SAME placement, so this toggle lives right beside the stepper it supersedes. */}
           <div style={{ padding: '0 6px 4px' }}>
             <AutoscaleControl placement={pl} running={running} />
+          </div>
+          {/* Wave 5 (Task 14b): the role selector — the only UI path to ever set a placement's
+              role to 'canary', which is what makes CanaryWeightControl below reachable at all. */}
+          <div style={{ padding: '0 6px 4px' }}>
+            <RoleControl placement={pl} running={running} />
+          </div>
+          {/* Wave 5 (Task 14): canaryWeight is only meaningful for a role: 'canary' placement —
+              CanaryWeightControl itself renders null otherwise. */}
+          <div style={{ padding: '0 6px 4px' }}>
+            <CanaryWeightControl placement={pl} running={running} />
           </div>
           </div>
         )

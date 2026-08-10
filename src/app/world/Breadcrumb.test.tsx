@@ -31,4 +31,15 @@ describe('Breadcrumb', () => {
     expect(screen.getByText('World')).toBeInTheDocument()
     expect(screen.queryByText('us-east-1')).not.toBeInTheDocument()
   })
+
+  it('shows the active environment label in the breadcrumb when set', () => {
+    useWorldStore.setState({ doc: { ...useWorldStore.getState().doc, environments: { s: { id: 's', label: 'Staging' } }, activeEnvironmentId: 's' } })
+    render(<Breadcrumb />)
+    expect(screen.getByText(/staging/i)).toBeInTheDocument()
+  })
+
+  it('does not show an environment chip when no environment is active', () => {
+    render(<Breadcrumb />)
+    expect(screen.queryByTestId('env-chip')).not.toBeInTheDocument()
+  })
 })

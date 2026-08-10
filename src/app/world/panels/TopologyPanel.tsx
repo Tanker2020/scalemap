@@ -6,14 +6,16 @@ import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
 import { useFileStore } from '../../store/file.store'
 import { useSimulationStore } from '../../store/simulation.store'
+import { useUiStore } from '../../store/ui.store'
 import { WORLD_REGIONS } from '../../../lib/regionConfig'
 import { INSTANCE_CATALOG, getPreset, type InstancePreset } from '../../../lib/world/instanceCatalog'
 import { nextWorldId } from '../../../lib/world/factories'
-import type { Region, Server, ManagedService } from '../../../lib/world/types'
+import type { Region, Server, ManagedService, Environment } from '../../../lib/world/types'
 import { SectionHeader, EdgeRow, ChipValue, MicroBars, PresetCardGrid, type EdgeRowStatus } from '../ui/kit'
 import { field, smallBtn, dangerBtn, row } from './panelStyles'
 import { healthWord } from '../ui/derived'
-import { computeWorldCost, HOURS_PER_MONTH } from '../../../lib/costModelV2'
+import { computeWorldCost, defaultProviderFromDoc, HOURS_PER_MONTH } from '../../../lib/costModelV2'
+import { applyEnvironment } from '../../../lib/world/environments'
 
 const HEALTH_COLOR: Record<'healthy' | 'degraded' | 'down', string> = {
   healthy: 'var(--color-success)',
@@ -55,6 +57,47 @@ const unstyledButton = {
   font: 'inherit', color: 'inherit', cursor: 'pointer',
 } as const
 
+// Wave 5 (Task 18): a batch-edit affordance, visible only when 2+ servers are multi-selected
+// on the AZ floor (`ui.store.ts`'s `selectedEntityIds` — server ids only, since the floor's
+// marquee/click/⌘-click/⇧-click selection targets servers exclusively; see Task 17). Applying
+// an instance-class change here dispatches ONE `batchUpdateServers([...ids], patch)` call — one
+// undo step for the whole batch, mirroring HardwareDrawer.tsx's single-server `commit`'s patch
+// shape (catalogId + the full specs/hourlyUsd/oversubscriptionRatio/burstable set, so the plate
+// price and specs never drift apart for any of the targeted servers).
+function BatchEditBar() {
+  const selectedEntityIds = useUiStore(s => s.selectedEntityIds)
+  const doc = useWorldStore(s => s.doc)
+  const store = useWorldStore.getState()
+  const selectedServerIds = [...selectedEntityIds].filter(id => doc.servers[id])
+
+  if (selectedServerIds.length < 2) return null
+
+  const applyClass = (presetId: string) => {
+    const p = getPreset(presetId)
+    if (!p) return
+    store.batchUpdateServers(selectedServerIds, {
+      catalogId: p.id, specs: { ...p.specs }, hourlyUsd: p.hourlyUsd,
+      oversubscriptionRatio: p.oversubscriptionRatio, burstable: p.burstable,
+    })
+  }
+
+  return (
+    <div data-testid="batch-edit-bar" style={{
+      display: 'flex', alignItems: 'center', gap: 6, margin: '2px 0 8px', padding: '4px 6px',
+      borderRadius: 4, border: '1px dashed var(--kit-accent)',
+    }}>
+      <span style={{ fontSize: 9.5, color: 'var(--color-text-secondary)' }}>
+        {selectedServerIds.length} selected
+      </span>
+      <select aria-label="batch instance class" style={{ ...field, flex: 1, marginBottom: 0 }}
+        defaultValue="" onChange={e => { if (e.target.value) applyClass(e.target.value) }}>
+        <option value="" disabled>apply instance class to all…</option>
+        {INSTANCE_CATALOG.map(p => <option key={p.id} value={p.id}>{p.id}</option>)}
+      </select>
+    </div>
+  )
+}
+
 export function TopologyPanel() {
   const doc = useWorldStore(s => s.doc)
   const store = useWorldStore.getState()
@@ -76,7 +119,13 @@ export function TopologyPanel() {
   // Task 16) into the `world` arg — same fix as CostTab.tsx's — so this panel's per-region
   // $/hr readout tracks an autoscaled placement's live running share, not its full envelope.
   const worldForCost = displayBatch?.world ? { ...displayBatch.world, runningByPlacement: displayBatch.runningByPlacement } : null
-  const worldCost = computeWorldCost(doc, worldForCost, displayBatch?.managedServices ?? null)
+  // computeWorldCost reads doc.servers/doc.placements directly -- an active environment's
+  // instanceClassOverrides/serverCountFactor/placementCountOverrides must be overlaid here too,
+  // or this panel's per-region $/hr meta line silently disagrees with CostTab.tsx's total.
+  // I3 fix (final wave-5 review): defaults an unpinned managed service's provider to
+  // `doc.cloudProfile`, matching CostTab.tsx's headline / scopeData.ts's rollups / RegionView.tsx —
+  // this per-region $/hr meta line is the world's own cost, not a comparison surface.
+  const worldCost = computeWorldCost(applyEnvironment(doc), worldForCost, displayBatch?.managedServices ?? null, defaultProviderFromDoc(doc))
 
   const nextAzLabel = (catalogId: string, regionId: string) => {
     const count = Object.values(doc.azs).filter(a => a.regionId === regionId).length
@@ -94,6 +143,8 @@ export function TopologyPanel() {
         <button className="kit-press" style={smallBtn} disabled={available.length === 0}
           onClick={() => store.addRegion(newRegion)}>+ Region</button>
       </div>
+
+      <BatchEditBar />
 
       {Object.values(doc.regions).map(region => {
         const regionHealth = displayBatch?.regions[region.id]?.health ?? null
@@ -197,6 +248,85 @@ export function TopologyPanel() {
           </div>
         )
       })}
+
+      <EnvironmentsSection />
+    </div>
+  )
+}
+
+// Comparison environments (Wave 5, Task 11): named what-if overlays authored here, applied at
+// compile time by `applyEnvironment` (src/lib/world/environments.ts) — this section is pure
+// CRUD over `doc.environments`/`activeEnvironmentId`/`cloudProfile`, mirroring the region/AZ
+// list-with-inline-edit-row convention above (label input + factor inputs + a × delete button,
+// same `field`/`row`/`smallBtn`/`dangerBtn` primitives). Lives inside TopologyPanel so it rides
+// the SAME running-disabled `<fieldset>` WorldPanel.tsx already wraps the whole topology tab in —
+// no new gating code needed (see WorldPanel.tsx's `<fieldset disabled={running && tab !==
+// 'events'}>`).
+function EnvironmentsSection() {
+  const doc = useWorldStore(s => s.doc)
+  const store = useWorldStore.getState()
+  const environments = Object.values(doc.environments ?? {})
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <SectionHeader label="▸ ENVIRONMENTS" />
+      <div style={row}>
+        <select aria-label="active-environment-select" style={{ ...field, marginBottom: 0, flex: 1 }}
+          value={doc.activeEnvironmentId ?? ''}
+          onChange={e => store.setActiveEnvironment(e.target.value || null)}>
+          <option value="">(base world)</option>
+          {environments.map(env => <option key={env.id} value={env.id}>{env.label}</option>)}
+        </select>
+        <select aria-label="cloud-profile-select" style={{ ...field, width: 90, marginBottom: 0 }}
+          value={doc.cloudProfile ?? 'generic'}
+          onChange={e => store.setCloudProfile(e.target.value as NonNullable<typeof doc.cloudProfile>)}>
+          <option value="generic">generic</option>
+          <option value="aws">aws</option>
+          <option value="gcp">gcp</option>
+          <option value="azure">azure</option>
+        </select>
+      </div>
+
+      {environments.map(env => <EnvironmentRow key={env.id} env={env} isActive={doc.activeEnvironmentId === env.id} />)}
+
+      <button className="kit-press" style={smallBtn} onClick={() => store.addEnvironment(`Environment ${environments.length + 1}`)}>
+        + Environment
+      </button>
+    </div>
+  )
+}
+
+function EnvironmentRow({ env, isActive }: { env: Environment; isActive: boolean }) {
+  const store = useWorldStore.getState()
+  const upd = (patch: Partial<Environment>) => store.updateEnvironment(env.id, patch)
+
+  return (
+    <div style={{
+      marginBottom: 6, padding: '4px 6px', borderRadius: 4,
+      border: `1px solid ${isActive ? 'var(--color-warning)' : 'var(--color-node-border)'}`,
+    }}>
+      <div style={row}>
+        <input style={{ ...field, marginBottom: 0, flex: 1 }} value={env.label} aria-label={`env-label-${env.id}`}
+          onChange={e => upd({ label: e.target.value })} />
+        <button className="kit-press" style={dangerBtn} data-testid={`env-delete-${env.id}`}
+          onClick={() => store.removeEnvironment(env.id)}>×</button>
+      </div>
+      <div style={{ ...row, flexWrap: 'wrap' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9.5, color: 'var(--color-text-muted)' }}>
+          server ×
+          <input type="number" step="0.1" style={{ ...field, width: 56, marginBottom: 0 }}
+            aria-label={`env-server-factor-${env.id}`}
+            value={env.serverCountFactor ?? ''}
+            onChange={e => upd({ serverCountFactor: e.target.value === '' ? undefined : Number(e.target.value) })} />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9.5, color: 'var(--color-text-muted)' }}>
+          rps ×
+          <input type="number" step="0.1" style={{ ...field, width: 56, marginBottom: 0 }}
+            aria-label={`env-rps-factor-${env.id}`}
+            value={env.populationRpsFactor ?? ''}
+            onChange={e => upd({ populationRpsFactor: e.target.value === '' ? undefined : Number(e.target.value) })} />
+        </label>
+      </div>
     </div>
   )
 }

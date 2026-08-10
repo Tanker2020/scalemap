@@ -10,6 +10,7 @@ import type {
   FaultScope, FaultSpec, PartitionFault,
 } from '../../lib/worldEngine/types'
 import { worldEngine } from '../../lib/worldEngine'
+import { applyEnvironment } from '../../lib/world/environments'
 import { DEFAULT_HYSTERESIS } from '../../lib/worldEngine/failover'
 import { eventLogAppend, eventLogBeginRun } from '../../lib/tauri'
 import { useFileStore } from './file.store'
@@ -262,7 +263,13 @@ export const useSimulationStore = create<SimulationStoreV2>((set, get) => ({
       })
     if (flushTimer !== null) clearInterval(flushTimer)
     flushTimer = setInterval(flushEventLog, EVENT_FLUSH_MS)
-    worldEngine.start(doc, compiled, {
+    // The engine reads doc.populations (peakRps) and doc.servers (catalogId) DIRECTLY --
+    // compileWorld.ts's own applyEnvironment overlay only affects `compiled`, which is computed
+    // and discarded before this call. Without re-applying it here, an active environment's
+    // `populationRpsFactor`/`instanceClassOverrides` would silently have no effect on the actual
+    // simulation, even though `serverCountFactor`/`placementCountOverrides` DO reach it (they
+    // change compiled.instances' cardinality).
+    worldEngine.start(applyEnvironment(doc), compiled, {
       onMetrics: (batch) => set(s => ({
         latestBatch: batch,
         warmupBatchesRemaining: Math.max(0, s.warmupBatchesRemaining - 1),

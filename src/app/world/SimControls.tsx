@@ -6,6 +6,7 @@ import type { CSSProperties } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useSimulationStore, selectWarmingUp, selectScenarioProgressMs } from '../store/simulation.store'
 import { useWorldStore } from '../store/world.store'
+import { useBaselineStore } from '../store/baseline.store'
 import { useCompiledWorld } from './useCompiledWorld'
 
 const btn: CSSProperties = {
@@ -37,6 +38,14 @@ export function SimControls() {
   const paused = useSimulationStore(s => s.paused)
   const timeScale = useSimulationStore(s => s.timeScale)
   const degraded = useSimulationStore(s => s.degraded)
+  // latestBatch is the only reactive signal that correlates with the replay ring having frames —
+  // getReplayFrames() itself is a plain facade passthrough (worldEngine.getReplayFrames()), not a
+  // subscribed selector, so it can't drive a re-render on its own. Every onMetrics batch (1 Hz)
+  // lands only after the engine has already pushed render-frame(s) into the ring, so "a batch has
+  // landed" is a safe (if slightly lagging-the-very-first-frame) proxy for "frames exist." Re-read
+  // the ring itself (not just a boolean) each time latestBatch changes so the count stays accurate
+  // through pause/resume/scrub without a second piece of derived state to keep in sync.
+  const latestBatch = useSimulationStore(s => s.latestBatch)
   const warmingUp = useSimulationStore(selectWarmingUp)
   const warmupBatchesRemaining = useSimulationStore(s => s.warmupBatchesRemaining)
   const scenarioProgressMs = useSimulationStore(selectScenarioProgressMs)
@@ -47,10 +56,12 @@ export function SimControls() {
   const setTimeScale = useSimulationStore(s => s.setTimeScale)
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
+  const capture = useBaselineStore(s => s.capture)
   const reduced = useReducedMotion()
 
   // live = actively ticking; a running-but-paused sim keeps its state but freezes.
   const live = running && !paused
+  const frameCount = latestBatch ? useSimulationStore.getState().getReplayFrames().length : 0
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -99,6 +110,18 @@ export function SimControls() {
         <option value={2}>2x</option>
         <option value={4}>4x</option>
       </select>
+      {/* Wave 5: snapshots the current replay buffer into a RunSummary (lib/runSummary.ts) via
+          the baseline store, for later side-by-side comparison against another captured run.
+          Disabled until at least one frame exists in the ring — see the frameCount comment above. */}
+      <button
+        className="kit-press"
+        style={btn}
+        disabled={frameCount === 0}
+        title={frameCount === 0 ? 'run the simulation to produce frames first' : 'capture a baseline for comparison'}
+        onClick={() => capture(useSimulationStore.getState().getReplayFrames(), doc, compiled, `Run ${new Date().toLocaleTimeString()}`)}
+      >
+        Capture baseline
+      </button>
       {running && doc.scenario && (
         <span
           data-testid="scenario-progress-chip" style={scenarioChip}

@@ -19,6 +19,7 @@ import { runAnalysis } from '../../../lib/analysis/runAnalysis'
 import { listRoutes, listPackets } from '../../../lib/nodeConfig'
 import { EventsTab } from '../EventsTab'
 import { CostTab } from '../CostTab'
+import { ComparePanel } from './ComparePanel'
 import { panel, sectionLabel } from './panelStyles'
 import { ChipValue } from '../ui/kit'
 import { ScopeRail } from '../dock/ScopeRail'
@@ -69,7 +70,7 @@ function SignatureHeader({ glyph, accent, summary, summaryColor }: SignatureHead
 const TAB_LABELS: Record<PanelTab, string> = {
   topology: 'Topology', blueprints: 'Blueprints', packets: 'Packets', managed: 'Managed',
   connections: 'Connections', traffic: 'Traffic',
-  routes: 'Routes', scenario: 'Scenario', signals: 'Signals', analysis: 'Analysis', events: 'Events', cost: 'Cost', config: 'Config',
+  routes: 'Routes', scenario: 'Scenario', signals: 'Signals', analysis: 'Analysis', events: 'Events', cost: 'Cost', compare: 'Compare', config: 'Config',
 }
 
 export interface WorldPanelProps {
@@ -295,6 +296,10 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
       }
       break
     }
+    case 'compare': {
+      header = { glyph: '⇄', accent: 'var(--color-accent)', summary: 'diff two captured baselines' }
+      break
+    }
     case 'config': {
       header = null
       break
@@ -359,6 +364,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
             {tab === 'analysis' && <AnalysisTab openSettings={openSettings} />}
             {tab === 'events' && <EventsTab />}
             {tab === 'cost' && <CostTab />}
+            {tab === 'compare' && <ComparePanel />}
           </>
         ) : (
           // Region/AZ/server scope (D2): every scope's Config now has a real instrument — no
