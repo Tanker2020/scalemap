@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement } from './factories'
+import {
+  createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
+  createVpc, createSubnet, createRouteTable, createNatGateway, createSecurityGroup,
+} from './factories'
 import { getPreset } from './instanceCatalog'
 import { compileWorld, instanceId } from './compileWorld'
 import { addPacket } from '../nodeConfig'
@@ -224,5 +227,121 @@ describe('compileWorld — protocol-mismatch findings (audit ISSUE-007)', () => 
     const doc = mismatchWorld('event', null)
     const compiled = compileWorld(doc)
     expect(compiled.findings.some(f => f.kind === 'protocol-mismatch')).toBe(false)
+  })
+})
+
+// ─── Network-topology compile wiring (Task 6) ────────────────────────────────
+// Task 5 added resolveRoute/evaluateSecurityGroups + a widened InstancePathContext to
+// network.ts, but compileWorld.ts never resolved or passed the new fields -- none of it ran.
+// This suite wires the call site and locks the regression floor: a doc with no subnetId
+// anywhere skips the route-table check entirely, matching pre-Task-6 behavior exactly.
+describe('compileWorld — network topology compile wiring (Task 6)', () => {
+  it('a doc with zero vpcs/subnets and no server.subnetId compiles byte-identically to pre-feature (regression floor)', () => {
+    const { doc, bp, server } = tinyWorld()
+    const target = createBlueprint('target', 1)
+    doc.blueprints[target.id] = target
+    const targetPl = createPlacement(target.id, server.id)
+    doc.placements[targetPl.id] = targetPl
+    bp.dependencies = [{
+      id: 'dep-1', target: { kind: 'blueprint', blueprintId: target.id },
+      port: 8080, protocol: 'http', packetTemplateId: null,
+    }]
+    const pl = createPlacement(bp.id, server.id)
+    doc.placements[pl.id] = pl
+
+    const before = compileWorld(doc)
+    const again = compileWorld(doc)
+    expect(again).toEqual(before)
+  })
+
+  // Region A: a VPC + private subnet with an EMPTY route table (no NAT/IGW route). ServerA
+  // (in that subnet) depends cross-region on ServerB in region B -- needsEgress is true, so
+  // resolveRoute finds no non-local route and the path must block with 'no-egress-route'.
+  function crossRegionSubnetWorld() {
+    const doc = createWorld()
+    const regionA = createRegion('us-east-1')
+    const regionB = createRegion('eu-west-1')
+    const azA = createAz(regionA.id, 'us-east-1a')
+    const azB = createAz(regionB.id, 'eu-west-1a')
+    const serverA = createServer(azA.id, getPreset('vps-medium')!)
+    const serverB = createServer(azB.id, getPreset('vps-medium')!)
+    Object.assign(doc.regions, { [regionA.id]: regionA, [regionB.id]: regionB })
+    Object.assign(doc.azs, { [azA.id]: azA, [azB.id]: azB })
+    Object.assign(doc.servers, { [serverA.id]: serverA, [serverB.id]: serverB })
+
+    const vpc = createVpc(regionA.id)
+    const routeTable = createRouteTable(vpc.id)
+    const subnet = createSubnet(vpc.id, azA.id, 'private', routeTable.id)
+    serverA.subnetId = subnet.id
+    doc.vpcs[vpc.id] = vpc
+    doc.routeTables[routeTable.id] = routeTable
+    doc.subnets[subnet.id] = subnet
+
+    const api = createBlueprint('api', 0)
+    const target = createBlueprint('target', 1)
+    api.dependencies = [{
+      id: 'dep-cross-region', target: { kind: 'blueprint', blueprintId: target.id },
+      port: 8080, protocol: 'http', packetTemplateId: null,
+    }]
+    Object.assign(doc.blueprints, { [api.id]: api, [target.id]: target })
+    const plApi = createPlacement(api.id, serverA.id)
+    const plTarget = createPlacement(target.id, serverB.id)
+    Object.assign(doc.placements, { [plApi.id]: plApi, [plTarget.id]: plTarget })
+
+    return { doc, vpc, routeTable, subnet, serverA, serverB, depId: 'dep-cross-region' }
+  }
+
+  it('a private-subnet server with no NAT/IGW route produces a blocked path with BlockReason.kind "no-egress-route"', () => {
+    const { doc } = crossRegionSubnetWorld()
+    const compiled = compileWorld(doc)
+    const blockedPath = compiled.paths.find(p => p.verdict === 'blocked')
+    expect(blockedPath?.blockReason?.kind).toBe('no-egress-route')
+  })
+
+  it('adding a NAT gateway route to that subnet route table flips the same path to permitted', () => {
+    const { doc, routeTable, subnet, depId } = crossRegionSubnetWorld()
+    const nat = createNatGateway(subnet.id)
+    doc.natGateways[nat.id] = nat
+    routeTable.routes.push({ destinationCidr: '0.0.0.0/0', target: { kind: 'natGateway', id: nat.id } })
+
+    const compiled = compileWorld(doc)
+    const path = compiled.paths.find(p => p.dependencyId === depId)
+    expect(path?.verdict).toBe('permitted')
+  })
+
+  it('a server with securityGroupIds set is evaluated by evaluateSecurityGroups, denying where no rule matches', () => {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    const az2 = createAz(region.id, 'us-east-1b')
+    const serverA = createServer(az.id, getPreset('vps-medium')!)
+    const serverB = createServer(az2.id, getPreset('vps-medium')!)
+    Object.assign(doc.regions, { [region.id]: region })
+    Object.assign(doc.azs, { [az.id]: az, [az2.id]: az2 })
+    Object.assign(doc.servers, { [serverA.id]: serverA, [serverB.id]: serverB })
+
+    const vpc = createVpc(region.id)
+    const sg = createSecurityGroup(vpc.id)
+    sg.rules = [{ port: 9999, protocol: 'tcp', source: 'internal' }] // never matches port 8080
+    serverB.securityGroupIds = [sg.id]
+    doc.vpcs[vpc.id] = vpc
+    doc.securityGroups[sg.id] = sg
+
+    const api = createBlueprint('api', 0)
+    const target = createBlueprint('target', 1)
+    const depId = 'dep-sg'
+    api.dependencies = [{
+      id: depId, target: { kind: 'blueprint', blueprintId: target.id },
+      port: 8080, protocol: 'http', packetTemplateId: null,
+    }]
+    Object.assign(doc.blueprints, { [api.id]: api, [target.id]: target })
+    const plApi = createPlacement(api.id, serverA.id)
+    const plTarget = createPlacement(target.id, serverB.id)
+    Object.assign(doc.placements, { [plApi.id]: plApi, [plTarget.id]: plTarget })
+
+    const compiled = compileWorld(doc)
+    const path = compiled.paths.find(p => p.dependencyId === depId)
+    expect(path?.verdict).toBe('blocked')
+    expect(path?.blockReason?.kind).toBe('firewall-deny')
   })
 })
