@@ -55,6 +55,12 @@ export interface WorldCostResult {
   // as an itemization line for the Cost tab, NOT a second addend.
   loadBalancerUsd: number
   loadBalancerCount: number
+  // Total hourly-base + per-GB cost of every AUTHORED NAT gateway (FEAT-014 Task 10). Already
+  // folded into byRegion/byAz (each NAT gateway resolves to an AZ via its subnet) and therefore
+  // into monthlyUsd — exposed separately only as an itemization line for the Cost tab, NOT a
+  // second addend.
+  natGatewayUsd: number
+  natGatewayCount: number
   // Per-service internet egress of storage/CDN managed services (node-model Phase 5.2) — already
   // folded into byRegion/byAz/monthlyUsd (each is region- or az-scoped); exposed as an itemization
   // line, not a second addend.
@@ -75,6 +81,23 @@ const LB_MODE_PRICING: Record<'l4' | 'l7', { capacityUnitUsdHr: number }> = {
   l4: { capacityUnitUsdHr: 0.006 },   // NLB NLCU
 }
 const LB_RPS_PER_CAPACITY_UNIT = 25
+
+// NAT gateway pricing (FEAT-014 Task 10), mirroring the LB line above: an hourly base charge plus
+// a per-GB data-processing charge on live throughput — realistic AWS us-east-1 order of magnitude.
+// bytesPerSec is read from world.natGatewayBytesPerSec (Task 9's engine wiring) — the raw
+// NIC-accounting figure (request+response wire bytes with burst multiplier applied), NOT the
+// WAL-write-amplified figure crossRegionUsd's egress line uses. This means a NAT gateway's cost
+// and the cross-region egress cost for the SAME WAL-backed db edge will not perfectly reconcile —
+// a known, documented, accepted limitation (see the "NOTE for Task 10" comment in
+// worldEngine/index.ts), not something this task fixes.
+const NAT_GATEWAY_HOURLY_USD = 0.045     // AWS us-east-1 NAT Gateway hourly rate
+const NAT_GATEWAY_PER_GB_USD = 0.045     // per-GB data processing charge
+
+function natGatewayMonthlyUsd(bytesPerSec: number): number {
+  const baseUsd = NAT_GATEWAY_HOURLY_USD * HOURS_PER_MONTH
+  const gbPerMonth = (Math.max(0, bytesPerSec) * SECONDS_PER_MONTH) / BYTES_PER_GB
+  return baseUsd + gbPerMonth * NAT_GATEWAY_PER_GB_USD
+}
 
 function loadBalancerMonthlyUsd(mode: 'l4' | 'l7', servedRps: number): number {
   const spec = getServiceSpec('loadBalancer', LB_PROVIDER)
@@ -283,6 +306,25 @@ export function computeWorldCost(
     loadBalancerCount += 1
   }
 
+  // NAT gateways (FEAT-014 Task 10): each AUTHORED gateway adds an hourly base charge plus a
+  // per-GB processing charge on its live throughput, folded into its resolved AZ/region — a NAT
+  // gateway is subnet-scoped (unlike an LB, which is region-scoped directly), so resolve
+  // subnet -> az -> region, matching the byAzMap/byRegionMap accumulation pattern above.
+  let natGatewayUsd = 0
+  let natGatewayCount = 0
+  for (const nat of Object.values(doc.natGateways)) {
+    const subnet = doc.subnets[nat.subnetId]
+    const az = subnet ? doc.azs[subnet.azId] : undefined
+    if (!subnet || !az) continue
+    const bytesPerSec = world?.natGatewayBytesPerSec?.[nat.id] ?? 0
+    const usd = natGatewayMonthlyUsd(bytesPerSec)
+    computeTotal += usd
+    bump(byAzMap, az.id, usd)
+    bump(byRegionMap, az.regionId, usd)
+    natGatewayUsd += usd
+    natGatewayCount += 1
+  }
+
   const interzone = PROVIDER_INTERZONE[WORLD_TRANSFER_PROVIDER]
   const crossAzUsd = world ? (world.crossAzBytesPerSec * SECONDS_PER_MONTH / BYTES_PER_GB) * interzone.crossAzUsdPerGb : 0
   const crossRegionUsd = world ? (world.crossRegionBytesPerSec * SECONDS_PER_MONTH / BYTES_PER_GB) * interzone.crossRegionUsdPerGb : 0
@@ -294,8 +336,8 @@ export function computeWorldCost(
   const internetUsd = world ? egressMonthlyCost('aws', internetGbMonth) : 0
 
   // computeTotal accumulated alongside every bump above (ISSUE-024) — provably complete even
-  // when an AZ→region reference dangles mid-edit. loadBalancerUsd is a SUBSET of it (already
-  // accumulated in the loop), so it is NOT added to monthlyUsd a second time.
+  // when an AZ→region reference dangles mid-edit. loadBalancerUsd and natGatewayUsd are each a
+  // SUBSET of it (already accumulated in their loops), so neither is added to monthlyUsd again.
   const monthlyUsd = computeTotal + crossAzUsd + crossRegionUsd + internetUsd
 
   return {
@@ -305,6 +347,8 @@ export function computeWorldCost(
     egress: { crossAzUsd, crossRegionUsd, internetUsd },
     loadBalancerUsd,
     loadBalancerCount,
+    natGatewayUsd,
+    natGatewayCount,
     managedEgressUsd: managedEgressTotal,
   }
 }

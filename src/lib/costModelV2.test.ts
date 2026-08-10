@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { computeWorldCost } from './costModelV2'
-import { createWorld, createRegion, createAz, createServer, createLoadBalancer, createBlueprint, createPlacement } from './world/factories'
+import { createWorld, createRegion, createAz, createServer, createLoadBalancer, createBlueprint, createPlacement, createVpc, createRouteTable, createSubnet, createNatGateway } from './world/factories'
 import { getPreset } from './world/instanceCatalog'
 import { useWorldStore } from '../app/store/world.store'
 import { HOURS_PER_MONTH } from './costModelV2'
@@ -211,6 +211,83 @@ describe('computeWorldCost', () => {
     // (500 GB − 100 GB aws free) × $0.09/GB = $36
     expect(result.managedEgressUsd).toBeCloseTo((500 - 100) * 0.09, 1)
     expect(result.byAz.find(a => a.azId === azId)!.monthlyUsd).toBeGreaterThan(0)
+  })
+
+  // FEAT-014 Task 10: NAT gateway hourly base + per-GB processing charge, mirroring the LB line.
+  describe('NAT gateway cost', () => {
+    function worldWithOneNatGateway(): { doc: WorldDoc; regionId: string; azId: string; natId: string } {
+      const { doc, regionId, azId } = twoServerWorld()
+      const vpc = createVpc(regionId)
+      doc.vpcs[vpc.id] = vpc
+      const rtb = createRouteTable(vpc.id)
+      doc.routeTables[rtb.id] = rtb
+      const subnet = createSubnet(vpc.id, azId, 'private', rtb.id)
+      doc.subnets[subnet.id] = subnet
+      const nat = createNatGateway(subnet.id)
+      doc.natGateways[nat.id] = nat
+      return { doc, regionId, azId, natId: nat.id }
+    }
+
+    it('a NAT gateway with nonzero throughput adds an hourly base charge plus a per-GB processing charge to the monthly total', () => {
+      const docWithoutNatGateway = twoServerWorld().doc
+      const withoutNat = computeWorldCost(docWithoutNatGateway, null)
+
+      const { doc: docWithOneNatGateway, natId } = worldWithOneNatGateway()
+      const BYTES_PER_GB = 1024 ** 3
+      const SECONDS_PER_MONTH = HOURS_PER_MONTH * 3600
+      const gbPerMonth = 200
+      const bytesPerSec = (gbPerMonth * BYTES_PER_GB) / SECONDS_PER_MONTH
+      const metricsWithNatThroughput = {
+        totalRps: 0, errorRate: 0, populationRoutes: [],
+        crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0,
+        natGatewayBytesPerSec: { [natId]: bytesPerSec },
+      }
+      const withNat = computeWorldCost(docWithOneNatGateway, metricsWithNatThroughput)
+
+      expect(withNat.monthlyUsd).toBeGreaterThan(withoutNat.monthlyUsd)
+      expect(withNat.natGatewayCount).toBe(1)
+      const expectedNatUsd = 0.045 * HOURS_PER_MONTH + gbPerMonth * 0.045
+      expect(withNat.natGatewayUsd).toBeCloseTo(expectedNatUsd, 5)
+      expect(withNat.monthlyUsd).toBeCloseTo(withoutNat.monthlyUsd + expectedNatUsd, 5)
+    })
+
+    it('a NAT gateway with only base hours (zero throughput) still bills the hourly base charge', () => {
+      const { doc: docWithOneNatGateway } = worldWithOneNatGateway()
+      const docWithoutNatGateway = twoServerWorld().doc
+      const withoutNat = computeWorldCost(docWithoutNatGateway, null)
+      const withNat = computeWorldCost(docWithOneNatGateway, null) // no world metrics -> bytesPerSec defaults to 0
+      expect(withNat.natGatewayUsd).toBeCloseTo(0.045 * HOURS_PER_MONTH, 5)
+      expect(withNat.monthlyUsd).toBeCloseTo(withoutNat.monthlyUsd + 0.045 * HOURS_PER_MONTH, 5)
+    })
+
+    it('folds NAT gateway cost into its resolved AZ and region exactly once', () => {
+      const { doc, regionId, azId } = worldWithOneNatGateway()
+      const withNat = computeWorldCost(doc, null)
+      const withoutNat = computeWorldCost({ ...doc, natGateways: {} }, null)
+      const azDelta = withNat.byAz.find(a => a.azId === azId)!.monthlyUsd - withoutNat.byAz.find(a => a.azId === azId)!.monthlyUsd
+      const regionDelta = withNat.byRegion.find(r => r.regionId === regionId)!.monthlyUsd - withoutNat.byRegion.find(r => r.regionId === regionId)!.monthlyUsd
+      expect(azDelta).toBeCloseTo(withNat.natGatewayUsd, 5)
+      expect(regionDelta).toBeCloseTo(withNat.natGatewayUsd, 5)
+    })
+
+    it('a NAT gateway whose subnet does not resolve to a live AZ is skipped (dangling reference)', () => {
+      const { doc, natId } = worldWithOneNatGateway()
+      const nat = doc.natGateways[natId]
+      doc.natGateways[natId] = { ...nat, subnetId: 'subnet-that-does-not-exist' }
+      const result = computeWorldCost(doc, null)
+      expect(result.natGatewayCount).toBe(0)
+      expect(result.natGatewayUsd).toBe(0)
+    })
+
+    it('REGRESSION FLOOR: a doc with zero natGateways entries adds exactly $0 to every cost total', () => {
+      const { doc } = twoServerWorld()
+      const preFeatureExpected = (0.036 + 0.34) * HOURS_PER_MONTH
+      const result = computeWorldCost(doc, null)
+      expect(doc.natGateways).toEqual({})
+      expect(result.natGatewayUsd).toBe(0)
+      expect(result.natGatewayCount).toBe(0)
+      expect(result.monthlyUsd).toBeCloseTo(preFeatureExpected, 5)
+    })
   })
 })
 
