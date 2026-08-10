@@ -209,6 +209,9 @@ in tests, not Esc).
 | Theme + LLM endpoint | ⚙ settings (header gear) |
 | Example worlds | home screen vault cards (`src/lib/vault/exampleWorlds.ts`, 4 examples, contract-tested) |
 | Simulate / scrub | header SimControls; ScrubberV2 bottom bar replays the run |
+| Keyboard shortcuts | ⌘N new world, ⌘Z/⇧⌘Z undo/redo (stopped only), Escape (disarms placement mode, else navigates up), ⌘K command palette, ⌘/ or `?` keyboard-map overlay — all one registry, `src/app/keymap.ts`'s `REGISTRY`, installed once in `App.tsx` |
+| Capture a baseline / compare two runs | header SimControls "Capture baseline" button (enabled once the replay buffer has frames); world scope → Compare tab to pick two captured runs and see a direction-aware latency/error/cost diff, plus JSON export/import via the usual file dialogs |
+| Switch / author a comparison environment | breadcrumb `▸ <Label>` chip shows the active environment; world scope → Topology tab → ENVIRONMENTS section to add/edit/delete environments (server-count and RPS scale factors, instance-class overrides) and switch the active one or the `cloudProfile` used for cost comparison |
 
 ---
 
