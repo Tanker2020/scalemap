@@ -9,7 +9,7 @@ import { compileWorld, instanceId } from '../world/compileWorld'
 import { addRoute, routeIdOf, updateRoute, addPacket } from '../nodeConfig'
 import type { HttpTemplate, ConnectionType } from '../nodeConfig'
 import { computeWorldCost } from '../costModelV2'
-import type { WorldDoc, CacheConfig } from '../world/types'
+import type { WorldDoc, CacheConfig, BlueprintDependency, InstanceId } from '../world/types'
 import type { MetricsBatch, EngineEvent, FramePayload } from './types'
 import { populationDemandRps } from './demand'
 import { createRng } from './rng'
@@ -4659,7 +4659,7 @@ describe('FEAT-014 (Task 9): NAT gateway byte accounting', () => {
   // each source server's demand is independently controllable), but every entry's SERVER is
   // placed in the SAME private subnet -- so every one of them resolves (buildNatGatewayIdByServer)
   // to the SAME shared NatGatewayState.
-  function natGatewayWorld(apiSpecs: { peakRps: number }[]) {
+  function natGatewayWorld(apiSpecs: { peakRps: number; fatPacketSizeKb?: number; serverANicMbps?: number }[]) {
     const doc = createWorld()
     doc.routing.policy = 'geo'
     const regionA = createRegion('us-east-1')
@@ -4672,37 +4672,65 @@ describe('FEAT-014 (Task 9): NAT gateway byte accounting', () => {
     const vpc = createVpc(regionA.id)
     const routeTable = createRouteTable(vpc.id)
     const subnet = createSubnet(vpc.id, azA.id, 'private', routeTable.id)
-    const nat = createNatGateway(subnet.id)
+    // The NAT gateway itself lives in a PUBLIC subnet (real AWS shape: it needs its own route to
+    // an internet gateway) -- it is the PRIVATE subnet's route table that points cross-region
+    // egress AT the gateway, not the gateway's own subnet placement. The gateway previously sat
+    // inside the private subnet it served, which could mislead a later task's implementer about
+    // which subnet a NAT gateway actually belongs in (task-9-report.md fix-round-1 minor #2).
+    const publicRouteTable = createRouteTable(vpc.id)
+    const publicSubnet = createSubnet(vpc.id, azA.id, 'public', publicRouteTable.id)
+    const nat = createNatGateway(publicSubnet.id)
     doc.vpcs[vpc.id] = vpc
     doc.routeTables[routeTable.id] = routeTable
+    doc.routeTables[publicRouteTable.id] = publicRouteTable
     doc.subnets[subnet.id] = subnet
+    doc.subnets[publicSubnet.id] = publicSubnet
     doc.natGateways[nat.id] = nat
     routeTable.routes.push({ destinationCidr: '0.0.0.0/0', target: { kind: 'natGateway', id: nat.id } })
 
+    const apiInstIds: InstanceId[] = []
     apiSpecs.forEach((spec, i) => {
       const serverA = createServer(azA.id, getPreset('dedicated-8')!)
       serverA.subnetId = subnet.id   // private-subnet server -- its cross-region egress routes via `nat`
+      if (spec.serverANicMbps != null) serverA.specs = { ...serverA.specs, nicMbps: spec.serverANicMbps }
       const serverB = createServer(azB.id, getPreset('dedicated-8')!)
       doc.servers[serverA.id] = serverA
       doc.servers[serverB.id] = serverB
 
       const api = publicBlueprint(`api${i}`, i)
       const target = createBlueprint(`target${i}`, i + 10)
-      api.dependencies = [{
+      const dep: BlueprintDependency = {
         id: `dep${i}`, target: { kind: 'blueprint', blueprintId: target.id },
         port: 8080, protocol: 'http', packetTemplateId: null,
-      }]
+      }
+      if (spec.fatPacketSizeKb != null) {
+        const packetId = 100 + i
+        doc.packets = {
+          ...doc.packets,
+          templates: {
+            ...doc.packets.templates,
+            [packetId]: {
+              id: packetId, name: `blob${i}`, protocol: 'http', method: 'PUT', statusCode: 200,
+              sizeKb: spec.fatPacketSizeKb, responseSizeKb: 1,
+            },
+          },
+          nextId: Math.max(doc.packets.nextId, packetId + 1),
+        }
+        dep.packetMix = [{ packetId, weight: 1 }]
+      }
+      api.dependencies = [dep]
       doc.blueprints[api.id] = api
       doc.blueprints[target.id] = target
       const plApi = createPlacement(api.id, serverA.id); doc.placements[plApi.id] = plApi
       const plTarget = createPlacement(target.id, serverB.id); doc.placements[plTarget.id] = plTarget
+      apiInstIds.push(instanceId(plApi.id, 0))
 
       const pop = createPopulation(`pop${i}`, 40.7, -74.0)   // near us-east-1 (region A)
       pop.peakRps = spec.peakRps
       doc.populations[pop.id] = pop
     })
 
-    return { doc, nat }
+    return { doc, nat, apiInstIds }
   }
 
   it('a doc with NAT gateways accounts bytes routed through the gateway and publishes natGatewayBytesPerSec', () => {
@@ -4715,19 +4743,53 @@ describe('FEAT-014 (Task 9): NAT gateway byte accounting', () => {
     sim.engine.stop()
   })
 
-  // Adapted from the plan's original wording ("two servers... get roughly half its cap when both
-  // saturate it, mirrors per-server NIC shedding"): Task 9's own Step 4 pseudocode never threads
-  // settleNatGateway's deliveredFraction/queuedLatencyMs result into flow admission anywhere (it
-  // is computed and then simply discarded, exactly like the accounting loop's addNicBytes calls
-  // here) -- unlike a per-server NIC, whose settleNic result feeds admittedScaleByServer/
-  // extraLatencyMsByServer THE NEXT STEP (index.ts's stepHost loop). Wiring an admission-side
-  // throttle for NAT gateways would mean threading a new per-server-or-gateway signal into
-  // flows.ts's queue-mode inputs -- a materially bigger, separate change or Task 9's own listed
-  // file scope (index.ts/metrics.ts/types.ts only), so it is left as a follow-up rather than
-  // guessed at here (see task-9-report.md). What Task 9 DOES guarantee -- and what this test
-  // verifies instead -- is that the byte accounting itself is genuinely SHARED per gateway: two
-  // servers whose subnets both resolve to the same NatGatewayState must have their bytes summed
-  // into ONE published rate, not overwritten/last-write-wins or tracked only for one of them.
+  // Fix round 1 (Critical #1/#2): settleNatGateway's deliveredFraction/queuedLatencyMs result is
+  // now threaded into admittedScaleByServer/extraLatencyMsByServer for every server behind that
+  // gateway (index.ts's stepHost loop, one-step-lagged exactly like a per-server NIC's own
+  // settleNic result), so a saturated gateway actually throttles/queues instead of only being
+  // measured. This is the enforcement half of the plan's Step 1 acceptance test ("two
+  // private-subnet servers sharing one NAT gateway each get roughly half its cap when both
+  // saturate it, mirrors per-server NIC shedding at the gateway level").
+  //
+  // Each server binds a fat (5 MB request) packet to its own dependency so realistic peakRps
+  // values can reach the 10 Gbps gateway cap (NAT_GATEWAY_NIC_MBPS) without needing unrealistic
+  // rps. `alone` sends one server's traffic through the gateway by itself, well under 2x the
+  // per-step cap (deliveredFraction stays 1 -- no admission shed, only a small queued-latency
+  // add). `combined` sends BOTH servers' identical traffic through the SAME shared gateway --
+  // their combined load pushes it past 2x the cap, where settleNic's own formula sheds to a FLAT
+  // one-step-of-latency queuedLatencyMs (vs. the small proportional add in the alone case) AND
+  // roughly halves deliveredFraction. The instances' own raw compute/NIC capacity is far above
+  // 300 rps, so (matching this file's existing latency-assertion idiom, e.g. lines 316/1714, not
+  // an rps-shed one) the shared-cap degradation shows up as a materially higher composed p50Ms
+  // for BOTH servers, not as an rps drop.
+  it('two private-subnet servers sharing one saturated NAT gateway both see materially higher latency (shared cap enforced), not just measured', () => {
+    // serverANicMbps is deliberately far above the gateway's 10 Gbps cap (NAT_GATEWAY_NIC_MBPS)
+    // so the GATEWAY, not each server's own per-server NIC, is the binding constraint being
+    // measured -- otherwise the per-server NIC's own (pre-existing, already-tested) queuing would
+    // dominate the comparison and prove nothing about gateway enforcement specifically.
+    const spec = { peakRps: 300, fatPacketSizeKb: 5120, serverANicMbps: 200_000 }
+    const alone = natGatewayWorld([spec])
+    const simAlone = drive(alone.doc, compileWorld(alone.doc))
+    simAlone.stepFor(15)
+    const aloneP50 = simAlone.latest().instances[alone.apiInstIds[0]]?.p50Ms ?? 0
+    simAlone.engine.stop()
+
+    const combined = natGatewayWorld([spec, spec])
+    const simCombined = drive(combined.doc, compileWorld(combined.doc))
+    simCombined.stepFor(15)
+    const batch = simCombined.latest()
+    const combinedP50_0 = batch.instances[combined.apiInstIds[0]]?.p50Ms ?? 0
+    const combinedP50_1 = batch.instances[combined.apiInstIds[1]]?.p50Ms ?? 0
+    simCombined.engine.stop()
+
+    expect(aloneP50).toBeGreaterThan(0)
+    // Sharing the saturated gateway meaningfully raises latency on BOTH servers above what either
+    // one alone experienced through it -- the enforcement Critical #1 was about. (+40ms mirrors
+    // the fixed +30/+50ms thresholds this file's other latency-shed assertions use.)
+    expect(combinedP50_0).toBeGreaterThan(aloneP50 + 40)
+    expect(combinedP50_1).toBeGreaterThan(aloneP50 + 40)
+  })
+
   it('two servers sharing one NAT gateway both contribute additively to its published byte rate', () => {
     const alone1 = natGatewayWorld([{ peakRps: 200 }])
     const sim1 = drive(alone1.doc, compileWorld(alone1.doc))

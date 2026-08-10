@@ -474,6 +474,12 @@ interface EngineState {
   // lookup, never a route-table walk.
   natGatewayStates: Map<NatGatewayId, NatGatewayState>
   natGatewayIdByServer: Map<ServerId, NatGatewayId>
+  // FEAT-014 (Task 9 fix round 1): previous step's gateway settlement, same one-step lag as
+  // nicDeliveredFraction/nicQueuedLatencyMs above — composed into admittedScaleByServer/
+  // extraLatencyMsByServer for every server whose subnet routes through that gateway, so a
+  // saturated gateway actually throttles/queues instead of only being measured.
+  natGatewayDeliveredFraction: Map<NatGatewayId, number>
+  natGatewayQueuedLatencyMs: Map<NatGatewayId, number>
   breakers: Map<string, Breaker>
   // Persistent per-instance request queues (audit ISSUE-013): carried across ticks, mutated by
   // solveFlows. THE backpressure/damping state — served = min(capacity, arrivals + backlog).
@@ -1616,7 +1622,16 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // fraction. CPU saturation no longer sheds throughput proportionally (the old one-step-lag
       // oscillator) — it bounds each instance's service rate, and the queue model (ISSUE-013)
       // absorbs the excess as latency before erroring past the queue bound.
-      admittedScaleByServer[server.id] = s.nicDeliveredFraction.get(server.id) ?? 1
+      // FEAT-014 (Task 9 fix round 1): if this server's subnet routes cross-region egress through
+      // a NAT gateway, that gateway's own one-step-lagged settlement composes with the server's
+      // own NIC settlement the same way cpu-brownout composes multiplicatively with VPS steal
+      // (line ~1501) — multiply the admission fractions, add the latencies. A gateway shared by
+      // two servers that together saturate it therefore throttles BOTH of them, mirroring
+      // per-server NIC shedding one level up the topology, rather than being silently ignored.
+      const natId = s.natGatewayIdByServer.get(server.id)
+      const natDeliveredFraction = natId ? s.natGatewayDeliveredFraction.get(natId) ?? 1 : 1
+      const natQueuedMs = natId ? s.natGatewayQueuedLatencyMs.get(natId) ?? 0 : 0
+      admittedScaleByServer[server.id] = (s.nicDeliveredFraction.get(server.id) ?? 1) * natDeliveredFraction
       latencyMultiplierByServer[server.id] = host.latencyMultiplier
       const queuedMs = s.nicQueuedLatencyMs.get(server.id) ?? 0
       const faultMs = latencyFault?.ms ?? 0
@@ -1624,9 +1639,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // the same "must ADD not assign" discipline FEAT-001 established for extraLatencyMsByServer
       // — this is the single mechanism that reaches BOTH Little's-law call sites (the host
       // scheduler's next-step InstanceLoad.activeConnections via prevFlows, and metrics.ts's
-      // published activeConnections via the same flows-solved latency samples).
+      // published activeConnections via the same flows-solved latency samples). The NAT gateway's
+      // queued ms joins the same additive chain.
       const diskMs = diskWaitMs ?? 0
-      const totalExtraMs = queuedMs + faultMs + diskMs
+      const totalExtraMs = queuedMs + faultMs + diskMs + natQueuedMs
       if (totalExtraMs > 0) extraLatencyMsByServer[server.id] = totalExtraMs
       let nic = s.nics.get(server.id)
       if (!nic) {
@@ -2034,6 +2050,13 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         // a second independent byte computation (plan Cross-Cutting Constraint 6). Gated on
         // `s.natGatewayIdByServer.size > 0` so a doc with zero NAT gateways pays only that one
         // cheap size check per row, never a Map lookup.
+        // NOTE for Task 10 (cost model NAT gateway line item): `req`/`resp` here are the RAW wire
+        // bytes for this row -- for a db dependency they do NOT include WAL write-amplification
+        // (that only gets applied via `writeFraction` further downstream, e.g. cross-AZ/region
+        // egress cost billing). If Task 10 bills NAT gateway egress the same way it bills
+        // cross-region egress cost, make sure it applies the same WAL-amplification factor this
+        // row's cost accounting uses elsewhere, or the two will silently disagree on a db-heavy
+        // edge's true byte volume through the gateway.
         if (s.natGatewayIdByServer.size > 0 && row.hopClass === 'cross-region') {
           const natId = s.natGatewayIdByServer.get(inst.serverId)
           const natState = natId ? s.natGatewayStates.get(natId) : undefined
@@ -2271,7 +2294,13 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     for (const [natId, natState] of s.natGatewayStates) {
       s.windowTotals.natGatewayBytes[natId] =
         (s.windowTotals.natGatewayBytes[natId] ?? 0) + natState.inBytesThisStep + natState.outBytesThisStep
-      settleNatGateway(natState, NAT_GATEWAY_NIC_MBPS, stepMs)
+      // FEAT-014 (Task 9 fix round 1): the settlement result used to be discarded here, so a
+      // saturated gateway was measured but never enforced. Store it the same way settleNic's
+      // result is stored just above (one-step lag), for the host loop to compose into
+      // admittedScaleByServer/extraLatencyMsByServer next step.
+      const settledNat = settleNatGateway(natState, NAT_GATEWAY_NIC_MBPS, stepMs)
+      s.natGatewayDeliveredFraction.set(natId, settledNat.deliveredFraction)
+      s.natGatewayQueuedLatencyMs.set(natId, settledNat.queuedLatencyMs)
     }
     s.windowTotals.crossAzBytes += totals.crossAzBytes * stepSec
     s.windowTotals.crossRegionBytes += totals.crossRegionBytes * stepSec
@@ -2726,6 +2755,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         nicDeliveredFraction: new Map(), nicQueuedLatencyMs: new Map(),
         natGatewayStates: new Map(Object.values(doc.natGateways).map(nat => [nat.id, createNatGatewayState()])),
         natGatewayIdByServer: buildNatGatewayIdByServer(doc),
+        natGatewayDeliveredFraction: new Map(), natGatewayQueuedLatencyMs: new Map(),
         breakers: new Map(), queueDepth: new Map(), metrics: createMetricsState(),
         events: createEventRing(500), replay: createReplayBuffer(300), tracer: createTracer(createRng(effectiveSeed ^ 0x1234)),
         prevFlows: {}, windowTotals: { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {}, natGatewayBytes: {} },
