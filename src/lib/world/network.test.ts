@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { evaluateFirewall, isInternetSource } from './network'
+import { evaluateFirewall, isInternetSource, resolveRoute, evaluateSecurityGroups, evaluateInstancePath } from './network'
 import { createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement } from './factories'
 import { getPreset } from './instanceCatalog'
 import { compileWorld } from './compileWorld'
-import type { FirewallRule, PlacementRuntime } from './types'
+import type { FirewallRule, PlacementRuntime, RouteTable as RouteTableT, SecurityGroup as SecurityGroupT } from './types'
 
 const allowAll: FirewallRule = { id: 'r-allow', action: 'allow', port: 'any', protocol: 'any', source: 'internal' }
 const denyDb: FirewallRule = { id: 'r-deny-db', action: 'deny', port: 5432, protocol: 'tcp', source: 'any' }
@@ -224,5 +224,83 @@ describe('evaluateInstancePath / compileWorld paths', () => {
     doc.placements['a'] = { ...createPlacement(api.id, web.id), id: 'a' }
     const compiled = compileWorld(doc)
     expect(compiled.paths[0]).toMatchObject({ verdict: 'permitted', hopClass: 'same-az', to: { kind: 'managed', managedServiceId: 'ms-1' } })
+  })
+
+  it('a context with no fromSubnet/fromRouteTable skips the route check entirely (regression floor)', () => {
+    const { doc, web, db } = twoServerWorld()
+    const api = createBlueprint('api', 0)
+    const pg = createBlueprint('pg', 1)
+    pg.ports = [{ port: 5432, protocol: 'tcp', visibility: 'internal' }]
+    api.dependencies = [{ id: 'dep-1', target: { kind: 'blueprint', blueprintId: pg.id }, port: 5432, protocol: 'db', packetTemplateId: null }]
+    Object.assign(doc.blueprints, { [api.id]: api, [pg.id]: pg })
+    const plApi = createPlacement(api.id, web.id)
+    const plPg = createPlacement(pg.id, db.id)
+    Object.assign(doc.placements, { [plApi.id]: plApi, [plPg.id]: plPg })
+
+    // Baseline: compileWorld (Task 6 hasn't wired fromSubnet/fromRouteTable through yet, so this
+    // is byte-identical to the pre-feature behavior).
+    const compiled = compileWorld(doc)
+    expect(compiled.paths[0]).toMatchObject({ verdict: 'permitted', hopClass: 'same-az' })
+
+    // Directly exercise evaluateInstancePath with a ctx that omits fromSubnet/fromRouteTable
+    // (and securityGroups) — must produce the exact same verdict as an equivalent ctx that
+    // never knew these fields existed.
+    const ctx = {
+      fromServer: web,
+      toServer: db,
+      fromRuntime: plApi.runtime,
+      toRuntime: plPg.runtime,
+      toBlueprint: pg,
+      port: 5432,
+      azs: doc.azs,
+    }
+    expect(evaluateInstancePath(ctx)).toEqual({ hopClass: 'same-az', verdict: 'permitted', blockReason: null })
+  })
+})
+
+describe('resolveRoute', () => {
+  const rt: RouteTableT = { id: 'rt-1', vpcId: 'vpc-1', routes: [] }
+
+  it('returns the local target for same-VPC traffic with no explicit match needed', () => {
+    expect(resolveRoute(rt, false)).toEqual({ kind: 'local' })
+  })
+
+  it('returns null when internet/cross-region traffic has no internetGateway/natGateway route', () => {
+    expect(resolveRoute(rt, true)).toBeNull()
+  })
+
+  it('returns the natGateway target when a 0.0.0.0/0 route points at one', () => {
+    const rtWithNat: RouteTableT = {
+      id: 'rt-1',
+      vpcId: 'vpc-1',
+      routes: [{ destinationCidr: '0.0.0.0/0', target: { kind: 'natGateway', id: 'nat-1' } }],
+    }
+    expect(resolveRoute(rtWithNat, true)).toEqual({ kind: 'natGateway', id: 'nat-1' })
+  })
+})
+
+describe('evaluateSecurityGroups', () => {
+  it('denies when no attached group has a matching allow rule (allow-only, implicit deny)', () => {
+    const server = { securityGroupIds: ['sg-1'] } as any
+    const groups: Record<string, SecurityGroupT> = {
+      'sg-1': { id: 'sg-1', vpcId: 'vpc-1', label: 'sg', rules: [{ port: 443, protocol: 'tcp', source: 'any' }] },
+    }
+    expect(evaluateSecurityGroups(server, groups, 5432).allowed).toBe(false)
+  })
+
+  it('allows when any attached group has a matching rule — union semantics, not first-match', () => {
+    const server = { securityGroupIds: ['sg-1', 'sg-2'] } as any
+    const groups: Record<string, SecurityGroupT> = {
+      'sg-1': { id: 'sg-1', vpcId: 'vpc-1', label: 'a', rules: [{ port: 443, protocol: 'tcp', source: 'any' }] },
+      'sg-2': { id: 'sg-2', vpcId: 'vpc-1', label: 'b', rules: [{ port: 5432, protocol: 'tcp', source: 'internal' }] },
+    }
+    expect(evaluateSecurityGroups(server, groups, 5432).allowed).toBe(true)
+  })
+
+  it('a security group with a matching rule allows even where the equivalent flat firewall would need an explicit deny to differ from allow', () => {
+    // demonstrates allow-only union vs ordered-list semantics — the whole point of this evaluator.
+    const server = { securityGroupIds: ['sg-1'] } as any
+    const groups: Record<string, SecurityGroupT> = { 'sg-1': { id: 'sg-1', vpcId: 'vpc-1', label: 'a', rules: [] } }
+    expect(evaluateSecurityGroups(server, groups, 80).allowed).toBe(false) // empty group = implicit deny, no rule needed to express it
   })
 })

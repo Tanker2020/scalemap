@@ -13,7 +13,7 @@
 // evaluator behind a model flag, deliberately not implemented until authoring demand exists.
 import type {
   Server, AvailabilityZone, FirewallRule, FirewallSource, ServiceBlueprint, PlacementRuntime,
-  HopClass, BlockReason,
+  HopClass, BlockReason, Subnet, RouteTable, RouteTarget, SecurityGroup,
 } from './types'
 
 // The single source of truth for "this source means the entire internet" (audit ISSUE-011):
@@ -51,6 +51,38 @@ export function evaluateFirewall(
   return { allowed: false, matchedRuleId: null } // default deny
 }
 
+// Route-table resolution (spec's original resolveRoute(sourceSubnet, destination, routeTables)
+// assumed CIDR-aware destination matching; this codebase's Server/AvailabilityZone model carries
+// no per-server IP address to match a destination CIDR against — hopClassBetween classifies
+// purely by az/region id, never an address. Simplified to what the data model actually supports:
+// same-VPC traffic is always 'local' (no route lookup needed, matching real VPC semantics);
+// egress-needing traffic requires a non-local route in the table, found via a most-specific-
+// prefix stand-in that in practice degenerates to "does any route exist with a non-local
+// target" since this model has no destination CIDR to compare against yet.
+export function resolveRoute(routeTable: RouteTable, needsEgress: boolean): RouteTarget | null {
+  if (!needsEgress) return { kind: 'local' }
+  const egressRoute = routeTable.routes.find(r => r.target.kind !== 'local')
+  return egressRoute ? egressRoute.target : null
+}
+
+// Security-group evaluator: an unordered, allow-only UNION of every attached group's rules —
+// genuinely different from evaluateFirewall's ordered first-match-wins semantics above. Any
+// attached group with a matching rule allows; no group with a match denies (implicit deny is
+// simply the absence of any match, never an explicit deny rule).
+export function evaluateSecurityGroups(
+  server: Server,
+  securityGroups: Record<string, SecurityGroup>,
+  port: number,
+): { allowed: boolean; matchedGroupId: string | null } {
+  for (const groupId of server.securityGroupIds ?? []) {
+    const group = securityGroups[groupId]
+    if (!group) continue
+    const match = group.rules.find(r => r.port === port && r.protocol === 'tcp') // all Phase-1 dep protocols ride tcp, mirrors firewallFirstMatch above
+    if (match) return { allowed: true, matchedGroupId: groupId }
+  }
+  return { allowed: false, matchedGroupId: null }
+}
+
 export function hopClassBetween(
   fromServer: Server,
   toServer: Server,
@@ -71,6 +103,10 @@ export interface InstancePathContext {
   toBlueprint: ServiceBlueprint
   port: number
   azs: Record<string, AvailabilityZone>
+  fromSubnet?: Subnet | null       // resolved by the caller (compileWorld) when fromServer.subnetId is set
+  fromRouteTable?: RouteTable | null
+  needsEgress?: boolean            // true when hopClass is cross-region OR destination is a managed/internet target
+  securityGroups?: Record<string, SecurityGroup>
 }
 
 export interface PathEvaluation {
@@ -85,9 +121,20 @@ const permitted = (hopClass: HopClass): PathEvaluation =>
   ({ hopClass, verdict: 'permitted', blockReason: null })
 
 export function evaluateInstancePath(ctx: InstancePathContext): PathEvaluation {
-  const { fromServer, toServer, fromRuntime, toRuntime, toBlueprint, port, azs } = ctx
+  const { fromServer, toServer, fromRuntime, toRuntime, toBlueprint, port, azs, fromSubnet, fromRouteTable, needsEgress, securityGroups } = ctx
   const hopClass = hopClassBetween(fromServer, toServer, azs)
   const bindsPort = toBlueprint.ports.some(p => p.port === port)
+
+  if (fromSubnet && fromRouteTable) {
+    const target = resolveRoute(fromRouteTable, needsEgress ?? hopClass === 'cross-region')
+    if (!target) {
+      return blocked(hopClass, {
+        kind: 'no-egress-route',
+        detail: `${fromServer.label}'s subnet has no route to ${hopClass === 'cross-region' ? 'this region' : 'the destination'}`,
+        firewallRuleId: null,
+      })
+    }
+  }
 
   if (toRuntime.type === 'process') {
     if (!bindsPort) {
@@ -98,7 +145,7 @@ export function evaluateInstancePath(ctx: InstancePathContext): PathEvaluation {
       })
     }
     if (hopClass === 'localhost') return permitted(hopClass)
-    return firewallVerdict(toServer, port, hopClass)
+    return firewallVerdict(toServer, port, hopClass, securityGroups)
   }
 
   // Container target.
@@ -156,10 +203,24 @@ export function evaluateInstancePath(ctx: InstancePathContext): PathEvaluation {
     })
   }
   if (hopClass === 'localhost') return permitted(hopClass)
-  return firewallVerdict(toServer, mapping.host, hopClass)
+  return firewallVerdict(toServer, mapping.host, hopClass, securityGroups)
 }
 
-function firewallVerdict(toServer: Server, port: number, hopClass: HopClass): PathEvaluation {
+function firewallVerdict(
+  toServer: Server,
+  port: number,
+  hopClass: HopClass,
+  securityGroups?: Record<string, SecurityGroup>,
+): PathEvaluation {
+  if (toServer.securityGroupIds?.length && securityGroups) {
+    const sg = evaluateSecurityGroups(toServer, securityGroups, port)
+    if (sg.allowed) return permitted(hopClass)
+    return blocked(hopClass, {
+      kind: 'firewall-deny',
+      detail: `denied by security group on ${toServer.label} (port ${port}, no matching allow rule)`,
+      firewallRuleId: null,
+    })
+  }
   const fw = evaluateFirewall(toServer.firewall, port)
   if (fw.allowed) return permitted(hopClass)
   return blocked(hopClass, {
