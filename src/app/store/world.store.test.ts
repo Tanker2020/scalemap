@@ -698,6 +698,145 @@ describe('world.store', () => {
   })
 })
 
+describe('world.store — network topology CRUD', () => {
+  it('addVpc creates a VPC and addRouteTable/addSubnet/addNatGateway/addSecurityGroup wire into it', () => {
+    const { regionId, azId } = buildChain()
+    const vpcId = useWorldStore.getState().addVpc(regionId)
+    expect(useWorldStore.getState().doc.vpcs[vpcId]).toBeDefined()
+
+    const rtId = useWorldStore.getState().addRouteTable(vpcId)
+    expect(useWorldStore.getState().doc.routeTables[rtId].vpcId).toBe(vpcId)
+
+    const subnetId = useWorldStore.getState().addSubnet(vpcId, azId, 'private')
+    expect(useWorldStore.getState().doc.subnets[subnetId].vpcId).toBe(vpcId)
+
+    const natId = useWorldStore.getState().addNatGateway(subnetId)
+    expect(useWorldStore.getState().doc.natGateways[natId].subnetId).toBe(subnetId)
+
+    const sgId = useWorldStore.getState().addSecurityGroup(vpcId)
+    expect(useWorldStore.getState().doc.securityGroups[sgId].vpcId).toBe(vpcId)
+
+    const igwId = useWorldStore.getState().addInternetGateway(vpcId)
+    expect(useWorldStore.getState().doc.internetGateways[igwId].vpcId).toBe(vpcId)
+  })
+
+  it('addSubnet creates its own route table in one undo step', () => {
+    const { regionId, azId } = buildChain()
+    const vpcId = useWorldStore.getState().addVpc(regionId)
+    const historyBefore = useWorldStore.getState().history.length
+
+    const subnetId = useWorldStore.getState().addSubnet(vpcId, azId, 'public')
+
+    const doc = useWorldStore.getState().doc
+    expect(doc.subnets[subnetId].kind).toBe('public')
+    const rtId = doc.subnets[subnetId].routeTableId
+    expect(doc.routeTables[rtId]).toBeDefined()
+    expect(useWorldStore.getState().history.length).toBe(historyBefore + 1)   // one undo step
+
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc.subnets[subnetId]).toBeUndefined()
+    expect(useWorldStore.getState().doc.routeTables[rtId]).toBeUndefined()
+  })
+
+  it('removeVpc cascades: deletes owned subnets, route tables, NAT gateways, security groups, and clears server references', () => {
+    const { regionId, azId, serverId } = buildChain()
+    const vpcId = useWorldStore.getState().addVpc(regionId)
+    const subnetId = useWorldStore.getState().addSubnet(vpcId, azId, 'private')
+    const natId = useWorldStore.getState().addNatGateway(subnetId)
+    const sgId = useWorldStore.getState().addSecurityGroup(vpcId)
+    const rtId = useWorldStore.getState().doc.subnets[subnetId].routeTableId
+
+    useWorldStore.setState(s => ({
+      doc: {
+        ...s.doc,
+        servers: {
+          ...s.doc.servers,
+          [serverId]: { ...s.doc.servers[serverId], subnetId, securityGroupIds: [sgId] },
+        },
+      },
+    }))
+
+    useWorldStore.getState().removeVpc(vpcId)
+    const doc = useWorldStore.getState().doc
+    expect(doc.vpcs[vpcId]).toBeUndefined()
+    expect(doc.subnets[subnetId]).toBeUndefined()
+    expect(doc.routeTables[rtId]).toBeUndefined()
+    expect(doc.natGateways[natId]).toBeUndefined()
+    expect(doc.securityGroups[sgId]).toBeUndefined()
+    expect(doc.servers[serverId].subnetId).toBeUndefined()
+    expect(doc.servers[serverId].securityGroupIds).toBeUndefined()
+  })
+
+  it('removeSubnet clears subnetId on any server referencing it and deletes NAT gateways in it', () => {
+    const { regionId, azId, serverId } = buildChain()
+    const vpcId = useWorldStore.getState().addVpc(regionId)
+    const subnetId = useWorldStore.getState().addSubnet(vpcId, azId, 'private')
+    const natId = useWorldStore.getState().addNatGateway(subnetId)
+
+    useWorldStore.setState(s => ({
+      doc: {
+        ...s.doc,
+        servers: { ...s.doc.servers, [serverId]: { ...s.doc.servers[serverId], subnetId } },
+      },
+    }))
+
+    useWorldStore.getState().removeSubnet(subnetId)
+    const doc = useWorldStore.getState().doc
+    expect(doc.subnets[subnetId]).toBeUndefined()
+    expect(doc.natGateways[natId]).toBeUndefined()
+    expect(doc.servers[serverId].subnetId).toBeUndefined()
+  })
+
+  it('removeSecurityGroup scrubs its id from every server that referenced it', () => {
+    const { regionId, azId, serverId } = buildChain()
+    const vpcId = useWorldStore.getState().addVpc(regionId)
+    const subnetId = useWorldStore.getState().addSubnet(vpcId, azId, 'private')
+    const sgId = useWorldStore.getState().addSecurityGroup(vpcId)
+
+    useWorldStore.setState(s => ({
+      doc: {
+        ...s.doc,
+        servers: {
+          ...s.doc.servers,
+          [serverId]: { ...s.doc.servers[serverId], subnetId, securityGroupIds: [sgId] },
+        },
+      },
+    }))
+
+    useWorldStore.getState().removeSecurityGroup(sgId)
+    const doc = useWorldStore.getState().doc
+    expect(doc.securityGroups[sgId]).toBeUndefined()
+    expect(doc.servers[serverId].securityGroupIds).toEqual([])
+  })
+
+  it('updateVpc/updateSubnet/updateRouteTable/updateSecurityGroup patch in place', () => {
+    const { regionId, azId } = buildChain()
+    const vpcId = useWorldStore.getState().addVpc(regionId)
+    const subnetId = useWorldStore.getState().addSubnet(vpcId, azId, 'public')
+    const rtId = useWorldStore.getState().doc.subnets[subnetId].routeTableId
+    const sgId = useWorldStore.getState().addSecurityGroup(vpcId)
+
+    useWorldStore.getState().updateVpc(vpcId, { label: 'core-vpc' })
+    useWorldStore.getState().updateSubnet(subnetId, { cidrBlock: '10.0.9.0/24' })
+    useWorldStore.getState().updateRouteTable(rtId, { routes: [] })
+    useWorldStore.getState().updateSecurityGroup(sgId, { label: 'web-sg' })
+
+    const doc = useWorldStore.getState().doc
+    expect(doc.vpcs[vpcId].label).toBe('core-vpc')
+    expect(doc.subnets[subnetId].cidrBlock).toBe('10.0.9.0/24')
+    expect(doc.securityGroups[sgId].label).toBe('web-sg')
+  })
+
+  it('removeRouteTable and removeInternetGateway and removeNatGateway tolerate unknown ids without throwing', () => {
+    expect(() => {
+      useWorldStore.getState().removeRouteTable('does-not-exist')
+      useWorldStore.getState().removeInternetGateway('does-not-exist')
+      useWorldStore.getState().removeNatGateway('does-not-exist')
+    }).not.toThrow()
+    expect(useWorldStore.getState().doc.routeTables['does-not-exist']).toBeUndefined()
+  })
+})
+
 // Audit ISSUE-031: history holds doc REFERENCES (mutations are immutable-by-contract), so undo
 // must restore the EXACT prior object — same identity — and pushing history must not clone.
 describe('world.store — reference-sharing history (ISSUE-031)', () => {
