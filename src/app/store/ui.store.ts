@@ -33,7 +33,10 @@ import type { ServerId } from '../../lib/world/types'
 // 2026-08-02 (FEAT-003 Task 20): gained 'scenario' — the scenario-timeline authoring tab
 // (ScenarioPanel.tsx). World scope only, alongside routes/traffic; configuration, not a live
 // chaos surface, so it rides the ambient WorldPanel fieldset normally (disabled while running).
-export type PanelTab = 'topology' | 'blueprints' | 'packets' | 'managed' | 'connections' | 'traffic' | 'routes' | 'scenario' | 'analysis' | 'events' | 'cost' | 'config'
+// 2026-08-10 (network-topology Task 12): gained 'network' — the VPC/subnet/route-table/NAT/IGW/
+// security-group authoring tab (NetworkPanel.tsx). World scope only, sitting next to 'topology'
+// as the network-layer counterpart to the hardware topology it complements.
+export type PanelTab = 'topology' | 'network' | 'blueprints' | 'packets' | 'managed' | 'connections' | 'traffic' | 'routes' | 'scenario' | 'analysis' | 'events' | 'cost' | 'config'
 
 export interface SceneOverlayTarget { kind: 'region' | 'population'; id: string }
 
