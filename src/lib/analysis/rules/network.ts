@@ -194,6 +194,91 @@ const lbRouteDropped: AnalysisRule = {
   },
 }
 
+// A compiled path blocked because its source subnet's route table has no egress route (Task 6's
+// resolveRoute returning null). Distinct from firewall-deny: nothing in the world is denying the
+// traffic, there is simply no route out of the subnet at all.
+const noEgressRoute: AnalysisRule = {
+  id: 'no-egress-route', family: 'network',
+  run: ({ compiled }) => {
+    const out: AnalysisFinding[] = []
+    for (const path of compiled.paths) {
+      if (path.verdict !== 'blocked' || path.blockReason?.kind !== 'no-egress-route') continue
+      out.push({
+        id: `no-egress-route:${path.id}`,
+        ruleId: 'no-egress-route', family: 'network', severity: 'warning',
+        title: 'Subnet has no egress route',
+        why: path.blockReason.detail,
+        fix: 'Add a route to an internet gateway or NAT gateway in this subnet\'s route table.',
+        affected: [path.fromInstanceId],
+      })
+    }
+    return out
+  },
+}
+
+// A security group rule's `source` names another group's id, and that group lives in a
+// different VPC. Compile-side evaluateSecurityGroups (src/lib/world/network.ts) never reads
+// `rule.source` at all -- it matches purely on port+protocol -- so this is analysis-only
+// semantics, exactly mirroring how FirewallRule.source is likewise unenforced at compile time
+// and only interpreted by db-port-exposed/entry-unreachable's isInternetSource() above. There is
+// no VPC peering entity in this feature's scope (FEAT-014), so any cross-VPC reference is
+// unconditionally treated as unpeered.
+const unpeeredSecurityGroupReference: AnalysisRule = {
+  id: 'unpeered-security-group-reference', family: 'network',
+  run: ({ doc }) => {
+    const out: AnalysisFinding[] = []
+    for (const group of Object.values(doc.securityGroups)) {
+      for (const rule of group.rules) {
+        const referenced = doc.securityGroups[rule.source]
+        if (!referenced || referenced.id === group.id || referenced.vpcId === group.vpcId) continue
+        out.push({
+          id: `unpeered-security-group-reference:${group.id}:${referenced.id}`,
+          ruleId: 'unpeered-security-group-reference', family: 'network', severity: 'warning',
+          title: 'Security group references a group in an unpeered VPC',
+          why: `${group.label} allows traffic from ${referenced.label}, which lives in a different VPC with no peering configured.`,
+          fix: 'Reference a group in the same VPC, or use a CIDR source instead.',
+          affected: [group.id, referenced.id],
+        })
+      }
+    }
+    return out
+  },
+}
+
+// More than one AZ's private subnets all route their egress through the SAME NAT gateway: that
+// gateway is a single point of failure across availability zones (an AZ outage taking down the
+// NAT gateway's own AZ breaks egress for every other AZ sharing it too).
+const natGatewaySpof: AnalysisRule = {
+  id: 'nat-gateway-spof', family: 'network',
+  run: ({ doc }) => {
+    const out: AnalysisFinding[] = []
+    const azsByNatGateway = new Map<string, Set<string>>()
+    for (const subnet of Object.values(doc.subnets)) {
+      if (subnet.kind !== 'private') continue
+      const rt = doc.routeTables[subnet.routeTableId]
+      const natRoute = rt?.routes.find(r => r.target.kind === 'natGateway')
+      if (!natRoute || natRoute.target.kind !== 'natGateway') continue
+      const set = azsByNatGateway.get(natRoute.target.id) ?? new Set<string>()
+      set.add(subnet.azId)
+      azsByNatGateway.set(natRoute.target.id, set)
+    }
+    for (const [natId, azSet] of azsByNatGateway) {
+      if (azSet.size <= 1) continue
+      const natLabel = doc.natGateways[natId]?.label ?? natId
+      out.push({
+        id: `nat-gateway-spof:${natId}`,
+        ruleId: 'nat-gateway-spof', family: 'network', severity: 'warning',
+        title: 'NAT gateway is a single point of failure across availability zones',
+        why: `${azSet.size} availability zones' private subnets all route their egress through the same NAT gateway (${natLabel}).`,
+        fix: 'Provision one NAT gateway per availability zone.',
+        affected: [natId],
+      })
+    }
+    return out
+  },
+}
+
 export const networkRules: AnalysisRule[] = [
   blockedDependencyPath, dbPortExposed, entryUnreachable, lbListenerTargetAbsent, lbRouteDropped,
+  noEgressRoute, unpeeredSecurityGroupReference, natGatewaySpof,
 ]
