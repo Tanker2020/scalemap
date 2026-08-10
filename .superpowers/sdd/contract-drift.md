@@ -493,3 +493,35 @@ No signature break — every new field/param is additive-optional. `npx tsc --no
 has its own duplicate `react`/`react-dom` and fails independently of this change):
 152 files / 1991 tests passing, including 9 new tests across `autoscale-ceiling-reached` and
 `autoscale-thrash`.
+
+## 2026-08-10 — Task 7: `LinkEndpoint`/`FaultScope`/`EndpointIds` widened for subnet/natGateway targeting (FEAT-014)
+
+Additive change, no signature break, just new union members: `FaultScope`
+(`worldEngine/types.ts`) gained `'subnet' | 'natGateway'` (now `'server' | 'az' | 'region' |
+'managed' | 'subnet' | 'natGateway'`); `LinkEndpoint` gained `{ kind: 'subnet'; id: string }` and
+`{ kind: 'natGateway'; id: string }` alongside the existing `region`/`az`/`server`/`internet`
+variants; `EndpointIds` (`faults.ts`) gained `subnetId?: string` and `natGatewayId?: string`
+alongside `regionId?`/`azId?`/`serverId?`.
+
+Real fix bundled with the addition: `endpointMatches` (`faults.ts`) was rewritten from an if-chain
+whose final branch (`return ids.serverId === endpoint.id`) silently treated ANY non-`internet`/
+`region`/`az` `LinkEndpoint` kind as a server match, into an exhaustive `switch (endpoint.kind)`
+with one case per kind mapped to the correspondingly-named `EndpointIds` field. Without this
+rewrite, adding the two new kinds here would have shipped a live bug: a `subnet`- or
+`natGateway`-scoped partition would have matched (or failed to match) against `ids.serverId`
+instead of `ids.subnetId`/`ids.natGatewayId`. The switch has no `default` case, so a future
+`LinkEndpoint` kind added without a matching case is a compile error, not a silent fallthrough.
+
+Covered by a new `faults.test.ts` describe block, `subnet and natGateway endpoint matching
+(FEAT-014)` (3 new tests, 21/21 total in the file passing): subnet-scoped and natGateway-scoped
+partition matching, plus a regression test asserting a server-scoped `EndpointIds` (with a
+`serverId` string equal to the partition's subnet id) does NOT match a subnet-scoped partition —
+the exact case the pre-fix fallthrough would have gotten wrong. `npx tsc --noEmit` clean.
+
+No other exhaustive switch over `LinkEndpoint['kind']` exists in the app — `PartitionsSection.tsx`
+and `ScenarioPanel.tsx` both resolve an endpoint's display label via an if-chain with an implicit
+final `server`-shaped fallback (`return doc.servers[endpoint.id]?.label ?? endpoint.id`), not a
+switch, so they compile unchanged; they will show a servers-lookup label for a `subnet`/
+`natGateway` endpoint until later network-topology tasks (NetworkPanel.tsx, Task 12) give
+partition authoring UI awareness of the two new kinds. Out of this task's scope per the brief's
+file list (`types.ts`/`faults.ts`/`faults.test.ts`/this file only).
