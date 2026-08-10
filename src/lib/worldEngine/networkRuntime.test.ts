@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { hopLatencyMs, applyNicCap, createNicState, addNicBytes, settleNic, refusedAttemptRate } from './networkRuntime'
+import {
+  hopLatencyMs, applyNicCap, createNicState, addNicBytes, settleNic, refusedAttemptRate,
+  createNatGatewayState, applyNatGatewayCap, settleNatGateway,
+} from './networkRuntime'
 import { createRng } from './rng'
 import { createServer } from '../world/factories'
 import { getPreset } from '../world/instanceCatalog'
@@ -81,28 +84,28 @@ describe('applyNicCap', () => {
 
   it('under cap: full delivery, no queued latency', () => {
     const state = createNicState()
-    expect(applyNicCap(state, server(), CAP * 0.4, CAP * 0.4, 100))
+    expect(applyNicCap(state, server().specs.nicMbps, CAP * 0.4, CAP * 0.4, 100))
       .toEqual({ deliveredFraction: 1, queuedLatencyMs: 0 })
   })
 
   it('between cap and 2x cap: full delivery with proportional queued latency', () => {
     const state = createNicState()
-    const r = applyNicCap(state, server(), CAP * 1.5, 0, 100)
+    const r = applyNicCap(state, server().specs.nicMbps, CAP * 1.5, 0, 100)
     expect(r.deliveredFraction).toBe(1)
     expect(r.queuedLatencyMs).toBeCloseTo(50, 5) // (1.5 - 1) * 100ms
   })
 
   it('beyond 2x cap: sheds to 2x cap with saturated queue latency', () => {
     const state = createNicState()
-    const r = applyNicCap(state, server(), 0, CAP * 4, 100)
+    const r = applyNicCap(state, server().specs.nicMbps, 0, CAP * 4, 100)
     expect(r.deliveredFraction).toBeCloseTo(0.5, 5) // 2 / 4
     expect(r.queuedLatencyMs).toBe(100)
   })
 
   it('accumulates within a step: two adds that jointly cross the cap start queueing', () => {
     const state = createNicState()
-    expect(applyNicCap(state, server(), CAP * 0.7, 0, 100).queuedLatencyMs).toBe(0)
-    const second = applyNicCap(state, server(), CAP * 0.7, 0, 100)
+    expect(applyNicCap(state, server().specs.nicMbps, CAP * 0.7, 0, 100).queuedLatencyMs).toBe(0)
+    const second = applyNicCap(state, server().specs.nicMbps, CAP * 0.7, 0, 100)
     expect(second.deliveredFraction).toBe(1)
     expect(second.queuedLatencyMs).toBeCloseTo(40, 5) // cumulative 1.4x cap -> (0.4)*100ms
   })
@@ -119,7 +122,7 @@ describe('settleNic — persistent send buffer (audit ISSUE-002)', () => {
   it('under cap: full delivery, no backlog carried, counters reset', () => {
     const state = createNicState()
     addNicBytes(state, CAP * 0.4, CAP * 0.4)
-    expect(settleNic(state, server(), 100)).toEqual({ deliveredFraction: 1, queuedLatencyMs: 0 })
+    expect(settleNic(state, server().specs.nicMbps, 100)).toEqual({ deliveredFraction: 1, queuedLatencyMs: 0 })
     expect(state.backlogBytes).toBe(0)
     expect(state.inBytesThisStep).toBe(0)
     expect(state.outBytesThisStep).toBe(0)
@@ -128,12 +131,12 @@ describe('settleNic — persistent send buffer (audit ISSUE-002)', () => {
   it('a saturated step carries backlog that drains on the next (idle) step', () => {
     const state = createNicState()
     addNicBytes(state, 0, CAP * 1.5)
-    const r1 = settleNic(state, server(), 100)
+    const r1 = settleNic(state, server().specs.nicMbps, 100)
     expect(r1.deliveredFraction).toBe(1)
     expect(r1.queuedLatencyMs).toBeCloseTo(50, 5)          // (1.5 − 1) × 100ms
     expect(state.backlogBytes).toBeCloseTo(CAP * 0.5, 0)   // the queued excess
 
-    const r2 = settleNic(state, server(), 100)             // idle step: only the backlog
+    const r2 = settleNic(state, server().specs.nicMbps, 100)             // idle step: only the backlog
     expect(r2).toEqual({ deliveredFraction: 1, queuedLatencyMs: 0 })
     expect(state.backlogBytes).toBe(0)                     // drained, not reset
   })
@@ -141,15 +144,38 @@ describe('settleNic — persistent send buffer (audit ISSUE-002)', () => {
   it('backlog is bounded at one step-cap (excess beyond 2x cap is shed) and adds to next step load', () => {
     const state = createNicState()
     addNicBytes(state, 0, CAP * 4)
-    const r1 = settleNic(state, server(), 100)
+    const r1 = settleNic(state, server().specs.nicMbps, 100)
     expect(r1.deliveredFraction).toBeCloseTo(0.5, 5)       // 2 / 4
     expect(state.backlogBytes).toBeCloseTo(CAP, 0)         // capped at one step's budget
 
     addNicBytes(state, 0, CAP * 0.6)                       // 0.6 new + 1.0 backlog = 1.6× cap
-    const r2 = settleNic(state, server(), 100)
+    const r2 = settleNic(state, server().specs.nicMbps, 100)
     expect(r2.deliveredFraction).toBe(1)
     expect(r2.queuedLatencyMs).toBeCloseTo(60, 5)          // still congested from the carryover
     expect(state.backlogBytes).toBeCloseTo(CAP * 0.6, 0)
+  })
+})
+
+describe('generalized NIC cap (nicMbps parameter) and NatGatewayState', () => {
+  it('applyNicCap/settleNic still work when called with nicMbps (regression floor)', () => {
+    const server = createServer('az-1', getPreset('vps-medium')!)
+    const CAP = 12_500_000
+    const state = createNicState()
+    expect(applyNicCap(state, server.specs.nicMbps, CAP * 0.4, CAP * 0.4, 100))
+      .toEqual({ deliveredFraction: 1, queuedLatencyMs: 0 })
+    expect(settleNic(state, server.specs.nicMbps, 100)).toEqual({ deliveredFraction: 1, queuedLatencyMs: 0 })
+  })
+
+  it('a NatGatewayState shares its cap across two flows the way a single NIC would', () => {
+    const state = createNatGatewayState()
+    const stepMs = 1000
+    const nicMbps = 100 // 12.5 MB/s cap
+    const capBytes = (nicMbps * 1e6 / 8) * (stepMs / 1000)
+    applyNatGatewayCap(state, nicMbps, capBytes * 0.6, 0, stepMs)
+    const r2 = applyNatGatewayCap(state, nicMbps, capBytes * 0.6, 0, stepMs)
+    // combined load (1.2x cap) exceeds capacity — both flows see queued latency, not full delivery
+    expect(r2.queuedLatencyMs).toBeGreaterThan(0)
+    settleNatGateway(state, nicMbps, stepMs)
   })
 })
 

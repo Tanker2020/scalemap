@@ -1,6 +1,6 @@
 // Runtime network model: per-hop latency sampling, NIC throughput caps, blocked-path
 // refusals. Spec decision 6, docs/superpowers/specs/2026-07-08-phase2-substrate-engine-design.md.
-import type { HopClass, CompiledPath, BlueprintDependency, Server } from '../world/types'
+import type { HopClass, CompiledPath, BlueprintDependency } from '../world/types'
 import type { Rng } from './rng'
 import { interRegionLatencyMs } from '../regionConfig'
 import { greatCircleKm } from '../world/regionGeo'
@@ -102,10 +102,10 @@ export function addNicBytes(state: NicState, inBytes: number, outBytes: number):
 //   >  2xcap      -> sheds to 2xcap (deliveredFraction = 2xcap / load), queue saturated
 function evaluateNic(
   state: NicState,
-  server: Server,
+  nicMbps: number,
   stepMs: number,
 ): { capBytes: number; load: number; result: { deliveredFraction: number; queuedLatencyMs: number } } {
-  const capBytes = ((server.specs.nicMbps * 1e6) / 8) * (stepMs / 1000)
+  const capBytes = ((nicMbps * 1e6) / 8) * (stepMs / 1000)
   const load = Math.max(state.inBytesThisStep, state.outBytesThisStep) + state.backlogBytes
   if (capBytes <= 0) return { capBytes, load, result: { deliveredFraction: 0, queuedLatencyMs: stepMs } }
   const ratio = load / capBytes
@@ -119,13 +119,13 @@ function evaluateNic(
 /** Accumulate + evaluate in one call (the original single-shot API; result reflects backlog). */
 export function applyNicCap(
   state: NicState,
-  server: Server,
+  nicMbps: number,
   addInBytes: number,
   addOutBytes: number,
   stepMs: number,
 ): { deliveredFraction: number; queuedLatencyMs: number } {
   addNicBytes(state, addInBytes, addOutBytes)
-  return evaluateNic(state, server, stepMs).result
+  return evaluateNic(state, nicMbps, stepMs).result
 }
 
 // End-of-step settlement (audit ISSUE-002): evaluate the step, carry the un-transmitted
@@ -134,15 +134,22 @@ export function applyNicCap(
 // mirroring admittedScale's one-step lag.
 export function settleNic(
   state: NicState,
-  server: Server,
+  nicMbps: number,
   stepMs: number,
 ): { deliveredFraction: number; queuedLatencyMs: number } {
-  const { capBytes, load, result } = evaluateNic(state, server, stepMs)
+  const { capBytes, load, result } = evaluateNic(state, nicMbps, stepMs)
   state.backlogBytes = capBytes <= 0 ? 0 : Math.min(Math.max(0, load - capBytes), capBytes)
   state.inBytesThisStep = 0
   state.outBytesThisStep = 0
   return result
 }
+
+// NAT gateway reuses the identical NicState shape/formulas — a NAT gateway IS a shared NIC from
+// the flow solver's point of view, just keyed by gateway id instead of server id.
+export type NatGatewayState = NicState
+export const createNatGatewayState = createNicState
+export const applyNatGatewayCap = applyNicCap
+export const settleNatGateway = settleNic
 
 // ─── Blocked-path refusals ────────────────────────────────────────────────────
 

@@ -2201,7 +2201,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     for (const server of Object.values(doc.servers)) {
       const nic = s.nics.get(server.id)
       if (!nic) continue
-      const settled = settleNic(nic, server, stepMs)
+      const settled = settleNic(nic, server.specs.nicMbps, stepMs)
       s.nicDeliveredFraction.set(server.id, settled.deliveredFraction)
       s.nicQueuedLatencyMs.set(server.id, settled.queuedLatencyMs)
     }
