@@ -70,6 +70,11 @@ interface UiStore {
   // WorldShell-local useState would be invisible to that closure.
   paletteOpen: boolean
   setPaletteOpen: (v: boolean | ((prev: boolean) => boolean)) => void
+  // 2026-08-09 (wave 5 ergonomics, task 19): the keyboard-map overlay's open/closed state, lifted
+  // the SAME way paletteOpen was one task earlier — keymap.ts's app-level `?`/⌘/ bindings are
+  // installed in App.tsx, above WorldShell, so their `run` needs a store-backed toggle to reach.
+  helpOpen: boolean
+  setHelpOpen: (v: boolean | ((prev: boolean) => boolean)) => void
 }
 
 export const useUiStore = create<UiStore>((set) => ({
@@ -108,4 +113,6 @@ export const useUiStore = create<UiStore>((set) => ({
   setPlaceMode: (v) => set(s => ({ placeMode: typeof v === 'function' ? v(s.placeMode) : v })),
   paletteOpen: false,
   setPaletteOpen: (v) => set(s => ({ paletteOpen: typeof v === 'function' ? v(s.paletteOpen) : v })),
+  helpOpen: false,
+  setHelpOpen: (v) => set(s => ({ helpOpen: typeof v === 'function' ? v(s.helpOpen) : v })),
 }))

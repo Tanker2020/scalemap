@@ -22,7 +22,9 @@ import { ConnectionsView } from './connections/ConnectionsView'
 import { FirewallRulesModal } from './server/FirewallRulesModal'
 import { AssistantView } from './ai/AssistantView'
 import { CommandPalette } from './CommandPalette'
+import { KeymapOverlay } from './KeymapOverlay'
 import { buildCommands, type PaletteContext } from './commands'
+import { REGISTRY } from '../keymap'
 import { useCompiledWorld } from './useCompiledWorld'
 import { WORLD_REGIONS } from '../../lib/regionConfig'
 import { getPreset } from '../../lib/world/instanceCatalog'
@@ -61,6 +63,10 @@ export function WorldShell() {
   // ui.store.ts's paletteOpen doc comment.
   const paletteOpen = useUiStore(s => s.paletteOpen)
   const setPaletteOpen = useUiStore(s => s.setPaletteOpen)
+  // The keyboard-map overlay's open state (wave 5 task 19) — same lift pattern as paletteOpen:
+  // keymap.ts's app-level `?`/⌘/ bindings are installed in App.tsx, above this component.
+  const helpOpen = useUiStore(s => s.helpOpen)
+  const setHelpOpen = useUiStore(s => s.setHelpOpen)
   const doc = useWorldStore(s => s.doc)
   const compiled = useCompiledWorld()
 
@@ -204,6 +210,12 @@ export function WorldShell() {
         commands={buildCommands(paletteCtx)}
         onClose={() => setPaletteOpen(false)}
         running={running}
+      />
+      <KeymapOverlay
+        open={helpOpen}
+        registry={REGISTRY}
+        running={running}
+        onClose={() => setHelpOpen(false)}
       />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <ConnectionsView open={connectionsOpen} onClose={() => setConnectionsOpen(false)} />

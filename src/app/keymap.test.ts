@@ -64,6 +64,7 @@ describe('keymap', () => {
         exitPlaceMode: vi.fn(),
         isInPlaceMode: () => false,
         togglePalette: vi.fn(),
+        toggleHelp: vi.fn(),
         ...overrides,
       }
     }
@@ -116,6 +117,7 @@ describe('keymap', () => {
         exitPlaceMode: vi.fn(),
         isInPlaceMode: () => false,
         togglePalette: vi.fn(),
+        toggleHelp: vi.fn(),
         ...overrides,
       }
     }
@@ -124,6 +126,61 @@ describe('keymap', () => {
     const e = new KeyboardEvent('keydown', { key: 'k', metaKey: true, cancelable: true })
     window.dispatchEvent(e)
     expect(ctx.togglePalette).toHaveBeenCalledTimes(1)
+    uninstall()
+  })
+
+  // wave 5 task 19 — the `?` / ⌘/ keyboard-map-overlay bindings added to REGISTRY. `?` requires
+  // the Shift-produced e.key === '?' to match a BARE (no-⇧-glyph) binding — the matchBinding fix
+  // this task made (symbol keys skip the alphanumeric shiftKey check).
+  it('bare ? calls toggleHelp (Shift+/ produces key "?" with shiftKey true)', () => {
+    function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
+      return {
+        running: false,
+        newWorld: vi.fn(),
+        goGlobe: vi.fn(),
+        setFilePath: vi.fn(),
+        setShowHome: vi.fn(),
+        undo: vi.fn(),
+        redo: vi.fn(),
+        goUp: vi.fn(),
+        exitPlaceMode: vi.fn(),
+        isInPlaceMode: () => false,
+        togglePalette: vi.fn(),
+        toggleHelp: vi.fn(),
+        ...overrides,
+      }
+    }
+    const ctx = makeCtx()
+    const uninstall = installKeymap(REGISTRY, () => ctx)
+    const e = new KeyboardEvent('keydown', { key: '?', shiftKey: true, cancelable: true })
+    window.dispatchEvent(e)
+    expect(ctx.toggleHelp).toHaveBeenCalledTimes(1)
+    uninstall()
+  })
+
+  it('⌘/ calls toggleHelp regardless of running state (when: always)', () => {
+    function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
+      return {
+        running: false,
+        newWorld: vi.fn(),
+        goGlobe: vi.fn(),
+        setFilePath: vi.fn(),
+        setShowHome: vi.fn(),
+        undo: vi.fn(),
+        redo: vi.fn(),
+        goUp: vi.fn(),
+        exitPlaceMode: vi.fn(),
+        isInPlaceMode: () => false,
+        togglePalette: vi.fn(),
+        toggleHelp: vi.fn(),
+        ...overrides,
+      }
+    }
+    const ctx = makeCtx({ running: true })
+    const uninstall = installKeymap(REGISTRY, () => ctx)
+    const e = new KeyboardEvent('keydown', { key: '/', metaKey: true, cancelable: true })
+    window.dispatchEvent(e)
+    expect(ctx.toggleHelp).toHaveBeenCalledTimes(1)
     uninstall()
   })
 })

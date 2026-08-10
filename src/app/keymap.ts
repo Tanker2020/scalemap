@@ -23,6 +23,9 @@ export interface CommandContext {
   // wave 5 task 16 — toggles the command palette's ui.store-backed open state (see ui.store.ts's
   // paletteOpen for why it isn't WorldShell-local).
   togglePalette: () => void
+  // wave 5 task 19 — toggles the self-maintaining keyboard-map overlay's ui.store-backed open
+  // state, the same lift pattern as togglePalette one task earlier.
+  toggleHelp: () => void
 }
 
 export interface Binding {
@@ -61,8 +64,18 @@ export function matchBinding(e: KeyboardEvent, registry: Binding[]): Binding | n
       if (e.key === 'Escape') return b
       continue
     }
-    if (parsed.key.length === 1 && e.key.toLowerCase() === parsed.key && evMeta === parsed.meta && e.shiftKey === parsed.shift) {
-      return b
+    if (parsed.key.length === 1) {
+      // A symbol like '?' already has Shift baked into the browser's e.key (Shift+/ produces
+      // key === '?', with e.shiftKey === true even though the binding is authored as a BARE
+      // key with no ⇧ glyph). Requiring e.shiftKey === parsed.shift for those would make a bare
+      // '?' binding un-triggerable by the only physical key combo that ever produces '?'. Only
+      // alphanumeric single-char keys need the explicit shift check — that's what keeps ⌘Z and
+      // ⇧⌘Z distinguishable (both parse to key 'z', shift is the only thing telling them apart).
+      const isAlphaNum = /[a-z0-9]/.test(parsed.key)
+      const shiftOk = isAlphaNum ? e.shiftKey === parsed.shift : true
+      if (e.key.toLowerCase() === parsed.key && evMeta === parsed.meta && shiftOk) {
+        return b
+      }
     }
   }
   return null
@@ -89,6 +102,18 @@ export const REGISTRY: Binding[] = [
   {
     id: 'toggle-palette', keys: '⌘K', label: 'Command palette', group: 'view', when: 'always',
     run: ctx => ctx.togglePalette(),
+  },
+  {
+    id: 'toggle-help', keys: '⌘/', label: 'Keyboard shortcuts', group: 'view', when: 'always',
+    run: ctx => ctx.toggleHelp(),
+  },
+  {
+    // Bare '?' is the conventional "show shortcuts" trigger in most apps, alongside ⌘/. It's a
+    // second REGISTRY entry (not a second keys-string on the same binding — matchBinding only
+    // ever parses one `keys` string per Binding) so KeymapOverlay lists both ways to open it,
+    // same self-maintaining property as every other binding.
+    id: 'toggle-help-bare', keys: '?', label: 'Keyboard shortcuts', group: 'view', when: 'always',
+    run: ctx => ctx.toggleHelp(),
   },
   {
     id: 'escape', keys: 'Escape', label: 'Back / exit place mode', group: 'navigate', when: 'always', preventDefault: 'never',

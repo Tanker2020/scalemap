@@ -44,6 +44,7 @@ beforeEach(() => {
     exitPlaceMode: () => useUiStore.getState().setPlaceMode(false),
     isInPlaceMode: () => useUiStore.getState().placeMode,
     togglePalette: () => useUiStore.getState().setPaletteOpen(o => !o),
+    toggleHelp: () => useUiStore.getState().setHelpOpen(o => !o),
   }))
 })
 

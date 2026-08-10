@@ -6051,3 +6051,68 @@ unrelated, modal-scoped Escape-to-close listeners (`SettingsModal.tsx`, `Firewal
 `AzConnectionsView.tsx`, `AssistantView.tsx`, `ServerView.tsx`'s capture-phase selection-Escape,
 plus each of those components' own test files exercising them directly) — out of this task's
 scope (the brief named specifically the `App.tsx`/`WorldShell.tsx` global pair).
+
+---
+
+## Wave 5 Task 19 — `src/app/world/KeymapOverlay.tsx`: self-maintaining keyboard-map overlay (`?`/`⌘/`)
+
+The last ergonomics-pack task: a help overlay that renders directly off `keymap.ts`'s `REGISTRY`
+(any `Binding[]`, actually — it's a pure prop) so a future binding needs zero changes to this
+component to appear in the help. Read-only; mirrors `CommandPalette.tsx`'s
+overlay/portal/reduced-motion pattern rather than inventing a new modal shape.
+
+**`src/app/world/KeymapOverlay.tsx` (new)** — `KeymapOverlay({ open, registry, running, onClose })`
+groups `registry` by `Binding['group']`, renders each group in a fixed `GROUP_ORDER` (`file` →
+`navigate` → `author` → `chaos` → `view`, not `Map` insertion order, so sections don't reshuffle
+as bindings are added/removed), and for each binding computes `enabled` via `keymap.ts`'s own
+`isEnabled(binding, running)` — NOT a re-derived copy of that rule, so a future `when` value or
+gating change in `keymap.ts` is reflected here for free. Disabled bindings render dimmed
+(`aria-disabled="true"`, `opacity: 0.5`). `createPortal`'d to `document.body`, backdrop
+click-to-close, `useReducedMotion()`-gated entrance, `data-testid="keymap-overlay"`.
+
+**`src/app/keymap.ts` changes:**
+- `CommandContext` gained `toggleHelp: () => void`, alongside `togglePalette` from Task 16 — same
+  lift pattern (`ui.store.ts`'s `helpOpen`/`setHelpOpen`, mirroring `paletteOpen`/`setPaletteOpen`).
+- `REGISTRY` gained two entries, both `group: 'view'`, `when: 'always'`, both calling
+  `ctx.toggleHelp()`: `toggle-help` (`keys: '⌘/'`) and `toggle-help-bare` (`keys: '?'`). Two
+  entries, not one binding with two key-strings, because `matchBinding` only ever parses a
+  single `keys` string per `Binding` — this keeps the overlay listing both ways to open it
+  (itself an instance of the self-maintaining property, not a special case).
+- **`matchBinding` fix (the actual bug this task's "confirm before assuming" step surfaced):**
+  `parseKeys('?')` already correctly produced `{ key: '?', meta: false, shift: false }` — the
+  brief's suspicion that `parseKeys` itself might need extending was unfounded. The real gap was
+  in `matchBinding`'s comparison against a REAL `KeyboardEvent`: pressing the only physical key
+  combo that ever produces `'?'` (Shift+`/`) sets `e.shiftKey = true`, but a bare `?` binding
+  parses to `shift: false` — the old `e.shiftKey === parsed.shift` check made a bare `?` binding
+  mathematically un-triggerable. Fixed by only requiring the exact `shiftKey` match for
+  alphanumeric single-char keys (where it's load-bearing — it's the only thing distinguishing
+  `⌘Z` from `⇧⌘Z`); symbol keys like `?` skip that check since Shift is already baked into `e.key`
+  by the browser. `⌘/`  is unaffected either way (`/` needs no Shift on a US keyboard, so
+  `parsed.shift` and the real `e.shiftKey` already agreed).
+
+**`src/app/store/ui.store.ts`** gained `helpOpen: boolean` + `setHelpOpen` (same updater-fn-or-value
+shape as `paletteOpen`/`setPaletteOpen`), for the identical reason: `App.tsx`'s app-level
+`installKeymap` context needs a store-backed toggle it can reach from outside `WorldShell`'s tree.
+
+**`src/App.tsx`**: the `installKeymap` context getter gained `toggleHelp: () =>
+useUiStore.getState().setHelpOpen(o => !o)`, alongside the existing `togglePalette`.
+
+**`src/app/world/WorldShell.tsx`**: imports `KeymapOverlay` + `REGISTRY`, reads
+`helpOpen`/`setHelpOpen` off `useUiStore`, and mounts `<KeymapOverlay open={helpOpen}
+registry={REGISTRY} running={running} onClose={() => setHelpOpen(false)} />` alongside the
+existing `<CommandPalette>` mount, both siblings of `<ScrubberV2/>` near the end of the render.
+
+**Test-file consequence:** `keymap.test.ts` and `WorldShell.test.tsx` both hand-construct
+`CommandContext` objects (for `installKeymap` calls exercising the registry directly) — adding a
+required `toggleHelp` field to the interface meant both needed a `toggleHelp: vi.fn()` /
+`toggleHelp: () => useUiStore.getState().setHelpOpen(o => !o)` addition to keep compiling; no
+existing test's behavior changed. `keymap.test.ts` also gained two new cases exercising the
+`matchBinding` fix directly: bare `?` (`{ key: '?', shiftKey: true }`) calling `toggleHelp`, and
+`⌘/` (`{ key: '/', metaKey: true }`) calling `toggleHelp` regardless of `running`.
+
+**Verification:** `npx vitest run src/app/world/KeymapOverlay.test.tsx` — 7 passed (closed-state
+no-render, grouped rendering, disabled/enabled `aria-disabled` reflection for `running`, the
+self-maintaining new-binding-appears-with-zero-component-changes case, REGISTRY's `toggle-help`
+entries rendering, backdrop click-to-close). `npx vitest run src/app/keymap.test.ts
+src/app/world/WorldShell.test.tsx src/app/world/CommandPalette.test.tsx` — 42 passed. `npx tsc
+--noEmit` clean. Full suite: `npx vitest run` — 161 files / 2146 tests, all green.
