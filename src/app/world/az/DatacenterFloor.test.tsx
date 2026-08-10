@@ -2,6 +2,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { DatacenterFloor } from './DatacenterFloor'
+import { isoBox } from './iso'
+import { POD_HEIGHT_PX } from './FreePoolPod'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore } from '../../store/simulation.store'
@@ -503,5 +505,110 @@ describe('DatacenterFloor — lines survive racking (2026-07-12 follow-up)', () 
     expect(trace.getAttribute('data-partitioned')).toBe('false')
     expect(trace).toHaveAttribute('stroke', 'var(--color-accent)')
     expect(trace).toHaveAttribute('stroke-dasharray', '3 6')
+  })
+})
+
+describe('DatacenterFloor — multi-select (wave 5 ergonomics, task 17)', () => {
+  it('a plain click on a pod selects exactly that server', () => {
+    const { azId } = seedAz()
+    const s1 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<DatacenterFloor />)
+    const pod = screen.getByTestId(`free-pod-${s1}`)
+    fireEvent.pointerDown(pod, { clientX: 10, clientY: 10, button: 0, pointerId: 1 })
+    fireEvent.pointerUp(pod, { clientX: 10, clientY: 10, pointerId: 1 })
+    expect(useUiStore.getState().selectedEntityIds).toEqual(new Set([s1]))
+    expect(useUiStore.getState().selectedServerId).toBe(s1)
+  })
+
+  it('⌘/ctrl-click toggles a server into/out of a multi-select', () => {
+    const { azId } = seedAz()
+    const s1 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const s2 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<DatacenterFloor />)
+    const pod1 = screen.getByTestId(`free-pod-${s1}`)
+    const pod2 = screen.getByTestId(`free-pod-${s2}`)
+
+    fireEvent.pointerDown(pod1, { clientX: 10, clientY: 10, button: 0, pointerId: 1 })
+    fireEvent.pointerUp(pod1, { clientX: 10, clientY: 10, pointerId: 1 })
+    expect(useUiStore.getState().selectedEntityIds).toEqual(new Set([s1]))
+
+    fireEvent.pointerDown(pod2, { clientX: 20, clientY: 20, button: 0, pointerId: 2, metaKey: true })
+    fireEvent.pointerUp(pod2, { clientX: 20, clientY: 20, pointerId: 2, metaKey: true })
+    expect(useUiStore.getState().selectedEntityIds).toEqual(new Set([s1, s2]))
+    expect(useUiStore.getState().selectedServerId).toBeNull()   // multi-select: no single scope target
+
+    // ⌘-click s1 again toggles it back OUT, leaving just s2.
+    fireEvent.pointerDown(pod1, { clientX: 10, clientY: 10, button: 0, pointerId: 3, ctrlKey: true })
+    fireEvent.pointerUp(pod1, { clientX: 10, clientY: 10, pointerId: 3, ctrlKey: true })
+    expect(useUiStore.getState().selectedEntityIds).toEqual(new Set([s2]))
+    expect(useUiStore.getState().selectedServerId).toBe(s2)
+  })
+
+  it('⇧-click range-selects from the last-clicked server to the current one, in layout order', () => {
+    const { azId } = seedAz()
+    const s1 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const s2 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const s3 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    render(<DatacenterFloor />)
+    const pod1 = screen.getByTestId(`free-pod-${s1}`)
+    const pod3 = screen.getByTestId(`free-pod-${s3}`)
+
+    fireEvent.pointerDown(pod1, { clientX: 10, clientY: 10, button: 0, pointerId: 1 })
+    fireEvent.pointerUp(pod1, { clientX: 10, clientY: 10, pointerId: 1 })
+    fireEvent.pointerDown(pod3, { clientX: 30, clientY: 30, button: 0, pointerId: 2, shiftKey: true })
+    fireEvent.pointerUp(pod3, { clientX: 30, clientY: 30, pointerId: 2, shiftKey: true })
+
+    expect(useUiStore.getState().selectedEntityIds).toEqual(new Set([s1, s2, s3]))
+    expect(useUiStore.getState().selectedServerId).toBeNull()
+  })
+
+  it('marquee selection selects exactly the servers whose floor layout rects intersect the marquee', () => {
+    const { azId } = seedAz()
+    // Two free-pool servers, created in order so 'server'-then-id sort (createServer's shared
+    // 'server' label falls back to id ordering) puts s1 at pod grid cell (0,0) and s2 at (1,0) —
+    // the SAME cols=4 base grid layoutFloor assigns below 5 occupants.
+    const s1 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const s2 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+
+    render(<DatacenterFloor />)
+    const svg = screen.getByTestId('datacenter-floor-svg')
+
+    // Compute the EXPECTED geometry from the same iso-projection primitives the component
+    // itself uses (iso.ts's isoBox) rather than asserting against approximate pixel guesses.
+    const cols = 4
+    const box0 = isoBox(0, 0, cols, POD_HEIGHT_PX, 0.52)
+    // A small marquee strictly inside pod 0's bounding rect only.
+    const x0 = box0.roofSW.x + 5
+    const y0 = box0.roofNW.y + 5
+
+    fireEvent.mouseDown(svg, { clientX: x0, clientY: y0 })
+    fireEvent.mouseMove(svg, { clientX: x0 + 10, clientY: y0 + 10 })
+    fireEvent.mouseUp(svg, { clientX: x0 + 10, clientY: y0 + 10 })
+
+    expect(useUiStore.getState().selectedEntityIds).toEqual(new Set([s1]))
+    expect(useUiStore.getState().selectedEntityIds.has(s2)).toBe(false)
+  })
+
+  it('marquee selection covering both pods selects both servers', () => {
+    const { azId } = seedAz()
+    const s1 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    const s2 = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+
+    render(<DatacenterFloor />)
+    const svg = screen.getByTestId('datacenter-floor-svg')
+
+    const cols = 4
+    const box0 = isoBox(0, 0, cols, POD_HEIGHT_PX, 0.52)
+    const box1 = isoBox(1, 0, cols, POD_HEIGHT_PX, 0.52)
+    const minX = Math.min(box0.roofSW.x, box1.roofSW.x) - 5
+    const minY = Math.min(box0.roofNW.y, box1.roofNW.y) - 5
+    const maxX = Math.max(box0.roofNE.x, box1.roofNE.x) + 5
+    const maxY = Math.max(box0.floorSE.y, box1.floorSE.y) + 5
+
+    fireEvent.mouseDown(svg, { clientX: minX, clientY: minY })
+    fireEvent.mouseMove(svg, { clientX: maxX, clientY: maxY })
+    fireEvent.mouseUp(svg, { clientX: maxX, clientY: maxY })
+
+    expect(useUiStore.getState().selectedEntityIds).toEqual(new Set([s1, s2]))
   })
 })

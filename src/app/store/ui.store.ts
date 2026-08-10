@@ -46,6 +46,18 @@ interface UiStore {
   setSceneOverlay: (o: SceneOverlayTarget | null) => void
   selectedServerId: ServerId | null
   setSelectedServerId: (id: ServerId | null) => void
+  // 2026-08-09 (wave 5 ergonomics, task 17): the general multi-select surface for the AZ floor
+  // (click/⌘-click/⇧-click/marquee). `selectedServerId` is NOT a parallel concept — it is the
+  // single-select DEGENERATE CASE of this set, kept in sync by every setter below so
+  // `dock/scope.ts`'s `deriveScope` (which reads only `selectedServerId`) keeps resolving
+  // exactly as it did before this task: a 1-member selection narrows the dock to that server,
+  // a 0- or 2+-member selection widens it back to AZ scope, same as an explicit
+  // `setSelectedServerId(null)` always has.
+  selectedEntityIds: Set<string>
+  setSelectedEntityIds: (ids: Set<string>) => void
+  toggleSelectedEntity: (id: string) => void
+  selectEntityRange: (ids: string[]) => void
+  clearSelection: () => void
   // 2026-08-09 (wave 5 ergonomics, task 15): lifted out of WorldShell's local useState so the
   // app-level keymap.ts registry (installed once, above WorldShell) can read/toggle the SAME
   // "armed" globe traffic-placement mode Escape needs to disarm. GlobeView's own HUD button and
@@ -71,7 +83,27 @@ export const useUiStore = create<UiStore>((set) => ({
   sceneOverlay: null,
   setSceneOverlay: (o) => set({ sceneOverlay: o }),
   selectedServerId: null,
-  setSelectedServerId: (id) => set({ selectedServerId: id }),
+  // Kept in sync with selectedEntityIds (task 17) — a single-click-to-inspect flow elsewhere in
+  // the app (that doesn't go through the multi-select handlers below) must not leave the two
+  // disagreeing: selecting one id collapses selectedEntityIds to that single member; clearing
+  // collapses it to empty, same as clearSelection().
+  setSelectedServerId: (id) => set({ selectedServerId: id, selectedEntityIds: id ? new Set([id]) : new Set() }),
+  selectedEntityIds: new Set<string>(),
+  setSelectedEntityIds: (ids) => set({
+    selectedEntityIds: ids,
+    selectedServerId: ids.size === 1 ? [...ids][0] : null,
+  }),
+  toggleSelectedEntity: (id) => set(s => {
+    const next = new Set(s.selectedEntityIds)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    return { selectedEntityIds: next, selectedServerId: next.size === 1 ? [...next][0] : null }
+  }),
+  selectEntityRange: (ids) => set({
+    selectedEntityIds: new Set(ids),
+    selectedServerId: ids.length === 1 ? ids[0] : null,
+  }),
+  clearSelection: () => set({ selectedEntityIds: new Set(), selectedServerId: null }),
   placeMode: false,
   setPlaceMode: (v) => set(s => ({ placeMode: typeof v === 'function' ? v(s.placeMode) : v })),
   paletteOpen: false,
