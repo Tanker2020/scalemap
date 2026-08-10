@@ -6566,3 +6566,117 @@ self-maintaining new-binding-appears-with-zero-component-changes case, REGISTRY'
 entries rendering, backdrop click-to-close). `npx vitest run src/app/keymap.test.ts
 src/app/world/WorldShell.test.tsx src/app/world/CommandPalette.test.tsx` — 42 passed. `npx tsc
 --noEmit` clean. Full suite: `npx vitest run` — 161 files / 2146 tests, all green.
+
+---
+
+## Wave 5 — FINAL REVIEW FIX WAVE (C1, I1, I2, I3)
+
+Four findings from the whole-branch final review of the 21-task wave, fixed together (no second
+fix round follows this one — see `.superpowers/sdd/2026-08-09-wave5-comparison-environments-ergonomics/task-final-fix-report.md`
+for the full writeup with reasoning, exact diffs summarized, and every verification command's output).
+
+**C1 (critical) — batch-edit bar was unreachable; multi-select had no visual feedback.** Three
+facts composed into a dead feature: `BatchEditBar` (Task 18) rendered only inside
+`TopologyPanel.tsx`, a WORLD-scope-only tab (`dock/scope.ts`'s `WORLD_TABS`); multi-select
+(`ui.store.ts`'s `selectedEntityIds`, Task 17) can only originate on `DatacenterFloor.tsx`, i.e.
+at `nav.level === 'az'`; and `WorldShell.tsx`'s nav-clear effect wipes `selectedEntityIds` on
+every `nav.level`/`nav.azId` change — including the exact `az → world` navigation required to
+reach the batch bar's only host. Fix: a second `AzBatchEditBar` (same
+`batchUpdateServers`/`selectedEntityIds`/`INSTANCE_CATALOG` shape as the original, scoped to
+`doc.servers[id]?.azId === azId`) now renders inside `dock/AzConfigTab.tsx` — AZ scope, the SAME
+scope a multi-selection can actually exist in (`dock/scope.ts`'s `deriveScope`: a 2+ selection
+stays AZ scope, never narrows to server scope), so it's reachable without ever leaving the floor.
+`TopologyPanel.tsx`'s original copy was left in place (harmless dead code at world scope, still
+covered by its own Task 18 tests) rather than deleted. The nav-clear effect itself was read
+carefully and left UNCHANGED: its `[nav.level, nav.azId]` dependency array only fires on an
+actual level/AZ transition, never on a same-AZ floor selection, so it isn't independently
+over-aggressive once the batch bar no longer requires leaving the scope. Separately,
+`RackCabinet.tsx`/`FreePoolPod.tsx` gained a `selectedEntityIds: ReadonlySet<ServerId>` prop
+(alongside the existing `selectedServerId`) — a slat/pod now highlights on
+`selectedServerId === server.id || selectedEntityIds.has(server.id)`, so a multi-selection
+finally has on-screen feedback (previously ALWAYS false for 2+ selections, since the store's own
+invariant sets `selectedServerId` to `null` whenever `selectedEntityIds.size !== 1`).
+`DatacenterFloor.tsx` threads its already-read `selectedEntityIds` down to both. New test:
+`WorldShell.test.tsx`'s "C1 fix" describe block drives the REAL lifecycle end-to-end — mounts
+`<WorldShell/>`, navigates via `nav.store` the way a click would, multi-selects 3 servers via the
+floor's actual pointer handlers (not a store seed), asserts all 3 carry `data-selected="true"`,
+asserts the batch bar is visible in that same scope, applies a batch instance-class change, and
+confirms it's one undo step — this is the exact test gap (TopologyPanel.test.tsx bypassing the
+nav lifecycle entirely) that let C1 ship unnoticed.
+
+**I1 (important) — baseline import had no shape validation.** `baseline.store.ts`'s `importJson`
+pushed whatever `parsed.summaries` contained straight into the store; a well-formed-JSON,
+wrong-shape file rendered fine in the compare-panel picker, then threw uncaught inside
+`ComparePanel.tsx`'s `MetricRow` (`format(n) => n.toFixed(0)` on a non-number) the moment it was
+selected for comparison — a white-screen crash with no error boundary anywhere in the app. Fix:
+`isValidRunSummaryShape` (new, in `baseline.store.ts`) checks `id`/`label` are strings and
+`latency.{p50Ms,p90Ms,p99Ms}`/`cost.{meanHourlyUsd,totalUsd,peakHourlyUsd}` are all numbers —
+enough to guarantee everything `ComparePanel`'s render path actually dereferences. `importJson`
+now validates `Array.isArray(summaries) && summaries.every(isValidRunSummaryShape)` and THROWS
+(not silently no-ops) on a mismatch, before ever calling `set(...)` — so `summaries` is left
+byte-unchanged on failure, never partially corrupted. No new error UI: `ComparePanel.tsx`'s
+Import button already wraps the call in a try/catch routing into the existing `fileError` banner
+(Task 7), so the thrown error surfaces through the same path a parse failure already did. One
+pre-existing test fixture (`baseline.store.test.ts`'s `fakeFrames()`) had to be widened to a
+full `WorldMetrics` shape (`crossAzBytesPerSec`/`crossRegionBytesPerSec`/
+`internetEgressBytesPerSec`/`populationRoutes`) — the old partial shape produced a genuine `NaN`
+cost (missing fields read as `undefined` inside `costModelV2.ts`'s egress math), which
+`JSON.stringify` lossy-serializes to `null`, which the new validator (correctly) now rejects on
+re-import. New tests: `baseline.store.test.ts` (throws-and-leaves-summaries-unchanged for three
+malformed shapes, accepts a shape-valid array), `ComparePanel.test.tsx` (wrong-shape JSON surfaces
+through the SAME banner as a parse failure, `summaries` left untouched).
+
+**I2 (important) — `RunSummary`/compare validity banner was blind to environment/`cloudProfile`.**
+`docFingerprint` hashes instance/path SHAPE only (by design — its own comment says "structural,
+not a hash of the whole doc"); an environment whose only knob is `populationRpsFactor`, or a
+`cloudProfile` switch, changes neither, so two runs captured under different environments read as
+"identical fingerprint, nothing changed" even though the whole demand curve or pricing basis
+moved. **Architectural choice (judgment call, since the finding left this open):** rather than
+folding environment/profile into `docFingerprint` itself, `RunSummary` gained two new fields —
+`environmentId: string | null` / `cloudProfile: string | null` (populated in `buildRunSummary`
+from `doc.activeEnvironmentId ?? null` / `doc.cloudProfile ?? null`) — and `ComparePanel.tsx`
+compares them directly, alongside the existing `scenarioId`/`seed` check. Reasoning: folding a
+pure demand-volume or pricing-basis knob into a hash whose entire contract is "structural only"
+would make the fingerprint mean two different things depending on what changed, silently breaking
+the "identical fingerprint ⇒ nothing changed structurally" invariant the existing "identical" note
+already promises in its own copy. A dedicated comparison is also cheaper to reason about and test
+in isolation. `ComparePanel.tsx`'s banner logic: `isIdentical` is now gated on
+`fingerprintMatches && !envDiffers` (previously fingerprint alone); a NEW `isEnvNote` case (amber,
+`role="status"`, distinct from both the red "not sound" and the gray "identical" notes) fires when
+the fingerprint matches but `environmentId`/`cloudProfile` differ — "same architecture, different
+demand volume or pricing" is a materially different message from either "unsound comparison" or
+"nothing changed." New tests: `runSummary.test.ts` (`environmentId`/`cloudProfile` null for a
+base-world capture; two runs differing ONLY in `activeEnvironmentId`/`cloudProfile` share
+`docFingerprint` but are distinguishable via the new fields), `ComparePanel.test.tsx` (the env-note
+fires instead of the plain "identical" note when only environment/profile differ; the plain
+"identical" note still fires when everything matches).
+
+**I3 (important) — `WorldDoc.cloudProfile` was authored, persisted, and completely inert.** The
+only reader of `doc.cloudProfile` was the `TopologyPanel.tsx` dropdown that WRITES it; `CostTab.tsx`'s
+three-way "price this world as…" row hardcoded pricing all of aws/gcp/azure regardless of the
+world's own profile, so setting `cloudProfile` to `'aws'` changed nothing anywhere. Fix: a new
+exported `defaultProviderFromDoc(doc)` in `costModelV2.ts` — returns `undefined` when
+`cloudProfile` is absent/`'generic'` (byte-identical to every pre-existing call site), else the
+real provider — is now passed as `computeWorldCost`'s `providerOverride` at the FOUR "this
+world's own cost" call sites: `CostTab.tsx`'s headline total (NOT its comparison row, which keeps
+explicitly overriding aws/gcp/azure regardless of the world's profile — that's the whole point of
+the row), `dock/scopeData.ts`'s `scopedCost` (region/AZ/world rollups feeding the dock's Cost
+tab), `RegionView.tsx`'s region cost headline, `TopologyPanel.tsx`'s per-region `$/hr` meta line,
+and `runSummary.ts`'s captured-cost figures (so a `RunSummary`'s cost tracks the same provider the
+live views showed while the run was captured). `providerOverride` only fills in for a managed
+service that hasn't pinned its own provider (`resolveProvider`'s existing contract, Task 12,
+unchanged) — server hourly cost is flat/preset-driven and was never provider-sensitive to begin
+with. New tests: `costModelV2.test.ts` (`defaultProviderFromDoc` unit behavior; feeding it into
+`computeWorldCost` matches an explicit `providerOverride` of the same value and reprices an
+unpinned service), `CostTab.test.tsx` (setting `doc.cloudProfile` changes the headline `$X /mo`
+total for a world with an unpinned managed service).
+
+**Verification:** targeted files — `npx vitest run src/app/world/WorldShell.test.tsx
+src/app/world/dock/AzConfigTab.test.tsx src/app/world/az/DatacenterFloor.test.tsx
+src/app/world/panels/TopologyPanel.test.tsx src/app/store/baseline.store.test.ts
+src/app/world/panels/ComparePanel.test.tsx src/lib/runSummary.test.ts src/lib/costModelV2.test.ts
+src/app/world/CostTab.test.tsx src/app/world/RegionView.test.tsx
+src/app/world/dock/scopeData.test.ts` — all passed, zero regressions. `npx tsc --noEmit` — clean.
+Full suite: `npx vitest run` — 161 files / 2158 tests, all green (12 new tests added by this fix
+wave: 1 in `WorldShell.test.tsx`, 3 in `baseline.store.test.ts`, 3 in `ComparePanel.test.tsx`, 2 in
+`runSummary.test.ts`, 3 in `costModelV2.test.ts`, 1 in `CostTab.test.tsx`).

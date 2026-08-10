@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeWorldCost } from './costModelV2'
+import { computeWorldCost, defaultProviderFromDoc } from './costModelV2'
 import { createWorld, createRegion, createAz, createServer, createLoadBalancer, createBlueprint, createPlacement } from './world/factories'
 import { getPreset } from './world/instanceCatalog'
 import { useWorldStore } from '../app/store/world.store'
@@ -428,6 +428,39 @@ describe('computeWorldCost — providerOverride ("price this world as…", Task 
     const withThreeArgs = computeWorldCost(doc, null, null)
     const withFourArgsUndefined = computeWorldCost(doc, null, null, undefined)
     expect(withFourArgsUndefined).toEqual(withThreeArgs)
+  })
+})
+
+// I3 fix (final wave-5 review): `doc.cloudProfile` used to be authored/persisted/read-back
+// but never consumed by anything. `defaultProviderFromDoc` is the ONE place a caller turns it
+// into `computeWorldCost`'s `providerOverride` — undefined/generic means "no default" (byte-
+// identical to every pre-existing call site), a real provider means "unpinned services default
+// to this provider," exactly mirroring providerOverride's own existing contract above.
+describe('defaultProviderFromDoc (I3 fix)', () => {
+  it('returns undefined when cloudProfile is absent or "generic"', () => {
+    const { doc } = twoServerWorld()
+    expect(defaultProviderFromDoc(doc)).toBeUndefined()
+    expect(defaultProviderFromDoc({ ...doc, cloudProfile: 'generic' })).toBeUndefined()
+  })
+
+  it('returns the real provider when cloudProfile is set to one', () => {
+    const { doc } = twoServerWorld()
+    expect(defaultProviderFromDoc({ ...doc, cloudProfile: 'aws' })).toBe('aws')
+    expect(defaultProviderFromDoc({ ...doc, cloudProfile: 'gcp' })).toBe('gcp')
+    expect(defaultProviderFromDoc({ ...doc, cloudProfile: 'azure' })).toBe('azure')
+  })
+
+  it('feeding it straight into computeWorldCost reprices an unpinned managed service, matching an explicit providerOverride of the same value', () => {
+    const { doc, regionId } = twoServerWorld()
+    doc.managedServices['unpinned'] = {
+      id: 'unpinned', label: 'no-pin', nodeType: 'objectStorage', provider: 'generic',
+      scope: { kind: 'region', regionId }, port: 443, storageGb: 100, storageTierId: 'standard',
+    }
+    const withCloudProfile: typeof doc = { ...doc, cloudProfile: 'aws' }
+    const viaCloudProfile = computeWorldCost(doc, null, null, defaultProviderFromDoc(withCloudProfile))
+    const viaExplicitOverride = computeWorldCost(doc, null, null, 'aws')
+    expect(viaCloudProfile).toEqual(viaExplicitOverride)
+    expect(viaCloudProfile.monthlyUsd).toBeGreaterThan(computeWorldCost(doc, null).monthlyUsd)
   })
 })
 

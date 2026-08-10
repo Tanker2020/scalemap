@@ -19,6 +19,20 @@ const DB_STORAGE_FALLBACK_USD_PER_GB_MONTH = 0.115
 // only fills in when the service has no pin of its own (provider === 'generic'). Called with
 // `providerOverride` undefined (every pre-existing call site), this is the exact identity
 // `ms.provider` always was — byte-identical default behavior.
+// I3 fix (final wave-5 review): `doc.cloudProfile` was authored, persisted, and read back by
+// TopologyPanel.tsx's own dropdown — but nothing downstream ever CONSUMED it, so setting a
+// world's cloud profile to 'aws' produced zero visible change anywhere. This is the ONE place a
+// caller turns `doc.cloudProfile` into the `providerOverride` argument above: 'generic' (or
+// absent) means "no default", matching `computeWorldCost`'s existing undefined-means-no-op
+// contract exactly. Used by every call site computing the world's OWN current cost (CostTab's
+// headline, scopeData's region/AZ/server rollups, TopologyPanel's per-region meta line,
+// RegionView's headline, runSummary's captured cost) — deliberately NOT by CostTab's three-way
+// "price this world as…" comparison row, which explicitly overrides per-provider on purpose and
+// must keep showing all three regardless of what the world's own profile is set to.
+export function defaultProviderFromDoc(doc: WorldDoc): RealProvider | undefined {
+  return doc.cloudProfile && doc.cloudProfile !== 'generic' ? doc.cloudProfile : undefined
+}
+
 function resolveProvider(explicit: CloudProvider, override: RealProvider | undefined): CloudProvider {
   // Widened from `explicit !== 'generic'` (fix round 1): a hand-authored/malformed .scalemap
   // could carry `provider: undefined` even though ManagedService['provider'] is a required

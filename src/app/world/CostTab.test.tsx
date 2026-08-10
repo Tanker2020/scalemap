@@ -65,6 +65,32 @@ describe('CostTab', () => {
     for (const el of rowValues) expect(el).toHaveStyle({ color: 'var(--color-price)' })
   })
 
+  // I3 fix (final wave-5 review): `doc.cloudProfile` used to be authored/persisted/read-back by
+  // the TopologyPanel dropdown that writes it, but nothing downstream ever consumed it — setting
+  // a world's cloud profile produced zero visible change anywhere. The headline "$X /mo" total
+  // (NOT the "price this world as…" comparison row, which explicitly overrides per-provider
+  // regardless) must now change when `cloudProfile` is set, for a world with an unpinned managed
+  // service (a pinned service's price is untouched by design — see costModelV2.test.ts's own
+  // providerOverride suite).
+  it('setting doc.cloudProfile changes the headline monthly total for a world with an unpinned managed service (but not a pinned one)', () => {
+    const regionId = useWorldStore.getState().addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+    useWorldStore.getState().addManagedService('objectStorage', 'Object store', { kind: 'region', regionId }, 443, undefined, {
+      storageGb: 500, storageTierId: 'standard',
+    })
+
+    const { unmount } = render(<CostTab />)
+    const genericTotal = screen.getByText(/\$\d+\.\d\d \/mo/).textContent
+    unmount()
+
+    useWorldStore.getState().setCloudProfile('aws')
+    render(<CostTab />)
+    const awsTotal = screen.getByText(/\$\d+\.\d\d \/mo/).textContent
+
+    expect(awsTotal).not.toBe(genericTotal)
+  })
+
   // Fix round 1: the degenerate all-identical test above proves the row renders, but a world with
   // an unpinned ('generic') managed service is actually eligible for repricing, so its three
   // totals must genuinely diverge — this is what would catch a regression where providerOverride

@@ -2,7 +2,7 @@
 // live byte rates. Reads scrubBatch ?? latestBatch (Task 15) so scrubbing replays cost too.
 import { useWorldStore } from '../store/world.store'
 import { useSimulationStore } from '../store/simulation.store'
-import { computeWorldCost } from '../../lib/costModelV2'
+import { computeWorldCost, defaultProviderFromDoc } from '../../lib/costModelV2'
 import { applyEnvironment } from '../../lib/world/environments'
 import type { RealProvider } from '../../lib/cloudRegistry'
 import { sectionLabel, row } from './panels/panelStyles'
@@ -29,7 +29,12 @@ export function CostTab() {
   // overlaid here too, or the Cost tab silently shows base-world pricing while Simulate uses the
   // scaled/overridden one.
   const compiledDoc = applyEnvironment(doc)
-  const cost = computeWorldCost(compiledDoc, worldForCost, batch?.managedServices ?? null)
+  // I3 fix (final wave-5 review): the headline "this world's own cost" figure now defaults any
+  // unpinned managed service's provider to `doc.cloudProfile` (when set to something other than
+  // 'generic') — previously the only reader of `cloudProfile` was the dropdown that WRITES it.
+  // The three-way comparison row below deliberately does NOT read it: it explicitly reprices
+  // under aws/gcp/azure regardless of the world's own profile, which is the whole point of that row.
+  const cost = computeWorldCost(compiledDoc, worldForCost, batch?.managedServices ?? null, defaultProviderFromDoc(doc))
   // Computed fresh on this render (not per simulation tick) — CostTab already only re-renders on
   // the 1Hz metrics batch (or a scrub step), so this is cheap and always in sync with `cost` above.
   const providerComparison = COMPARISON_PROVIDERS.map(provider => ({

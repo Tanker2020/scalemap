@@ -14,7 +14,7 @@ import type { Region, Server, ManagedService, Environment } from '../../../lib/w
 import { SectionHeader, EdgeRow, ChipValue, MicroBars, PresetCardGrid, type EdgeRowStatus } from '../ui/kit'
 import { field, smallBtn, dangerBtn, row } from './panelStyles'
 import { healthWord } from '../ui/derived'
-import { computeWorldCost, HOURS_PER_MONTH } from '../../../lib/costModelV2'
+import { computeWorldCost, defaultProviderFromDoc, HOURS_PER_MONTH } from '../../../lib/costModelV2'
 import { applyEnvironment } from '../../../lib/world/environments'
 
 const HEALTH_COLOR: Record<'healthy' | 'degraded' | 'down', string> = {
@@ -122,7 +122,10 @@ export function TopologyPanel() {
   // computeWorldCost reads doc.servers/doc.placements directly -- an active environment's
   // instanceClassOverrides/serverCountFactor/placementCountOverrides must be overlaid here too,
   // or this panel's per-region $/hr meta line silently disagrees with CostTab.tsx's total.
-  const worldCost = computeWorldCost(applyEnvironment(doc), worldForCost, displayBatch?.managedServices ?? null)
+  // I3 fix (final wave-5 review): defaults an unpinned managed service's provider to
+  // `doc.cloudProfile`, matching CostTab.tsx's headline / scopeData.ts's rollups / RegionView.tsx —
+  // this per-region $/hr meta line is the world's own cost, not a comparison surface.
+  const worldCost = computeWorldCost(applyEnvironment(doc), worldForCost, displayBatch?.managedServices ?? null, defaultProviderFromDoc(doc))
 
   const nextAzLabel = (catalogId: string, regionId: string) => {
     const count = Object.values(doc.azs).filter(a => a.regionId === regionId).length

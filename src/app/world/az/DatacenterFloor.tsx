@@ -799,6 +799,7 @@ export function DatacenterFloor() {
                   lagByServer={lagByServer}
                   warmthByServer={warmthByServer}
                   selectedServerId={selectedServerId}
+                  selectedEntityIds={selectedEntityIds}
                   newServerIds={reducedMotion ? EMPTY_SERVER_ID_SET : newIds}
                   animatedLedIds={animatedLedIds}
                   reducedMotion={reducedMotion}
@@ -820,6 +821,7 @@ export function DatacenterFloor() {
                   replicaLag={lagByServer.get(server.id) ?? null}
                   warmth={warmthByServer.get(server.id) ?? null}
                   selectedServerId={selectedServerId}
+                  selectedEntityIds={selectedEntityIds}
                   isNew={newIds.has(server.id) && !reducedMotion}
                   animatedLed={animatedLedIds.has(server.id)}
                   reducedMotion={reducedMotion}

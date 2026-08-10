@@ -68,7 +68,17 @@ export function ComparePanel() {
   const scenarioDiffers = a && b && a.scenarioId !== b.scenarioId
   const seedDiffers = a && b && a.seed !== b.seed
   const isInvalid = Boolean(scenarioDiffers || seedDiffers)
-  const isIdentical = Boolean(a && b && !isInvalid && a.docFingerprint === b.docFingerprint)
+  // I2 fix (final wave-5 review): `docFingerprint` is deliberately structural-only (instance/path
+  // shape — see runSummary.ts) — it stays IDENTICAL across a `populationRpsFactor`-only or
+  // `cloudProfile`-only change, so two runs captured under different environments (e.g. "staging"
+  // vs "prod") used to read as "nothing changed" even though the whole demand curve or pricing
+  // basis moved. Gate the "identical" note on environment/cloudProfile agreement too, and surface
+  // a distinct informational note (not the red "not sound" banner above — same structure, same
+  // scenario/seed, so the comparison IS still valid) when they differ but the fingerprint matches.
+  const envDiffers = Boolean(a && b && (a.environmentId !== b.environmentId || a.cloudProfile !== b.cloudProfile))
+  const fingerprintMatches = Boolean(a && b && a.docFingerprint === b.docFingerprint)
+  const isIdentical = Boolean(!isInvalid && fingerprintMatches && !envDiffers)
+  const isEnvNote = Boolean(!isInvalid && fingerprintMatches && envDiffers)
 
   return (
     <div>
@@ -90,6 +100,14 @@ export function ComparePanel() {
       {isIdentical && (
         <div role="status" style={{ color: 'var(--color-text-muted)', marginTop: 8, marginBottom: 8 }}>
           Runs share an identical architecture fingerprint — nothing changed structurally between A and B.
+        </div>
+      )}
+      {isEnvNote && (
+        <div role="status" style={{ color: 'var(--color-warning)', marginTop: 8, marginBottom: 8 }}>
+          {`Same architecture fingerprint, but captured under different ${
+            [a!.environmentId !== b!.environmentId && 'environments', a!.cloudProfile !== b!.cloudProfile && 'cloud profiles']
+              .filter(Boolean).join(' and ')
+          } (A: ${a!.environmentId ?? 'base world'} / ${a!.cloudProfile ?? 'generic'} vs B: ${b!.environmentId ?? 'base world'} / ${b!.cloudProfile ?? 'generic'}) — demand volume or pricing may differ even though nothing changed structurally.`}
         </div>
       )}
 

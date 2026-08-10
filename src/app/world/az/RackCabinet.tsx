@@ -205,6 +205,11 @@ export interface RackCabinetProps {
   lagByServer: ReadonlyMap<ServerId, ReplicaLagInfo>   // FEAT-005 live replication-lag readout per server
   warmthByServer: ReadonlyMap<ServerId, number>   // FEAT-007 live cold-start ramp per server
   selectedServerId: ServerId | null
+  // C1 fix (final wave-5 review): the floor's multi-selection (`ui.store.ts`'s `selectedEntityIds`)
+  // previously had ZERO visual representation here — only the single-select degenerate case
+  // (`selectedServerId`) drove the highlight, so selecting 2+ servers looked identical to
+  // selecting none. A slat now highlights if it's the single selection OR a member of the set.
+  selectedEntityIds: ReadonlySet<ServerId>
   newServerIds: ReadonlySet<ServerId>
   animatedLedIds: ReadonlySet<ServerId>
   reducedMotion: boolean
@@ -213,7 +218,7 @@ export interface RackCabinetProps {
 }
 
 export function RackCabinet({
-  rack, cell, cols, residents, usedU, batch, accentsByServer, cacheByServer, lagByServer, warmthByServer, selectedServerId, newServerIds, animatedLedIds, reducedMotion, onSelect, onEnter,
+  rack, cell, cols, residents, usedU, batch, accentsByServer, cacheByServer, lagByServer, warmthByServer, selectedServerId, selectedEntityIds, newServerIds, animatedLedIds, reducedMotion, onSelect, onEnter,
 }: RackCabinetProps): ReactElement {
   const heightPx = cabinetHeightPx(usedU)
   const box = isoBox(cell.x, cell.y, cols, heightPx)
@@ -245,7 +250,7 @@ export function RackCabinet({
             cacheHit={cacheByServer.get(server.id) ?? null}
             replicaLag={lagByServer.get(server.id) ?? null}
             warmth={warmthByServer.get(server.id) ?? null}
-            selected={selectedServerId === server.id}
+            selected={selectedServerId === server.id || selectedEntityIds.has(server.id)}
             isNew={newServerIds.has(server.id)}
             animatedLed={animatedLedIds.has(server.id)}
             reducedMotion={reducedMotion}

@@ -216,6 +216,49 @@ describe('buildRunSummary — active-environment cost overlay', () => {
   })
 })
 
+// ─── buildRunSummary: environment/cloudProfile identity (I2 fix, final wave-5 review) ─────────
+// docFingerprint is structural-only (instance/path shape) — it does NOT move when only
+// populationRpsFactor or cloudProfile changes, so two captures under different environments used
+// to be indistinguishable after the fact (RunSummary recorded no environment identity at all).
+// These two fields let a comparison recognize "captured under different conditions" even when the
+// fingerprint agrees — see ComparePanel.tsx's isEnvNote banner, which reads them.
+
+describe('buildRunSummary — environmentId/cloudProfile identity', () => {
+  it('records null/null for a base-world capture with no active environment or cloud profile', () => {
+    const { doc } = buildTwoTierWorld()
+    const compiled = compileWorld(doc)
+    const frames = buildFrames({ count: 5, p50Ms: 20, p99Ms: 40 })
+    const summary = buildRunSummary(frames, doc, compiled, 'base')
+    expect(summary.environmentId).toBeNull()
+    expect(summary.cloudProfile).toBeNull()
+  })
+
+  it('two runs differing ONLY in activeEnvironmentId/cloudProfile share the same docFingerprint but are distinguishable via the new fields', () => {
+    const { doc } = buildTwoTierWorld()
+    const compiled = compileWorld(doc)
+    const frames = buildFrames({ count: 5, p50Ms: 20, p99Ms: 40 })
+    const baseline = buildRunSummary(frames, doc, compiled, 'base')
+
+    // Adding an environment with ONLY a populationRpsFactor (no instanceClassOverrides/
+    // serverCountFactor) changes neither instance count nor path shape -- docFingerprint is
+    // computed off `compiled` alone, so it's still built from the SAME unscaled `doc`/`compiled`
+    // here (mirroring the finding: a demand-volume-only knob never touches instances/paths).
+    const stagingDoc: WorldDoc = {
+      ...doc,
+      environments: { env1: { id: 'env1', label: 'Staging', populationRpsFactor: 0.2 } },
+      activeEnvironmentId: 'env1',
+      cloudProfile: 'aws',
+    }
+    const staging = buildRunSummary(frames, stagingDoc, compiled, 'staging')
+
+    expect(staging.docFingerprint).toBe(baseline.docFingerprint)   // structurally identical
+    expect(staging.environmentId).toBe('env1')
+    expect(staging.cloudProfile).toBe('aws')
+    expect(staging.environmentId).not.toBe(baseline.environmentId)   // but distinguishable
+    expect(staging.cloudProfile).not.toBe(baseline.cloudProfile)
+  })
+})
+
 // ─── buildRunSummary: determinism (the feature's core precondition) ───────────
 
 describe('buildRunSummary — determinism', () => {

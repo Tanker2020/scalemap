@@ -6,7 +6,7 @@
 // stay node-env testable without jsdom/Zustand.
 import type { WorldDoc } from '../../../lib/world/types'
 import type { WorldMetrics, ManagedServiceMetrics } from '../../../lib/worldEngine/types'
-import { computeWorldCost, HOURS_PER_MONTH } from '../../../lib/costModelV2'
+import { computeWorldCost, defaultProviderFromDoc, HOURS_PER_MONTH } from '../../../lib/costModelV2'
 import { applyEnvironment } from '../../../lib/world/environments'
 import type { DockScope } from './scope'
 
@@ -42,7 +42,11 @@ export function scopedCost(
     return { hourlyUsd, monthlyUsd: hourlyUsd * HOURS_PER_MONTH, egressNote: 'egress is attributed at the AZ level' }
   }
 
-  const cost = computeWorldCost(overlaid, world, managed)
+  // I3 fix (final wave-5 review): defaults an unpinned managed service's provider to
+  // `doc.cloudProfile` — these region/AZ/world rollups feed the dock's real Cost tab bodies, not
+  // a comparison surface, so they should track the world's own profile the same way CostTab.tsx's
+  // headline does.
+  const cost = computeWorldCost(overlaid, world, managed, defaultProviderFromDoc(doc))
   if (scope.kind === 'world') {
     return { hourlyUsd: cost.monthlyUsd / HOURS_PER_MONTH, monthlyUsd: cost.monthlyUsd, egressNote: null }
   }

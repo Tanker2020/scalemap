@@ -6,7 +6,7 @@
 // a store action, a test, or anywhere else without pulling in worldEngine/index.ts.
 import type { WorldDoc, CompiledWorld, CompiledPath, SloTargets } from './world/types'
 import type { ReplayFrame, MetricsBatch } from './worldEngine/types'
-import { computeWorldCost, HOURS_PER_MONTH } from './costModelV2'
+import { computeWorldCost, defaultProviderFromDoc, HOURS_PER_MONTH } from './costModelV2'
 import { applyEnvironment } from './world/environments'
 
 export interface RunSummary {
@@ -16,6 +16,16 @@ export interface RunSummary {
   scenarioId: string | null
   seed: number
   docFingerprint: string
+  // I2 fix (final wave-5 review): `docFingerprint` is deliberately STRUCTURAL only (instance/path
+  // shape — see its own comment below), so it stays identical across a `populationRpsFactor`-only
+  // or `cloudProfile`-only change between two captures, even though the whole demand curve or
+  // pricing basis moved. These two fields let a comparison recognize that case instead of reading
+  // it as "nothing changed" — see ComparePanel.tsx's validity-banner logic, which compares them
+  // alongside scenarioId/seed rather than folding them into the fingerprint itself (folding a
+  // demand-volume knob into a hash whose whole contract is "structural only" would make the
+  // fingerprint mean two different things depending on what changed).
+  environmentId: string | null
+  cloudProfile: string | null
   durationMs: number
   latency: { p50Ms: number; p90Ms: number; p99Ms: number }
   errorRate: number
@@ -159,8 +169,14 @@ export function buildRunSummary(
   // frame from that frame's own world/managedServices metrics slice. WorldCostResult exposes
   // monthlyUsd, not an hourly figure, so hourlyUsd is derived via HOURS_PER_MONTH (the same basis
   // computeWorldCost itself bills against) rather than inventing a parallel cost field.
+  // I3 fix (final wave-5 review): defaults an unpinned managed service's provider to
+  // `doc.cloudProfile`, matching every other "this world's own cost" call site (CostTab,
+  // scopeData, TopologyPanel, RegionView) — a captured RunSummary's cost figures must track the
+  // same provider those live views show, or a comparison would silently disagree with what the
+  // user saw while the run was live.
+  const providerOverride = defaultProviderFromDoc(doc)
   const frameHourlyUsds = sorted.map(f =>
-    computeWorldCost(overlaidDoc, f.batch.world, f.batch.managedServices ?? null).monthlyUsd / HOURS_PER_MONTH,
+    computeWorldCost(overlaidDoc, f.batch.world, f.batch.managedServices ?? null, providerOverride).monthlyUsd / HOURS_PER_MONTH,
   )
   const meanHourlyUsd = wMean(i => frameHourlyUsds[i])
   const peakHourlyUsd = Math.max(0, ...frameHourlyUsds)
@@ -179,6 +195,8 @@ export function buildRunSummary(
     scenarioId: doc.scenario?.id ?? null,
     seed: doc.scenario?.seed ?? 0,
     docFingerprint: docFingerprint(compiled),
+    environmentId: doc.activeEnvironmentId ?? null,
+    cloudProfile: doc.cloudProfile ?? null,
     durationMs,
     latency,
     errorRate,

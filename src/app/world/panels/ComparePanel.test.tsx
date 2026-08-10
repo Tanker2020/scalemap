@@ -25,6 +25,8 @@ function runSummaryFixture(partial: Partial<RunSummary> = {}): RunSummary {
     scenarioId: 's1',
     seed: 1,
     docFingerprint: 'fp1',
+    environmentId: null,
+    cloudProfile: null,
     durationMs: 60000,
     latency: { p50Ms: 10, p90Ms: 18, p99Ms: 40 },
     errorRate: 0.001,
@@ -66,6 +68,37 @@ describe('ComparePanel', () => {
     })
     render(<ComparePanel />)
     expect(screen.queryByText(/differ/i)).not.toBeInTheDocument()
+  })
+
+  // I2 fix (final wave-5 review): two runs with an identical structural fingerprint but captured
+  // under different environments/cloud profiles used to read as flatly "identical — nothing
+  // changed", which is misleading for the exact "capture staging, compare to prod" workflow these
+  // features exist for. A distinct informational note now fires instead of the plain "identical"
+  // note when environmentId/cloudProfile differ but the fingerprint still matches.
+  it('shows an environment-difference note (not the plain "identical" note) when fingerprints match but environmentId/cloudProfile differ', () => {
+    useBaselineStore.setState({
+      summaries: [
+        runSummaryFixture({ id: 'a', docFingerprint: 'fp-same', environmentId: null, cloudProfile: 'generic' }),
+        runSummaryFixture({ id: 'b', docFingerprint: 'fp-same', environmentId: 'env-staging', cloudProfile: 'aws' }),
+      ],
+      compareA: 'a', compareB: 'b',
+    })
+    render(<ComparePanel />)
+    expect(screen.queryByText(/differ/i)).toBeInTheDocument()   // the new note itself says "different environments"
+    expect(screen.queryByText(/nothing changed structurally between A and B/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/env-staging/)).toBeInTheDocument()
+  })
+
+  it('still shows the plain "identical" note when fingerprints AND environmentId/cloudProfile all match', () => {
+    useBaselineStore.setState({
+      summaries: [
+        runSummaryFixture({ id: 'a', docFingerprint: 'fp-same', environmentId: 'env1', cloudProfile: 'aws' }),
+        runSummaryFixture({ id: 'b', docFingerprint: 'fp-same', environmentId: 'env1', cloudProfile: 'aws' }),
+      ],
+      compareA: 'a', compareB: 'b',
+    })
+    render(<ComparePanel />)
+    expect(screen.getByText(/nothing changed structurally between A and B/i)).toBeInTheDocument()
   })
 
   it('renders direction-aware deltas: lower latency is good, lower cost is good', () => {
@@ -148,5 +181,22 @@ describe('ComparePanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /import/i }))
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/import failed/i))
+  })
+
+  // I1 fix (final wave-5 review): well-formed JSON, wrong RunSummary shape — used to be pushed
+  // straight into the picker with no validation, then crash uncaught the moment it was selected
+  // for comparison (ComparePanel's MetricRow calls `.toFixed()` on fields that were never
+  // checked to be numbers). baseline.store.ts's importJson now throws on a shape mismatch, and
+  // this proves that error surfaces through the SAME existing banner as the parse-failure case
+  // above, and that `summaries` is left untouched rather than partially corrupted.
+  it('shows the same error banner (not a crash) when import JSON parses but has the wrong RunSummary shape, and leaves summaries untouched', async () => {
+    vi.mocked(openFileDialog).mockResolvedValue('/x/wrong-shape.json')
+    vi.mocked(loadDiagram).mockResolvedValue(JSON.stringify({ summaries: [{ id: 'bad', label: 'Bad' }] }))
+    useBaselineStore.setState({ summaries: [runSummaryFixture({ id: 'existing' })], compareA: null, compareB: null })
+    render(<ComparePanel />)
+
+    fireEvent.click(screen.getByRole('button', { name: /import/i }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/import failed/i))
+    expect(useBaselineStore.getState().summaries.map(s => s.id)).toEqual(['existing'])
   })
 })
