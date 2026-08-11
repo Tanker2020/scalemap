@@ -1802,7 +1802,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     // s.faults.partitions. Skipped entirely when no partition is active (the common case),
     // matching the anyFaultsActive short-circuit discipline above. NOT consumed inside flows.ts
     // yet — a later task wires actual blocking/loss/delay behavior off this map.
-    const impairmentMemo = buildImpairmentMemo(compiled, doc, s.faults.partitions, s.regionOfAz)
+    const impairmentMemo = buildImpairmentMemo(compiled, doc, s.faults.partitions, s.regionOfAz, s.natGatewayIdByServer)
     // FEAT-004 (Task 3): per-cache-identity miss fraction, keyed by instance id (a service whose
     // own blueprint carries cacheConfig — the "proxy" shape) or `managed:${id}` (a managed cache
     // target reached via cacheAsideVia — the "cache-aside" shape). Skipped entirely when the world
@@ -3011,19 +3011,34 @@ export function buildImpairmentMemo(
   doc: WorldDoc,
   partitions: PartitionFault[],
   regionOfAz: Map<AzId, RegionId>,
+  // FEAT-014 (final review Important #2): the start()-time-resolved "which NAT gateway (if any)
+  // does this server's subnet route cross-region egress through" index (buildNatGatewayIdByServer)
+  // — reused here rather than re-derived, so a subnet/natGateway-scoped partition endpoint can
+  // actually resolve to a real EndpointIds.subnetId/natGatewayId instead of always being undefined
+  // (which made endpointMatches's 'subnet'/'natGateway' cases correct-but-unreachable at runtime,
+  // despite Task 7's unit test proving the matcher itself worked in isolation). Optional so every
+  // existing test/call site that doesn't pass it keeps compiling — absent ⇒ the pre-fix behavior
+  // (subnetId/natGatewayId always undefined).
+  natGatewayIdByServer?: Map<ServerId, NatGatewayId>,
 ): Map<string, { blocked: boolean; lossFraction: number; delayMs: number }> {
   const memo = new Map<string, { blocked: boolean; lossFraction: number; delayMs: number }>()
   if (partitions.length === 0) return memo
+  const idsForServer = (serverId: ServerId): { subnetId?: string; natGatewayId?: string } => {
+    const subnetId = doc.servers[serverId]?.subnetId
+    if (!subnetId) return {}
+    const natGatewayId = natGatewayIdByServer?.get(serverId)
+    return natGatewayId ? { subnetId, natGatewayId } : { subnetId }
+  }
   for (const path of compiled.paths) {
     const fromInst = compiled.instances[path.fromInstanceId]
     const fromIds = fromInst
-      ? { regionId: fromInst.regionId, azId: fromInst.azId, serverId: fromInst.serverId }
+      ? { regionId: fromInst.regionId, azId: fromInst.azId, serverId: fromInst.serverId, ...idsForServer(fromInst.serverId) }
       : {}
-    let toIds: { regionId?: string; azId?: string; serverId?: string }
+    let toIds: { regionId?: string; azId?: string; serverId?: string; subnetId?: string; natGatewayId?: string }
     if (path.to.kind === 'instance') {
       const toInst = compiled.instances[path.to.instanceId]
       toIds = toInst
-        ? { regionId: toInst.regionId, azId: toInst.azId, serverId: toInst.serverId }
+        ? { regionId: toInst.regionId, azId: toInst.azId, serverId: toInst.serverId, ...idsForServer(toInst.serverId) }
         : {}
     } else {
       const ms = doc.managedServices[path.to.managedServiceId]

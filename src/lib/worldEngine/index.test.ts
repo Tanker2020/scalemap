@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { createWorldEngine, buildImpairmentMemo } from './index'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, createPopulation,
-  createLoadBalancer, createVpc, createSubnet, createRouteTable, createNatGateway,
+  createLoadBalancer, createVpc, createSubnet, createRouteTable, createNatGateway, createInternetGateway,
 } from '../world/factories'
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
@@ -2481,6 +2481,118 @@ describe('FEAT-002 impairment memo (Task 10)', () => {
     expect(memo.size).toBeGreaterThan(0)
     const entry = memo.get(f.path.id)
     expect(entry).toEqual({ blocked: true, lossFraction: 0, delayMs: 0 })
+  })
+
+  // FEAT-014 (final review Important #2): buildImpairmentMemo previously never populated
+  // EndpointIds.subnetId/natGatewayId, so a `{kind:'subnet',id}` or `{kind:'natGateway',id}`
+  // partition endpoint could never match anything at runtime even though endpointMatches (faults.ts)
+  // handled those kinds correctly in isolation — this proves the memo itself now resolves them.
+  describe('subnet/natGateway endpoint resolution (final review Important #2)', () => {
+    function subnetFixture() {
+      const doc = createWorld()
+      doc.routing.policy = 'geo'
+      const r1 = createRegion('us-east-1')
+      const r2 = createRegion('eu-west-1')
+      const az1a = createAz(r1.id, 'us-east-1a')
+      const az2a = createAz(r2.id, 'eu-west-1a')
+      Object.assign(doc.regions, { [r1.id]: r1, [r2.id]: r2 })
+      Object.assign(doc.azs, { [az1a.id]: az1a, [az2a.id]: az2a })
+
+      const vpc = createVpc(r1.id)
+      // A real egress route out of the subnet (an internet gateway route) — the fixture must
+      // isolate the PARTITION as the only cause of blocked traffic; without this the route table's
+      // pre-existing 'no-egress-route' block (empty routes) would already block the path with zero
+      // partitions active, confounding the assertion.
+      const igw = createInternetGateway(vpc.id)
+      const routeTable = createRouteTable(vpc.id)
+      routeTable.routes.push({ destinationCidr: '0.0.0.0/0', target: { kind: 'internetGateway', id: igw.id } })
+      const subnet = createSubnet(vpc.id, az1a.id, 'private', routeTable.id)
+      Object.assign(doc.vpcs, { [vpc.id]: vpc })
+      Object.assign(doc.internetGateways, { [igw.id]: igw })
+      Object.assign(doc.routeTables, { [routeTable.id]: routeTable })
+      Object.assign(doc.subnets, { [subnet.id]: subnet })
+
+      const server = createServer(az1a.id, getPreset('dedicated-8')!)
+      server.subnetId = subnet.id
+      const target = createServer(az2a.id, getPreset('dedicated-8')!)
+      Object.assign(doc.servers, { [server.id]: server, [target.id]: target })
+
+      const web = publicBlueprint('web', 0)
+      const repl = createBlueprint('repl', 1)
+      web.dependencies = [{ id: 'd-repl', target: { kind: 'blueprint', blueprintId: repl.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+      Object.assign(doc.blueprints, { [web.id]: web, [repl.id]: repl })
+      const plWeb = createPlacement(web.id, server.id)
+      const plRepl = createPlacement(repl.id, target.id)
+      Object.assign(doc.placements, { [plWeb.id]: plWeb, [plRepl.id]: plRepl })
+
+      const compiled = compileWorld(doc)
+      const webIid = instanceId(plWeb.id, 0)
+      const replIid = instanceId(plRepl.id, 0)
+      const path = compiled.paths.find(p => p.fromInstanceId === webIid && p.to.kind === 'instance' && p.to.instanceId === replIid)!
+      return { doc, compiled, r1, r2, az1a, az2a, subnet, server, target, path, webIid, replIid }
+    }
+
+    it('a subnet-scoped partition endpoint matches a path whose source server is IN that subnet', () => {
+      const f = subnetFixture()
+      const regionOfAz = new Map([[f.az1a.id, f.r1.id], [f.az2a.id, f.r2.id]])
+      const partitions = [
+        { from: { kind: 'subnet' as const, id: f.subnet.id }, to: { kind: 'region' as const, id: f.r2.id }, mode: 'drop' as const, symmetric: true },
+      ]
+      const memo = buildImpairmentMemo(f.compiled, f.doc, partitions, regionOfAz, new Map())
+      expect(memo.get(f.path.id)).toEqual({ blocked: true, lossFraction: 0, delayMs: 0 })
+    })
+
+    it('a subnet-scoped partition does NOT match when natGatewayIdByServer is omitted vs provided — subnetId resolution alone is enough (no gateway needed)', () => {
+      const f = subnetFixture()
+      const regionOfAz = new Map([[f.az1a.id, f.r1.id], [f.az2a.id, f.r2.id]])
+      const partitions = [
+        { from: { kind: 'subnet' as const, id: f.subnet.id }, to: { kind: 'region' as const, id: f.r2.id }, mode: 'drop' as const, symmetric: true },
+      ]
+      // Omitting the optional natGatewayIdByServer arg entirely must not break subnetId resolution.
+      const memo = buildImpairmentMemo(f.compiled, f.doc, partitions, regionOfAz)
+      expect(memo.get(f.path.id)).toEqual({ blocked: true, lossFraction: 0, delayMs: 0 })
+    })
+
+    it('a server with no subnetId never matches a subnet-scoped partition endpoint (regression floor)', () => {
+      const f = subnetFixture()
+      const regionOfAz = new Map([[f.az1a.id, f.r1.id], [f.az2a.id, f.r2.id]])
+      const partitions = [
+        { from: { kind: 'subnet' as const, id: 'some-other-subnet' }, to: { kind: 'region' as const, id: f.r2.id }, mode: 'drop' as const, symmetric: true },
+      ]
+      const memo = buildImpairmentMemo(f.compiled, f.doc, partitions, regionOfAz, new Map())
+      expect(memo.get(f.path.id)).toEqual({ blocked: false, lossFraction: 0, delayMs: 0 })
+    })
+
+    // Real engine-level integration test (not just the unit-level memo above): drives the actual
+    // simulation with live population traffic through a `{kind:'subnet',id}` partition and proves
+    // the downstream instance genuinely stops receiving admitted traffic — this is what "the
+    // memo is never fed real data in production" (the original finding) means to actually fix.
+    it('ENGINE-LEVEL: a subnet-scoped partition genuinely blocks live traffic between two servers, one of which is in that subnet', () => {
+      const f = subnetFixture()
+      const pop = createPopulation('nyc', 40.7, -74.0)
+      pop.peakRps = 200
+      pop.diurnal = 'flat'
+      f.doc.populations[pop.id] = pop
+      const compiled = compileWorld(f.doc)   // recompile — populationRegionOrder must see the population
+
+      const sim = drive(f.doc, compiled)
+      sim.stepFor(15)   // settle past DNS/health-check warmup
+      const before = sim.latest()
+      expect(before.instances[f.webIid]?.rps ?? 0).toBeGreaterThan(0)
+      expect(before.instances[f.replIid]?.rps ?? 0).toBeGreaterThan(0)
+
+      sim.engine.setPartition!({
+        from: { kind: 'subnet', id: f.subnet.id }, to: { kind: 'region', id: f.r2.id },
+        mode: 'drop', symmetric: true,
+      })
+      sim.stepFor(20)   // past any queueing/EMA lag
+
+      const after = sim.latest()
+      const beforeRps = before.instances[f.replIid]?.rps ?? 0
+      const afterRps = after.instances[f.replIid]?.rps ?? 0
+      expect(afterRps).toBeLessThan(beforeRps * 0.05)   // effectively zero — a fully dropped path
+      sim.engine.stop()
+    })
   })
 })
 
