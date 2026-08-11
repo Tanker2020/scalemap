@@ -16,11 +16,13 @@
 // at all yet, the add affordance disables with an explanatory title, matching BlueprintsPanel's
 // "no services yet — open a server and add one" / ManagedPanel's "add a region or AZ first"
 // empty-state convention.
-import { useState, type CSSProperties } from 'react'
+import { useState, type CSSProperties, type ReactElement } from 'react'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
-import type { RouteTable, Subnet, Vpc, WorldDoc } from '../../../lib/world/types'
-import { SectionHeader, Explainer } from '../ui/kit'
+import type {
+  FirewallSource, RouteTable, RouteTarget, SecurityGroup, SecurityGroupRule, Subnet, Vpc, WorldDoc,
+} from '../../../lib/world/types'
+import { SectionHeader, Explainer, Segmented } from '../ui/kit'
 import { sectionLabel, smallBtn, dangerBtn, row, field } from './panelStyles'
 
 const actionBtn: CSSProperties = {
@@ -38,6 +40,156 @@ const badge = (kind: 'public' | 'private'): CSSProperties => ({
   color: kind === 'public' ? 'var(--color-accent)' : 'var(--color-text-muted)',
 })
 const muted: CSSProperties = { fontSize: 9.5, color: 'var(--color-text-muted)' }
+
+// Gateways a subnet's route table can target — scoped to gateways that live in the SAME VPC
+// (an internet gateway is vpcId-scoped directly; a NAT gateway is subnetId-scoped, so its VPC is
+// resolved via its own subnet). Shared by the route-add control below.
+function gatewayOptionsForVpc(doc: WorldDoc, vpcId: string): { kind: 'internetGateway' | 'natGateway'; id: string; label: string }[] {
+  const igws = Object.values(doc.internetGateways)
+    .filter(g => g.vpcId === vpcId)
+    .map(g => ({ kind: 'internetGateway' as const, id: g.id, label: 'internet gateway' }))
+  const nats = Object.values(doc.natGateways)
+    .filter(n => doc.subnets[n.subnetId]?.vpcId === vpcId)
+    .map(n => ({ kind: 'natGateway' as const, id: n.id, label: `NAT gateway (${n.label})` }))
+  return [...igws, ...nats]
+}
+
+function routeTargetLabel(doc: WorldDoc, target: RouteTarget): string {
+  if (target.kind === 'local') return 'local'
+  if (target.kind === 'internetGateway') return 'internet gateway'
+  return `NAT gateway (${doc.natGateways[target.id]?.label ?? target.id})`
+}
+
+// Route-entry editor for one subnet's route table (final review Critical #1): the model's
+// resolveRoute (src/lib/world/network.ts) only asks "does ANY non-local route exist", never
+// does real CIDR matching, so a single catch-all '0.0.0.0/0' entry per gateway is the realistic
+// and sufficient authoring surface — not a full CIDR form.
+function RouteTableEditor({ subnet, doc }: { subnet: Subnet; doc: WorldDoc }): ReactElement {
+  const updateRouteTable = useWorldStore(s => s.updateRouteTable)
+  const rt = doc.routeTables[subnet.routeTableId]
+  const gateways = gatewayOptionsForVpc(doc, subnet.vpcId)
+  const [selected, setSelected] = useState('')
+
+  if (!rt) return <></>
+
+  const addRoute = () => {
+    const gw = gateways.find(g => `${g.kind}:${g.id}` === selected)
+    if (!gw) return
+    const entry = { destinationCidr: '0.0.0.0/0', target: { kind: gw.kind, id: gw.id } as RouteTarget }
+    updateRouteTable(rt.id, { routes: [...rt.routes, entry] })
+  }
+  const removeRoute = (index: number) => {
+    updateRouteTable(rt.id, { routes: rt.routes.filter((_, i) => i !== index) })
+  }
+
+  return (
+    <div style={{ marginTop: 4 }}>
+      {rt.routes.map((r, i) => (
+        <div key={`${r.destinationCidr}-${i}`} style={{ ...row, marginTop: 2 }}>
+          <span style={{ ...muted, flex: 1 }}>{r.destinationCidr} → {routeTargetLabel(doc, r.target)}</span>
+          <button
+            type="button" className="kit-press" style={dangerBtn}
+            aria-label={`remove-route-${subnet.id}-${i}`}
+            onClick={() => removeRoute(i)}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+      <div style={{ ...row, marginTop: 4 }}>
+        <select
+          aria-label={`add route target for ${subnet.id}`} style={field} value={selected}
+          disabled={gateways.length === 0}
+          onChange={e => setSelected(e.target.value)}
+        >
+          <option value="">{gateways.length === 0 ? 'no gateways in this VPC' : 'select a gateway…'}</option>
+          {gateways.map(g => (
+            <option key={`${g.kind}:${g.id}`} value={`${g.kind}:${g.id}`}>{g.label}</option>
+          ))}
+        </select>
+        <button
+          type="button" className="kit-press"
+          style={selected ? smallBtn : { ...smallBtn, opacity: 0.35, cursor: 'default' }}
+          disabled={!selected}
+          title={gateways.length === 0 ? 'add an internet gateway or NAT gateway to this VPC first' : undefined}
+          onClick={addRoute}
+        >
+          + add route
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// Rule editor for a SecurityGroup (final review Critical #1). SecurityGroupRule is allow-only
+// (port + protocol + source, same FirewallSource type the legacy firewall editor uses) — mirrors
+// FirewallRulesModal.tsx's SourceCell any/internal/custom segmented pattern, simplified (no
+// action/order — a security group is an unordered allow-only union, per network.ts's
+// evaluateSecurityGroups).
+function SecurityGroupRuleEditor({ group }: { group: SecurityGroup }): ReactElement {
+  const updateSecurityGroup = useWorldStore(s => s.updateSecurityGroup)
+  const [port, setPort] = useState('443')
+  const [protocol, setProtocol] = useState<'tcp' | 'udp'>('tcp')
+  const [customText, setCustomText] = useState<string | null>(null)
+  const sourceOption: 'any' | 'internal' | 'custom' = customText !== null ? 'custom' : 'any'
+  const source: FirewallSource = customText !== null ? customText : 'any'
+
+  const commit = (rules: SecurityGroupRule[]) => updateSecurityGroup(group.id, { rules })
+  const addRule = () => {
+    const n = Number(port)
+    if (!Number.isFinite(n) || n < 0 || source === '') return
+    commit([...group.rules, { port: n, protocol, source }])
+  }
+  const removeRule = (index: number) => commit(group.rules.filter((_, i) => i !== index))
+
+  return (
+    <div style={{ marginTop: 4, paddingLeft: 4 }}>
+      {group.rules.map((r, i) => (
+        <div key={`${r.port}-${r.protocol}-${r.source}-${i}`} style={{ ...row, marginTop: 2 }}>
+          <span style={{ ...muted, flex: 1 }}>
+            allow {r.protocol} port {r.port} from {r.source}
+          </span>
+          <button
+            type="button" className="kit-press" style={dangerBtn}
+            aria-label={`remove-sg-rule-${group.id}-${i}`}
+            onClick={() => removeRule(i)}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+      <div style={{ ...row, marginTop: 4, flexWrap: 'wrap' }}>
+        <input
+          aria-label={`port for new rule on ${group.label}`} style={{ ...field, flex: '0 0 60px', marginBottom: 0 }}
+          value={port} onChange={e => setPort(e.target.value)}
+        />
+        <select
+          aria-label={`protocol for new rule on ${group.label}`} style={{ ...field, flex: '0 0 64px', marginBottom: 0 }}
+          value={protocol} onChange={e => setProtocol(e.target.value as 'tcp' | 'udp')}
+        >
+          <option value="tcp">tcp</option>
+          <option value="udp">udp</option>
+        </select>
+        <Segmented
+          ariaLabel={`source for new rule on ${group.label}`}
+          value={sourceOption}
+          onChange={v => setCustomText(v === 'custom' ? '' : null)}
+          options={[{ value: 'any', label: 'any' }, { value: 'internal', label: 'internal' }, { value: 'custom', label: 'custom' }]}
+        />
+      </div>
+      {sourceOption === 'custom' && (
+        <input
+          aria-label={`source cidr for new rule on ${group.label}`} style={{ ...field, marginTop: 4 }}
+          placeholder="10.0.0.0/8" value={customText ?? ''}
+          onChange={e => setCustomText(e.target.value)}
+        />
+      )}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+        <button type="button" className="kit-press" style={smallBtn} onClick={addRule}>+ add rule</button>
+      </div>
+    </div>
+  )
+}
 
 function routeTableSummary(rt: RouteTable | undefined): string {
   if (!rt || rt.routes.length === 0) return '0 routes'
@@ -189,13 +341,16 @@ function VpcDetail({ vpc, doc }: { vpc: Vpc; doc: WorldDoc }) {
       <div style={sectionLabel}>Security groups</div>
       {securityGroups.length === 0 && <div style={muted}>no security groups yet</div>}
       {securityGroups.map(sg => (
-        <div key={sg.id} style={row}>
-          <input
-            aria-label={`sg-label-${sg.id}`} style={{ ...field, flex: 1, marginBottom: 0 }}
-            value={sg.label} onChange={e => updateSecurityGroup(sg.id, { label: e.target.value })}
-          />
-          <span style={muted}>{sg.rules.length} rule{sg.rules.length === 1 ? '' : 's'}</span>
-          <button className="kit-press" style={dangerBtn} aria-label={`remove-sg-${sg.id}`} onClick={() => removeSecurityGroup(sg.id)}>×</button>
+        <div key={sg.id} style={{ ...card, padding: 8, marginTop: 6 }}>
+          <div style={row}>
+            <input
+              aria-label={`sg-label-${sg.id}`} style={{ ...field, flex: 1, marginBottom: 0 }}
+              value={sg.label} onChange={e => updateSecurityGroup(sg.id, { label: e.target.value })}
+            />
+            <span style={muted}>{sg.rules.length} rule{sg.rules.length === 1 ? '' : 's'}</span>
+            <button className="kit-press" style={dangerBtn} aria-label={`remove-sg-${sg.id}`} onClick={() => removeSecurityGroup(sg.id)}>×</button>
+          </div>
+          <SecurityGroupRuleEditor group={sg} />
         </div>
       ))}
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
@@ -227,6 +382,7 @@ function SubnetRow({ subnet, doc }: { subnet: Subnet; doc: WorldDoc }) {
       <div style={{ ...row, marginTop: 4 }}>
         <span style={{ ...muted, flex: 1, minWidth: 0 }}>{routeTableSummary(doc.routeTables[subnet.routeTableId])}</span>
       </div>
+      <RouteTableEditor subnet={subnet} doc={doc} />
       {subnet.kind === 'public' && (
         <div style={{ ...row, marginTop: 4 }}>
           {nat ? (
