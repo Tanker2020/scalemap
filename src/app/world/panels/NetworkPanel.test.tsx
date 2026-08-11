@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { NetworkPanel } from './NetworkPanel'
 import { useWorldStore } from '../../store/world.store'
 import { useNavStore } from '../../store/nav.store'
@@ -169,6 +169,26 @@ describe('NetworkPanel', () => {
     const rules = useWorldStore.getState().doc.securityGroups[sgId].rules
     expect(rules).toHaveLength(1)
     expect(rules[0]).toMatchObject({ port: 5432, protocol: 'tcp', source: 'any' })
+  })
+
+  // Final-review re-review New Breakage #1: the source Segmented's onChange only tracked
+  // customText (null => 'any'), so clicking 'internal' was indistinguishable from 'any' and
+  // silently authored an internet-open rule the user meant as internal-only.
+  it('choosing "internal" as the rule source authors source: "internal", not "any"', () => {
+    const { regionId } = seedRegionAz()
+    const vpcId = useWorldStore.getState().addVpc(regionId)
+    const sgId = useWorldStore.getState().addSecurityGroup(vpcId)
+    render(<NetworkPanel />)
+    fireEvent.click(screen.getByTestId(`vpc-label-${vpcId}`))
+
+    const sg = useWorldStore.getState().doc.securityGroups[sgId]
+    fireEvent.change(screen.getByLabelText(`port for new rule on ${sg.label}`), { target: { value: '5432' } })
+    fireEvent.click(within(screen.getByLabelText(`source for new rule on ${sg.label}`)).getByText('internal'))
+    fireEvent.click(screen.getByRole('button', { name: /add rule/i }))
+
+    const rules = useWorldStore.getState().doc.securityGroups[sgId].rules
+    expect(rules).toHaveLength(1)
+    expect(rules[0].source).toBe('internal')
   })
 
   it('removing a security-group rule via the UI removes it from doc.securityGroups[id].rules', () => {

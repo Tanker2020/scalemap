@@ -130,9 +130,9 @@ function SecurityGroupRuleEditor({ group }: { group: SecurityGroup }): ReactElem
   const updateSecurityGroup = useWorldStore(s => s.updateSecurityGroup)
   const [port, setPort] = useState('443')
   const [protocol, setProtocol] = useState<'tcp' | 'udp'>('tcp')
+  const [sourceOption, setSourceOption] = useState<'any' | 'internal' | 'custom'>('any')
   const [customText, setCustomText] = useState<string | null>(null)
-  const sourceOption: 'any' | 'internal' | 'custom' = customText !== null ? 'custom' : 'any'
-  const source: FirewallSource = customText !== null ? customText : 'any'
+  const source: FirewallSource = sourceOption === 'custom' ? (customText ?? '') : sourceOption
 
   const commit = (rules: SecurityGroupRule[]) => updateSecurityGroup(group.id, { rules })
   const addRule = () => {
@@ -173,7 +173,10 @@ function SecurityGroupRuleEditor({ group }: { group: SecurityGroup }): ReactElem
         <Segmented
           ariaLabel={`source for new rule on ${group.label}`}
           value={sourceOption}
-          onChange={v => setCustomText(v === 'custom' ? '' : null)}
+          onChange={v => {
+            setSourceOption(v as 'any' | 'internal' | 'custom')
+            setCustomText(v === 'custom' ? '' : null)
+          }}
           options={[{ value: 'any', label: 'any' }, { value: 'internal', label: 'internal' }, { value: 'custom', label: 'custom' }]}
         />
       </div>
