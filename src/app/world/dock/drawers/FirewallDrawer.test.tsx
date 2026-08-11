@@ -100,4 +100,41 @@ describe('FirewallDrawer', () => {
       expect((span as HTMLElement).style.color).toBe('var(--kit-accent)')
     }
   })
+
+  // Final review Important #4: a networked server with ZERO security groups attached is still
+  // governed by the legacy flat firewall at compile/engine time (network.ts's firewallVerdict only
+  // branches to evaluateSecurityGroups when securityGroupIds is non-empty) — the drawer must show
+  // both the picker AND the still-live legacy rules, not silently swap to picker-only.
+  describe('networked server with zero security groups attached', () => {
+    function seedNetworkedServer(): string {
+      const serverId = seedServer()
+      const regionId = Object.values(useWorldStore.getState().doc.regions)[0].id
+      const vpcId = useWorldStore.getState().addVpc(regionId)
+      const azId = Object.values(useWorldStore.getState().doc.azs)[0].id
+      const subnetId = useWorldStore.getState().addSubnet(vpcId, azId, 'private')
+      useWorldStore.getState().updateServer(serverId, { subnetId })
+      return serverId
+    }
+
+    it('shows BOTH the security-group picker and the legacy firewall rule list, with an explanatory note', () => {
+      const serverId = seedNetworkedServer()
+      render(<FirewallDrawer server={currentServer(serverId)} running={false} onOpenRules={() => {}} />)
+      expect(screen.getByTestId('security-group-picker')).toBeInTheDocument()
+      expect(screen.getByTestId('firewall-legacy-still-active-note')).toHaveTextContent(
+        'No security groups attached — the legacy firewall rules below are still in effect.',
+      )
+      expect(screen.getAllByTestId('firewall-drawer-sentence')).toHaveLength(1)
+    })
+
+    it('hides the legacy list and note once at least one security group is attached', () => {
+      const serverId = seedNetworkedServer()
+      const vpcId = Object.values(useWorldStore.getState().doc.vpcs)[0].id
+      const sgId = useWorldStore.getState().addSecurityGroup(vpcId)
+      useWorldStore.getState().updateServer(serverId, { securityGroupIds: [sgId] })
+      render(<FirewallDrawer server={currentServer(serverId)} running={false} onOpenRules={() => {}} />)
+      expect(screen.getByTestId('security-group-picker')).toBeInTheDocument()
+      expect(screen.queryByTestId('firewall-legacy-still-active-note')).toBeNull()
+      expect(screen.queryByTestId('firewall-drawer-sentence')).toBeNull()
+    })
+  })
 })
