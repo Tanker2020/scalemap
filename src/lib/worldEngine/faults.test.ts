@@ -144,3 +144,38 @@ describe('faults: impairmentFor', () => {
     expect(impairmentFor(managedIds, { serverId: 'srv-2' }, [partition]).blocked).toBe(false)
   })
 })
+
+describe('subnet and natGateway endpoint matching (FEAT-014)', () => {
+  // Note: the brief's original draft of these tests used `to: { kind: 'internet' }`, mirroring
+  // impairmentFor's existing region/az partition tests. But endpointMatches's 'internet' case is
+  // (deliberately, unchanged by this task) `return false` unconditionally — there is no
+  // "ids represent the internet" concept in EndpointIds, so an 'internet' LinkEndpoint never
+  // matches either side of a resolved from/to pair (confirmed against the only real call site,
+  // index.ts's buildImpairmentMemo, which never resolves a toIds to represent internet either).
+  // A partition with `to: internet` therefore can never report blocked:true via impairmentFor
+  // regardless of this task's fix, so asserting blocked:true against one would fail for reasons
+  // unrelated to the fallthrough bug being tested here. These tests instead pair two same-kind
+  // endpoints (subnet<->subnet, natGateway<->natGateway), mirroring the existing region/az tests
+  // above, so they actually exercise endpointMatches's new subnet/natGateway cases.
+  it('a subnet-scoped partition matches only endpoints carrying that subnetId, never a server-scoped endpoint', () => {
+    const partitions = [{ from: { kind: 'subnet', id: 'subnet-1' }, to: { kind: 'subnet', id: 'subnet-2' }, mode: 'drop', symmetric: false }]
+    const matching = impairmentFor({ subnetId: 'subnet-1' }, { subnetId: 'subnet-2' }, partitions as any)
+    expect(matching.blocked).toBe(true)
+    const nonMatching = impairmentFor({ subnetId: 'subnet-3' }, { subnetId: 'subnet-2' }, partitions as any)
+    expect(nonMatching.blocked).toBe(false)
+  })
+
+  it('a natGateway-scoped partition matches only endpoints carrying that natGatewayId', () => {
+    const partitions = [{ from: { kind: 'natGateway', id: 'nat-1' }, to: { kind: 'natGateway', id: 'nat-2' }, mode: 'drop', symmetric: false }]
+    expect(impairmentFor({ natGatewayId: 'nat-1' }, { natGatewayId: 'nat-2' }, partitions as any).blocked).toBe(true)
+    expect(impairmentFor({ natGatewayId: 'nat-9' }, { natGatewayId: 'nat-2' }, partitions as any).blocked).toBe(false)
+  })
+
+  it('a server-scoped endpoint never accidentally matches a subnet-scoped partition (no cross-kind fallthrough)', () => {
+    const partitions = [{ from: { kind: 'subnet', id: 'subnet-1' }, to: { kind: 'subnet', id: 'subnet-2' }, mode: 'drop', symmetric: false }]
+    // a server whose id happens to equal the subnet id string must NOT match, since the fallthrough
+    // in the pre-Task-7 implementation (`return ids.serverId === endpoint.id` as the final branch)
+    // matched any non-internet/region/az endpoint kind against ids.serverId.
+    expect(impairmentFor({ serverId: 'subnet-1' }, { subnetId: 'subnet-2' }, partitions as any).blocked).toBe(false)
+  })
+})

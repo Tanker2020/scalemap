@@ -13,6 +13,12 @@ export type ManagedServiceId = string
 export type PopulationId = string
 export type InstanceId = string
 export type LbId = string
+export type VpcId = string
+export type SubnetId = string
+export type RouteTableId = string
+export type InternetGatewayId = string
+export type NatGatewayId = string
+export type SecurityGroupId = string
 
 export type RoutingPolicyKind = 'latency' | 'geo' | 'weighted' | 'priority'
 
@@ -102,6 +108,62 @@ export interface FirewallRule {
   source: FirewallSource
 }
 
+export interface Vpc {
+  id: VpcId
+  regionId: RegionId
+  label: string
+  cidrBlock: string
+}
+
+export interface Subnet {
+  id: SubnetId
+  vpcId: VpcId
+  azId: AzId
+  kind: 'public' | 'private'
+  cidrBlock: string
+  routeTableId: RouteTableId
+}
+
+export type RouteTarget =
+  | { kind: 'local' }
+  | { kind: 'internetGateway'; id: InternetGatewayId }
+  | { kind: 'natGateway'; id: NatGatewayId }
+
+export interface RouteTableEntry {
+  destinationCidr: string
+  target: RouteTarget
+}
+
+export interface RouteTable {
+  id: RouteTableId
+  vpcId: VpcId
+  routes: RouteTableEntry[]
+}
+
+export interface InternetGateway {
+  id: InternetGatewayId
+  vpcId: VpcId
+}
+
+export interface NatGateway {
+  id: NatGatewayId
+  subnetId: SubnetId
+  label: string
+}
+
+export interface SecurityGroupRule {
+  port: number
+  protocol: 'tcp' | 'udp'
+  source: FirewallSource
+}
+
+export interface SecurityGroup {
+  id: SecurityGroupId
+  vpcId: VpcId
+  label: string
+  rules: SecurityGroupRule[]
+}
+
 export interface ComposeNetwork { name: string; cidr: string }
 export interface ComposeVolume { name: string; sizeGb: number }
 
@@ -142,6 +204,8 @@ export interface Server {
   oversubscriptionRatio: number | null // vps only
   burstable: boolean                   // vps only
   firewall: FirewallRule[]             // evaluated in array order, first match wins, default deny
+  subnetId?: SubnetId               // absent = legacy flat-firewall server, unchanged behavior
+  securityGroupIds?: string[]       // meaningful only when subnetId is set
   stacks: ComposeStack[]
   rack: RackPosition | null            // null = free pool (unracked)
 }
@@ -444,6 +508,12 @@ export interface WorldDoc {
   managedServices: Record<ManagedServiceId, ManagedService>
   loadBalancers: Record<LbId, LoadBalancer>
   racks: Record<RackId, Rack>
+  vpcs: Record<VpcId, Vpc>
+  subnets: Record<SubnetId, Subnet>
+  routeTables: Record<RouteTableId, RouteTable>
+  internetGateways: Record<InternetGatewayId, InternetGateway>
+  natGateways: Record<NatGatewayId, NatGateway>
+  securityGroups: Record<SecurityGroupId, SecurityGroup>
   // Route catalog (Phase 2 L7 route system) — the revived packet registry. Its HTTP-protocol
   // templates ARE the routes populations emit (via requestMix) and listener rules match. Lives
   // inside WorldDoc so every route edit rides world.store's mutate() (undo/dirty) and serializes
@@ -501,7 +571,7 @@ export interface ServiceInstance {
   indexInPlacement: number
 }
 
-export type BlockReasonKind = 'no-port-binding' | 'firewall-deny' | 'network-isolation'
+export type BlockReasonKind = 'no-port-binding' | 'firewall-deny' | 'network-isolation' | 'no-egress-route'
 
 export interface BlockReason {
   kind: BlockReasonKind

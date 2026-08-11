@@ -155,6 +155,11 @@ export interface WorldMetrics {
   crossAzBytesPerSec: number
   crossRegionBytesPerSec: number
   internetEgressBytesPerSec: number
+  // Additive-optional (frozen-contract rule, FEAT-014 Task 9): per-NAT-gateway byte rate
+  // (bytes/sec, EMA), keyed by NatGatewayId. Absent when the doc has zero NAT gateways (the
+  // regression floor) or omitted by an older/test-built batch -- read as
+  // `batch.world.natGatewayBytesPerSec?.[natGatewayId]`. See contract-drift.md §FEAT-014.
+  natGatewayBytesPerSec?: Record<string, number>
 }
 
 // Live traffic REACHING a cloud-managed service (node-model Phase 5.1). Managed services have no
@@ -391,18 +396,22 @@ export type FaultSpec =
   | { kind: 'error-inject'; errorFraction: number }
   | { kind: 'disk-stall'; iopsFraction: number }
 
-export type FaultScope = 'server' | 'az' | 'region' | 'managed'
+export type FaultScope = 'server' | 'az' | 'region' | 'managed' | 'subnet' | 'natGateway'
 
-// ─── Network partitions (FEAT-002) ───────────────────────────────────────────
-// A LinkEndpoint names one side of a partitioned link at region/az/server granularity
-// (or 'internet' for a population-facing edge). PartitionFault pairs two endpoints with
-// an impairment mode; `impairmentFor` (faults.ts) is the pure predicate that resolves a
-// concrete from/to identity pair against the active partition list.
+// ─── Network partitions (FEAT-002, widened FEAT-014) ─────────────────────────
+// A LinkEndpoint names one side of a partitioned link at region/az/server/subnet/
+// natGateway granularity (or 'internet' for a population-facing edge). PartitionFault
+// pairs two endpoints with an impairment mode; `impairmentFor` (faults.ts) is the pure
+// predicate that resolves a concrete from/to identity pair against the active partition
+// list, via an exhaustive switch over `endpoint.kind` (endpointMatches) — every new kind
+// added here must get a corresponding case there.
 
 export type LinkEndpoint =
   | { kind: 'region'; id: string }
   | { kind: 'az'; id: string }
   | { kind: 'server'; id: string }
+  | { kind: 'subnet'; id: string }
+  | { kind: 'natGateway'; id: string }
   | { kind: 'internet' }
 
 export interface PartitionFault {

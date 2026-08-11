@@ -732,3 +732,75 @@ describe('DatacenterFloor — multi-select (wave 5 ergonomics, task 17)', () => 
     expect(useUiStore.getState().selectedServerId).toBeNull()
   })
 })
+
+// FEAT-014 (network topology): subnet boundary overlay — static/compiled-state grouping of a
+// subnet's racks/pods, never batch-driven.
+describe('DatacenterFloor — subnet boundary overlay', () => {
+  it('renders a subnet boundary outline for each subnet with a server in the current AZ', () => {
+    const { azId, regionId } = seedAz()
+    const world = useWorldStore.getState()
+    const vpcId = world.addVpc(regionId)
+    const subnetId = world.addSubnet(vpcId, azId, 'public')
+    const serverId = world.addServer(azId, getPreset('vps-medium')!)
+    world.updateServer(serverId, { subnetId })
+
+    render(<DatacenterFloor />)
+    const boundary = screen.getByTestId(`subnet-boundary-${subnetId}`)
+    expect(boundary).toBeTruthy()
+    expect(boundary.querySelector('polygon')).toBeTruthy()
+    expect(boundary.textContent).toContain('public')
+  })
+
+  it('renders a boundary for a private subnet with the muted-text stroke', () => {
+    const { azId, regionId } = seedAz()
+    const world = useWorldStore.getState()
+    const vpcId = world.addVpc(regionId)
+    const subnetId = world.addSubnet(vpcId, azId, 'private')
+    const serverId = world.addServer(azId, getPreset('vps-medium')!)
+    world.updateServer(serverId, { subnetId })
+
+    render(<DatacenterFloor />)
+    const boundary = screen.getByTestId(`subnet-boundary-${subnetId}`)
+    const polygon = boundary.querySelector('polygon')
+    expect(polygon).toHaveAttribute('stroke', 'var(--color-text-muted)')
+    expect(boundary.textContent).toContain('private')
+  })
+
+  it('also groups a racked server into its subnet boundary', () => {
+    const { azId, regionId } = seedAz()
+    const world = useWorldStore.getState()
+    const vpcId = world.addVpc(regionId)
+    const subnetId = world.addSubnet(vpcId, azId, 'public')
+    world.addRack(azId)
+    const rack = Object.values(useWorldStore.getState().doc.racks)[0]
+    const serverId = world.addServer(azId, getPreset('vps-medium')!)
+    world.assignServerToRack(serverId, rack.id)
+    world.updateServer(serverId, { subnetId })
+
+    render(<DatacenterFloor />)
+    expect(screen.getByTestId(`subnet-boundary-${subnetId}`)).toBeTruthy()
+  })
+
+  it('renders nothing extra when no server in the AZ has a subnetId (regression floor)', () => {
+    const { azId } = seedAz()
+    useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+
+    render(<DatacenterFloor />)
+    expect(screen.queryByTestId(/subnet-boundary-/)).not.toBeInTheDocument()
+  })
+
+  it('does not render a boundary for a subnet in a different AZ', () => {
+    const { azId, regionId } = seedAz()
+    const world = useWorldStore.getState()
+    const otherAzId = world.addAz(regionId, 'us-east-1b')
+    const vpcId = world.addVpc(regionId)
+    const subnetId = world.addSubnet(vpcId, otherAzId, 'public')
+    // A server physically in THIS az referencing a subnet scoped to the OTHER az is a stale/
+    // cross-az reference the overlay must skip rather than draw a boundary for.
+    const serverId = world.addServer(azId, getPreset('vps-medium')!)
+    world.updateServer(serverId, { subnetId })
+
+    render(<DatacenterFloor />)
+    expect(screen.queryByTestId(/subnet-boundary-/)).not.toBeInTheDocument()
+  })
+})

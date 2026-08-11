@@ -67,7 +67,9 @@ export function deriveScope(nav: NavSnapshot, selectedServerId: string | null, d
 // world-only authoring set.
 // Wave 5 Task 5: 'compare' is world-only (a comparison is a whole-world statement), so it joins
 // WORLD_TABS alone, after the rest of the world-only authoring set.
-const WORLD_TABS: PanelTab[] = ['topology', 'blueprints', 'packets', 'managed', 'connections', 'traffic', 'routes', 'scenario', 'signals', 'analysis', 'events', 'cost', 'compare']
+// network-topology Task 12: 'network' sits right after 'topology' — VPC/subnet/gateway authoring
+// is the network-layer sibling of the hardware topology tab, both world-only.
+const WORLD_TABS: PanelTab[] = ['topology', 'network', 'blueprints', 'packets', 'managed', 'connections', 'traffic', 'routes', 'scenario', 'signals', 'analysis', 'events', 'cost', 'compare']
 const SCOPED_TABS: PanelTab[] = ['config', 'signals', 'analysis', 'events', 'cost']
 
 export function scopeTabs(scope: DockScope): PanelTab[] {

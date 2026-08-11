@@ -38,7 +38,10 @@ import type { ServerId } from '../../lib/world/types'
 // world-only) since it reads the replay ring scoped to wherever the dock currently is.
 // 2026-08-09 (wave 5 task 5): gained 'compare' — the A/B baseline-comparison tab, world scope
 // only (a comparison is a whole-world statement).
-export type PanelTab = 'topology' | 'blueprints' | 'packets' | 'managed' | 'connections' | 'traffic' | 'routes' | 'scenario' | 'signals' | 'analysis' | 'events' | 'cost' | 'compare' | 'config'
+// 2026-08-10 (network-topology Task 12): gained 'network' — the VPC/subnet/route-table/NAT/IGW/
+// security-group authoring tab (NetworkPanel.tsx). World scope only, sitting next to 'topology'
+// as the network-layer counterpart to the hardware topology it complements.
+export type PanelTab = 'topology' | 'network' | 'blueprints' | 'packets' | 'managed' | 'connections' | 'traffic' | 'routes' | 'scenario' | 'signals' | 'analysis' | 'events' | 'cost' | 'compare' | 'config'
 
 export interface SceneOverlayTarget { kind: 'region' | 'population'; id: string }
 

@@ -11,10 +11,11 @@ import { MAX_GLOBE_ARCS } from './types'
 import type {
   WorldDoc, CompiledWorld, InstanceId, ServerId, AzId, RegionId, PopulationId, BlueprintId,
   ServiceInstance, CompiledLbRouting, Server, AvailabilityZone, PlacementRole, BlueprintDependency,
-  ScenarioAction, ScenarioStep, CacheConfig, DbConfig, PlacementId,
+  ScenarioAction, ScenarioStep, CacheConfig, DbConfig, PlacementId, NatGatewayId,
 } from '../world/types'
 import { effectiveMissFraction } from './cache'
 import { managedDbEngine } from '../world/types'
+import { resolveRoute } from '../world/network'
 import { routeMatchesPattern, listRoutes } from '../nodeConfig'
 import { pickPacketByIndex, resolveWireSize, routeIngressBytes, buildPickTable, resolveMixProtocol, type WireSize, type PickTable } from '../packetResolve'
 import {
@@ -33,7 +34,10 @@ import {
 } from './routingRuntime'
 import { stepHost, diskIoDemandFor, diskWaitFor, resolveDiskIopsCeiling, warmthOf, type InstanceLoad, type HostStepResult, type WarmingEntry } from './hostScheduler'
 import { createVpsState, stepVps, type VpsState } from './vpsModel'
-import { createNicState, addNicBytes, settleNic, NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES, type NicState } from './networkRuntime'
+import {
+  createNicState, addNicBytes, settleNic, NIC_REQUEST_BYTES, NIC_RESPONSE_BYTES, type NicState,
+  createNatGatewayState, settleNatGateway, type NatGatewayState,
+} from './networkRuntime'
 import { sampleSizeMultiplier } from './latency'
 import {
   getBreaker, recordWeighted, transition, admitRequest, pathKey, type Breaker,
@@ -95,6 +99,10 @@ function recordScaleEvent(history: Map<PlacementId, number[]>, placementId: Plac
 }
 const MIN_HEALTH_SIGNAL_RPS = 0.5            // below this offered rps, errorRate carries no signal
 const DEGRADE_THRESHOLD_MS = 4               // spec decision 9 / Global Constraints
+// FEAT-014 (Task 9): NatGateway carries no authorable nicMbps of its own (Task 1's type) — a
+// fixed 10 Gbps baseline (real AWS NAT Gateway line rate) stands in until a follow-up feature
+// authors one. Applies to every NAT gateway in a doc uniformly.
+const NAT_GATEWAY_NIC_MBPS = 10_000
 const DEGRADE_WINDOW_STEPS = 30              // 3s of 100ms steps
 const DEGRADED_STEP_MS = 200
 const RENDER_PROGRESS_PER_MS = 1 / 1200      // particle sweeps a pair in ~1.2s wall-time
@@ -131,6 +139,31 @@ function groupInstancesByServer(compiled: CompiledWorld): Map<ServerId, ServiceI
 function buildRoutePathById(doc: WorldDoc): Map<string, string> {
   const m = new Map<string, string>()
   for (const route of listRoutes(doc.packets)) m.set(String(route.id), route.path)
+  return m
+}
+
+// FEAT-014 (Task 9): "which NAT gateway (if any) does this server's subnet route cross-region
+// egress through" -- resolved once at start() from the frozen doc, exactly mirroring
+// compileWorld.ts's own fromSubnet/fromRouteTable/resolveRoute(routeTable, needsEgress) call
+// (network.ts's resolveRoute), so a server never disagrees at runtime with what the compiler
+// already decided its egress route target is. needsEgress is passed `true` unconditionally here
+// (rather than compileWorld's `hopClass === 'cross-region'` gate) because this index is keyed
+// purely by SOURCE server -- the model has one route table per subnet with at most one non-local
+// egress route, so "does this server's subnet resolve to a natGateway" has a single fixed answer
+// independent of which destination a given hop happens to be going to; the per-step call site
+// (the internal-hop loop below) still only consults this map for hops it already knows are
+// cross-region, reproducing compileWorld's gate at the point of use instead of here.
+function buildNatGatewayIdByServer(doc: WorldDoc): Map<ServerId, NatGatewayId> {
+  const m = new Map<ServerId, NatGatewayId>()
+  for (const server of Object.values(doc.servers)) {
+    if (!server.subnetId) continue
+    const subnet = doc.subnets[server.subnetId]
+    if (!subnet) continue
+    const routeTable = doc.routeTables[subnet.routeTableId]
+    if (!routeTable) continue
+    const target = resolveRoute(routeTable, true)
+    if (target?.kind === 'natGateway' && doc.natGateways[target.id]) m.set(server.id, target.id)
+  }
   return m
 }
 
@@ -317,7 +350,7 @@ function matchRouteTargets(path: string | null | undefined, lb: CompiledLbRoutin
 
 interface Attached { scope: RenderScope; onFrame: (p: FramePayload) => void }
 
-interface EngineState {
+export interface EngineState {
   running: boolean
   seed: number
   rng: Rng
@@ -433,6 +466,20 @@ interface EngineState {
   nics: Map<ServerId, NicState>
   nicDeliveredFraction: Map<ServerId, number>
   nicQueuedLatencyMs: Map<ServerId, number>
+  // FEAT-014 (Task 9): one NatGatewayState per doc.natGateways entry, built once at start() —
+  // empty for a doc with no NAT gateways, mirroring `nics`' per-server shape but keyed by
+  // gateway id. `natGatewayIdByServer` is the start()-time-resolved "which gateway (if any) does
+  // this server's subnet route cross-region egress through" index (mirrors serversByAz/
+  // azsByRegion's own start()-time-index pattern) so the per-step hop loop pays only a Map
+  // lookup, never a route-table walk.
+  natGatewayStates: Map<NatGatewayId, NatGatewayState>
+  natGatewayIdByServer: Map<ServerId, NatGatewayId>
+  // FEAT-014 (Task 9 fix round 1): previous step's gateway settlement, same one-step lag as
+  // nicDeliveredFraction/nicQueuedLatencyMs above — composed into admittedScaleByServer/
+  // extraLatencyMsByServer for every server whose subnet routes through that gateway, so a
+  // saturated gateway actually throttles/queues instead of only being measured.
+  natGatewayDeliveredFraction: Map<NatGatewayId, number>
+  natGatewayQueuedLatencyMs: Map<NatGatewayId, number>
   breakers: Map<string, Breaker>
   // Persistent per-instance request queues (audit ISSUE-013): carried across ticks, mutated by
   // solveFlows. THE backpressure/damping state — served = min(capacity, arrivals + backlog).
@@ -443,7 +490,14 @@ interface EngineState {
   tracer: Tracer
 
   prevFlows: Record<InstanceId, InstanceFlow>
-  windowTotals: { crossAzBytes: number; crossRegionBytes: number; internetBytes: number; managedEgressBytes: Record<string, number> }
+  windowTotals: {
+    crossAzBytes: number; crossRegionBytes: number; internetBytes: number
+    managedEgressBytes: Record<string, number>
+    // FEAT-014 (Task 9): per-NAT-gateway step bytes (in+out), accumulated the same way
+    // managedEgressBytes accumulates per-managed-service bytes -- stays `{}` for a doc with no
+    // NAT gateways, so buildBatch's natGatewayBytesPerSec loop is zero iterations.
+    natGatewayBytes: Record<string, number>
+  }
   lastRoutingSnapshot: RoutingSnapshot
   popRegion: Map<PopulationId, RegionId>
   pendingFailover: Map<PopulationId, RegionId>
@@ -822,6 +876,16 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
   // determinism hole this feature exists to prevent. The public facade methods below keep reading
   // state.clock.simMs (unchanged behavior for UI-driven calls, which are never backdated), and
   // delegate to these same functions so there is exactly one implementation either way.
+  // FEAT-014 (final review Important #3): failover.ts's OutageScope ('server'|'az'|'region'|
+  // 'managed') is DELIBERATELY narrower than the widened FaultScope ('subnet'/'natGateway' added
+  // for partition endpoints only) — its health-check probing, AZ drain ramp, and multi-AZ
+  // managed-service promotion have no concept of a subnet or NAT gateway going "down", and
+  // widening them to fake one would be conjuring semantics nobody asked for. A region/az/server/
+  // managed 'down' fault already covers every meaningful outage case. This predicate is the single
+  // place that decision lives, so `scope as OutageScope` never has to happen unguarded again.
+  const isFailoverScope = (scope: FaultScope): scope is OutageScope =>
+    scope === 'server' || scope === 'az' || scope === 'region' || scope === 'managed'
+
   const doSetFault = (s: EngineState, scope: FaultScope, id: string, spec: FaultSpec | null, simMs: number): void => {
     const affected = instanceIdsForFaultScope(s, scope, id)
     // Audit final-review N-finding: capture whether the fault being CLEARED was actually a
@@ -834,10 +898,16 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     for (const e of setFaultPure(s.faults, scope, id, spec, simMs, affected)) emitEvent(e)
     // 'down' (and clearing back to null) routes through the EXISTING failover outage path so
     // behavior stays byte-identical to the pre-FEAT-001 setOutage — faults.ts's own state above
-    // is bookkeeping/event-emission only, never a second source of truth for down/health.
-    if (spec === null || spec.kind === 'down') {
+    // is bookkeeping/event-emission only, never a second source of truth for down/health. Gated
+    // on isFailoverScope: a 'subnet'/'natGateway'-scoped 'down' fault still gets recorded above
+    // (setFaultPure) and its affected instances are still correctly resolved
+    // (instanceIdsForFaultScope's exhaustive switch, Important #3) for whatever a future caller
+    // wants to do with them — it just never reaches the failover outage/health machinery below,
+    // which structurally cannot represent either scope. A deliberate, documented no-op for that
+    // combination, not a silent gap.
+    if ((spec === null || spec.kind === 'down') && isFailoverScope(scope)) {
       const down = spec !== null
-      for (const e of failoverSetOutage(s.failover, scope as OutageScope, id, down, simMs)) emitEvent(e)
+      for (const e of failoverSetOutage(s.failover, scope, id, down, simMs)) emitEvent(e)
       // audit ISSUE-008: an AZ failure is a SIMULATED outage for the managed services scoped to
       // it — they go down with the AZ (and multi-AZ DBs may then auto-promote their standby),
       // and recover with it. Manual per-service kills are untouched in both directions.
@@ -1597,7 +1667,16 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // fraction. CPU saturation no longer sheds throughput proportionally (the old one-step-lag
       // oscillator) — it bounds each instance's service rate, and the queue model (ISSUE-013)
       // absorbs the excess as latency before erroring past the queue bound.
-      admittedScaleByServer[server.id] = s.nicDeliveredFraction.get(server.id) ?? 1
+      // FEAT-014 (Task 9 fix round 1): if this server's subnet routes cross-region egress through
+      // a NAT gateway, that gateway's own one-step-lagged settlement composes with the server's
+      // own NIC settlement the same way cpu-brownout composes multiplicatively with VPS steal
+      // (line ~1501) — multiply the admission fractions, add the latencies. A gateway shared by
+      // two servers that together saturate it therefore throttles BOTH of them, mirroring
+      // per-server NIC shedding one level up the topology, rather than being silently ignored.
+      const natId = s.natGatewayIdByServer.get(server.id)
+      const natDeliveredFraction = natId ? s.natGatewayDeliveredFraction.get(natId) ?? 1 : 1
+      const natQueuedMs = natId ? s.natGatewayQueuedLatencyMs.get(natId) ?? 0 : 0
+      admittedScaleByServer[server.id] = (s.nicDeliveredFraction.get(server.id) ?? 1) * natDeliveredFraction
       latencyMultiplierByServer[server.id] = host.latencyMultiplier
       const queuedMs = s.nicQueuedLatencyMs.get(server.id) ?? 0
       const faultMs = latencyFault?.ms ?? 0
@@ -1605,9 +1684,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // the same "must ADD not assign" discipline FEAT-001 established for extraLatencyMsByServer
       // — this is the single mechanism that reaches BOTH Little's-law call sites (the host
       // scheduler's next-step InstanceLoad.activeConnections via prevFlows, and metrics.ts's
-      // published activeConnections via the same flows-solved latency samples).
+      // published activeConnections via the same flows-solved latency samples). The NAT gateway's
+      // queued ms joins the same additive chain.
       const diskMs = diskWaitMs ?? 0
-      const totalExtraMs = queuedMs + faultMs + diskMs
+      const totalExtraMs = queuedMs + faultMs + diskMs + natQueuedMs
       if (totalExtraMs > 0) extraLatencyMsByServer[server.id] = totalExtraMs
       let nic = s.nics.get(server.id)
       if (!nic) {
@@ -1756,7 +1836,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     // s.faults.partitions. Skipped entirely when no partition is active (the common case),
     // matching the anyFaultsActive short-circuit discipline above. NOT consumed inside flows.ts
     // yet — a later task wires actual blocking/loss/delay behavior off this map.
-    const impairmentMemo = buildImpairmentMemo(compiled, doc, s.faults.partitions, s.regionOfAz)
+    const impairmentMemo = buildImpairmentMemo(compiled, doc, s.faults.partitions, s.regionOfAz, s.natGatewayIdByServer)
     // FEAT-004 (Task 3): per-cache-identity miss fraction, keyed by instance id (a service whose
     // own blueprint carries cacheConfig — the "proxy" shape) or `managed:${id}` (a managed cache
     // target reached via cacheAsideVia — the "cache-aside" shape). Skipped entirely when the world
@@ -1997,6 +2077,25 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         const toId = row.toInstanceId
         const toNic = toId != null ? nicByServer[compiled.instances[toId]?.serverId ?? ''] : undefined
         if (toNic) addNicBytes(toNic, req, resp)   // callee: request in, response out
+
+        // FEAT-014 (Task 9): the SAME req/resp bytes just booked against the caller's own NIC
+        // above, ADDITIONALLY fed into the caller's NAT gateway state when its subnet resolves
+        // one for cross-region egress (buildNatGatewayIdByServer, start()-time-resolved) — never
+        // a second independent byte computation (plan Cross-Cutting Constraint 6). Gated on
+        // `s.natGatewayIdByServer.size > 0` so a doc with zero NAT gateways pays only that one
+        // cheap size check per row, never a Map lookup.
+        // NOTE for Task 10 (cost model NAT gateway line item): `req`/`resp` here are the RAW wire
+        // bytes for this row -- for a db dependency they do NOT include WAL write-amplification
+        // (that only gets applied via `writeFraction` further downstream, e.g. cross-AZ/region
+        // egress cost billing). If Task 10 bills NAT gateway egress the same way it bills
+        // cross-region egress cost, make sure it applies the same WAL-amplification factor this
+        // row's cost accounting uses elsewhere, or the two will silently disagree on a db-heavy
+        // edge's true byte volume through the gateway.
+        if (s.natGatewayIdByServer.size > 0 && row.hopClass === 'cross-region') {
+          const natId = s.natGatewayIdByServer.get(inst.serverId)
+          const natState = natId ? s.natGatewayStates.get(natId) : undefined
+          if (natState) addNicBytes(natState, resp, req)
+        }
       }
     }
 
@@ -2219,9 +2318,23 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     for (const server of Object.values(doc.servers)) {
       const nic = s.nics.get(server.id)
       if (!nic) continue
-      const settled = settleNic(nic, server, stepMs)
+      const settled = settleNic(nic, server.specs.nicMbps, stepMs)
       s.nicDeliveredFraction.set(server.id, settled.deliveredFraction)
       s.nicQueuedLatencyMs.set(server.id, settled.queuedLatencyMs)
+    }
+    // FEAT-014 (Task 9): NAT gateway settlement, same "read the step's raw counters into the
+    // window BEFORE they're reset" ordering as accumulateStep/settleNic above -- zero iterations
+    // for a doc with no NAT gateways (natGatewayStates built empty at start()).
+    for (const [natId, natState] of s.natGatewayStates) {
+      s.windowTotals.natGatewayBytes[natId] =
+        (s.windowTotals.natGatewayBytes[natId] ?? 0) + natState.inBytesThisStep + natState.outBytesThisStep
+      // FEAT-014 (Task 9 fix round 1): the settlement result used to be discarded here, so a
+      // saturated gateway was measured but never enforced. Store it the same way settleNic's
+      // result is stored just above (one-step lag), for the host loop to compose into
+      // admittedScaleByServer/extraLatencyMsByServer next step.
+      const settledNat = settleNatGateway(natState, NAT_GATEWAY_NIC_MBPS, stepMs)
+      s.natGatewayDeliveredFraction.set(natId, settledNat.deliveredFraction)
+      s.natGatewayQueuedLatencyMs.set(natId, settledNat.queuedLatencyMs)
     }
     s.windowTotals.crossAzBytes += totals.crossAzBytes * stepSec
     s.windowTotals.crossRegionBytes += totals.crossRegionBytes * stepSec
@@ -2303,7 +2416,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       s.callbacks.onMetrics(batch)
       s.replay.push({ simMs, batch, events: s.events.drain() })
       s.tracer.sample(flows, compiled, doc, simMs, entryId => populationsForEntry(entryId), managedDbRt)
-      s.windowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} }
+      s.windowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {}, natGatewayBytes: {} }
     }
   }
 
@@ -2674,9 +2787,12 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         vpsFactor: new Map(),
         nics: new Map(Object.values(doc.servers).map(sv => [sv.id, createNicState()])),
         nicDeliveredFraction: new Map(), nicQueuedLatencyMs: new Map(),
+        natGatewayStates: new Map(Object.values(doc.natGateways).map(nat => [nat.id, createNatGatewayState()])),
+        natGatewayIdByServer: buildNatGatewayIdByServer(doc),
+        natGatewayDeliveredFraction: new Map(), natGatewayQueuedLatencyMs: new Map(),
         breakers: new Map(), queueDepth: new Map(), metrics: createMetricsState(),
         events: createEventRing(500), replay: createReplayBuffer(300), tracer: createTracer(createRng(effectiveSeed ^ 0x1234)),
-        prevFlows: {}, windowTotals: { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} },
+        prevFlows: {}, windowTotals: { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {}, natGatewayBytes: {} },
         lastRoutingSnapshot: { populationRoutes: [] }, popRegion: new Map(), pendingFailover: new Map(),
         popPrevRegion: new Map(),
         checkFailedPrev: new Map(), probePrev: new Map(), instanceHealth: new Map(), oomRestartAt: new Map(), refusedRateLimit: new Map(),
@@ -2929,19 +3045,34 @@ export function buildImpairmentMemo(
   doc: WorldDoc,
   partitions: PartitionFault[],
   regionOfAz: Map<AzId, RegionId>,
+  // FEAT-014 (final review Important #2): the start()-time-resolved "which NAT gateway (if any)
+  // does this server's subnet route cross-region egress through" index (buildNatGatewayIdByServer)
+  // — reused here rather than re-derived, so a subnet/natGateway-scoped partition endpoint can
+  // actually resolve to a real EndpointIds.subnetId/natGatewayId instead of always being undefined
+  // (which made endpointMatches's 'subnet'/'natGateway' cases correct-but-unreachable at runtime,
+  // despite Task 7's unit test proving the matcher itself worked in isolation). Optional so every
+  // existing test/call site that doesn't pass it keeps compiling — absent ⇒ the pre-fix behavior
+  // (subnetId/natGatewayId always undefined).
+  natGatewayIdByServer?: Map<ServerId, NatGatewayId>,
 ): Map<string, { blocked: boolean; lossFraction: number; delayMs: number }> {
   const memo = new Map<string, { blocked: boolean; lossFraction: number; delayMs: number }>()
   if (partitions.length === 0) return memo
+  const idsForServer = (serverId: ServerId): { subnetId?: string; natGatewayId?: string } => {
+    const subnetId = doc.servers[serverId]?.subnetId
+    if (!subnetId) return {}
+    const natGatewayId = natGatewayIdByServer?.get(serverId)
+    return natGatewayId ? { subnetId, natGatewayId } : { subnetId }
+  }
   for (const path of compiled.paths) {
     const fromInst = compiled.instances[path.fromInstanceId]
     const fromIds = fromInst
-      ? { regionId: fromInst.regionId, azId: fromInst.azId, serverId: fromInst.serverId }
+      ? { regionId: fromInst.regionId, azId: fromInst.azId, serverId: fromInst.serverId, ...idsForServer(fromInst.serverId) }
       : {}
-    let toIds: { regionId?: string; azId?: string; serverId?: string }
+    let toIds: { regionId?: string; azId?: string; serverId?: string; subnetId?: string; natGatewayId?: string }
     if (path.to.kind === 'instance') {
       const toInst = compiled.instances[path.to.instanceId]
       toIds = toInst
-        ? { regionId: toInst.regionId, azId: toInst.azId, serverId: toInst.serverId }
+        ? { regionId: toInst.regionId, azId: toInst.azId, serverId: toInst.serverId, ...idsForServer(toInst.serverId) }
         : {}
     } else {
       const ms = doc.managedServices[path.to.managedServiceId]
@@ -2963,24 +3094,54 @@ export function buildImpairmentMemo(
 // FEAT-001: resolve a fault scope/id to the concrete instance ids it covers, so setFault can
 // clear their leakAccumMb entries on fault-clear (a fresh heap the moment the fault stops, not
 // just on the next OOM). 'managed' scope has no compiled ServiceInstances — always [].
-function instanceIdsForFaultScope(state: EngineState, scope: FaultScope, id: string): InstanceId[] {
-  if (scope === 'managed') return []
-  if (scope === 'server') return (state.instancesByServer.get(id) ?? []).map(i => i.id)
-  if (scope === 'az') {
-    const out: InstanceId[] = []
-    for (const sv of state.serversByAz.get(id) ?? []) {
-      for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+//
+// FEAT-014 (final review Important #3): widened to a genuinely exhaustive switch over FaultScope
+// — the pre-fix version was an if-chain ending in an unguarded `// region` fallthrough, so a
+// 'subnet'- or 'natGateway'-scoped fault silently took the region branch (wrong lookup, silent
+// no-op) instead of resolving correctly. 'subnet'/'natGateway' now resolve via the same
+// subnetId/natGatewayIdByServer data Important #2's buildImpairmentMemo fix already required in
+// hand — the instance ids of every server whose subnetId matches / whose resolved NAT gateway
+// matches. The switch has no default case, so a FaultScope member added later without a matching
+// branch here is a compile error, not a silent fallthrough (mirrors faults.ts's endpointMatches).
+export function instanceIdsForFaultScope(state: EngineState, scope: FaultScope, id: string): InstanceId[] {
+  switch (scope) {
+    case 'managed':
+      return []
+    case 'server':
+      return (state.instancesByServer.get(id) ?? []).map(i => i.id)
+    case 'az': {
+      const out: InstanceId[] = []
+      for (const sv of state.serversByAz.get(id) ?? []) {
+        for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+      }
+      return out
     }
-    return out
-  }
-  // region
-  const out: InstanceId[] = []
-  for (const az of state.azsByRegion.get(id) ?? []) {
-    for (const sv of state.serversByAz.get(az.id) ?? []) {
-      for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+    case 'region': {
+      const out: InstanceId[] = []
+      for (const az of state.azsByRegion.get(id) ?? []) {
+        for (const sv of state.serversByAz.get(az.id) ?? []) {
+          for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+        }
+      }
+      return out
+    }
+    case 'subnet': {
+      const out: InstanceId[] = []
+      for (const sv of Object.values(state.doc.servers)) {
+        if (sv.subnetId !== id) continue
+        for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+      }
+      return out
+    }
+    case 'natGateway': {
+      const out: InstanceId[] = []
+      for (const sv of Object.values(state.doc.servers)) {
+        if (state.natGatewayIdByServer.get(sv.id) !== id) continue
+        for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+      }
+      return out
     }
   }
-  return out
 }
 
 // Order-preserving single-pass grouping (audit ISSUE-032) — same shape as groupInstancesByServer.

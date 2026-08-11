@@ -27,6 +27,7 @@
 // opener button; all editing (add/reorder/remove/per-field edits) now lives in the modal.
 import { type ReactElement } from 'react'
 import { ruleSourceWords, rulePortPhrase } from '../../server/ruleSentence'
+import { SecurityGroupPicker } from './SecurityGroupPicker'
 import type { Server } from '../../../../lib/world/types'
 
 export function firewallPv(server: Server, liveAllowedRps?: number | null): string {
@@ -46,9 +47,16 @@ export interface FirewallDrawerProps {
 
 const SENTENCE_ID_COLOR = 'var(--kit-accent)'
 
-export function FirewallDrawer({ server, running, onOpenRules }: FirewallDrawerProps): ReactElement {
+// The legacy flat-firewall sentence list + "+ rule" opener — extracted (final review Important
+// #4) so it can render BOTH for an un-networked server (subnetId absent, the original sole
+// caller) AND beneath the SecurityGroupPicker for a networked server that has zero security
+// groups attached yet. network.ts's firewallVerdict only branches to evaluateSecurityGroups when
+// `toServer.securityGroupIds?.length` is non-empty — a server that just got a subnetId but no
+// groups yet is STILL governed by this exact list at compile/engine time, so hiding it there would
+// hide what's actually enforced.
+function LegacyFirewallRules({ server, running, onOpenRules }: FirewallDrawerProps): ReactElement {
   return (
-    <div data-testid="firewall-drawer-body">
+    <>
       {server.firewall.map((r, i) => (
         <div
           key={r.id} data-testid="firewall-drawer-sentence"
@@ -86,6 +94,51 @@ export function FirewallDrawer({ server, running, onOpenRules }: FirewallDrawerP
       <div style={{ fontSize: 9.5, color: 'var(--color-text-muted)', marginTop: 6 }}>
         open rules editor
       </div>
+    </>
+  )
+}
+
+export function FirewallDrawer({ server, running, onOpenRules }: FirewallDrawerProps): ReactElement {
+  // Task 13 (network-topology): a networked server (subnetId set) is governed by security
+  // groups scoped to its subnet's VPC instead of the legacy flat firewall rule list — the
+  // un-networked branch (subnetId absent) is completely unchanged, the regression floor for
+  // existing worlds/tests.
+  //
+  // Final review Important #4: network.ts's firewallVerdict only branches to
+  // evaluateSecurityGroups when `toServer.securityGroupIds?.length` is non-empty — the state
+  // every server is in immediately after subnet assignment. Before this fix, the drawer swapped
+  // straight to SecurityGroupPicker's "No security groups in this VPC" empty state the moment
+  // subnetId was set, giving zero visibility into the legacy firewall rules the engine was STILL
+  // enforcing underneath. Now: subnetId set + no groups attached shows BOTH the picker (so the
+  // user can attach one) AND the still-live legacy rule list beneath it, with a note explaining
+  // why. subnetId set + at least one group attached shows the picker alone (unchanged from
+  // before — evaluateSecurityGroups genuinely governs at that point).
+  if (server.subnetId) {
+    const hasGroups = (server.securityGroupIds?.length ?? 0) > 0
+    return (
+      <div data-testid="firewall-drawer-body">
+        <SecurityGroupPicker server={server} />
+        {!hasGroups && (
+          <>
+            <div
+              data-testid="firewall-legacy-still-active-note"
+              style={{
+                color: 'var(--color-warning)', fontSize: 9.5, margin: '8px 0 4px',
+                lineHeight: 1.5,
+              }}
+            >
+              No security groups attached — the legacy firewall rules below are still in effect.
+            </div>
+            <LegacyFirewallRules server={server} running={running} onOpenRules={onOpenRules} />
+          </>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div data-testid="firewall-drawer-body">
+      <LegacyFirewallRules server={server} running={running} onOpenRules={onOpenRules} />
     </div>
   )
 }

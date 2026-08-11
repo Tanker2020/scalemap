@@ -137,13 +137,27 @@ export interface EndpointIds {
   regionId?: string
   azId?: string
   serverId?: string
+  subnetId?: string
+  natGatewayId?: string
 }
 
+// Exhaustive switch over LinkEndpoint['kind'] (FEAT-014) — deliberately NOT an if-chain with a
+// trailing fallthrough. The pre-FEAT-014 version ended `return ids.serverId === endpoint.id` as
+// its final branch, which meant any endpoint kind other than 'internet'/'region'/'az' (including
+// the 'subnet'/'natGateway' kinds added here) would silently be compared against ids.serverId —
+// a subnet-scoped partition could wrongly match a server whose id happened to equal the subnet
+// id string, or wrongly fail to match a real subnet endpoint. The switch's implicit exhaustiveness
+// (no default) means a future LinkEndpoint kind added without a matching case here is a compile
+// error, not a silent fallthrough.
 function endpointMatches(endpoint: LinkEndpoint, ids: EndpointIds): boolean {
-  if (endpoint.kind === 'internet') return false
-  if (endpoint.kind === 'region') return ids.regionId === endpoint.id
-  if (endpoint.kind === 'az') return ids.azId === endpoint.id
-  return ids.serverId === endpoint.id
+  switch (endpoint.kind) {
+    case 'internet': return false
+    case 'region': return ids.regionId === endpoint.id
+    case 'az': return ids.azId === endpoint.id
+    case 'server': return ids.serverId === endpoint.id
+    case 'subnet': return ids.subnetId === endpoint.id
+    case 'natGateway': return ids.natGatewayId === endpoint.id
+  }
 }
 
 export function impairmentFor(

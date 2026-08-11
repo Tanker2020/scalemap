@@ -14,11 +14,18 @@ import { navigateToEntity, entityLabel } from '../entityNav'
 
 export { navigateToEntity, entityLabel } from '../entityNav'
 
-// Compile findings not already claimed by a blocked-dependency-path analysis finding (D4).
+// Compile findings not already claimed by a blocked-dependency-path analysis finding (D4). Also
+// claims 'no-egress-route' findings (final review Important #6): blockedDependencyPath
+// deliberately skips 'no-egress-route'-kind blocked paths so the dedicated noEgressRoute rule can
+// own that presentation exclusively (correct severity + routing-specific advice, no duplicate
+// critical finding) — but the generic compile-side 'blocked-path' finding compileWorld.ts still
+// emits for EVERY blocked path regardless of kind, so without also claiming here it would leak
+// through unsuppressed as a second, uncorrelated duplicate of noEgressRoute's own finding.
 export function unsuppressedCompileFindings(analysis: AnalysisFinding[], compile: CompileFinding[]): CompileFinding[] {
-  const claimed = new Set(
-    analysis.filter(f => f.ruleId === 'blocked-dependency-path').map(f => f.id.slice('blocked-dependency-path:'.length)),
-  )
+  const claimed = new Set([
+    ...analysis.filter(f => f.ruleId === 'blocked-dependency-path').map(f => f.id.slice('blocked-dependency-path:'.length)),
+    ...analysis.filter(f => f.ruleId === 'no-egress-route').map(f => f.id.slice('no-egress-route:'.length)),
+  ])
   return compile.filter(cf => {
     if (cf.kind !== 'blocked-path') return true
     const pathId = cf.id.startsWith('finding-') ? cf.id.slice('finding-'.length) : cf.id

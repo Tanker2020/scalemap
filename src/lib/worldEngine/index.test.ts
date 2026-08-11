@@ -1,15 +1,15 @@
 import { describe, it, expect } from 'vitest'
-import { createWorldEngine, buildImpairmentMemo } from './index'
+import { createWorldEngine, buildImpairmentMemo, instanceIdsForFaultScope, type EngineState } from './index'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, createPopulation,
-  createLoadBalancer,
+  createLoadBalancer, createVpc, createSubnet, createRouteTable, createNatGateway, createInternetGateway,
 } from '../world/factories'
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
 import { addRoute, routeIdOf, updateRoute, addPacket } from '../nodeConfig'
 import type { HttpTemplate, ConnectionType } from '../nodeConfig'
 import { computeWorldCost } from '../costModelV2'
-import type { WorldDoc, CacheConfig } from '../world/types'
+import type { WorldDoc, CacheConfig, BlueprintDependency, InstanceId } from '../world/types'
 import type { MetricsBatch, EngineEvent, FramePayload } from './types'
 import { populationDemandRps } from './demand'
 import { createRng } from './rng'
@@ -2482,6 +2482,249 @@ describe('FEAT-002 impairment memo (Task 10)', () => {
     const entry = memo.get(f.path.id)
     expect(entry).toEqual({ blocked: true, lossFraction: 0, delayMs: 0 })
   })
+
+  // FEAT-014 (final review Important #2): buildImpairmentMemo previously never populated
+  // EndpointIds.subnetId/natGatewayId, so a `{kind:'subnet',id}` or `{kind:'natGateway',id}`
+  // partition endpoint could never match anything at runtime even though endpointMatches (faults.ts)
+  // handled those kinds correctly in isolation — this proves the memo itself now resolves them.
+  describe('subnet/natGateway endpoint resolution (final review Important #2)', () => {
+    function subnetFixture() {
+      const doc = createWorld()
+      doc.routing.policy = 'geo'
+      const r1 = createRegion('us-east-1')
+      const r2 = createRegion('eu-west-1')
+      const az1a = createAz(r1.id, 'us-east-1a')
+      const az2a = createAz(r2.id, 'eu-west-1a')
+      Object.assign(doc.regions, { [r1.id]: r1, [r2.id]: r2 })
+      Object.assign(doc.azs, { [az1a.id]: az1a, [az2a.id]: az2a })
+
+      const vpc = createVpc(r1.id)
+      // A real egress route out of the subnet (an internet gateway route) — the fixture must
+      // isolate the PARTITION as the only cause of blocked traffic; without this the route table's
+      // pre-existing 'no-egress-route' block (empty routes) would already block the path with zero
+      // partitions active, confounding the assertion.
+      const igw = createInternetGateway(vpc.id)
+      const routeTable = createRouteTable(vpc.id)
+      routeTable.routes.push({ destinationCidr: '0.0.0.0/0', target: { kind: 'internetGateway', id: igw.id } })
+      const subnet = createSubnet(vpc.id, az1a.id, 'private', routeTable.id)
+      Object.assign(doc.vpcs, { [vpc.id]: vpc })
+      Object.assign(doc.internetGateways, { [igw.id]: igw })
+      Object.assign(doc.routeTables, { [routeTable.id]: routeTable })
+      Object.assign(doc.subnets, { [subnet.id]: subnet })
+
+      const server = createServer(az1a.id, getPreset('dedicated-8')!)
+      server.subnetId = subnet.id
+      const target = createServer(az2a.id, getPreset('dedicated-8')!)
+      Object.assign(doc.servers, { [server.id]: server, [target.id]: target })
+
+      const web = publicBlueprint('web', 0)
+      const repl = createBlueprint('repl', 1)
+      web.dependencies = [{ id: 'd-repl', target: { kind: 'blueprint', blueprintId: repl.id }, port: 8080, protocol: 'http', packetTemplateId: null }]
+      Object.assign(doc.blueprints, { [web.id]: web, [repl.id]: repl })
+      const plWeb = createPlacement(web.id, server.id)
+      const plRepl = createPlacement(repl.id, target.id)
+      Object.assign(doc.placements, { [plWeb.id]: plWeb, [plRepl.id]: plRepl })
+
+      const compiled = compileWorld(doc)
+      const webIid = instanceId(plWeb.id, 0)
+      const replIid = instanceId(plRepl.id, 0)
+      const path = compiled.paths.find(p => p.fromInstanceId === webIid && p.to.kind === 'instance' && p.to.instanceId === replIid)!
+      return { doc, compiled, r1, r2, az1a, az2a, subnet, server, target, path, webIid, replIid }
+    }
+
+    it('a subnet-scoped partition endpoint matches a path whose source server is IN that subnet', () => {
+      const f = subnetFixture()
+      const regionOfAz = new Map([[f.az1a.id, f.r1.id], [f.az2a.id, f.r2.id]])
+      const partitions = [
+        { from: { kind: 'subnet' as const, id: f.subnet.id }, to: { kind: 'region' as const, id: f.r2.id }, mode: 'drop' as const, symmetric: true },
+      ]
+      const memo = buildImpairmentMemo(f.compiled, f.doc, partitions, regionOfAz, new Map())
+      expect(memo.get(f.path.id)).toEqual({ blocked: true, lossFraction: 0, delayMs: 0 })
+    })
+
+    it('a subnet-scoped partition does NOT match when natGatewayIdByServer is omitted vs provided — subnetId resolution alone is enough (no gateway needed)', () => {
+      const f = subnetFixture()
+      const regionOfAz = new Map([[f.az1a.id, f.r1.id], [f.az2a.id, f.r2.id]])
+      const partitions = [
+        { from: { kind: 'subnet' as const, id: f.subnet.id }, to: { kind: 'region' as const, id: f.r2.id }, mode: 'drop' as const, symmetric: true },
+      ]
+      // Omitting the optional natGatewayIdByServer arg entirely must not break subnetId resolution.
+      const memo = buildImpairmentMemo(f.compiled, f.doc, partitions, regionOfAz)
+      expect(memo.get(f.path.id)).toEqual({ blocked: true, lossFraction: 0, delayMs: 0 })
+    })
+
+    it('a server with no subnetId never matches a subnet-scoped partition endpoint (regression floor)', () => {
+      const f = subnetFixture()
+      const regionOfAz = new Map([[f.az1a.id, f.r1.id], [f.az2a.id, f.r2.id]])
+      const partitions = [
+        { from: { kind: 'subnet' as const, id: 'some-other-subnet' }, to: { kind: 'region' as const, id: f.r2.id }, mode: 'drop' as const, symmetric: true },
+      ]
+      const memo = buildImpairmentMemo(f.compiled, f.doc, partitions, regionOfAz, new Map())
+      expect(memo.get(f.path.id)).toEqual({ blocked: false, lossFraction: 0, delayMs: 0 })
+    })
+
+    // Real engine-level integration test (not just the unit-level memo above): drives the actual
+    // simulation with live population traffic through a `{kind:'subnet',id}` partition and proves
+    // the downstream instance genuinely stops receiving admitted traffic — this is what "the
+    // memo is never fed real data in production" (the original finding) means to actually fix.
+    it('ENGINE-LEVEL: a subnet-scoped partition genuinely blocks live traffic between two servers, one of which is in that subnet', () => {
+      const f = subnetFixture()
+      const pop = createPopulation('nyc', 40.7, -74.0)
+      pop.peakRps = 200
+      pop.diurnal = 'flat'
+      f.doc.populations[pop.id] = pop
+      const compiled = compileWorld(f.doc)   // recompile — populationRegionOrder must see the population
+
+      const sim = drive(f.doc, compiled)
+      sim.stepFor(15)   // settle past DNS/health-check warmup
+      const before = sim.latest()
+      expect(before.instances[f.webIid]?.rps ?? 0).toBeGreaterThan(0)
+      expect(before.instances[f.replIid]?.rps ?? 0).toBeGreaterThan(0)
+
+      sim.engine.setPartition!({
+        from: { kind: 'subnet', id: f.subnet.id }, to: { kind: 'region', id: f.r2.id },
+        mode: 'drop', symmetric: true,
+      })
+      sim.stepFor(20)   // past any queueing/EMA lag
+
+      const after = sim.latest()
+      const beforeRps = before.instances[f.replIid]?.rps ?? 0
+      const afterRps = after.instances[f.replIid]?.rps ?? 0
+      expect(afterRps).toBeLessThan(beforeRps * 0.05)   // effectively zero — a fully dropped path
+      sim.engine.stop()
+    })
+  })
+})
+
+// ─── FEAT-014 (final review Important #3): FaultScope exhaustiveness ────────────────────────
+// instanceIdsForFaultScope used to be an if-chain ending in an unguarded `// region` fallthrough
+// — a 'subnet'/'natGateway'-scoped fault silently took the region branch. It is now a genuinely
+// exhaustive switch (no default), and failover.ts's narrower OutageScope vs the widened FaultScope
+// is reconciled by isFailoverScope gating the 'down'-fault routing to failoverSetOutage.
+describe('FEAT-014 final review Important #3: FaultScope exhaustiveness', () => {
+  function faultScopeState() {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    Object.assign(doc.regions, { [region.id]: region })
+    Object.assign(doc.azs, { [az.id]: az })
+
+    const vpc = createVpc(region.id)
+    const routeTable = createRouteTable(vpc.id)
+    const subnet = createSubnet(vpc.id, az.id, 'private', routeTable.id)
+    Object.assign(doc.vpcs, { [vpc.id]: vpc })
+    Object.assign(doc.routeTables, { [routeTable.id]: routeTable })
+    Object.assign(doc.subnets, { [subnet.id]: subnet })
+
+    const inSubnet = createServer(az.id, getPreset('dedicated-8')!)
+    inSubnet.subnetId = subnet.id
+    const outsideSubnet = createServer(az.id, getPreset('dedicated-8')!)
+    Object.assign(doc.servers, { [inSubnet.id]: inSubnet, [outsideSubnet.id]: outsideSubnet })
+
+    const nat = createNatGateway(subnet.id)
+    Object.assign(doc.natGateways, { [nat.id]: nat })
+
+    const bp = createBlueprint('svc', 0)
+    Object.assign(doc.blueprints, { [bp.id]: bp })
+    const plIn = createPlacement(bp.id, inSubnet.id)
+    const plOut = createPlacement(bp.id, outsideSubnet.id)
+    Object.assign(doc.placements, { [plIn.id]: plIn, [plOut.id]: plOut })
+
+    const compiled = compileWorld(doc)
+    const inSubnetIid = instanceId(plIn.id, 0)
+    const outsideSubnetIid = instanceId(plOut.id, 0)
+
+    const instancesByServer = new Map<string, typeof compiled.instances[string][]>()
+    for (const inst of Object.values(compiled.instances)) {
+      const list = instancesByServer.get(inst.serverId) ?? []
+      list.push(inst)
+      instancesByServer.set(inst.serverId, list)
+    }
+
+    // Minimal EngineState fixture — only the fields instanceIdsForFaultScope actually reads.
+    const state = {
+      doc,
+      instancesByServer,
+      serversByAz: new Map([[az.id, [inSubnet, outsideSubnet]]]),
+      azsByRegion: new Map([[region.id, [az]]]),
+      natGatewayIdByServer: new Map([[inSubnet.id, nat.id]]),
+    } as unknown as EngineState
+
+    return { state, subnetId: subnet.id, natId: nat.id, inSubnetIid, outsideSubnetIid }
+  }
+
+  it("resolves 'subnet' scope to exactly the instances of servers whose subnetId matches", () => {
+    const f = faultScopeState()
+    expect(instanceIdsForFaultScope(f.state, 'subnet', f.subnetId)).toEqual([f.inSubnetIid])
+  })
+
+  it("resolves 'natGateway' scope to exactly the instances of servers routed through that gateway", () => {
+    const f = faultScopeState()
+    expect(instanceIdsForFaultScope(f.state, 'natGateway', f.natId)).toEqual([f.inSubnetIid])
+  })
+
+  it("'subnet'/'natGateway' scope with an unknown id resolves to [] — never falls through to the region branch", () => {
+    const f = faultScopeState()
+    expect(instanceIdsForFaultScope(f.state, 'subnet', 'no-such-subnet')).toEqual([])
+    expect(instanceIdsForFaultScope(f.state, 'natGateway', 'no-such-gateway')).toEqual([])
+  })
+
+  it('a server OUTSIDE the subnet is never included — regression floor', () => {
+    const f = faultScopeState()
+    const subnetResult = instanceIdsForFaultScope(f.state, 'subnet', f.subnetId)
+    expect(subnetResult).not.toContain(f.outsideSubnetIid)
+  })
+
+  // Reconciling failover.ts's OutageScope vs the widened FaultScope: a 'down' fault scoped to
+  // 'subnet'/'natGateway' must not reach failoverSetOutage (structurally unsupported scope), so
+  // the affected instance's PUBLISHED HEALTH must stay whatever it already was — failover's
+  // manualOutages/healthByScope bookkeeping (the thing that actually drives published health) is
+  // never touched for those two scopes. (faults.ts's own event emission is scope-agnostic and
+  // fires an 'outage_triggered' event regardless — that alone doesn't prove failover ran, so
+  // published health, not the event stream, is the signal that distinguishes the two paths.)
+  it("a 'down' fault scoped to 'subnet' does NOT drive the instance's published health down (isFailoverScope rejects it); the identical fault scoped to 'server' does", () => {
+    function build() {
+      const doc = createWorld()
+      const region = createRegion('us-east-1')
+      const az = createAz(region.id, 'us-east-1a')
+      Object.assign(doc.regions, { [region.id]: region })
+      Object.assign(doc.azs, { [az.id]: az })
+      const vpc = createVpc(region.id)
+      const routeTable = createRouteTable(vpc.id)
+      const subnet = createSubnet(vpc.id, az.id, 'private', routeTable.id)
+      Object.assign(doc.vpcs, { [vpc.id]: vpc })
+      Object.assign(doc.routeTables, { [routeTable.id]: routeTable })
+      Object.assign(doc.subnets, { [subnet.id]: subnet })
+      const server = createServer(az.id, getPreset('dedicated-8')!)
+      server.subnetId = subnet.id
+      doc.servers[server.id] = server
+      const bp = createBlueprint('svc', 0)
+      doc.blueprints[bp.id] = bp
+      const pl = createPlacement(bp.id, server.id)
+      doc.placements[pl.id] = pl
+      const compiled = compileWorld(doc)
+      return { doc, compiled, subnet, server, iid: instanceId(pl.id, 0) }
+    }
+
+    const subnetCase = build()
+    const sim = drive(subnetCase.doc, subnetCase.compiled)
+    sim.stepFor(1)
+    sim.engine.setFault('subnet', subnetCase.subnet.id, { kind: 'down' })
+    sim.stepFor(1)
+    expect(sim.latest().instances[subnetCase.iid]?.health).not.toBe('down')
+    sim.engine.stop()
+
+    // Control: the identical 'down' fault scoped to 'server' still routes through failover
+    // normally (regression floor for the four original OutageScope members) and DOES drive
+    // published health down.
+    const serverCase = build()
+    const sim2 = drive(serverCase.doc, serverCase.compiled)
+    sim2.stepFor(1)
+    sim2.engine.setFault('server', serverCase.server.id, { kind: 'down' })
+    sim2.stepFor(1)
+    expect(sim2.latest().instances[serverCase.iid]?.health).toBe('down')
+    sim2.engine.stop()
+  })
 })
 
 // ─── FEAT-002 (Task 12): directional health checks — the split-brain enabler ─────────────────
@@ -4647,5 +4890,190 @@ describe('FEAT-008/FEAT-007 Task 22: wave-close integration tests', () => {
     expect(warm.scaledOut).toBe(true)
     expect(warm.scaledIn).toBe(false)
     expect(warm.p99At10s).toBeLessThan(cold.p99At10s) // instant capacity recovers meaningfully more
+  })
+})
+
+// ─── FEAT-014 (Task 9): NAT gateway byte accounting ────────────────────────────
+describe('FEAT-014 (Task 9): NAT gateway byte accounting', () => {
+  // One VPC in region A with a single private subnet whose route table's ONLY non-local route
+  // targets a NAT gateway (mirrors compileWorld.test.ts's crossRegionSubnetWorld fixture, minus
+  // the block-then-unblock steps -- here the NAT route is present from the start). Each entry in
+  // `apiSpecs` gets its OWN public entry blueprint + its OWN cross-region target blueprint (so
+  // each source server's demand is independently controllable), but every entry's SERVER is
+  // placed in the SAME private subnet -- so every one of them resolves (buildNatGatewayIdByServer)
+  // to the SAME shared NatGatewayState.
+  function natGatewayWorld(apiSpecs: { peakRps: number; fatPacketSizeKb?: number; serverANicMbps?: number }[]) {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const regionA = createRegion('us-east-1')
+    const regionB = createRegion('eu-west-1')
+    const azA = createAz(regionA.id, 'us-east-1a')
+    const azB = createAz(regionB.id, 'eu-west-1a')
+    Object.assign(doc.regions, { [regionA.id]: regionA, [regionB.id]: regionB })
+    Object.assign(doc.azs, { [azA.id]: azA, [azB.id]: azB })
+
+    const vpc = createVpc(regionA.id)
+    const routeTable = createRouteTable(vpc.id)
+    const subnet = createSubnet(vpc.id, azA.id, 'private', routeTable.id)
+    // The NAT gateway itself lives in a PUBLIC subnet (real AWS shape: it needs its own route to
+    // an internet gateway) -- it is the PRIVATE subnet's route table that points cross-region
+    // egress AT the gateway, not the gateway's own subnet placement. The gateway previously sat
+    // inside the private subnet it served, which could mislead a later task's implementer about
+    // which subnet a NAT gateway actually belongs in (task-9-report.md fix-round-1 minor #2).
+    const publicRouteTable = createRouteTable(vpc.id)
+    const publicSubnet = createSubnet(vpc.id, azA.id, 'public', publicRouteTable.id)
+    const nat = createNatGateway(publicSubnet.id)
+    doc.vpcs[vpc.id] = vpc
+    doc.routeTables[routeTable.id] = routeTable
+    doc.routeTables[publicRouteTable.id] = publicRouteTable
+    doc.subnets[subnet.id] = subnet
+    doc.subnets[publicSubnet.id] = publicSubnet
+    doc.natGateways[nat.id] = nat
+    routeTable.routes.push({ destinationCidr: '0.0.0.0/0', target: { kind: 'natGateway', id: nat.id } })
+
+    const apiInstIds: InstanceId[] = []
+    apiSpecs.forEach((spec, i) => {
+      const serverA = createServer(azA.id, getPreset('dedicated-8')!)
+      serverA.subnetId = subnet.id   // private-subnet server -- its cross-region egress routes via `nat`
+      if (spec.serverANicMbps != null) serverA.specs = { ...serverA.specs, nicMbps: spec.serverANicMbps }
+      const serverB = createServer(azB.id, getPreset('dedicated-8')!)
+      doc.servers[serverA.id] = serverA
+      doc.servers[serverB.id] = serverB
+
+      const api = publicBlueprint(`api${i}`, i)
+      const target = createBlueprint(`target${i}`, i + 10)
+      const dep: BlueprintDependency = {
+        id: `dep${i}`, target: { kind: 'blueprint', blueprintId: target.id },
+        port: 8080, protocol: 'http', packetTemplateId: null,
+      }
+      if (spec.fatPacketSizeKb != null) {
+        const packetId = 100 + i
+        doc.packets = {
+          ...doc.packets,
+          templates: {
+            ...doc.packets.templates,
+            [packetId]: {
+              id: packetId, name: `blob${i}`, protocol: 'http', method: 'PUT', statusCode: 200,
+              sizeKb: spec.fatPacketSizeKb, responseSizeKb: 1,
+            },
+          },
+          nextId: Math.max(doc.packets.nextId, packetId + 1),
+        }
+        dep.packetMix = [{ packetId, weight: 1 }]
+      }
+      api.dependencies = [dep]
+      doc.blueprints[api.id] = api
+      doc.blueprints[target.id] = target
+      const plApi = createPlacement(api.id, serverA.id); doc.placements[plApi.id] = plApi
+      const plTarget = createPlacement(target.id, serverB.id); doc.placements[plTarget.id] = plTarget
+      apiInstIds.push(instanceId(plApi.id, 0))
+
+      const pop = createPopulation(`pop${i}`, 40.7, -74.0)   // near us-east-1 (region A)
+      pop.peakRps = spec.peakRps
+      doc.populations[pop.id] = pop
+    })
+
+    return { doc, nat, apiInstIds }
+  }
+
+  it('a doc with NAT gateways accounts bytes routed through the gateway and publishes natGatewayBytesPerSec', () => {
+    const { doc, nat } = natGatewayWorld([{ peakRps: 200 }])
+    const compiled = compileWorld(doc)
+    const sim = drive(doc, compiled)
+    sim.stepFor(5)
+    const batch = sim.latest()
+    expect(batch.world.natGatewayBytesPerSec?.[nat.id]).toBeGreaterThan(0)
+    sim.engine.stop()
+  })
+
+  // Fix round 1 (Critical #1/#2): settleNatGateway's deliveredFraction/queuedLatencyMs result is
+  // now threaded into admittedScaleByServer/extraLatencyMsByServer for every server behind that
+  // gateway (index.ts's stepHost loop, one-step-lagged exactly like a per-server NIC's own
+  // settleNic result), so a saturated gateway actually throttles/queues instead of only being
+  // measured. This is the enforcement half of the plan's Step 1 acceptance test ("two
+  // private-subnet servers sharing one NAT gateway each get roughly half its cap when both
+  // saturate it, mirrors per-server NIC shedding at the gateway level").
+  //
+  // Each server binds a fat (5 MB request) packet to its own dependency so realistic peakRps
+  // values can reach the 10 Gbps gateway cap (NAT_GATEWAY_NIC_MBPS) without needing unrealistic
+  // rps. `alone` sends one server's traffic through the gateway by itself, well under 2x the
+  // per-step cap (deliveredFraction stays 1 -- no admission shed, only a small queued-latency
+  // add). `combined` sends BOTH servers' identical traffic through the SAME shared gateway --
+  // their combined load pushes it past 2x the cap, where settleNic's own formula sheds to a FLAT
+  // one-step-of-latency queuedLatencyMs (vs. the small proportional add in the alone case) AND
+  // roughly halves deliveredFraction. The instances' own raw compute/NIC capacity is far above
+  // 300 rps, so (matching this file's existing latency-assertion idiom, e.g. lines 316/1714, not
+  // an rps-shed one) the shared-cap degradation shows up as a materially higher composed p50Ms
+  // for BOTH servers, not as an rps drop.
+  it('two private-subnet servers sharing one saturated NAT gateway both see materially higher latency (shared cap enforced), not just measured', () => {
+    // serverANicMbps is deliberately far above the gateway's 10 Gbps cap (NAT_GATEWAY_NIC_MBPS)
+    // so the GATEWAY, not each server's own per-server NIC, is the binding constraint being
+    // measured -- otherwise the per-server NIC's own (pre-existing, already-tested) queuing would
+    // dominate the comparison and prove nothing about gateway enforcement specifically.
+    const spec = { peakRps: 300, fatPacketSizeKb: 5120, serverANicMbps: 200_000 }
+    const alone = natGatewayWorld([spec])
+    const simAlone = drive(alone.doc, compileWorld(alone.doc))
+    simAlone.stepFor(15)
+    const aloneP50 = simAlone.latest().instances[alone.apiInstIds[0]]?.p50Ms ?? 0
+    simAlone.engine.stop()
+
+    const combined = natGatewayWorld([spec, spec])
+    const simCombined = drive(combined.doc, compileWorld(combined.doc))
+    simCombined.stepFor(15)
+    const batch = simCombined.latest()
+    const combinedP50_0 = batch.instances[combined.apiInstIds[0]]?.p50Ms ?? 0
+    const combinedP50_1 = batch.instances[combined.apiInstIds[1]]?.p50Ms ?? 0
+    simCombined.engine.stop()
+
+    expect(aloneP50).toBeGreaterThan(0)
+    // Sharing the saturated gateway meaningfully raises latency on BOTH servers above what either
+    // one alone experienced through it -- the enforcement Critical #1 was about. (+40ms mirrors
+    // the fixed +30/+50ms thresholds this file's other latency-shed assertions use.)
+    expect(combinedP50_0).toBeGreaterThan(aloneP50 + 40)
+    expect(combinedP50_1).toBeGreaterThan(aloneP50 + 40)
+  })
+
+  it('two servers sharing one NAT gateway both contribute additively to its published byte rate', () => {
+    const alone1 = natGatewayWorld([{ peakRps: 200 }])
+    const sim1 = drive(alone1.doc, compileWorld(alone1.doc))
+    sim1.stepFor(8)
+    const bytes1 = sim1.latest().world.natGatewayBytesPerSec?.[alone1.nat.id] ?? 0
+    sim1.engine.stop()
+
+    const alone2 = natGatewayWorld([{ peakRps: 150 }])
+    const sim2 = drive(alone2.doc, compileWorld(alone2.doc))
+    sim2.stepFor(8)
+    const bytes2 = sim2.latest().world.natGatewayBytesPerSec?.[alone2.nat.id] ?? 0
+    sim2.engine.stop()
+
+    const combined = natGatewayWorld([{ peakRps: 200 }, { peakRps: 150 }])
+    const simC = drive(combined.doc, compileWorld(combined.doc))
+    simC.stepFor(8)
+    const bytesC = simC.latest().world.natGatewayBytesPerSec?.[combined.nat.id] ?? 0
+    simC.engine.stop()
+
+    expect(bytes1).toBeGreaterThan(0)
+    expect(bytes2).toBeGreaterThan(0)
+    // The combined run's shared-gateway rate must sit meaningfully above EITHER contributor alone
+    // (ruling out a keying bug that only ever tracks the last-touched server) and land close to
+    // their sum (ruling out silent double-counting or dropped contributions).
+    expect(bytesC).toBeGreaterThan(bytes1 * 1.3)
+    expect(bytesC).toBeGreaterThan(bytes2 * 1.3)
+    expect(bytesC).toBeGreaterThan((bytes1 + bytes2) * 0.7)
+    expect(bytesC).toBeLessThan((bytes1 + bytes2) * 1.3)
+  })
+
+  it('a doc with zero natGateways produces byte-identical engine output for a fixed seed (regression floor)', () => {
+    const f = e2eFixture()
+    const simA = drive(f.doc, f.compiled)
+    simA.stepFor(20)
+    const simB = drive(f.doc, f.compiled)
+    simB.stepFor(20)
+    expect(simB.latest()).toEqual(simA.latest())
+    // Absent, not present-and-empty (Cross-Cutting Constraint 3 / the additive-optional-omission
+    // convention every other MetricsBatch optional field already follows).
+    expect(simA.latest().world.natGatewayBytesPerSec).toBeUndefined()
+    simA.engine.stop()
+    simB.engine.stop()
   })
 })

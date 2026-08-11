@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useLayoutEffect, useRef, type CSSProperties } from 'react'
 import { TopologyPanel } from './TopologyPanel'
+import { NetworkPanel } from './NetworkPanel'
 import { BlueprintsPanel } from './BlueprintsPanel'
 import { PacketsPanel } from './PacketsPanel'
 import { ManagedPanel } from './ManagedPanel'
@@ -68,7 +69,7 @@ function SignatureHeader({ glyph, accent, summary, summaryColor }: SignatureHead
 }
 
 const TAB_LABELS: Record<PanelTab, string> = {
-  topology: 'Topology', blueprints: 'Blueprints', packets: 'Packets', managed: 'Managed',
+  topology: 'Topology', network: 'Network', blueprints: 'Blueprints', packets: 'Packets', managed: 'Managed',
   connections: 'Connections', traffic: 'Traffic',
   routes: 'Routes', scenario: 'Scenario', signals: 'Signals', analysis: 'Analysis', events: 'Events', cost: 'Cost', compare: 'Compare', config: 'Config',
 }
@@ -196,6 +197,14 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
       header = {
         glyph: '▦', accent: 'var(--color-accent)',
         summary: `${nRegions} region${nRegions === 1 ? '' : 's'} · ${nAzs} AZ${nAzs === 1 ? '' : 's'} · ${nServers} server${nServers === 1 ? '' : 's'}`,
+      }
+      break
+    }
+    case 'network': {
+      const nVpcs = Object.keys(doc.vpcs).length
+      header = {
+        glyph: '⌬', accent: 'var(--color-accent)',
+        summary: `${nVpcs} VPC${nVpcs === 1 ? '' : 's'}`,
       }
       break
     }
@@ -351,6 +360,7 @@ export function WorldPanel({ running, placeMode, onTogglePlaceMode, selectedPopu
         {scope.kind === 'world' ? (
           <>
             {tab === 'topology' && <TopologyPanel />}
+            {tab === 'network' && <NetworkPanel />}
             {tab === 'blueprints' && <BlueprintsPanel openConnections={openConnections} />}
             {tab === 'packets' && <PacketsPanel />}
             {tab === 'managed' && <ManagedPanel />}

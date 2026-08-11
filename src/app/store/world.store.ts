@@ -5,7 +5,7 @@ import { create } from 'zustand'
 import type {
   WorldDoc, Server, ServiceBlueprint, Placement, ManagedScope, ManagedService, ClientPopulation,
   RoutingConfig, AzId, Rack, RackId, LoadBalancer, DependencyTarget, BlueprintDependency,
-  Scenario, ScenarioStep, Environment,
+  Scenario, ScenarioStep, Environment, Vpc, Subnet, RouteTable, SecurityGroup,
 } from '../../lib/world/types'
 import { planReachability, applyReachabilityPlan } from '../../lib/world/connections'
 import { planSpread } from '../../lib/world/spread'
@@ -16,6 +16,7 @@ import { defaultDbClassId } from '../../lib/dbInstanceClasses'
 import {
   createWorld, createRegion, createAz, createServer, createDbServer, createBlueprint, createPlacement,
   createPopulation, createRack, createLoadBalancer, nextWorldId, type InstancePresetLike,
+  createVpc, createSubnet, createRouteTable, createInternetGateway, createNatGateway, createSecurityGroup,
 } from '../../lib/world/factories'
 import {
   canAssign, rackUsedU, serverHeightU, autoArrangePlan,
@@ -152,6 +153,22 @@ interface WorldStore {
   updateRouting: (patch: Partial<RoutingConfig>) => void
   addLoadBalancer: (regionId: string) => string
   updateLoadBalancer: (id: string, patch: Partial<LoadBalancer>) => void
+  addVpc: (regionId: string) => string
+  updateVpc: (id: string, patch: Partial<Vpc>) => void
+  removeVpc: (id: string) => void
+  addSubnet: (vpcId: string, azId: string, kind: 'public' | 'private') => string
+  updateSubnet: (id: string, patch: Partial<Subnet>) => void
+  removeSubnet: (id: string) => void
+  addRouteTable: (vpcId: string) => string
+  updateRouteTable: (id: string, patch: Partial<RouteTable>) => void
+  removeRouteTable: (id: string) => void
+  addInternetGateway: (vpcId: string) => string
+  removeInternetGateway: (id: string) => void
+  addNatGateway: (subnetId: string) => string
+  removeNatGateway: (id: string) => void
+  addSecurityGroup: (vpcId: string) => string
+  updateSecurityGroup: (id: string, patch: Partial<SecurityGroup>) => void
+  removeSecurityGroup: (id: string) => void
   addRoute: (fields: RouteFields) => string
   updateRoute: (routeId: string, patch: Partial<RouteFields>) => void
   removeRoute: (routeId: string) => void
@@ -668,6 +685,115 @@ export const useWorldStore = create<WorldStore>((set, get) => {
         servers[sid] = { ...servers[sid], rack: pos }
       }
       return { ...d, racks, servers }
+    }),
+
+    addVpc: (regionId) => {
+      const vpc = createVpc(regionId)
+      mutate(d => ({ ...d, vpcs: { ...d.vpcs, [vpc.id]: vpc } }))
+      return vpc.id
+    },
+    updateVpc: (id, patch) => mutate(d => {
+      if (!d.vpcs[id]) return d
+      return { ...d, vpcs: { ...d.vpcs, [id]: { ...d.vpcs[id], ...patch } } }
+    }),
+    // Cascade-deletes everything owned by the VPC (subnets, route tables, security groups, NAT
+    // gateways, internet gateways) and clears dangling subnet/SG references on any server, all
+    // in ONE mutate — one undo step (same discipline as removeRack above).
+    removeVpc: (id) => mutate(d => {
+      if (!d.vpcs[id]) return d
+      const subnetIds = Object.values(d.subnets).filter(s => s.vpcId === id).map(s => s.id)
+      const routeTableIds = Object.values(d.routeTables).filter(r => r.vpcId === id).map(r => r.id)
+      const sgIds = Object.values(d.securityGroups).filter(g => g.vpcId === id).map(g => g.id)
+      const natIds = Object.values(d.natGateways).filter(n => subnetIds.includes(n.subnetId)).map(n => n.id)
+      const igwIds = Object.values(d.internetGateways).filter(g => g.vpcId === id).map(g => g.id)
+      const servers = Object.fromEntries(Object.entries(d.servers).map(([sid, s]) =>
+        s.subnetId && subnetIds.includes(s.subnetId)
+          ? [sid, { ...s, subnetId: undefined, securityGroupIds: undefined }]
+          : [sid, s]))
+      const vpcs = { ...d.vpcs }; delete vpcs[id]
+      const subnets = { ...d.subnets }; subnetIds.forEach(sid => delete subnets[sid])
+      const routeTables = { ...d.routeTables }; routeTableIds.forEach(rid => delete routeTables[rid])
+      const securityGroups = { ...d.securityGroups }; sgIds.forEach(gid => delete securityGroups[gid])
+      const natGateways = { ...d.natGateways }; natIds.forEach(nid => delete natGateways[nid])
+      const internetGateways = { ...d.internetGateways }; igwIds.forEach(gid => delete internetGateways[gid])
+      return { ...d, vpcs, subnets, routeTables, securityGroups, natGateways, internetGateways, servers }
+    }),
+    // Authoring a subnet always creates its own route table in the same gesture — ONE mutate,
+    // one undo step (mirrors autoArrangeAz's "newRacks + assignments together" precedent).
+    addSubnet: (vpcId, azId, kind) => {
+      const rt = createRouteTable(vpcId)
+      const subnet = createSubnet(vpcId, azId, kind, rt.id)
+      mutate(d => ({
+        ...d,
+        routeTables: { ...d.routeTables, [rt.id]: rt },
+        subnets: { ...d.subnets, [subnet.id]: subnet },
+      }))
+      return subnet.id
+    },
+    updateSubnet: (id, patch) => mutate(d => {
+      if (!d.subnets[id]) return d
+      return { ...d, subnets: { ...d.subnets, [id]: { ...d.subnets[id], ...patch } } }
+    }),
+    removeSubnet: (id) => mutate(d => {
+      if (!d.subnets[id]) return d
+      const natIds = Object.values(d.natGateways).filter(n => n.subnetId === id).map(n => n.id)
+      const servers = Object.fromEntries(Object.entries(d.servers).map(([sid, s]) =>
+        s.subnetId === id ? [sid, { ...s, subnetId: undefined, securityGroupIds: undefined }] : [sid, s]))
+      const subnets = { ...d.subnets }; delete subnets[id]
+      const natGateways = { ...d.natGateways }; natIds.forEach(nid => delete natGateways[nid])
+      return { ...d, subnets, natGateways, servers }
+    }),
+    addRouteTable: (vpcId) => {
+      const rt = createRouteTable(vpcId)
+      mutate(d => ({ ...d, routeTables: { ...d.routeTables, [rt.id]: rt } }))
+      return rt.id
+    },
+    updateRouteTable: (id, patch) => mutate(d => {
+      if (!d.routeTables[id]) return d
+      return { ...d, routeTables: { ...d.routeTables, [id]: { ...d.routeTables[id], ...patch } } }
+    }),
+    removeRouteTable: (id) => mutate(d => {
+      if (!d.routeTables[id]) return d
+      const routeTables = { ...d.routeTables }; delete routeTables[id]
+      return { ...d, routeTables }
+    }),
+    addInternetGateway: (vpcId) => {
+      const igw = createInternetGateway(vpcId)
+      mutate(d => ({ ...d, internetGateways: { ...d.internetGateways, [igw.id]: igw } }))
+      return igw.id
+    },
+    removeInternetGateway: (id) => mutate(d => {
+      if (!d.internetGateways[id]) return d
+      const internetGateways = { ...d.internetGateways }; delete internetGateways[id]
+      return { ...d, internetGateways }
+    }),
+    addNatGateway: (subnetId) => {
+      const nat = createNatGateway(subnetId)
+      mutate(d => ({ ...d, natGateways: { ...d.natGateways, [nat.id]: nat } }))
+      return nat.id
+    },
+    removeNatGateway: (id) => mutate(d => {
+      if (!d.natGateways[id]) return d
+      const natGateways = { ...d.natGateways }; delete natGateways[id]
+      return { ...d, natGateways }
+    }),
+    addSecurityGroup: (vpcId) => {
+      const sg = createSecurityGroup(vpcId)
+      mutate(d => ({ ...d, securityGroups: { ...d.securityGroups, [sg.id]: sg } }))
+      return sg.id
+    },
+    updateSecurityGroup: (id, patch) => mutate(d => {
+      if (!d.securityGroups[id]) return d
+      return { ...d, securityGroups: { ...d.securityGroups, [id]: { ...d.securityGroups[id], ...patch } } }
+    }),
+    removeSecurityGroup: (id) => mutate(d => {
+      if (!d.securityGroups[id]) return d
+      const servers = Object.fromEntries(Object.entries(d.servers).map(([sid, s]) =>
+        s.securityGroupIds?.includes(id)
+          ? [sid, { ...s, securityGroupIds: s.securityGroupIds.filter(g => g !== id) }]
+          : [sid, s]))
+      const securityGroups = { ...d.securityGroups }; delete securityGroups[id]
+      return { ...d, securityGroups, servers }
     }),
 
     setScenario: (scenario) => mutate(d => ({ ...d, scenario: scenario ?? undefined })),

@@ -251,7 +251,16 @@ export function buildBatch(
   doc: WorldDoc,
   compiled: CompiledWorld,
   routingSnapshot: RoutingSnapshot,
-  totals: { crossAzBytes: number; crossRegionBytes: number; internetBytes: number; managedEgressBytes?: Record<string, number> },
+  totals: {
+    crossAzBytes: number; crossRegionBytes: number; internetBytes: number
+    managedEgressBytes?: Record<string, number>
+    // FEAT-014 (Task 9): per-NAT-gateway step-window bytes (in+out), the SAME EngineState.
+    // windowTotals.natGatewayBytes accumulator index.ts's settleNatGateway loop builds -- never
+    // re-derived here. Optional + absent-when-empty, mirroring managedEgressBytes' own
+    // convention, so a doc with no NAT gateways leaves this undefined and the published
+    // `natGatewayBytesPerSec` field is omitted entirely (regression floor).
+    natGatewayBytes?: Record<string, number>
+  },
   simMs: number,
   // Instances silent because an UPSTREAM is down (audit ISSUE-014) — published 'degraded'
   // instead of a healthy zero. Optional: absent ⇒ no override (existing callers unchanged).
@@ -643,6 +652,15 @@ export function buildBatch(
   // ── World ──
   const totalRps = Object.values(regions).reduce((s, r) => s + r.rps, 0)
   const errWeighted = Object.values(regions).reduce((s, r) => s + r.errorRate * r.rps, 0)
+  // FEAT-014 (Task 9): per-gateway EMA, the same `ema(...)` blend crossAzBytesPerSec/
+  // crossRegionBytesPerSec use above, keyed per gateway (mirrors the per-managed-service
+  // `egressBytesPerSec` loop). Built only from keys actually present in `totals.natGatewayBytes`
+  // -- a doc with no NAT gateways never enters the loop, so `natGatewayBytesPerSec` stays an
+  // empty object and is omitted from `world` below (regression floor: `toBe`-identical batch).
+  const natGatewayBytesPerSec: Record<string, number> = {}
+  for (const [natId, bytes] of Object.entries(totals.natGatewayBytes ?? {})) {
+    natGatewayBytesPerSec[natId] = ema(state, `nat:${natId}`, bytes)
+  }
   const world: WorldMetrics = {
     totalRps,
     errorRate: totalRps > 0 ? errWeighted / totalRps : 0,
@@ -650,6 +668,7 @@ export function buildBatch(
     crossAzBytesPerSec: ema(state, 'w:xaz', totals.crossAzBytes),
     crossRegionBytesPerSec: ema(state, 'w:xregion', totals.crossRegionBytes),
     internetEgressBytesPerSec: ema(state, 'w:inet', totals.internetBytes),
+    ...(Object.keys(natGatewayBytesPerSec).length > 0 ? { natGatewayBytesPerSec } : {}),
   }
 
   // ── Topics (audit ISSUE-002) ──

@@ -16,7 +16,7 @@ import { useNavStore } from '../../store/nav.store'
 import { useSimulationStore, selectLive } from '../../store/simulation.store'
 import { useUiStore } from '../../store/ui.store'
 import { useCompiledWorld, instancesByServerFor } from '../useCompiledWorld'
-import { layoutFloor } from './floorLayout'
+import { layoutFloor, type FloorPlan } from './floorLayout'
 import { aggregateFlows, internetIngress, meanUtilization, serverAccents } from './floorData'
 import { placeLabels, estimateLabelSize, type LabelSpec, type Rect } from './labelLayout'
 import { rackUsedU } from '../../../lib/world/rackModel'
@@ -27,11 +27,11 @@ import { FreePoolPod, POD_HEIGHT_PX } from './FreePoolPod'
 import { InspectorV2 } from '../InspectorV2'
 import { ChaosControl, isNonFatalFault, NON_FATAL_FAULT_ACCENT } from '../dock/ChaosControl'
 import { useFloorCamera, INTERACTIVE_SEL } from './useFloorCamera'
-import { VIEW_W, VIEW_H, floorOutline, tileOutline, tileCenter, isoBox, type IsoBox, type Pt } from './iso'
+import { VIEW_W, VIEW_H, floorOutline, tileOutline, tileCenter, tileToScreen, isoBox, type IsoBox, type Pt } from './iso'
 // FEAT-002 Task 14: impairmentFor is a pure predicate (no engine-runtime deps), safe to import
 // directly rather than reimplementing its forward/backward matching by hand.
 import { impairmentFor } from '../../../lib/worldEngine/faults'
-import type { AzId, RackId, RegionId, Server, ServerId, WorldDoc } from '../../../lib/world/types'
+import type { AzId, RackId, RegionId, Server, ServerId, SubnetId, WorldDoc } from '../../../lib/world/types'
 import type { PartitionFault } from '../../../lib/worldEngine/types'
 import './azFloorStyles'
 
@@ -77,6 +77,63 @@ export function flowImpairment(
         : {}
   }
   return impairmentFor(fromIds, toIds, partitions)
+}
+
+// FEAT-014 (network topology): a subnet is purely a doc/compiled-state grouping — it never
+// changes mid-run — so this reads `doc.subnets` + each AZ server's (also static) `subnetId` and
+// `layoutFloor`'s own grid cells, NOT the 1 Hz metrics batch. Boundary geometry mirrors `iso.ts`'s
+// own `floorOutline` (a rectangular grid region -> a screen-space rhombus via `tileToScreen`),
+// generalized from "the whole grid" to "the tile bounding box of one subnet's occupied cells",
+// with a small fractional-tile pad so the dashed outline doesn't hug rack/pod edges exactly. A
+// racked server resolves to its RACK's cell (several servers can share a cabinet tile); a
+// free-pool server resolves to its own pod cell. Pure + exported for unit coverage without
+// mounting the DOM/SVG component (same rationale as `flowImpairment` above — unrelated concern,
+// deliberately NOT merged into it).
+export interface SubnetBoundary {
+  subnetId: SubnetId
+  kind: 'public' | 'private'
+  points: string   // svg <polygon> points attribute
+  labelX: number
+  labelY: number
+}
+
+const SUBNET_BOUNDARY_PAD = 0.14   // fraction of one tile's grid unit
+
+export function computeSubnetBoundaries(
+  doc: WorldDoc, azId: AzId, azServers: Server[], plan: FloorPlan,
+): SubnetBoundary[] {
+  const cellsBySubnet = new Map<SubnetId, { x: number; y: number }[]>()
+  for (const server of azServers) {
+    if (!server.subnetId) continue
+    const cell = server.rack ? plan.cabinets[server.rack.rackId] : plan.pods[server.id]
+    if (!cell) continue
+    const list = cellsBySubnet.get(server.subnetId) ?? []
+    list.push(cell)
+    cellsBySubnet.set(server.subnetId, list)
+  }
+
+  const boundaries: SubnetBoundary[] = []
+  for (const [subnetId, cells] of cellsBySubnet) {
+    const subnet = doc.subnets[subnetId]
+    if (!subnet || subnet.azId !== azId) continue   // subnet-elsewhere / stale reference: skip
+    const minX = Math.min(...cells.map(c => c.x))
+    const maxX = Math.max(...cells.map(c => c.x))
+    const minY = Math.min(...cells.map(c => c.y))
+    const maxY = Math.max(...cells.map(c => c.y))
+    const pad = SUBNET_BOUNDARY_PAD
+    const corners = [
+      tileToScreen(minX - pad, minY - pad, plan.cols),
+      tileToScreen(maxX + 1 + pad, minY - pad, plan.cols),
+      tileToScreen(maxX + 1 + pad, maxY + 1 + pad, plan.cols),
+      tileToScreen(minX - pad, maxY + 1 + pad, plan.cols),
+    ]
+    const points = corners.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+    boundaries.push({
+      subnetId, kind: subnet.kind, points,
+      labelX: corners[0].x, labelY: corners[0].y - 6,
+    })
+  }
+  return boundaries.sort((a, b) => a.subnetId.localeCompare(b.subnetId))
 }
 
 const btnStyle: CSSProperties = {
@@ -209,6 +266,14 @@ export function DatacenterFloor() {
   const plan = useMemo(
     () => layoutFloor(racks, rackedByRack, freePool, managedIds),
     [racks, rackedByRack, freePool, managedIds],
+  )
+
+  // Static/compiled-state overlay (FEAT-014) — recomputed only when the doc's subnets, this AZ's
+  // servers, or the floor grid itself change; never on a batch tick, and never animated (see the
+  // comment on `computeSubnetBoundaries` above).
+  const subnetBoundaries = useMemo(
+    () => (azId ? computeSubnetBoundaries(doc, azId, azServers, plan) : []),
+    [doc.subnets, azId, azServers, plan],
   )
 
   // Boot-cascade detection: a server id present now but absent from the previously-seen set
@@ -683,6 +748,26 @@ export function DatacenterFloor() {
                 <polygon points={isoBox(ghostCell.x, ghostCell.y, plan.cols, 40).top} fill="none" stroke="#2a3140" strokeDasharray="5 5" />
               </g>
             )}
+
+            {/* Subnet boundaries (FEAT-014): a dashed outline grouping a subnet's racks/pods,
+                drawn UNDER the racks/pods/flows so their own strokes+labels stay legible on top.
+                Static/compiled-state only — no batch dependency, no animation (adds zero new
+                animated elements to the motion budget above). */}
+            {subnetBoundaries.map(b => {
+              const isPublic = b.kind === 'public'
+              const stroke = isPublic ? 'var(--color-accent)' : 'var(--color-text-muted)'
+              const fill = isPublic
+                ? 'color-mix(in srgb, var(--color-accent) 10%, transparent)'
+                : 'color-mix(in srgb, var(--color-text-muted) 10%, transparent)'
+              return (
+                <g key={b.subnetId} data-testid={`subnet-boundary-${b.subnetId}`} style={{ pointerEvents: 'none' }}>
+                  <polygon points={b.points} fill={fill} stroke={stroke} strokeWidth={1.2} strokeDasharray="6 4" opacity={0.85} />
+                  <text x={b.labelX} y={b.labelY} fill={stroke} style={{ font: '8px var(--font-mono)', letterSpacing: '0.06em' }}>
+                    {b.kind} · {b.subnetId.split('-').slice(0, 2).join('-')}
+                  </text>
+                </g>
+              )
+            })}
 
             {/* Flow traces — top 5 by source rps animate (dash speed ∝ rate); blocked flows are
                 always static red dash + reason (never shimmer a refused path). FEAT-002 (Task

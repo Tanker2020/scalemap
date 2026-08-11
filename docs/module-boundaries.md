@@ -5141,7 +5141,6 @@ ISSUE-004's full engine wiring of `resolvedFrameRps` and ISSUE-006's `statusCode
 remain explicitly deferred follow-ups (primitives implemented and tested; wiring/semantics scoped
 down and documented at the time, not silently dropped).
 
-<<<<<<< HEAD
 ## Fault Injection Wave 1, Task 3 — wiring `down`/`cpu-brownout`/`memory-leak` into `index.ts` (2026-08-01)
 
 ### `src/lib/worldEngine/index.ts` (hub file) — real `setFault`/`setOutage` facade methods
@@ -6828,3 +6827,128 @@ src/app/world/dock/scopeData.test.ts` — all passed, zero regressions. `npx tsc
 Full suite: `npx vitest run` — 161 files / 2158 tests, all green (12 new tests added by this fix
 wave: 1 in `WorldShell.test.tsx`, 3 in `baseline.store.test.ts`, 3 in `ComparePanel.test.tsx`, 2 in
 `runSummary.test.ts`, 3 in `costModelV2.test.ts`, 1 in `CostTab.test.tsx`).
+
+## Wave 6 — Network Topology: module additions (FEAT-014, 2026-08-10)
+
+VPC/Subnet/RouteTable/InternetGateway/NatGateway/SecurityGroup — six new additive entities
+(`src/lib/world/types.ts`) replacing today's flat per-server firewall list with route-table
+egress checks and AWS-Security-Group-shaped allow-only evaluation, on top of a NAT gateway that
+gets its own NIC-style byte cap, cost line item, and analysis coverage. Every new field/collection
+is optional; a `Server` with no `subnetId` behaves byte-identically to pre-Wave-6 at every layer
+(compile, engine step, cost, metrics) — asserted with `toBe`/`toEqual` regression tests in each
+touched file, not `toBeCloseTo`. Depends only on FEAT-002 (Wave 1)'s `LinkEndpoint`/`PartitionFault`
+vocabulary, extended additively.
+
+### New modules
+
+| File | Role |
+|---|---|
+| `src/app/world/panels/NetworkPanel.tsx` | World-scope authoring surface (new `'network'` `PanelTab`): VPC list → subnet list (public/private badge, route-table summary) → NAT/IGW/security-group authoring. Follows `BlueprintsPanel.tsx`'s exact list/detail/empty-state structural convention and `panelStyles`/`ui/kit` shared primitives. Region resolution for "add VPC" prefers `nav.store`'s current region focus (if it still resolves in `doc.regions`), else the world's first region, else disables the control with an explanatory tooltip. |
+| `src/app/world/dock/drawers/SecurityGroupPicker.tsx` | Replaces the per-server firewall editor in `FirewallDrawer.tsx` **only when `server.subnetId` is set** (an early-return branch — the un-networked path's existing JSX is untouched byte-for-byte). Lists security groups scoped to the server's subnet's VPC only (not the whole doc); toggling patches `server.securityGroupIds` via the existing `updateServer(id, patch)` action. Dangling-`subnetId` is structurally prevented by Task 4's cascade-delete actions but the component still defensively no-ops if the subnet can't resolve. |
+
+### In-place extensions
+
+| File | What changed |
+|---|---|
+| `src/lib/world/types.ts` | Adds `VpcId`/`SubnetId`/`RouteTableId`/`InternetGatewayId`/`NatGatewayId`/`SecurityGroupId` id types; `Vpc`/`Subnet`/`RouteTarget`/`RouteTableEntry`/`RouteTable`/`InternetGateway`/`NatGateway`/`SecurityGroupRule`/`SecurityGroup` interfaces; six new `Record<id,T>` collections on `WorldDoc` (`vpcs`/`subnets`/`routeTables`/`internetGateways`/`natGateways`/`securityGroups`); optional `Server.subnetId`/`Server.securityGroupIds`; `BlockReasonKind` gains `'no-egress-route'`. |
+| `src/lib/world/factories.ts` | `createVpc`/`createSubnet`/`createRouteTable`/`createInternetGateway`/`createNatGateway`/`createSecurityGroup`, matching `createRack`'s `nextWorldId(prefix)` pattern exactly. |
+| `src/lib/serializer.ts` | Six new collections default to `{}` in `deserializeWorld`'s normalization block (same `?? {}` pattern as `racks`/`loadBalancers`/`packets`) — deliberately NOT added to `requiredCollections`, so pre-Wave-6 `.scalemap` v3 files still load with no version bump. |
+| `src/app/store/world.store.ts` | 16 CRUD actions (`add`/`update`/`remove` for `Vpc`/`Subnet`/`RouteTable`/`SecurityGroup`, `add`/`remove` for `InternetGateway`/`NatGateway`), all routed through the existing `mutate()` helper. `addSubnet` is a single atomic `mutate()` call constructing both the subnet AND its auto-created route table together — verified against this repo's real one-`mutate()`-per-user-action convention (`removeRack`/`autoArrangeAz`'s own `history.length` assertions), not assumed. `removeVpc`/`removeSubnet`/`removeSecurityGroup` cascade-delete owned entities and clear dangling `subnetId`/`securityGroupIds` references on servers; `removeRouteTable`/`removeInternetGateway`/`removeNatGateway` do NOT scrub cross-references when deleted standalone (matches the brief's own prescribed scope — a known, accepted limitation if a future UI ever exposes standalone deletion of those three). |
+| `src/lib/world/network.ts` | `resolveRoute(routeTable, needsEgress)` — deliberately simplified from the original CIDR-destination-matching design to a 2-arg local-vs-egress form, since `Server`/`AvailabilityZone` carry no per-server IP address to match a CIDR against; same-VPC/no-egress ⇒ `{kind:'local'}`, egress-needed ⇒ first non-local route's target or `null` (multi-non-local-route tie-breaking is undefined by design, a known latent ambiguity). `evaluateSecurityGroups(server, securityGroups, port)` — allow-only union semantics (any attached group with a matching port+`'tcp'` rule allows; empty/no-match denies), genuinely distinct from `evaluateFirewall`'s ordered first-match-wins. `InstancePathContext` widened with optional `fromSubnet`/`fromRouteTable`/`needsEgress`/`securityGroups`; `evaluateInstancePath` gates on a route-table egress check (returns `no-egress-route`) ahead of the firewall/SG check, and `firewallVerdict` branches to `evaluateSecurityGroups` when the destination server has `securityGroupIds` set, else falls to the legacy path unchanged. |
+| `src/lib/world/compileWorld.ts` | Resolves `fromSubnet`/`fromRouteTable` (`null` when `fromServer.subnetId` is absent) and `needsEgress` (`hopClassBetween(...) === 'cross-region'`) at the existing `evaluateInstancePath({...})` call site; passes `doc.securityGroups` through. The managed-service path (always `verdict: 'permitted'`) is intentionally untouched — managed targets are terminal in the flow solver and out of this feature's scope. |
+| `src/lib/worldEngine/types.ts` | `FaultScope` gains `'subnet' \| 'natGateway'`; `LinkEndpoint` gains `{kind:'subnet';id}`/`{kind:'natGateway';id}` (additive, logged in `contract-drift.md`). `WorldMetrics` gains `natGatewayBytesPerSec?: Record<NatGatewayId, number>` — omitted entirely (never present-and-empty) for a doc with zero NAT gateways. |
+| `src/lib/worldEngine/faults.ts` | `EndpointIds` gains `subnetId?`/`natGatewayId?`. `endpointMatches` rewritten from an if-chain whose final branch silently fell through to `ids.serverId === endpoint.id` for ANY unhandled kind, into an exhaustive `switch` with no default — a real bug fix, not just a type-union widening: the old fallthrough would have wrongly matched a subnet-scoped partition against a same-named server id. Covered by a regression test proving the specific collision case. |
+| `src/lib/worldEngine/networkRuntime.ts` | `evaluateNic`/`applyNicCap`/`settleNic` regeneralized from taking `server: Server` to a plain `nicMbps: number` (byte-identical math, only the parameter source changed) so the same formulas serve both a per-server NIC and a shared NAT gateway. `NatGatewayState`/`createNatGatewayState`/`applyNatGatewayCap`/`settleNatGateway` are direct aliases/re-exports of the NIC equivalents — zero duplicate logic. The one production call site (`index.ts`) was updated to pass `server.specs.nicMbps`. |
+| `src/lib/worldEngine/index.ts` | `buildNatGatewayIdByServer` — a `start()`-time index (mirrors `serversByAz`/`azsByRegion`) resolving which NAT gateway (if any) a server's subnet route table sends cross-region egress through, via the SAME `resolveRoute` `compileWorld.ts` uses (a server can never disagree at runtime with the compiler's verdict). Byte accounting hooks into the EXISTING per-hop cross-region NIC accounting (the same `req`/`resp` bytes already booked for that hop's own NIC, fed into the gateway's `NatGatewayState` via `addNicBytes` — never a second derivation). **Enforcement (added in task review's fix round, not the original pass):** `EngineState.natGatewayDeliveredFraction`/`natGatewayQueuedLatencyMs` store `settleNatGateway`'s result at settlement; a server's own `admittedScaleByServer`/`extraLatencyMsByServer` entries compose the resolving gateway's fraction multiplicatively / latency additively, mirroring the per-server NIC's own admission/latency feedback — a shared NAT gateway can now actually throttle, not just report a byte rate. No `flows.ts` signature change was needed. Known accepted coarseness: the throttle applies to a server's entire admitted traffic once ANY of its egress saturates the gateway, not just the cross-region share that caused the saturation (a per-server-scalar limitation, narrowing it needs a per-hop signal — flagged as a follow-up candidate, not fixed). `NAT_GATEWAY_NIC_MBPS = 10_000` is a fixed engine constant standing in for `NatGateway` having no authorable `nicMbps` of its own. |
+| `src/lib/worldEngine/metrics.ts` | `buildBatch` reads an optional `natGatewayBytes?: Record<string, number>` sibling on its existing `totals` param (not a new positional parameter); EMA's it into `world.natGatewayBytesPerSec`, spread-conditionally omitted when empty, mirroring the per-managed-service `egressBytesPerSec` loop already in this file. |
+| `src/lib/costModelV2.ts` | `natGatewayMonthlyUsd(bytesPerSec)` mirrors `loadBalancerMonthlyUsd`'s hourly-base-plus-per-unit shape ($0.045/hr + $0.045/GB processed). NAT gateway AZ/region resolution is genuinely different from a load balancer's direct `regionId` — it walks `nat.subnetId → doc.subnets[..].azId → doc.azs[..].regionId`, folding into both `byAzMap` and `byRegionMap` (an LB only bumps `byRegionMap`, since a NAT gateway is AZ-scoped and an LB isn't). Dangling `subnetId` fails safe (`continue`, contributes $0). Known accepted limitation: the NAT byte numbers reused here are raw NIC-accounting bytes (burst-multiplier applied, no WAL amplification), while the existing `crossRegionUsd` cost line uses WAL-amplified bytes for db edges — the two won't perfectly reconcile for a WAL-backed cross-region db edge (documented inline near both call sites). |
+| `src/lib/analysis/rules/network.ts` | Three new rules spread into the existing `networkRules` export (`runAnalysis.ts` needed no change — it already spreads the array generically): `noEgressRoute` (fires per `CompiledPath` blocked with `BlockReason.kind === 'no-egress-route'`), `natGatewaySpof` (fires when >1 AZ's private subnets route through one NAT gateway — buckets by `Set<azId>` per gateway so multiple same-AZ subnets sharing a gateway do NOT false-positive), `unpeeredSecurityGroupReference` (a deliberate design call: reads `SecurityGroupRule.source` as possibly holding another group's id across VPCs — justified by finding `evaluateSecurityGroups` never reads `.source` at all, the same "authored-but-compile-inert, given meaning only by an analysis rule" pattern `FirewallRule.source`/`isInternetSource()` already establishes for `db-port-exposed`). |
+| `src/app/store/ui.store.ts` | `PanelTab` union gains `'network'`. |
+| `src/app/world/dock/scope.ts` | `WORLD_TABS` gains `'network'` (world-scope only — VPC/subnet layout is a whole-world concept like `topology`/`managed`). |
+| `src/app/world/panels/WorldPanel.tsx` | `TAB_LABELS` gains `network: 'Network'`; a `case 'network':` header block (glyph `⌬`, `var(--color-accent)`); a `{tab === 'network' && <NetworkPanel />}` render line. Hub file — edited sequentially, alone, per this file's own high-conflict convention. |
+| `src/app/world/az/DatacenterFloor.tsx` | A subnet-boundary overlay: for each subnet with ≥1 server in the current AZ, groups ALL matching cells (racked servers via `plan.cabinets[rackId]`, free-pool via `plan.pods[serverId]`) into a real multi-cell bounding box (not a single-rack special case), rendered as a dashed, `pointerEvents:'none'` polygon underneath the existing rack/pod layer — public subnets tinted `var(--color-accent)`, private `var(--color-text-muted)`, via this codebase's established `color-mix(in srgb, var(--color-X) 10%, transparent)` low-opacity idiom. Driven entirely by static/compiled doc state (`doc.subnets`, `azId`, server `subnetId`, `layoutFloor`'s geometry) — zero dependency on the 1 Hz metrics batch, zero new animated elements, respecting the file's documented motion-budget discipline. `data-testid="subnet-boundary-${subnet.id}"` matches the file's existing `<noun>-<id>` testid convention. |
+
+### Final-review fix wave — closing the gaps a per-task lens couldn't see
+
+The Wave 6 sequence above landed all 15 tasks, but the final whole-branch review (which looks at
+cross-task integration, not each task in isolation) found the merged result could only be
+*authored* into broken states, and that two type-level extensions from Task 7/9 had no live
+producer feeding them. A single fix wave (6 commits) plus one residual bug fix closed all of it:
+
+- **`NetworkPanel.tsx` gained two authoring surfaces it was missing:** `RouteTableEditor` (a
+  route-entry row per subnet — pick an IGW/NAT gateway scoped to the VPC, commits a `0.0.0.0/0`
+  catch-all `RouteTableEntry` via `updateRouteTable`, matching `resolveRoute`'s real "any
+  non-local route" semantics rather than true CIDR matching) and `SecurityGroupRuleEditor` (port/
+  protocol/source, mirrors `FirewallRulesModal.tsx`'s `SourceCell` any/internal/custom pattern,
+  commits via `updateSecurityGroup`). Without these, every subnet's route table and every security
+  group started empty with no in-app way to populate them — the feature could compile-block or
+  deny-everything permanently with zero recovery path. Both render inside `WorldPanel.tsx`'s
+  existing `<fieldset disabled={running}>` wrapper, so no new edit-lock wiring was needed. A
+  re-review of this fix found the Segmented source-option control had its own bug — choosing
+  "internal" silently committed `source: 'any'` (state derived only from `customText`, so `null`
+  meant "any" for both the any-button and the internal-button) — fixed by tracking the chosen
+  option in its own state, matching `SourceCell`'s real pattern; covered by a regression test.
+- **`worldEngine/index.ts`'s `buildImpairmentMemo`** now populates `subnetId`/`natGatewayId` on
+  `EndpointIds` (reusing the existing `natGatewayIdByServer` index, not re-deriving), so a
+  `{kind:'subnet'}`/`{kind:'natGateway'}` partition — type-complete since Task 7 — can finally
+  match a real path. Proven with a genuine `createWorldEngine()` integration test (live traffic,
+  `setPartition`, asserted rps collapse), not just the existing unit test on `endpointMatches` in
+  isolation.
+- **`instanceIdsForFaultScope`** is now an exhaustive `switch` over all six `FaultScope` members
+  (was an if-chain with a silent region-branch fallthrough for the two new kinds — the exact
+  fallthrough-class bug Task 7's `endpointMatches` rewrite was designed to prevent, reintroduced
+  one file over by widening the type without widening its consumers). `failover.ts`'s narrower
+  `OutageScope` vs. `WorldEngineApi.setOutage`'s wider `FaultScope` is now reconciled explicitly:
+  a `down` fault scoped to `subnet`/`natGateway` is deliberately rejected (documented in-line —
+  "down" has no obvious meaning for a subnet), not silently faked. No UI currently offers a
+  subnet/natGateway-scoped fault of any kind, so this was previously unreachable, not user-visible.
+- **`FirewallDrawer.tsx`** now branches on `(server.securityGroupIds?.length ?? 0) > 0` — the
+  exact predicate `network.ts`'s `firewallVerdict` uses to choose between `evaluateSecurityGroups`/
+  `evaluateFirewall` — instead of on `subnetId` alone. A networked-but-groupless server (every
+  server, immediately after subnet assignment) now shows the SG picker *plus* the still-live
+  legacy firewall list with an explanatory note, rather than an empty picker hiding what the
+  engine is actually enforcing.
+- **`analysis/rules/network.ts`'s `dbPortExposed`/`entryUnreachable`** gained an `isPortOpenToAny`
+  seam that branches on the SAME `securityGroupIds?.length` condition as `firewallVerdict`, so an
+  SG-governed server is evaluated against its groups' rules instead of its (possibly stale,
+  inert) `firewall` list. `blockedDependencyPath` now skips `'no-egress-route'`-kind paths
+  entirely (an early `continue`), applying this codebase's existing compile-finding-duplicate-
+  suppression convention to `noEgressRoute`'s new coverage rather than double-reporting with
+  contradictory severities/advice — `AnalysisTab.tsx`'s existing id-prefix suppression logic was
+  widened to also claim `no-egress-route:`-prefixed compile findings.
+
+**Parked, not fixed (final-review re-review, non-blocking):** route/rule editors accept an empty
+port (silently becomes `0`) or empty custom CIDR with no validation feedback, and
+`RouteTableEditor` permits appending a duplicate catch-all route to the same gateway;
+`isPortOpenToAny`'s SG branch checks port+source but not protocol, so a `udp`-only SG rule can
+false-positive `db-port-exposed` (the engine's `evaluateSecurityGroups` requires `protocol ===
+'tcp'`, this rule doesn't); `dbPortExposed` dropped the matched rule's id from `why`/`affected` on
+the legacy-firewall branch too (only necessary on the SG branch, since `SecurityGroupRule` has no
+id); `faultsForServer` still doesn't apply non-partition fault kinds (`cpu-brownout`/`memory-leak`/
+etc.) to subnet/natGateway scope (no UI exposes this today); `entryUnreachable`'s suggested-fix
+text stays generically firewall-worded even when its firing condition is now SG-aware.
+
+### Verification (Task 15, full pass)
+
+`npx tsc --noEmit` — clean, 0 errors. `npx vitest run` — 154 files / 2068 tests, all passing. `npm
+run build` — succeeds. `npm run bench` (`enginePerf`+`renderPerf`) — 2 passed, no regression for a
+doc without any of the new networking entities. Every touched file's own regression-floor test
+(byte-identical `compileWorld`/`runStep` output for a doc with none of the six new collections)
+independently verified during each task's review, not just asserted here.
+
+**Manual live-smoke checklist (requires `npm run tauri dev`, not run by an agent in this pass —
+GUI-dependent):**
+- Build a two-AZ topology; put one AZ's servers in a private subnet with no NAT/IGW route in its
+  route table; confirm the outbound dependency paths show `blocked` with `no-egress-route` in the
+  Analysis tab (`NetworkPanel` for authoring, Task 12).
+- Add a NAT gateway + route to that subnet's route table; confirm the same paths flip to
+  `permitted` with no other change.
+- Attach a security group to a server via `SecurityGroupPicker` (Task 13) with no matching-port
+  rule; confirm it denies where the legacy firewall editor would have needed an explicit deny rule
+  to produce the same verdict.
+- Drive heavy cross-region traffic from two private-subnet servers sharing one NAT gateway; confirm
+  both show materially higher latency once the gateway saturates (the Task 9 fix-round enforcement).
+- Confirm `unpeered-security-group-reference` and `nat-gateway-spof` findings appear in the Analysis
+  tab for the misconfigurations built in Task 11's fixtures.
+- Confirm subnet boundaries render on the AZ floor in both dark and light themes (⚙ Settings →
+  Appearance), with zero new console errors throughout.

@@ -4,7 +4,7 @@ import type {
   WorldDoc, CompiledWorld, ServiceInstance, InstanceId, CompiledPath, CompileFinding,
   HopClass,
 } from './types'
-import { evaluateInstancePath } from './network'
+import { evaluateInstancePath, hopClassBetween } from './network'
 import { computeRouting, volumeFindings } from './routing'
 import { resolveMixProtocol } from '../packetResolve'
 import { applyEnvironment } from './environments'
@@ -138,10 +138,21 @@ export function compileWorld(rawDoc: WorldDoc): CompiledWorld {
         const toBp = doc.blueprints[to.blueprintId]
         if (!toPl || !toServer || !toBp) continue
 
+        // Task 6: resolve the source server's subnet/route-table context so evaluateInstancePath
+        // (Task 5) can gate on route-table egress and evaluate security groups when authored. A
+        // server with no subnetId (every pre-Task-1 doc, and any server that never opted into
+        // VPC placement) resolves both to null, which evaluateInstancePath treats as "skip the
+        // route-table check entirely" -- the regression floor.
+        const fromSubnet = fromServer.subnetId ? doc.subnets[fromServer.subnetId] ?? null : null
+        const fromRouteTable = fromSubnet ? doc.routeTables[fromSubnet.routeTableId] ?? null : null
+        const needsEgress = hopClassBetween(fromServer, toServer, doc.azs) === 'cross-region'
+
         const evaluation = evaluateInstancePath({
           fromServer, toServer,
           fromRuntime: fromPl.runtime, toRuntime: toPl.runtime,
           toBlueprint: toBp, port: dep.port, azs: doc.azs,
+          fromSubnet, fromRouteTable, needsEgress,
+          securityGroups: doc.securityGroups,
         })
         const path: CompiledPath = {
           id: `${from.id}->${dep.id}->${to.id}`,
