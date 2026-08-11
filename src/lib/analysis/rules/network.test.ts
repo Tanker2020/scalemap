@@ -117,6 +117,64 @@ describe('network: db-port-exposed', () => {
     s.placement(web.id, s1.id); s.placement(db.id, s1.id)
     expect(ids(run(s), 'db-port-exposed')).toHaveLength(0)
   })
+
+  // Final review Important #5: an SG-governed server (subnetId set + securityGroupIds non-empty)
+  // is evaluated via its attached groups' rules at compile/engine time, never server.firewall —
+  // db-port-exposed must ask the same question or it silently misses the real exposure.
+  it('fires for an SG-governed server with an internet-open security-group rule (previously a false negative)', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const s1 = s.server(az.id); const s2 = s.server(az.id)
+
+    const vpc = createVpc(r.id)
+    const routeTable = createRouteTable(vpc.id)
+    const subnet = createSubnet(vpc.id, az.id, 'private', routeTable.id)
+    const sg = createSecurityGroup(vpc.id, 'open-sg')
+    sg.rules = [{ port: 5432, protocol: 'tcp', source: 'any' }]
+    s2.subnetId = subnet.id
+    s2.securityGroupIds = [sg.id]
+    s.doc.vpcs[vpc.id] = vpc
+    s.doc.routeTables[routeTable.id] = routeTable
+    s.doc.subnets[subnet.id] = subnet
+    s.doc.securityGroups[sg.id] = sg
+
+    const web = s.blueprint('web', 0); const db = s.blueprint('db', 1)
+    db.ports = [{ port: 5432, protocol: 'tcp', visibility: 'internal' }]
+    web.dependencies = [dep('d-db', db.id, 'db', 5432)]
+    s.placement(web.id, s1.id); s.placement(db.id, s2.id)
+
+    const f = ids(run(s), 'db-port-exposed')
+    expect(f.length).toBeGreaterThanOrEqual(1)
+    expect(f[0].affected).toContain(s2.id)
+    expect(f[0].fix).toMatch(/security group/i)
+  })
+
+  it('does NOT fire from a leftover permissive firewall rule on an SG-governed server whose attached group is closed (previously a false positive)', () => {
+    const s = scenario()
+    const r = s.region('us-east-1'); const az = s.az(r.id, 'us-east-1a')
+    const s1 = s.server(az.id); const s2 = s.server(az.id)
+
+    const vpc = createVpc(r.id)
+    const routeTable = createRouteTable(vpc.id)
+    const subnet = createSubnet(vpc.id, az.id, 'private', routeTable.id)
+    const sg = createSecurityGroup(vpc.id, 'closed-sg')
+    sg.rules = [{ port: 5432, protocol: 'tcp', source: 'internal' }]   // NOT internet-open
+    s2.subnetId = subnet.id
+    s2.securityGroupIds = [sg.id]
+    // A leftover permissive legacy rule — inert now that the SG governs, must NOT be read.
+    s2.firewall = [allowAny(5432), ...s2.firewall]
+    s.doc.vpcs[vpc.id] = vpc
+    s.doc.routeTables[routeTable.id] = routeTable
+    s.doc.subnets[subnet.id] = subnet
+    s.doc.securityGroups[sg.id] = sg
+
+    const web = s.blueprint('web', 0); const db = s.blueprint('db', 1)
+    db.ports = [{ port: 5432, protocol: 'tcp', visibility: 'internal' }]
+    web.dependencies = [dep('d-db', db.id, 'db', 5432)]
+    s.placement(web.id, s1.id); s.placement(db.id, s2.id)
+
+    expect(ids(run(s), 'db-port-exposed')).toHaveLength(0)
+  })
 })
 
 describe('network: entry-unreachable', () => {

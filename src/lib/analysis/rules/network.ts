@@ -3,7 +3,7 @@
 // of the first-match loop, a security-logic split waiting to drift); these rules stay the
 // source-AWARE consumers, reading the matched rule's action + source themselves.
 import type { AnalysisFinding, AnalysisRule } from '../types'
-import type { FirewallRule } from '../../world/types'
+import type { FirewallRule, Server, WorldDoc } from '../../world/types'
 import { isInternetSource, firewallFirstMatch } from '../../world/network'
 import { getRoute, routeMatchesPattern } from '../../nodeConfig'
 // Internet-open = 'any' OR an all-covering CIDR like '0.0.0.0/0'/'::/0' (audit ISSUE-011) —
@@ -11,6 +11,26 @@ import { getRoute, routeMatchesPattern } from '../../nodeConfig'
 const openToAny = (rules: FirewallRule[], port: number): FirewallRule | null => {
   const m = firewallFirstMatch(rules, port)
   return m && m.action === 'allow' && isInternetSource(m.source) ? m : null
+}
+
+// Final review Important #5: db-port-exposed/entry-unreachable used to read server.firewall
+// unconditionally, ignoring securityGroupIds entirely. For an SG-governed server (subnetId set
+// AND securityGroupIds non-empty) that's wrong in BOTH directions — an internet-open SG rule was
+// never flagged (false negative on the flagship security finding), and a leftover permissive
+// `firewall` rule WAS flagged even though it's inert underneath the SG. This mirrors the EXACT
+// condition network.ts's firewallVerdict uses to decide which evaluator actually governs at
+// compile/engine time (`toServer.securityGroupIds?.length` non-empty), so "is this port open to
+// any source" always asks about whichever rule set is actually in force. SecurityGroupRule has no
+// action/id (allow-only, unlike FirewallRule) — so the SG check is just "does ANY attached group
+// have a matching internet-open rule", no first-match ordering needed.
+function isPortOpenToAny(doc: WorldDoc, server: Server, port: number): boolean {
+  if (server.securityGroupIds?.length) {
+    return server.securityGroupIds.some(gid => {
+      const group = doc.securityGroups[gid]
+      return group?.rules.some(r => r.port === port && isInternetSource(r.source)) ?? false
+    })
+  }
+  return openToAny(server.firewall, port) !== null
 }
 
 const blockedDependencyPath: AnalysisRule = {
@@ -53,7 +73,8 @@ const dbPortExposed: AnalysisRule = {
     const emitted = new Set<string>()
     const push = (f: AnalysisFinding) => { if (!emitted.has(f.id)) { emitted.add(f.id); out.push(f) } }
 
-    // (a) db-protocol dependency whose target instance's server firewall allows the port from 'any'.
+    // (a) db-protocol dependency whose target instance's server (firewall OR, when SG-governed,
+    // its attached security groups — see isPortOpenToAny above) allows the port from 'any'.
     for (const bp of Object.values(doc.blueprints)) {
       for (const d of bp.dependencies) {
         if (d.protocol !== 'db' || d.target.kind !== 'blueprint') continue
@@ -61,14 +82,19 @@ const dbPortExposed: AnalysisRule = {
         for (const inst of Object.values(compiled.instances)) {
           if (inst.blueprintId !== targetBpId) continue
           const server = doc.servers[inst.serverId]; if (!server) continue
-          const open = openToAny(server.firewall, d.port)
-          if (!open) continue
+          const sgGoverned = (server.securityGroupIds?.length ?? 0) > 0
+          if (!isPortOpenToAny(doc, server, d.port)) continue
+          const via = sgGoverned
+            ? `a security group attached to ${server.label}`
+            : `Server ${server.label}`
           push({
             id: `db-port-exposed:${server.id}`, ruleId: 'db-port-exposed', family: 'network', severity: 'critical',
             title: 'Database port exposed to the internet',
-            why: `Server ${server.label} allows db port ${d.port} from any source (rule ${open.id}); the database is reachable from the internet.`,
-            fix: `Restrict rule ${open.id} to an internal/CIDR source or remove it (Server view → firewall).`,
-            affected: [server.id, open.id],
+            why: `${via} allows db port ${d.port} from any source; the database is reachable from the internet.`,
+            fix: sgGoverned
+              ? `Restrict the security group rule for port ${d.port} to an internal/CIDR source or remove it (Network panel → security groups).`
+              : `Restrict the firewall rule for port ${d.port} to an internal/CIDR source or remove it (Server view → firewall).`,
+            affected: [server.id],
           })
         }
       }
@@ -109,7 +135,10 @@ const entryUnreachable: AnalysisRule = {
       const serverIds = new Set<string>()
       for (const inst of Object.values(compiled.instances)) if (inst.blueprintId === bp.id) serverIds.add(inst.serverId)
       if (serverIds.size === 0) continue // not placed — not a live front door
-      const unreachable = publicPorts.find(p => ![...serverIds].some(sid => openToAny(doc.servers[sid]?.firewall ?? [], p.port)))
+      const unreachable = publicPorts.find(p => ![...serverIds].some(sid => {
+        const hostServer = doc.servers[sid]
+        return hostServer && isPortOpenToAny(doc, hostServer, p.port)
+      }))
       if (!unreachable) continue
       const names = [...serverIds].map(sid => doc.servers[sid]?.label ?? sid).join(', ')
       out.push({
