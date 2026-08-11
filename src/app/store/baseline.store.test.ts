@@ -28,6 +28,15 @@ function fakeDoc(): WorldDoc {
     packets: { mode: 'generic', templates: {}, nextId: 1 },
     slo: undefined,
     scenario: null,
+    // FEAT-014 (network topology): computeWorldCost reads doc.natGateways/subnets/azs
+    // unconditionally now — a hand-built fixture predating that feature needs the empty
+    // defaults too, matching every other WorldDoc collection above.
+    vpcs: {},
+    subnets: {},
+    routeTables: {},
+    internetGateways: {},
+    natGateways: {},
+    securityGroups: {},
   } as unknown as WorldDoc
 }
 
