@@ -575,15 +575,29 @@ per-server NIC loop immediately above it, which already uses the same accumulate
 split (`addNicBytes` per row, `settleNic` once at end of step) rather than evaluating on every
 row — avoiding redundant per-row cap evaluation for no behavioral difference.
 
-Deviation/scope note: `settleNatGateway`'s returned `deliveredFraction`/`queuedLatencyMs` is
-computed and discarded, same as the per-row accounting above — nothing in this task threads a
-NAT-gateway saturation signal into flow admission (the way a per-server NIC's `settleNic` result
-feeds `admittedScaleByServer`/`extraLatencyMsByServer` the following step). Wiring that would mean
-teaching `flows.ts`'s queue-mode inputs about a NAT-gateway-level cap — a materially larger change
-than this task's stated file scope (`index.ts`/`metrics.ts`/`types.ts`/test only) and not
-attempted here; flagged as a candidate follow-up. No new `EngineEventKind` was added — nothing in
-this task's acceptance criteria needed one, and speculatively adding a `nat_gateway_saturated`
-event with no consumer would be exactly the "preemptive" case the brief said to avoid.
+**Superseded by the Task 9 fix round (same day) — corrected below.** The paragraph originally here
+said `settleNatGateway`'s `deliveredFraction`/`queuedLatencyMs` was computed and discarded, with no
+NAT-gateway saturation signal threaded into flow admission. Task review flagged this as Critical:
+the brief's own acceptance test and the plan's Task 15 live-smoke criterion both require a shared
+NAT gateway to actually throttle, not just report a byte rate. The fix round closed the gap WITHOUT
+touching `flows.ts` (the originally-assumed, materially larger route): `EngineState` gained
+`natGatewayDeliveredFraction: Map<NatGatewayId, number>` / `natGatewayQueuedLatencyMs: Map<NatGatewayId,
+number>` (`index.ts:481-482`), populated from `settleNatGateway`'s result at settlement
+(`index.ts:2302-2303`, one-step lag, same as `nicDeliveredFraction`). At the point a server's own
+`admittedScaleByServer`/`extraLatencyMsByServer` entries are built (`index.ts:1632-1634,1645`), the
+resolving NAT gateway's `deliveredFraction` is multiplied in (composing with the server's own NIC
+fraction, mirroring how `cpu-brownout` composes multiplicatively with VPS steal fraction) and its
+`queuedLatencyMs` is added in (joining the existing NIC-queue/fault/disk-wait additive chain) for
+every server `natGatewayIdByServer` resolves to that gateway. A server with no NAT gateway in its
+path is an exact no-op (`natId ? ... : 1` / `natId ? ... : 0`). No `flows.ts` signature change was
+needed. `index.test.ts` gained a saturation test asserting BOTH servers sharing a saturated gateway
+see materially higher latency, not just a byte-additivity check. No new `EngineEventKind` was
+added — nothing in this task's acceptance criteria needed one, and speculatively adding a
+`nat_gateway_saturated` event with no consumer would be exactly the "preemptive" case the brief
+said to avoid. Known accepted coarseness (task-review Minor, not fixed): the throttle applies to a
+server's ENTIRE traffic once any of its egress resolves to a saturated gateway, not just the
+cross-region share that actually contributed to that gateway's load — narrowing this would require
+a per-hop rather than per-server signal; flagged as a candidate follow-up, not blocking.
 
 Regression floor: `src/lib/worldEngine/index.test.ts`'s `FEAT-014 (Task 9)` describe block. "a
 doc with zero natGateways produces byte-identical engine output for a fixed seed" runs the
