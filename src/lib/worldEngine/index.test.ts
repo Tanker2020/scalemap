@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createWorldEngine, buildImpairmentMemo } from './index'
+import { createWorldEngine, buildImpairmentMemo, instanceIdsForFaultScope, type EngineState } from './index'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, createPopulation,
   createLoadBalancer, createVpc, createSubnet, createRouteTable, createNatGateway, createInternetGateway,
@@ -2593,6 +2593,137 @@ describe('FEAT-002 impairment memo (Task 10)', () => {
       expect(afterRps).toBeLessThan(beforeRps * 0.05)   // effectively zero — a fully dropped path
       sim.engine.stop()
     })
+  })
+})
+
+// ─── FEAT-014 (final review Important #3): FaultScope exhaustiveness ────────────────────────
+// instanceIdsForFaultScope used to be an if-chain ending in an unguarded `// region` fallthrough
+// — a 'subnet'/'natGateway'-scoped fault silently took the region branch. It is now a genuinely
+// exhaustive switch (no default), and failover.ts's narrower OutageScope vs the widened FaultScope
+// is reconciled by isFailoverScope gating the 'down'-fault routing to failoverSetOutage.
+describe('FEAT-014 final review Important #3: FaultScope exhaustiveness', () => {
+  function faultScopeState() {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const az = createAz(region.id, 'us-east-1a')
+    Object.assign(doc.regions, { [region.id]: region })
+    Object.assign(doc.azs, { [az.id]: az })
+
+    const vpc = createVpc(region.id)
+    const routeTable = createRouteTable(vpc.id)
+    const subnet = createSubnet(vpc.id, az.id, 'private', routeTable.id)
+    Object.assign(doc.vpcs, { [vpc.id]: vpc })
+    Object.assign(doc.routeTables, { [routeTable.id]: routeTable })
+    Object.assign(doc.subnets, { [subnet.id]: subnet })
+
+    const inSubnet = createServer(az.id, getPreset('dedicated-8')!)
+    inSubnet.subnetId = subnet.id
+    const outsideSubnet = createServer(az.id, getPreset('dedicated-8')!)
+    Object.assign(doc.servers, { [inSubnet.id]: inSubnet, [outsideSubnet.id]: outsideSubnet })
+
+    const nat = createNatGateway(subnet.id)
+    Object.assign(doc.natGateways, { [nat.id]: nat })
+
+    const bp = createBlueprint('svc', 0)
+    Object.assign(doc.blueprints, { [bp.id]: bp })
+    const plIn = createPlacement(bp.id, inSubnet.id)
+    const plOut = createPlacement(bp.id, outsideSubnet.id)
+    Object.assign(doc.placements, { [plIn.id]: plIn, [plOut.id]: plOut })
+
+    const compiled = compileWorld(doc)
+    const inSubnetIid = instanceId(plIn.id, 0)
+    const outsideSubnetIid = instanceId(plOut.id, 0)
+
+    const instancesByServer = new Map<string, typeof compiled.instances[string][]>()
+    for (const inst of Object.values(compiled.instances)) {
+      const list = instancesByServer.get(inst.serverId) ?? []
+      list.push(inst)
+      instancesByServer.set(inst.serverId, list)
+    }
+
+    // Minimal EngineState fixture — only the fields instanceIdsForFaultScope actually reads.
+    const state = {
+      doc,
+      instancesByServer,
+      serversByAz: new Map([[az.id, [inSubnet, outsideSubnet]]]),
+      azsByRegion: new Map([[region.id, [az]]]),
+      natGatewayIdByServer: new Map([[inSubnet.id, nat.id]]),
+    } as unknown as EngineState
+
+    return { state, subnetId: subnet.id, natId: nat.id, inSubnetIid, outsideSubnetIid }
+  }
+
+  it("resolves 'subnet' scope to exactly the instances of servers whose subnetId matches", () => {
+    const f = faultScopeState()
+    expect(instanceIdsForFaultScope(f.state, 'subnet', f.subnetId)).toEqual([f.inSubnetIid])
+  })
+
+  it("resolves 'natGateway' scope to exactly the instances of servers routed through that gateway", () => {
+    const f = faultScopeState()
+    expect(instanceIdsForFaultScope(f.state, 'natGateway', f.natId)).toEqual([f.inSubnetIid])
+  })
+
+  it("'subnet'/'natGateway' scope with an unknown id resolves to [] — never falls through to the region branch", () => {
+    const f = faultScopeState()
+    expect(instanceIdsForFaultScope(f.state, 'subnet', 'no-such-subnet')).toEqual([])
+    expect(instanceIdsForFaultScope(f.state, 'natGateway', 'no-such-gateway')).toEqual([])
+  })
+
+  it('a server OUTSIDE the subnet is never included — regression floor', () => {
+    const f = faultScopeState()
+    const subnetResult = instanceIdsForFaultScope(f.state, 'subnet', f.subnetId)
+    expect(subnetResult).not.toContain(f.outsideSubnetIid)
+  })
+
+  // Reconciling failover.ts's OutageScope vs the widened FaultScope: a 'down' fault scoped to
+  // 'subnet'/'natGateway' must not reach failoverSetOutage (structurally unsupported scope), so
+  // the affected instance's PUBLISHED HEALTH must stay whatever it already was — failover's
+  // manualOutages/healthByScope bookkeeping (the thing that actually drives published health) is
+  // never touched for those two scopes. (faults.ts's own event emission is scope-agnostic and
+  // fires an 'outage_triggered' event regardless — that alone doesn't prove failover ran, so
+  // published health, not the event stream, is the signal that distinguishes the two paths.)
+  it("a 'down' fault scoped to 'subnet' does NOT drive the instance's published health down (isFailoverScope rejects it); the identical fault scoped to 'server' does", () => {
+    function build() {
+      const doc = createWorld()
+      const region = createRegion('us-east-1')
+      const az = createAz(region.id, 'us-east-1a')
+      Object.assign(doc.regions, { [region.id]: region })
+      Object.assign(doc.azs, { [az.id]: az })
+      const vpc = createVpc(region.id)
+      const routeTable = createRouteTable(vpc.id)
+      const subnet = createSubnet(vpc.id, az.id, 'private', routeTable.id)
+      Object.assign(doc.vpcs, { [vpc.id]: vpc })
+      Object.assign(doc.routeTables, { [routeTable.id]: routeTable })
+      Object.assign(doc.subnets, { [subnet.id]: subnet })
+      const server = createServer(az.id, getPreset('dedicated-8')!)
+      server.subnetId = subnet.id
+      doc.servers[server.id] = server
+      const bp = createBlueprint('svc', 0)
+      doc.blueprints[bp.id] = bp
+      const pl = createPlacement(bp.id, server.id)
+      doc.placements[pl.id] = pl
+      const compiled = compileWorld(doc)
+      return { doc, compiled, subnet, server, iid: instanceId(pl.id, 0) }
+    }
+
+    const subnetCase = build()
+    const sim = drive(subnetCase.doc, subnetCase.compiled)
+    sim.stepFor(1)
+    sim.engine.setFault('subnet', subnetCase.subnet.id, { kind: 'down' })
+    sim.stepFor(1)
+    expect(sim.latest().instances[subnetCase.iid]?.health).not.toBe('down')
+    sim.engine.stop()
+
+    // Control: the identical 'down' fault scoped to 'server' still routes through failover
+    // normally (regression floor for the four original OutageScope members) and DOES drive
+    // published health down.
+    const serverCase = build()
+    const sim2 = drive(serverCase.doc, serverCase.compiled)
+    sim2.stepFor(1)
+    sim2.engine.setFault('server', serverCase.server.id, { kind: 'down' })
+    sim2.stepFor(1)
+    expect(sim2.latest().instances[serverCase.iid]?.health).toBe('down')
+    sim2.engine.stop()
   })
 })
 

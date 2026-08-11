@@ -350,7 +350,7 @@ function matchRouteTargets(path: string | null | undefined, lb: CompiledLbRoutin
 
 interface Attached { scope: RenderScope; onFrame: (p: FramePayload) => void }
 
-interface EngineState {
+export interface EngineState {
   running: boolean
   seed: number
   rng: Rng
@@ -865,6 +865,16 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
   // determinism hole this feature exists to prevent. The public facade methods below keep reading
   // state.clock.simMs (unchanged behavior for UI-driven calls, which are never backdated), and
   // delegate to these same functions so there is exactly one implementation either way.
+  // FEAT-014 (final review Important #3): failover.ts's OutageScope ('server'|'az'|'region'|
+  // 'managed') is DELIBERATELY narrower than the widened FaultScope ('subnet'/'natGateway' added
+  // for partition endpoints only) — its health-check probing, AZ drain ramp, and multi-AZ
+  // managed-service promotion have no concept of a subnet or NAT gateway going "down", and
+  // widening them to fake one would be conjuring semantics nobody asked for. A region/az/server/
+  // managed 'down' fault already covers every meaningful outage case. This predicate is the single
+  // place that decision lives, so `scope as OutageScope` never has to happen unguarded again.
+  const isFailoverScope = (scope: FaultScope): scope is OutageScope =>
+    scope === 'server' || scope === 'az' || scope === 'region' || scope === 'managed'
+
   const doSetFault = (s: EngineState, scope: FaultScope, id: string, spec: FaultSpec | null, simMs: number): void => {
     const affected = instanceIdsForFaultScope(s, scope, id)
     // Audit final-review N-finding: capture whether the fault being CLEARED was actually a
@@ -877,10 +887,16 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     for (const e of setFaultPure(s.faults, scope, id, spec, simMs, affected)) emitEvent(e)
     // 'down' (and clearing back to null) routes through the EXISTING failover outage path so
     // behavior stays byte-identical to the pre-FEAT-001 setOutage — faults.ts's own state above
-    // is bookkeeping/event-emission only, never a second source of truth for down/health.
-    if (spec === null || spec.kind === 'down') {
+    // is bookkeeping/event-emission only, never a second source of truth for down/health. Gated
+    // on isFailoverScope: a 'subnet'/'natGateway'-scoped 'down' fault still gets recorded above
+    // (setFaultPure) and its affected instances are still correctly resolved
+    // (instanceIdsForFaultScope's exhaustive switch, Important #3) for whatever a future caller
+    // wants to do with them — it just never reaches the failover outage/health machinery below,
+    // which structurally cannot represent either scope. A deliberate, documented no-op for that
+    // combination, not a silent gap.
+    if ((spec === null || spec.kind === 'down') && isFailoverScope(scope)) {
       const down = spec !== null
-      for (const e of failoverSetOutage(s.failover, scope as OutageScope, id, down, simMs)) emitEvent(e)
+      for (const e of failoverSetOutage(s.failover, scope, id, down, simMs)) emitEvent(e)
       // audit ISSUE-008: an AZ failure is a SIMULATED outage for the managed services scoped to
       // it — they go down with the AZ (and multi-AZ DBs may then auto-promote their standby),
       // and recover with it. Manual per-service kills are untouched in both directions.
@@ -3060,24 +3076,54 @@ export function buildImpairmentMemo(
 // FEAT-001: resolve a fault scope/id to the concrete instance ids it covers, so setFault can
 // clear their leakAccumMb entries on fault-clear (a fresh heap the moment the fault stops, not
 // just on the next OOM). 'managed' scope has no compiled ServiceInstances — always [].
-function instanceIdsForFaultScope(state: EngineState, scope: FaultScope, id: string): InstanceId[] {
-  if (scope === 'managed') return []
-  if (scope === 'server') return (state.instancesByServer.get(id) ?? []).map(i => i.id)
-  if (scope === 'az') {
-    const out: InstanceId[] = []
-    for (const sv of state.serversByAz.get(id) ?? []) {
-      for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+//
+// FEAT-014 (final review Important #3): widened to a genuinely exhaustive switch over FaultScope
+// — the pre-fix version was an if-chain ending in an unguarded `// region` fallthrough, so a
+// 'subnet'- or 'natGateway'-scoped fault silently took the region branch (wrong lookup, silent
+// no-op) instead of resolving correctly. 'subnet'/'natGateway' now resolve via the same
+// subnetId/natGatewayIdByServer data Important #2's buildImpairmentMemo fix already required in
+// hand — the instance ids of every server whose subnetId matches / whose resolved NAT gateway
+// matches. The switch has no default case, so a FaultScope member added later without a matching
+// branch here is a compile error, not a silent fallthrough (mirrors faults.ts's endpointMatches).
+export function instanceIdsForFaultScope(state: EngineState, scope: FaultScope, id: string): InstanceId[] {
+  switch (scope) {
+    case 'managed':
+      return []
+    case 'server':
+      return (state.instancesByServer.get(id) ?? []).map(i => i.id)
+    case 'az': {
+      const out: InstanceId[] = []
+      for (const sv of state.serversByAz.get(id) ?? []) {
+        for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+      }
+      return out
     }
-    return out
-  }
-  // region
-  const out: InstanceId[] = []
-  for (const az of state.azsByRegion.get(id) ?? []) {
-    for (const sv of state.serversByAz.get(az.id) ?? []) {
-      for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+    case 'region': {
+      const out: InstanceId[] = []
+      for (const az of state.azsByRegion.get(id) ?? []) {
+        for (const sv of state.serversByAz.get(az.id) ?? []) {
+          for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+        }
+      }
+      return out
+    }
+    case 'subnet': {
+      const out: InstanceId[] = []
+      for (const sv of Object.values(state.doc.servers)) {
+        if (sv.subnetId !== id) continue
+        for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+      }
+      return out
+    }
+    case 'natGateway': {
+      const out: InstanceId[] = []
+      for (const sv of Object.values(state.doc.servers)) {
+        if (state.natGatewayIdByServer.get(sv.id) !== id) continue
+        for (const inst of state.instancesByServer.get(sv.id) ?? []) out.push(inst.id)
+      }
+      return out
     }
   }
-  return out
 }
 
 // Order-preserving single-pass grouping (audit ISSUE-032) — same shape as groupInstancesByServer.
