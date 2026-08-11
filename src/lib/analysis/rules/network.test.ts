@@ -40,6 +40,35 @@ describe('network: blocked-dependency-path', () => {
     s.placement(web.id, s1.id); s.placement(api.id, s1.id) // localhost → permitted
     expect(ids(run(s), 'blocked-dependency-path')).toHaveLength(0)
   })
+
+  // Final review Important #6: a 'no-egress-route'-kind blocked path used to fall into this
+  // rule's trailing else branch too, at 'critical' severity with wrong port-binding advice,
+  // duplicating the dedicated noEgressRoute rule's own 'warning'-severity finding for the SAME
+  // path. blockedDependencyPath must now skip it entirely — noEgressRoute owns it exclusively.
+  it('does NOT fire for a no-egress-route-kind blocked path — the dedicated no-egress-route rule owns it exclusively', () => {
+    const s = scenario()
+    const rA = s.region('us-east-1'); const azA = s.az(rA.id, 'us-east-1a')
+    const rB = s.region('eu-west-1'); const azB = s.az(rB.id, 'eu-west-1a')
+    const s1 = s.server(azA.id); const s2 = s.server(azB.id)
+
+    const vpc = createVpc(rA.id)
+    const routeTable = createRouteTable(vpc.id) // no routes -> no egress
+    const subnet = createSubnet(vpc.id, azA.id, 'private', routeTable.id)
+    s1.subnetId = subnet.id
+    s.doc.vpcs[vpc.id] = vpc
+    s.doc.routeTables[routeTable.id] = routeTable
+    s.doc.subnets[subnet.id] = subnet
+
+    const web = s.blueprint('web', 0); const api = s.blueprint('api', 1)
+    api.ports = [{ port: 8080, protocol: 'tcp', visibility: 'internal' }]
+    web.dependencies = [dep('d-api', api.id, 'http', 8080)]
+    s.placement(web.id, s1.id); s.placement(api.id, s2.id)
+
+    const findings = run(s)
+    expect(ids(findings, 'blocked-dependency-path')).toHaveLength(0)
+    // The dedicated rule still fires exactly once for the same root cause.
+    expect(ids(findings, 'no-egress-route').length).toBeGreaterThanOrEqual(1)
+  })
 })
 
 describe('network: db-port-exposed', () => {

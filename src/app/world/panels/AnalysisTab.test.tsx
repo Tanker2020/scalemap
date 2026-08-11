@@ -79,4 +79,20 @@ describe('AnalysisTab', () => {
     const kept = unsuppressedCompileFindings(analysis, compile)
     expect(kept.map(f => f.id)).toEqual(['finding-vol-x'])
   })
+
+  // Final review Important #6: blockedDependencyPath now deliberately skips 'no-egress-route'
+  // paths (the dedicated no-egress-route rule owns them exclusively), so the generic compile-side
+  // 'blocked-path' finding for that SAME path must be claimed by the no-egress-route analysis
+  // finding instead — otherwise it leaks through as an uncorrelated third duplicate.
+  it('suppresses the compile duplicate covered by a no-egress-route finding', () => {
+    const analysis: AnalysisFinding[] = [
+      { id: 'no-egress-route:i1->d->i2', ruleId: 'no-egress-route', family: 'network', severity: 'warning', title: 't', why: 'w', fix: 'f', affected: [] },
+    ]
+    const compile: CompileFinding[] = [
+      { id: 'finding-i1->d->i2', severity: 'error', kind: 'blocked-path', message: 'm', affected: [] },
+      { id: 'finding-vol-x', severity: 'warning', kind: 'stateful-without-volume', message: 'm2', affected: [] },
+    ]
+    const kept = unsuppressedCompileFindings(analysis, compile)
+    expect(kept.map(f => f.id)).toEqual(['finding-vol-x'])
+  })
 })

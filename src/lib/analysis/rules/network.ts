@@ -39,6 +39,17 @@ const blockedDependencyPath: AnalysisRule = {
     const out: AnalysisFinding[] = []
     for (const path of compiled.paths) {
       if (path.verdict !== 'blocked' || !path.blockReason || path.to.kind !== 'instance') continue
+      // Final review Important #6: 'no-egress-route' paths are OWNED exclusively by the
+      // dedicated noEgressRoute rule below (added Task 11), which reports them at the correct
+      // 'warning' severity with routing-specific advice. Before this fix, the if/else-if chain's
+      // trailing `else` branch swept 'no-egress-route' in too, at 'critical' severity, with
+      // port-binding advice ("bind the port or publish it via a host port mapping") that made no
+      // sense for a routing failure — and produced a second, contradictory finding for the SAME
+      // root cause. Skipping here (rather than adding a correctly-worded branch) mirrors the
+      // codebase's existing compile-finding-suppression discipline (AnalysisTab.tsx's
+      // unsuppressedCompileFindings, which claims compile findings this rule already re-surfaces)
+      // — one dedicated rule owns one BlockReasonKind's presentation, never two.
+      if (path.blockReason.kind === 'no-egress-route') continue
       const targetId = path.to.instanceId
       const targetServerId = compiled.instances[targetId]?.serverId ?? ''
       const server = doc.servers[targetServerId]
