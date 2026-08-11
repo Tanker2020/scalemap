@@ -5918,6 +5918,66 @@ vocabulary, extended additively.
 | `src/app/world/panels/WorldPanel.tsx` | `TAB_LABELS` gains `network: 'Network'`; a `case 'network':` header block (glyph `⌬`, `var(--color-accent)`); a `{tab === 'network' && <NetworkPanel />}` render line. Hub file — edited sequentially, alone, per this file's own high-conflict convention. |
 | `src/app/world/az/DatacenterFloor.tsx` | A subnet-boundary overlay: for each subnet with ≥1 server in the current AZ, groups ALL matching cells (racked servers via `plan.cabinets[rackId]`, free-pool via `plan.pods[serverId]`) into a real multi-cell bounding box (not a single-rack special case), rendered as a dashed, `pointerEvents:'none'` polygon underneath the existing rack/pod layer — public subnets tinted `var(--color-accent)`, private `var(--color-text-muted)`, via this codebase's established `color-mix(in srgb, var(--color-X) 10%, transparent)` low-opacity idiom. Driven entirely by static/compiled doc state (`doc.subnets`, `azId`, server `subnetId`, `layoutFloor`'s geometry) — zero dependency on the 1 Hz metrics batch, zero new animated elements, respecting the file's documented motion-budget discipline. `data-testid="subnet-boundary-${subnet.id}"` matches the file's existing `<noun>-<id>` testid convention. |
 
+### Final-review fix wave — closing the gaps a per-task lens couldn't see
+
+The Wave 6 sequence above landed all 15 tasks, but the final whole-branch review (which looks at
+cross-task integration, not each task in isolation) found the merged result could only be
+*authored* into broken states, and that two type-level extensions from Task 7/9 had no live
+producer feeding them. A single fix wave (6 commits) plus one residual bug fix closed all of it:
+
+- **`NetworkPanel.tsx` gained two authoring surfaces it was missing:** `RouteTableEditor` (a
+  route-entry row per subnet — pick an IGW/NAT gateway scoped to the VPC, commits a `0.0.0.0/0`
+  catch-all `RouteTableEntry` via `updateRouteTable`, matching `resolveRoute`'s real "any
+  non-local route" semantics rather than true CIDR matching) and `SecurityGroupRuleEditor` (port/
+  protocol/source, mirrors `FirewallRulesModal.tsx`'s `SourceCell` any/internal/custom pattern,
+  commits via `updateSecurityGroup`). Without these, every subnet's route table and every security
+  group started empty with no in-app way to populate them — the feature could compile-block or
+  deny-everything permanently with zero recovery path. Both render inside `WorldPanel.tsx`'s
+  existing `<fieldset disabled={running}>` wrapper, so no new edit-lock wiring was needed. A
+  re-review of this fix found the Segmented source-option control had its own bug — choosing
+  "internal" silently committed `source: 'any'` (state derived only from `customText`, so `null`
+  meant "any" for both the any-button and the internal-button) — fixed by tracking the chosen
+  option in its own state, matching `SourceCell`'s real pattern; covered by a regression test.
+- **`worldEngine/index.ts`'s `buildImpairmentMemo`** now populates `subnetId`/`natGatewayId` on
+  `EndpointIds` (reusing the existing `natGatewayIdByServer` index, not re-deriving), so a
+  `{kind:'subnet'}`/`{kind:'natGateway'}` partition — type-complete since Task 7 — can finally
+  match a real path. Proven with a genuine `createWorldEngine()` integration test (live traffic,
+  `setPartition`, asserted rps collapse), not just the existing unit test on `endpointMatches` in
+  isolation.
+- **`instanceIdsForFaultScope`** is now an exhaustive `switch` over all six `FaultScope` members
+  (was an if-chain with a silent region-branch fallthrough for the two new kinds — the exact
+  fallthrough-class bug Task 7's `endpointMatches` rewrite was designed to prevent, reintroduced
+  one file over by widening the type without widening its consumers). `failover.ts`'s narrower
+  `OutageScope` vs. `WorldEngineApi.setOutage`'s wider `FaultScope` is now reconciled explicitly:
+  a `down` fault scoped to `subnet`/`natGateway` is deliberately rejected (documented in-line —
+  "down" has no obvious meaning for a subnet), not silently faked. No UI currently offers a
+  subnet/natGateway-scoped fault of any kind, so this was previously unreachable, not user-visible.
+- **`FirewallDrawer.tsx`** now branches on `(server.securityGroupIds?.length ?? 0) > 0` — the
+  exact predicate `network.ts`'s `firewallVerdict` uses to choose between `evaluateSecurityGroups`/
+  `evaluateFirewall` — instead of on `subnetId` alone. A networked-but-groupless server (every
+  server, immediately after subnet assignment) now shows the SG picker *plus* the still-live
+  legacy firewall list with an explanatory note, rather than an empty picker hiding what the
+  engine is actually enforcing.
+- **`analysis/rules/network.ts`'s `dbPortExposed`/`entryUnreachable`** gained an `isPortOpenToAny`
+  seam that branches on the SAME `securityGroupIds?.length` condition as `firewallVerdict`, so an
+  SG-governed server is evaluated against its groups' rules instead of its (possibly stale,
+  inert) `firewall` list. `blockedDependencyPath` now skips `'no-egress-route'`-kind paths
+  entirely (an early `continue`), applying this codebase's existing compile-finding-duplicate-
+  suppression convention to `noEgressRoute`'s new coverage rather than double-reporting with
+  contradictory severities/advice — `AnalysisTab.tsx`'s existing id-prefix suppression logic was
+  widened to also claim `no-egress-route:`-prefixed compile findings.
+
+**Parked, not fixed (final-review re-review, non-blocking):** route/rule editors accept an empty
+port (silently becomes `0`) or empty custom CIDR with no validation feedback, and
+`RouteTableEditor` permits appending a duplicate catch-all route to the same gateway;
+`isPortOpenToAny`'s SG branch checks port+source but not protocol, so a `udp`-only SG rule can
+false-positive `db-port-exposed` (the engine's `evaluateSecurityGroups` requires `protocol ===
+'tcp'`, this rule doesn't); `dbPortExposed` dropped the matched rule's id from `why`/`affected` on
+the legacy-firewall branch too (only necessary on the SG branch, since `SecurityGroupRule` has no
+id); `faultsForServer` still doesn't apply non-partition fault kinds (`cpu-brownout`/`memory-leak`/
+etc.) to subnet/natGateway scope (no UI exposes this today); `entryUnreachable`'s suggested-fix
+text stays generically firewall-worded even when its firing condition is now SG-aware.
+
 ### Verification (Task 15, full pass)
 
 `npx tsc --noEmit` — clean, 0 errors. `npx vitest run` — 154 files / 2068 tests, all passing. `npm
