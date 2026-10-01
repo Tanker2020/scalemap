@@ -6952,3 +6952,32 @@ GUI-dependent):**
   tab for the misconfigurations built in Task 11's fixtures.
 - Confirm subnet boundaries render on the AZ floor in both dark and light themes (⚙ Settings →
   Appearance), with zero new console errors throughout.
+
+## Three-tier vault example: drop the self-hosted `lb` tier, one instance per tier per AZ (2026-10-01)
+
+User-reported (2026-10-01): the "Classic three-tier" vault world placed an `lb` blueprint on a lone
+`lb-01` VPS in `us-east-1a` as its ONLY public-port (entry) blueprint, fanning out to `web-01`
+(1a) / `web-02` (1b), with a single `api-01` in 1b. That LB tier was redundant: every region
+ALWAYS has a regional LB (`routing.ts` `computeLbRouting` — authored in `doc.loadBalancers`, else a
+synthesized NLB default) that already distributes ingress across every public-port blueprint's
+instances per AZ. The preset therefore modeled regional LB → `lb-01` → web — a double balancing
+hop whose second hop was a single-AZ entry SPOF — plus a single-AZ `api` SPOF that forced every
+`web-01` → api call cross-AZ. Neither was flagged because no analysis rule checks single-instance
+services on the request path (the world's zero-findings contract was satisfied structurally).
+
+- **`src/lib/vault/exampleWorlds.ts` `threeTier()`** — removed the `lb` blueprint, `lb-01` server
+  and its placement. `web` is now the entry blueprint (port 443, `public`; `allowAny(443)` on
+  `web-01`/`web-02`, the same idiom as `eventDriven()`'s public `api`). Added `api-02` in
+  `us-east-1a`, so each AZ holds one web, one api, and one db (primary in 1a, replica in 1b).
+  Blurb updated. The "creeping memory leak" scenario still targets `api-01` — now a partial
+  degradation (half the api capacity) instead of a total outage, a better on-ramp story.
+- **Contract unchanged** — still compiles to zero compile+analysis findings
+  (`exampleWorlds.test.ts`); the vault's 4-entry/id-order contract is untouched. The earlier
+  "Cross-zone-off empty-AZ" section's description of this preset (`lb` only in 1a, `lb-01`
+  absorbing all ingress) is historical as of this change.
+- **Verified** — with a 500 rps population added, the engine splits ≈250 rps onto each of
+  `web-01`/`web-02`/`api-01`/`api-02`/`db-primary`/`db-replica`, all healthy, 0 dropped.
+- **Parked follow-up** — a real `proxy`/LB `BlueprintKind` (today `BlueprintKind` is
+  `api | worker | db-sql | db-nosql | cache`, so a self-hosted "lb" service is just a default-workload
+  `api` that forwards via its dependency with the flow solver's health-weighted even split, no
+  algorithm/L7/AZ-affinity config) and a "single-instance service on the request path" rule.

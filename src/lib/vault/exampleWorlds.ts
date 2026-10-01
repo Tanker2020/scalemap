@@ -56,32 +56,35 @@ function threeTier(): WorldDoc {
   const aza = az(doc, r.id, 'us-east-1a')
   const azb = az(doc, r.id, 'us-east-1b')
 
-  const lb1 = server(doc, aza.id, 'vps-large', 'lb-01')
+  // No self-hosted LB tier: every region always has a regional LB (authored in doc.loadBalancers,
+  // else routing.ts synthesizes a default), and it already fans ingress across every PUBLIC-port
+  // blueprint's instances in each AZ. A separate `lb` service on one VPS would only add a second
+  // balancing hop and a single-AZ entry SPOF. Each tier has one instance per AZ, so losing either
+  // AZ still leaves a full web → api → db path in the other.
   const web1 = server(doc, aza.id, 'vps-large', 'web-01')
   const web2 = server(doc, azb.id, 'vps-large', 'web-02')
   const api1 = server(doc, azb.id, 'vps-large', 'api-01')
+  const api2 = server(doc, aza.id, 'vps-large', 'api-02')
   const dbP = server(doc, aza.id, 'dedicated-8', 'db-primary')
   const dbR = server(doc, azb.id, 'dedicated-8', 'db-replica')
 
-  lb1.firewall = [allowAny(443), ...lb1.firewall]
+  web1.firewall = [allowAny(443), ...web1.firewall]
+  web2.firewall = [allowAny(443), ...web2.firewall]
 
-  const lb = blueprint(doc, 'lb', 1)
-  lb.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
   const web = blueprint(doc, 'web', 0)
-  web.ports = [{ port: 8080, protocol: 'tcp', visibility: 'internal' }]
+  web.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
   const api = blueprint(doc, 'api', 2)
   api.ports = [{ port: 8081, protocol: 'tcp', visibility: 'internal' }]
   const db = blueprint(doc, 'db', 3)
   db.ports = [{ port: 5432, protocol: 'tcp', visibility: 'internal' }]
   db.stateful = true; db.volumeName = 'pgdata'
-  lb.dependencies = [dep('d-lb-web', { kind: 'blueprint', blueprintId: web.id }, 8080, 'http')]
   web.dependencies = [dep('d-web-api', { kind: 'blueprint', blueprintId: api.id }, 8081, 'http')]
   api.dependencies = [dep('d-api-db', { kind: 'blueprint', blueprintId: db.id }, 5432, 'db')]
 
-  place(doc, lb.id, lb1.id)
   place(doc, web.id, web1.id)
   place(doc, web.id, web2.id)
   place(doc, api.id, api1.id)
+  place(doc, api.id, api2.id)
   place(doc, db.id, dbP.id, 'primary')
   place(doc, db.id, dbR.id, 'replica')
   // No populations: a single-region world's only population would trip no-failover-region. Shows
@@ -293,7 +296,7 @@ export const VAULT: VaultEntry[] = [
   {
     id: 'three-tier',
     name: 'Classic three-tier',
-    blurb: 'LB-fronted web + api + replicated db across two AZs. The on-ramp.',
+    blurb: 'Regional-LB-fronted web + api + replicated db, one of each tier per AZ. The on-ramp.',
     tags: ['1 region', '6 servers'],
     difficulty: 'beginner',
     build: threeTier,
