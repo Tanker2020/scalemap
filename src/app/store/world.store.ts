@@ -112,6 +112,8 @@ interface WorldStore {
   /** Authors a NEW global service and places it on this host, in one undo step. */
   addServiceToServer: (serverId: string, draft: ServiceDraft) =>
     { blueprintId: string; placementId: string }
+  /** Authors a NEW global service WITHOUT placing it (Blueprints tab). Returns the blueprint id. */
+  createService: (draft: ServiceDraft) => string
   updateServer: (id: string, patch: Partial<Server>) => void
   /** Applies the SAME patch to N servers as a single undo step (Wave 5 batch editing). */
   batchUpdateServers: (ids: string[], patch: Partial<Server>) => void
@@ -209,6 +211,17 @@ interface WorldStore {
   redo: () => void
 }
 
+// A ServiceDraft (the "add a service" form's vocabulary) → a fresh global blueprint. Shared by
+// the VPS door (addServiceToServer) and the Blueprints tab (createService) so the two can't drift.
+function blueprintFromDraft(draft: ServiceDraft, colorIndex: number): ServiceBlueprint {
+  const bp = createBlueprint(draft.name, colorIndex)
+  bp.kind = draft.kind
+  bp.workload = draft.workload ?? draftWorkload(draft.kind, draft.cost, draft.memory)
+  bp.ports = draftPorts(draft)
+  if (draft.kind === 'proxy') bp.proxyConfig = defaultProxyConfig()
+  return bp
+}
+
 export const useWorldStore = create<WorldStore>((set, get) => {
   // Wraps a doc-transform as a history-pushing mutation.
   const mutate = (fn: (doc: WorldDoc) => WorldDoc) => {
@@ -289,11 +302,7 @@ export const useWorldStore = create<WorldStore>((set, get) => {
       if (!host || placementViolation(host, { kind: draft.kind, ownerServerKind: null }) !== null) {
         return { blueprintId: '', placementId: '' }
       }
-      const bp = createBlueprint(draft.name, Object.keys(get().doc.blueprints).length)
-      bp.kind = draft.kind
-      bp.workload = draft.workload ?? draftWorkload(draft.kind, draft.cost, draft.memory)
-      bp.ports = draftPorts(draft)
-      if (draft.kind === 'proxy') bp.proxyConfig = defaultProxyConfig()
+      const bp = blueprintFromDraft(draft, Object.keys(get().doc.blueprints).length)
       const placement = createPlacement(bp.id, serverId)
 
       mutate(d => ({
@@ -302,6 +311,14 @@ export const useWorldStore = create<WorldStore>((set, get) => {
         placements: { ...d.placements, [placement.id]: placement },
       }))
       return { blueprintId: bp.id, placementId: placement.id }
+    },
+    // The Blueprints tab's "+ new service": the same draft → definition as the VPS door, but
+    // UNPLACED — it costs and simulates nothing until mounted on a host or spread. Never a
+    // database (HostableKind excludes them; databases arrive as boxes).
+    createService: (draft) => {
+      const bp = blueprintFromDraft(draft, Object.keys(get().doc.blueprints).length)
+      mutate(d => ({ ...d, blueprints: { ...d.blueprints, [bp.id]: bp } }))
+      return bp.id
     },
     // Applies planSpread's whole plan in ONE mutate(): a half-applied spread — a freshly created
     // host with no placement on it — is not a state undo should be able to land in. Bails BEFORE

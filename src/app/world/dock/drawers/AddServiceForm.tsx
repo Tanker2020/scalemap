@@ -49,7 +49,9 @@ const rowLabel: CSSProperties = { color: 'var(--color-text-muted)', display: 'bl
 const rowGap: CSSProperties = { marginBottom: 7 }
 
 export interface AddServiceFormProps {
-  serverId: string
+  // The host to place the new service on (the VPS door). Absent ⇒ the Blueprints tab's
+  // "+ new service": the definition is created UNPLACED (world.store createService).
+  serverId?: string
   running: boolean
   onDone: () => void
 }
@@ -88,9 +90,9 @@ export function AddServiceForm({ serverId, running, onDone }: AddServiceFormProp
 
   const submit = (): void => {
     if (running || draft.name.trim() === '') return
-    useWorldStore.getState().addServiceToServer(serverId, {
-      ...draft, name: draft.name.trim(), workload: effectiveWorkload,
-    })
+    const finished = { ...draft, name: draft.name.trim(), workload: effectiveWorkload }
+    if (serverId) useWorldStore.getState().addServiceToServer(serverId, finished)
+    else useWorldStore.getState().createService(finished)
     onDone()
   }
 
@@ -102,7 +104,9 @@ export function AddServiceForm({ serverId, running, onDone }: AddServiceFormProp
         <label htmlFor="svc-name" style={rowLabel}>service name</label>
         <input
           id="svc-name" aria-label="service name" style={field} value={draft.name}
-          placeholder="orders-api" disabled={running}
+          // "e.g." so the hint can't be mistaken for a value already typed in — a bare
+          // "orders-api" in grey read as filled, leaving users stuck at a disabled button.
+          placeholder="e.g. orders-api" disabled={running} autoFocus
           onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
         />
       </div>
@@ -239,13 +243,19 @@ export function AddServiceForm({ serverId, running, onDone }: AddServiceFormProp
         <button
           type="button" className="kit-press" style={canSubmit ? btn : btnLocked}
           disabled={!canSubmit}
-          title={running ? 'stop the simulation to edit' : undefined}
+          title={running ? 'stop the simulation to edit' : !canSubmit ? 'name the service first' : undefined}
           onClick={submit}
         >
           add service
         </button>
         <button type="button" className="kit-press" style={btn} onClick={onDone}>cancel</button>
       </div>
+      {/* Say WHY the button is inert — the only non-running reason is a missing name. */}
+      {!running && draft.name.trim() === '' && (
+        <div data-testid="svc-name-required" style={{ marginTop: 4, color: 'var(--color-text-muted)' }}>
+          give the service a name to add it
+        </div>
+      )}
     </div>
   )
 }

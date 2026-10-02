@@ -360,7 +360,9 @@ error all read it — never re-implement the check.
 **Global blueprint library:** `panels/BlueprintsPanel.tsx` + `BlueprintModal.tsx` (world-scope
 `blueprints` tab) give `ServiceBlueprint` — always a global, reusable definition — the catalog
 surface it lost in node-model Phase 5. It does NOT resurrect the retired generic-blueprint
-authoring model: creating a service is still the VPS door (`dock/drawers/AddServiceForm`), and
+authoring model: a service is created either at the VPS door (`dock/drawers/AddServiceForm` in a
+server's Services drawer — created AND placed) or with the tab's "+ new service" (the same form
+with no `serverId` → `world.store`'s `createService`, created UNPLACED until mounted), and
 dependencies are still authored in the Connections graph. `duplicateBlueprint` deep-copies a
 definition with fresh dependency ids and no placements.
 

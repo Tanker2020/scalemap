@@ -34,6 +34,18 @@ describe('AddServiceForm', () => {
 
   // A nameless service is unreadable everywhere it appears (chips, rows, the graph), so the
   // action stays inert rather than creating "Untitled".
+  it('explains that a name is required while the button is disabled, and focuses the name field', () => {
+    const serverId = seedHost()
+    render(<AddServiceForm serverId={serverId} running={false} onDone={() => {}} />)
+    expect(screen.getByLabelText(/service name/i)).toHaveFocus()
+    expect(screen.getByLabelText(/service name/i)).toHaveAttribute('placeholder', 'e.g. orders-api')
+    expect(screen.getByRole('button', { name: /add service/i })).toHaveAttribute('title', 'name the service first')
+    expect(screen.getByTestId('svc-name-required')).toBeInTheDocument()
+    nameIt('orders-api')
+    expect(screen.queryByTestId('svc-name-required')).toBeNull()
+    expect(screen.getByRole('button', { name: /add service/i })).not.toBeDisabled()
+  })
+
   it('creates a reverse proxy with a default routing config', () => {
     const serverId = seedHost()
     render(<AddServiceForm serverId={serverId} running={false} onDone={() => {}} />)

@@ -1260,3 +1260,16 @@ describe('world.store — appliance rule (placementRules.ts)', () => {
   })
 })
 
+describe('world.store — createService (Blueprints tab)', () => {
+  it('creates the definition unplaced, as one undo step', () => {
+    useWorldStore.getState().newWorld()
+    const id = useWorldStore.getState().createService({ ...defaultDraft('cache'), name: 'sessions' })
+    const doc = useWorldStore.getState().doc
+    expect(doc.blueprints[id]).toMatchObject({ name: 'sessions', kind: 'cache', ownerServerKind: null })
+    expect(doc.blueprints[id].ports).toEqual([{ port: 6379, protocol: 'tcp', visibility: 'internal' }])
+    expect(Object.keys(doc.placements)).toHaveLength(0)
+    useWorldStore.getState().undo()
+    expect(useWorldStore.getState().doc.blueprints[id]).toBeUndefined()
+  })
+})
+

@@ -7086,3 +7086,23 @@ finding for any of it. Reachable from the UI via both unfiltered "mount a bluepr
   `ServerBoard.test.tsx`. `BlueprintModal.test.tsx` and three `ConnectionsView.test.tsx` seeds that
   retyped a plain service to `db-sql` now use a real `addDbServer` box. Full suite 171 files /
   2358 tests green; `tsc` clean; build OK.
+
+## Blueprints tab "+ new service" + add-service name affordance (2026-10-01)
+
+- **Blueprints tab can create services.** `world.store.ts` gains `createService(draft): string` —
+  the same draft → blueprint translation as `addServiceToServer`, now shared through a module-level
+  `blueprintFromDraft` helper (kind, preset/override workload, ports, default `proxyConfig` for a
+  proxy) — but UNPLACED, one mutate()/undo step. `AddServiceForm`'s `serverId` is now OPTIONAL:
+  present ⇒ the VPS door (`addServiceToServer`), absent ⇒ `createService`. `BlueprintsPanel`
+  renders a "+ new service" button (edit-locked while running) that opens `AddServiceForm` inline
+  with no `serverId`; the explainer and empty state now name both creation paths and where
+  databases come from; an unplaced card reads "not placed — mount it from a server's Services
+  drawer". This partially relaxes node-model Phase 5's "author only at the VPS door" stance: an
+  unplaced definition is allowed (as `duplicateBlueprint` already produced), it simply costs and
+  simulates nothing until mounted. Still never a database (`HostableKind`).
+- **Add-service name affordance.** User-reported: the "add service" button looked broken because
+  the grey `orders-api` placeholder read as an already-typed name. The placeholder is now
+  `e.g. orders-api`, the name field autofocuses, and while the name is empty the disabled button's
+  title says "name the service first" with an inline "give the service a name to add it" line.
+- **Tests.** New `panels/BlueprintsPanel.test.tsx`; `createService` in `world.store.test.ts`; the
+  name affordance in `AddServiceForm.test.tsx`. Full suite 172 files / 2364 tests green.

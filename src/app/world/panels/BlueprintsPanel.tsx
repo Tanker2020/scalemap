@@ -18,6 +18,8 @@ import type { ServiceBlueprint, WorldDoc } from '../../../lib/world/types'
 import { SectionHeader, Explainer } from '../ui/kit'
 import { smallBtn, dangerBtn, row } from './panelStyles'
 import { BlueprintModal } from './BlueprintModal'
+import { AddServiceForm } from '../dock/drawers/AddServiceForm'
+import { useSimulationStore } from '../../store/simulation.store'
 
 const chip: CSSProperties = {
   fontSize: 9, padding: '1px 5px', borderRadius: 3, flexShrink: 0,
@@ -34,7 +36,7 @@ const actionBtn: CSSProperties = {
 // interesting case — it costs nothing and simulates nothing, and the row says so plainly.
 function placementSummary(doc: WorldDoc, bpId: string): string {
   const servers = Object.values(doc.placements).filter(p => p.blueprintId === bpId).map(p => p.serverId)
-  if (servers.length === 0) return 'not placed'
+  if (servers.length === 0) return 'not placed — mount it from a server\'s Services drawer'
   const azs = new Set(servers.map(sid => doc.servers[sid]?.azId).filter(Boolean))
   return `${servers.length} host${servers.length === 1 ? '' : 's'} · ${azs.size} AZ${azs.size === 1 ? '' : 's'}`
 }
@@ -57,6 +59,8 @@ export function BlueprintsPanel({ openConnections }: BlueprintsPanelProps) {
   const removeBlueprint = useWorldStore(s => s.removeBlueprint)
   const duplicateBlueprint = useWorldStore(s => s.duplicateBlueprint)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
+  const running = useSimulationStore(s => s.running)
   const blueprints = Object.values(doc.blueprints).sort((a, b) => a.name.localeCompare(b.name))
 
   return (
@@ -64,12 +68,26 @@ export function BlueprintsPanel({ openConnections }: BlueprintsPanelProps) {
       <SectionHeader label="▸ SERVICES" />
       <Explainer>
         Every service definition in this world, whether or not it runs anywhere. A definition is
-        global — mount the same one on many hosts and each becomes an instance. Add a new service
-        from a host (its VPS door); duplicate here when you want a variant to diverge from.
+        global — mount the same one on many hosts and each becomes an instance. Create one here
+        (unplaced until you mount it on a server) or from a server's Services drawer (placed there
+        at once). Databases arrive as boxes from an AZ's ADD A NODE list.
       </Explainer>
-      {blueprints.length === 0 && (
+      {creating ? (
+        <div style={{
+          background: 'var(--color-node-base)', border: '1px solid var(--color-node-border)',
+          borderRadius: 8, padding: '4px 10px', marginTop: 8,
+        }}>
+          <AddServiceForm running={running} onDone={() => setCreating(false)} />
+        </div>
+      ) : (
+        <button className="kit-press" style={{ ...actionBtn, marginTop: 6, ...(running ? { opacity: 0.5, cursor: 'default' } : {}) }}
+          aria-label="new service" disabled={running}
+          title={running ? 'stop the simulation to edit' : 'define a new service — it runs nowhere until you mount it on a server'}
+          onClick={() => setCreating(true)}>+ new service</button>
+      )}
+      {blueprints.length === 0 && !creating && (
         <div style={{ color: 'var(--color-text-muted)', margin: '6px 0' }}>
-          no services yet — open a server and add one
+          no services yet — create one above, or open a server and add one there
         </div>
       )}
       {blueprints.map(bp => {
