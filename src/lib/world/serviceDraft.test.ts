@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { defaultDraft, draftWorkload, draftPorts, HOSTABLE_KINDS, COST_MS } from './serviceDraft'
+import { defaultDraft, draftWorkload, draftPorts, HOSTABLE_KINDS, COST_MS, PROXY_COST_MS, PROXY_RAM_PER_CONN_MB } from './serviceDraft'
 
 describe('HOSTABLE_KINDS', () => {
   // A database needs its own box (it comes from the AZ palette as an appliance, and its blueprint
@@ -10,8 +10,8 @@ describe('HOSTABLE_KINDS', () => {
     expect(HOSTABLE_KINDS).not.toContain('db-nosql')
   })
 
-  it('offers api, worker and cache', () => {
-    expect([...HOSTABLE_KINDS]).toEqual(['api', 'worker', 'cache'])
+  it('offers api, worker, cache and reverse proxy', () => {
+    expect([...HOSTABLE_KINDS]).toEqual(['api', 'worker', 'cache', 'proxy'])
   })
 })
 
@@ -92,5 +92,18 @@ describe('draftPorts', () => {
 
   it('emits no bindings for a portless draft', () => {
     expect(draftPorts(defaultDraft('worker'))).toEqual([])
+  })
+})
+
+describe('reverse proxy draft', () => {
+  it('defaults to a public 443 listener with the light preset', () => {
+    expect(defaultDraft('proxy')).toMatchObject({ cost: 'light', memory: 'small', port: 443, visibility: 'public' })
+  })
+  it('uses the proxy CPU table, a per-KB cost, and cheap connections', () => {
+    const w = draftWorkload('proxy', 'medium', 'small')
+    expect(w.cpuMsPerRequest).toBe(PROXY_COST_MS.medium)
+    expect(w.cpuMsPerRequest).toBeLessThan(COST_MS.light)
+    expect(w.cpuMsPerKb).toBeGreaterThan(0)
+    expect(w.ramPerConnMb).toBe(PROXY_RAM_PER_CONN_MB)
   })
 })

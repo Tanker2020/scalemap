@@ -6,6 +6,8 @@ import type {
 } from './types'
 import { evaluateInstancePath, hopClassBetween } from './network'
 import { computeRouting, volumeFindings } from './routing'
+import { proxyFindings } from './proxyFindings'
+import { placementViolation } from './placementRules'
 import { resolveMixProtocol } from '../packetResolve'
 import { applyEnvironment } from './environments'
 
@@ -56,6 +58,25 @@ export function compileWorld(rawDoc: WorldDoc): CompiledWorld {
       kind: 'missing-environment',
       message: `Active environment "${rawDoc.activeEnvironmentId}" was not found — compiling the base world unscaled`,
       affected: [],
+    })
+  }
+
+  // Appliance rule safety net (placementRules.ts). Every authoring path refuses these, so this only
+  // fires for a hand-edited or pre-rule file — loudly, as an error, rather than letting a database
+  // quietly run on a general host (or a service on a database box). The instance still compiles,
+  // so the file opens and simulates; the error says what to fix.
+  for (const pl of Object.values(doc.placements)) {
+    const bp = doc.blueprints[pl.blueprintId]
+    const server = doc.servers[pl.serverId]
+    if (!bp || !server) continue
+    const why = placementViolation(server, bp)
+    if (why === null) continue
+    findings.push({
+      id: `finding-placement-host-mismatch-${pl.id}`,
+      severity: 'error',
+      kind: 'placement-host-mismatch',
+      message: `${bp.name} is placed on ${server.label}, but ${why}. Move or remove this placement`,
+      affected: [pl.id, bp.id, server.id],
     })
   }
 
@@ -180,7 +201,7 @@ export function compileWorld(rawDoc: WorldDoc): CompiledWorld {
   return {
     instances,
     paths,
-    findings: [...findings, ...volumeFindings(doc), ...protocolMismatchFindings(doc)],
+    findings: [...findings, ...volumeFindings(doc), ...protocolMismatchFindings(doc), ...proxyFindings(doc)],
     routing: computeRouting(doc, instances),
   }
 }

@@ -14,7 +14,10 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactEle
 import { createPortal } from 'react-dom'
 import { useWorldStore } from '../../store/world.store'
 import { useCompiledWorld } from '../useCompiledWorld'
-import type { BlueprintDependency, DependencyTarget } from '../../../lib/world/types'
+import type { BlueprintDependency, DependencyTarget, ServiceBlueprint } from '../../../lib/world/types'
+import { defaultProxyConfig } from '../../../lib/world/factories'
+import { proxyUpstreamIds } from '../../../lib/world/proxyFindings'
+import { proxyDependencyFractions } from '../../../lib/worldEngine/proxyRouting'
 import {
   connNodes, edgesForView, layoutNodes, INTERNET_NODE,
   NODE_W, NODE_H, type ConnEdge, type ConnNode, type EdgeStatus,
@@ -243,6 +246,7 @@ export function ConnectionsView({ open, onClose }: ConnectionsViewProps): ReactE
               .filter((x): x is { depId: string; label: string } => x != null)
             return (
               <EdgeInspector edge={selectedEdge} nodeById={nodeById}
+                proxyNote={fromBp && currentDep ? proxyUpstreamNote(doc.packets, fromBp, currentDep.id) : null}
                 dbTarget={dbTarget}
                 dbEngine={targetBp?.dbConfig?.engine ?? null}
                 writeFraction={currentDep?.writeFraction ?? 0}
@@ -362,13 +366,34 @@ function DraftBar({ draft, nodeById, onChange, onCommit, onCancel }: {
   )
 }
 
+// What a reverse proxy does with THIS outgoing edge. Edges out of a proxy are one-of (each request
+// takes exactly one), unlike every other kind's call-every-dependency edges, so the inspector says
+// which share or which paths this upstream receives. Shares come from the engine's own function.
+function proxyUpstreamNote(packets: PacketRegistry, bp: ServiceBlueprint, depId: string): string | null {
+  if (bp.kind !== 'proxy') return null
+  const cfg = bp.proxyConfig ?? defaultProxyConfig()
+  const upstreams = proxyUpstreamIds(packets, bp)
+  if (!upstreams.includes(depId)) return 'proxy upstream · not routed (a proxy does not forward async events)'
+  if (cfg.mode === 'l4') {
+    const share = proxyDependencyFractions(cfg, upstreams, undefined).byDep[depId] ?? 0
+    return `proxy upstream · ${Math.round(share * 100)}% of its traffic (L4 weight ${cfg.upstreamWeights?.[depId] ?? 1})`
+  }
+  const paths = cfg.listenerRules.filter(r => r.dependencyId === depId).map(r => r.pathPattern)
+  if (cfg.defaultDependencyId === depId) paths.push('default')
+  return paths.length > 0
+    ? `proxy upstream · L7 rules: ${paths.join(', ')}`
+    : 'proxy upstream · receives nothing (no rule or default points here)'
+}
+
 function EdgeInspector({
-  edge, nodeById, dbTarget, dbEngine, writeFraction, onWriteFraction,
+  edge, nodeById, proxyNote, dbTarget, dbEngine, writeFraction, onWriteFraction,
   cacheOptions, cacheAsideVia, onCacheAsideVia,
   registry, packetMix, reqKb, respKb, bindable, onPacketMix, onWireSize,
   onFix, onRemove, onClose,
 }: {
   edge: ConnEdge; nodeById: Record<string, ConnNode>
+  /** Set when the edge leaves a reverse proxy: which share/paths this upstream receives. */
+  proxyNote: string | null
   dbTarget: boolean; dbEngine: 'sql' | 'nosql' | null; writeFraction: number; onWriteFraction: (w: number) => void
   /** Sibling dependencies on the same blueprint that resolve to a cache — cache-aside candidates. */
   cacheOptions: { depId: string; label: string }[]
@@ -404,6 +429,9 @@ function EdgeInspector({
         {edge.totalPaths > 0 && edge.status !== 'permitted' && ` (${edge.blockedPaths}/${edge.totalPaths} blocked)`}
       </div>
       {edge.blockReason && <div style={{ marginTop: 6, fontSize: 10, color: 'var(--color-text-secondary)' }}>{edge.blockReason.detail}</div>}
+      {proxyNote && (
+        <div data-testid="edge-proxy-note" style={{ marginTop: 6, fontSize: 10, color: 'var(--color-text-secondary)' }}>{proxyNote}</div>
+      )}
       {dbTarget && (
         // Read/write split (node-model Phase 3): writes route to the primary (SQL) or all nodes
         // (NoSQL), reads to the replicas. The caption names where writes land so the consequence

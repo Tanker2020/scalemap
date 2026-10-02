@@ -9,7 +9,8 @@
 // PURE: plans only. It allocates no ids and mutates nothing, so world.store can apply the whole
 // plan inside ONE mutate() and undo the entire spread as a single step. No React/store imports —
 // node-env testable, same contract as rackModel.ts beside it.
-import { isDbServerKind, type BlueprintId, type ServiceBlueprint, type Server, type WorldDoc } from './types'
+import type { BlueprintId, ServiceBlueprint, Server, WorldDoc } from './types'
+import { placementViolation } from './placementRules'
 
 // Per target AZ: reuse a host that fits, or stand up a new one cloned from the source's preset.
 export type SpreadTarget =
@@ -29,15 +30,10 @@ function residentRamMb(doc: WorldDoc, serverId: string): number {
   return total
 }
 
-// A host can take this blueprint if the appliance rules allow it AND there is RAM headroom.
-// Appliance rule, both directions: an appliance box owns exactly one blueprint and accepts no
-// other service; an appliance-owned blueprint only ever lands on a box of its own kind.
+// A host can take this blueprint if the appliance rule allows it (placementRules.ts — the one
+// definition, shared with the store, the pickers and compile) AND there is RAM headroom.
 function canHost(doc: WorldDoc, server: Server, bp: ServiceBlueprint): boolean {
-  if (bp.ownerServerKind !== null) {
-    if (server.kind !== bp.ownerServerKind) return false
-  } else if (isDbServerKind(server.kind)) {
-    return false
-  }
+  if (placementViolation(server, bp) !== null) return false
   return residentRamMb(doc, server.id) + bp.workload.ramBaseMb <= server.specs.ramMb
 }
 

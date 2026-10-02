@@ -17,7 +17,7 @@ import type { BlueprintKind, ServicePort, WorkloadProfile } from './types'
 // a database arrives as an appliance node from the AZ palette, carrying its own box, and its
 // blueprint's `ownerServerKind` makes spread's canHost() refuse it on a plain VPS. Offering a db
 // kind here would let the form create a service nothing can host.
-export const HOSTABLE_KINDS = ['api', 'worker', 'cache'] as const satisfies readonly BlueprintKind[]
+export const HOSTABLE_KINDS = ['api', 'worker', 'cache', 'proxy'] as const satisfies readonly BlueprintKind[]
 export type HostableKind = typeof HOSTABLE_KINDS[number]
 
 export type CostPreset = 'light' | 'medium' | 'heavy'
@@ -28,6 +28,16 @@ export type MemoryPreset = 'small' | 'medium' | 'large'
 // cache lookup, 'medium' a typical JSON endpoint doing a query or two, 'heavy' something doing
 // real work per request (rendering, serialization of a big payload, a fan-out of calls).
 export const COST_MS: Record<CostPreset, number> = { light: 2, medium: 8, heavy: 25 }
+
+// A reverse proxy's per-request CPU is an order of magnitude below an app's: it parses headers and
+// copies bytes, it doesn't run business logic. 'light' is a plain L4/L7 forward, 'medium' adds TLS
+// termination, 'heavy' is WAF-style inspection or heavy header rewriting. Payload size adds its own
+// per-KB cost (PROXY_CPU_MS_PER_KB) — TLS and buffer copies scale with bytes, not requests.
+export const PROXY_COST_MS: Record<CostPreset, number> = { light: 0.2, medium: 0.5, heavy: 1.5 }
+export const PROXY_CPU_MS_PER_KB = 0.01
+// Proxies hold connections cheaply (event-loop buffers, not a thread or an app session each):
+// ~100 KB per connection whatever the memory preset, which only moves the baseline.
+export const PROXY_RAM_PER_CONN_MB = 0.1
 
 // Cold-start time (FEAT-007): how long a freshly-started instance takes to reach full rated
 // capacity. Scales with the cost preset on the same reasoning as COST_MS itself — a heavier
@@ -62,8 +72,20 @@ export interface ServiceDraft {
   workload?: WorkloadProfile
 }
 
-export function draftWorkload(_kind: HostableKind, cost: CostPreset, memory: MemoryPreset): WorkloadProfile {
+export function draftWorkload(kind: HostableKind, cost: CostPreset, memory: MemoryPreset): WorkloadProfile {
   const ram = MEMORY_MB[memory]
+  if (kind === 'proxy') {
+    return {
+      cpuMsPerRequest: PROXY_COST_MS[cost],
+      cpuMsPerKb: PROXY_CPU_MS_PER_KB,
+      ramBaseMb: ram.base,
+      ramPerConnMb: PROXY_RAM_PER_CONN_MB,
+      diskIoPerRequest: 0,
+      // A proxy has nothing to warm (no JIT-heavy app code, no caches): the lightest cold start.
+      coldStartMs: COLD_START_MS.light,
+      warmCapacityFraction: WARM_CAPACITY_FRACTION,
+    }
+  }
   return {
     cpuMsPerRequest: COST_MS[cost],
     ramBaseMb: ram.base,
@@ -87,6 +109,10 @@ export function defaultDraft(kind: HostableKind): ServiceDraft {
     case 'cache':
       // Memory-dominant and near-free per request — the shape that makes a cache worth having.
       return { name: '', kind, cost: 'light', memory: 'large', port: 6379, visibility: 'internal' }
+    case 'proxy':
+      // The edge of the stack: public on 443 by default, since fronting clients is what a reverse
+      // proxy is for. Light per request, small footprint.
+      return { name: '', kind, cost: 'light', memory: 'small', port: 443, visibility: 'public' }
     case 'api':
     default:
       // Internal by default: exposure to the internet is opted into, never assumed — the same

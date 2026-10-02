@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { serializeWorld, deserializeWorld } from './serializer'
-import { createWorld, createRegion, createAz, createServer, createRack, createBlueprint } from './world/factories'
+import { createWorld, createRegion, createAz, createServer, createRack, createBlueprint, defaultProxyConfig } from './world/factories'
 
 describe('scalemap v3 serializer', () => {
   it('round-trips a world document with meta and viewState', () => {
@@ -403,5 +403,18 @@ describe('scalemap v3 serializer', () => {
     expect(doc.internetGateways).toEqual({})
     expect(doc.natGateways).toEqual({})
     expect(doc.securityGroups).toEqual({})
+  })
+
+  it('defaults a missing proxyConfig on a proxy blueprint and leaves other blueprints untouched', () => {
+    const world = createWorld()
+    const proxy = createBlueprint('edge', 0)
+    proxy.kind = 'proxy'
+    const api = createBlueprint('api', 1)
+    world.blueprints[proxy.id] = proxy
+    world.blueprints[api.id] = api
+    const parsed = deserializeWorld(serializeWorld(world, 'w', '2026-10-01T00:00:00.000Z'))
+    expect(parsed.world.blueprints[proxy.id].proxyConfig).toEqual(defaultProxyConfig())
+    expect(parsed.world.blueprints[api.id]).toEqual(api)
+    expect('proxyConfig' in parsed.world.blueprints[api.id]).toBe(false)
   })
 })

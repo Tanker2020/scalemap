@@ -15,6 +15,8 @@ import { createPortal } from 'react-dom'
 import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import type { BlueprintKind, DbConfig, DbEngine, ServiceBlueprint } from '../../../lib/world/types'
+import { defaultProxyConfig } from '../../../lib/world/factories'
+import { allowedBlueprintKinds } from '../../../lib/world/placementRules'
 import { SectionHeader, Segmented, Explainer } from '../ui/kit'
 
 export interface BlueprintModalProps {
@@ -60,6 +62,7 @@ const KINDS: { key: BlueprintKind; label: string }[] = [
   { key: 'db-sql', label: 'SQL DB' },
   { key: 'db-nosql', label: 'NoSQL DB' },
   { key: 'cache', label: 'Cache' },
+  { key: 'proxy', label: 'Reverse proxy / LB' },
 ]
 
 // Numeric workload fields live as STRINGS while editing so a half-typed or cleared box doesn't
@@ -140,6 +143,9 @@ export function BlueprintModal({ open, editingId, onClose, onOpenConnections }: 
   const running = useSimulationStore(s => s.running)
   const [draft, setDraft] = useState<BlueprintDraft | null>(null)
   const [depCount, setDepCount] = useState(0)
+  // The kinds this blueprint may be retyped to (placementRules.ts): a database box's own service
+  // is locked to its engine, and a free service can never become a database.
+  const [allowedKinds, setAllowedKinds] = useState<BlueprintKind[]>([])
 
   useEffect(() => {
     if (!open || editingId == null) return
@@ -148,6 +154,7 @@ export function BlueprintModal({ open, editingId, onClose, onOpenConnections }: 
     if (!bp) { onClose(); return }
     setDraft(draftFrom(bp))
     setDepCount(bp.dependencies.length)
+    setAllowedKinds(allowedBlueprintKinds(bp))
   }, [open, editingId, onClose])
 
   useEffect(() => {
@@ -209,6 +216,11 @@ export function BlueprintModal({ open, editingId, onClose, onOpenConnections }: 
           ttlSec: Math.max(0, num(draft.cacheTtlSec, DEFAULT_CACHE_TTL_SEC)),
         }
         : undefined,
+      // A proxy keeps its authored routing table across catalog edits (rules/weights are edited in
+      // the server dock's service form); a blueprint retyped TO proxy starts from the default.
+      proxyConfig: draft.kind === 'proxy'
+        ? (useWorldStore.getState().doc.blueprints[editingId]?.proxyConfig ?? defaultProxyConfig())
+        : undefined,
     })
     onClose()
   }
@@ -238,10 +250,17 @@ export function BlueprintModal({ open, editingId, onClose, onOpenConnections }: 
           <div style={rowGap}>
             <label htmlFor="bp-kind" style={rowLabel}>kind</label>
             <select id="bp-kind" aria-label="kind" style={field} value={draft.kind}
+              disabled={allowedKinds.length <= 1}
               onChange={e => set({ kind: e.target.value as BlueprintKind })}>
-              {KINDS.map(k => <option key={k.key} value={k.key}>{k.label}</option>)}
+              {KINDS.filter(k => allowedKinds.includes(k.key)).map(k => <option key={k.key} value={k.key}>{k.label}</option>)}
             </select>
-            <Explainer>db kinds route writes to the primary and reads to replicas; others fan out evenly</Explainer>
+            {allowedKinds.length <= 1 && (
+              <Explainer>a database box's own service — its engine is fixed by the box (add a different DB node to change it)</Explainer>
+            )}
+            {allowedKinds.length > 1 && (
+              <Explainer>databases arrive as boxes from an AZ's ADD A NODE list, so a service can't be turned into one here</Explainer>
+            )}
+            <Explainer>db kinds route writes to the primary and reads to replicas; a proxy sends each request to one upstream; others call every dependency</Explainer>
           </div>
 
           <SectionHeader label="▸ WORKLOAD" />

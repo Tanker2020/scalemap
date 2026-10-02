@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
+  createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, createDbServer,
   createVpc, createSubnet, createRouteTable, createNatGateway, createSecurityGroup,
 } from './factories'
 import { getPreset } from './instanceCatalog'
@@ -393,3 +393,41 @@ describe('compileWorld — network topology compile wiring (Task 6)', () => {
     expect(path?.blockReason?.kind).toBe('firewall-deny')
   })
 })
+
+describe('compileWorld — placement-host-mismatch (appliance rule safety net)', () => {
+  // Built by hand, bypassing the store's guards — exactly what a hand-edited file can contain.
+  function world() {
+    const doc = createWorld()
+    const r = createRegion('us-east-1'); const a = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[a.id] = a
+    const vps = createServer(a.id, getPreset('vps-medium')!); doc.servers[vps.id] = vps
+    const box = createDbServer(a.id, getPreset('db-sql-small')!, 'orders-db')
+    doc.servers[box.server.id] = box.server
+    doc.blueprints[box.blueprint.id] = box.blueprint
+    doc.placements[box.placement.id] = box.placement
+    return { doc, vps, box }
+  }
+  const mismatches = (doc: WorldDoc) => compileWorld(doc).findings.filter(f => f.kind === 'placement-host-mismatch')
+
+  it('is silent for a well-formed world', () => {
+    expect(mismatches(world().doc)).toEqual([])
+  })
+
+  it('reports a database placed on a general host as an error, but still compiles the instance', () => {
+    const { doc, vps, box } = world()
+    const pl = createPlacement(box.blueprint.id, vps.id); doc.placements[pl.id] = pl
+    const f = mismatches(doc)
+    expect(f).toHaveLength(1)
+    expect(f[0]).toMatchObject({ severity: 'error', affected: [pl.id, box.blueprint.id, vps.id] })
+    expect(f[0].message).toMatch(/runs only on its own database box/)
+    expect(compileWorld(doc).instances[instanceId(pl.id, 0)]).toBeDefined()
+  })
+
+  it('reports a service placed on a database box', () => {
+    const { doc, box } = world()
+    const api = createBlueprint('api', 1); doc.blueprints[api.id] = api
+    const pl = createPlacement(api.id, box.server.id); doc.placements[pl.id] = pl
+    expect(mismatches(doc)).toHaveLength(1)
+  })
+})
+

@@ -198,6 +198,7 @@ src/
                                     # consumer reads through instead of the raw doc
     worldEngine/                  # The simulation engine — a from-scratch port (not a reuse)
                                    # of the deleted canvas app's particleEngine mechanisms
+                                   # (+ proxyRouting.ts: reverse-proxy one-of upstream split)
       index.ts                     # createWorldEngine() facade — sequences every subsystem
                                     # below into one fixed-step run; exports MAX_GLOBE_ARCS
       rng.ts, engineClock.ts, demand.ts, routingRuntime.ts, hostScheduler.ts, vpsModel.ts,
@@ -337,6 +338,24 @@ above must shed that fraction identically (`checkoutTimeoutErrorFraction`) — `
 own RAM accounting and `metrics.ts`'s published `ramMb` both read it from the SAME per-step
 `checkoutByInstance` result, never re-derived. A new `InstanceMetrics.checkoutWaitMs` (additive-
 optional) surfaces the wait itself.
+
+**Reverse-proxy blueprint kind (2026-10-01):** `BlueprintKind` `'proxy'` is a self-hosted
+reverse proxy / LB (nginx/HAProxy/Envoy) authored through the VPS door like any service. Every
+OTHER kind calls each of its dependencies with its full admitted rps; a proxy routes each request
+to exactly ONE upstream (its dependencies ARE its upstreams) — L4 by `upstreamWeights`, L7 by
+path rules + a default upstream, optionally zone-aware (`preferLocalAz`). L7 rules apply only to
+traffic arriving straight from the regional LB (route identity doesn't survive internal hops).
+`src/lib/worldEngine/proxyRouting.ts` is the ONE place the split is computed and
+`src/lib/world/proxyFindings.ts` the ONE definition of a proxy's routable upstreams — the flow
+solver, analysis rules (`proxy-single-instance`, `redundant-proxy-tier`), the Connections
+inspector, and `dock/drawers/ProxyConfigSection.tsx` all call them.
+
+**Appliance placement rule (2026-10-01):** `src/lib/world/placementRules.ts` is the ONE
+definition of which service may run on which server: a DB box (`db-sql`/`db-nosql`) runs only its
+own database of its own engine; a general host never runs a database (databases arrive only as
+boxes from an AZ's ADD A NODE palette). `spread.ts`, `world.store.ts`'s placement/kind actions,
+both mount pickers, `BlueprintModal`'s kind select, and `compileWorld`'s `placement-host-mismatch`
+error all read it — never re-implement the check.
 
 **Global blueprint library:** `panels/BlueprintsPanel.tsx` + `BlueprintModal.tsx` (world-scope
 `blueprints` tab) give `ServiceBlueprint` — always a global, reusable definition — the catalog

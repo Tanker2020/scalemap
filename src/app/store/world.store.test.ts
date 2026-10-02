@@ -1178,3 +1178,85 @@ describe('world.store — batchUpdateServers (Wave 5, Task 18)', () => {
     expect(useFileStore.getState().dirty).toBe(true)
   })
 })
+
+describe('world.store — appliance rule (placementRules.ts)', () => {
+  // One AZ with a VPS (running `api`), a SQL box and a NoSQL box — the exact probe that showed
+  // every one of these placements used to be accepted.
+  function seed() {
+    useWorldStore.getState().newWorld()
+    const s = useWorldStore.getState()
+    const regionId = s.addRegion('us-east-1')
+    const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+    const vps = useWorldStore.getState().addServer(azId, getPreset('vps-large')!)
+    const sql = useWorldStore.getState().addDbServer(azId, getPreset('db-sql-small')!, 'sql-1')
+    const nosql = useWorldStore.getState().addDbServer(azId, getPreset('db-nosql-small')!, 'nosql-1')
+    const api = useWorldStore.getState().addServiceToServer(vps, { ...defaultDraft('api'), name: 'api' })
+    return { azId, vps, sql, nosql, api }
+  }
+  const placementCount = () => Object.keys(useWorldStore.getState().doc.placements).length
+
+  it('refuses a database on a general host, anything on a db box, and SQL/NoSQL crossovers', () => {
+    const { vps, sql, nosql, api } = seed()
+    const before = placementCount()
+    expect(useWorldStore.getState().addPlacement(sql.blueprintId, vps)).toBe('')
+    expect(useWorldStore.getState().addPlacement(api.blueprintId, sql.serverId)).toBe('')
+    expect(useWorldStore.getState().addPlacement(sql.blueprintId, nosql.serverId)).toBe('')
+    expect(useWorldStore.getState().addPlacement(nosql.blueprintId, sql.serverId)).toBe('')
+    expect(placementCount()).toBe(before)
+  })
+
+  it('still allows legitimate placements', () => {
+    const { azId, vps, sql, api } = seed()
+    const vps2 = useWorldStore.getState().addServer(azId, getPreset('vps-large')!)
+    expect(useWorldStore.getState().addPlacement(api.blueprintId, vps2)).not.toBe('')
+    const sql2 = useWorldStore.getState().addServer(azId, getPreset('db-sql-small')!)
+    expect(useWorldStore.getState().addPlacement(sql.blueprintId, sql2)).not.toBe('')
+    void vps
+  })
+
+  it('refuses to move a placement onto a forbidden host', () => {
+    const { sql, api } = seed()
+    const plId = api.placementId
+    const vpsId = useWorldStore.getState().doc.placements[plId].serverId
+    useWorldStore.getState().updatePlacement(plId, { serverId: sql.serverId })
+    expect(useWorldStore.getState().doc.placements[plId].serverId).toBe(vpsId)
+    useWorldStore.getState().updatePlacement(plId, { count: 3 })
+    expect(useWorldStore.getState().doc.placements[plId].count).toBe(3)
+  })
+
+  it('refuses to author a new service onto a database box', () => {
+    const { sql } = seed()
+    const before = Object.keys(useWorldStore.getState().doc.blueprints).length
+    expect(useWorldStore.getState().addServiceToServer(sql.serverId, { ...defaultDraft('api'), name: 'x' }))
+      .toEqual({ blueprintId: '', placementId: '' })
+    expect(Object.keys(useWorldStore.getState().doc.blueprints)).toHaveLength(before)
+  })
+
+  it('drops a kind change that would retype a box\'s database or turn a service into one', () => {
+    const { sql, api } = seed()
+    useWorldStore.getState().updateBlueprint(sql.blueprintId, { kind: 'db-nosql', name: 'renamed' })
+    expect(useWorldStore.getState().doc.blueprints[sql.blueprintId]).toMatchObject({ kind: 'db-sql', name: 'renamed' })
+    useWorldStore.getState().updateBlueprint(api.blueprintId, { kind: 'db-sql', dbConfig: { engine: 'sql', storageGb: 1 } })
+    expect(useWorldStore.getState().doc.blueprints[api.blueprintId].kind).toBe('api')
+    expect(useWorldStore.getState().doc.blueprints[api.blueprintId].dbConfig).toBeNull()
+    useWorldStore.getState().updateBlueprint(api.blueprintId, { kind: 'proxy' })
+    expect(useWorldStore.getState().doc.blueprints[api.blueprintId].kind).toBe('proxy')
+  })
+
+  it('ignores an attempt to change ownership', () => {
+    const { api } = seed()
+    useWorldStore.getState().updateBlueprint(api.blueprintId, { ownerServerKind: 'db-sql' })
+    expect(useWorldStore.getState().doc.blueprints[api.blueprintId].ownerServerKind).toBeNull()
+  })
+
+  it('spread puts a NoSQL database onto a new NoSQL box, never a VPS', () => {
+    const { nosql } = seed()
+    const regionId = Object.keys(useWorldStore.getState().doc.regions)[0]
+    const azB = useWorldStore.getState().addAz(regionId, 'us-east-1b')
+    useWorldStore.getState().spreadBlueprint(nosql.blueprintId, [azB])
+    const doc = useWorldStore.getState().doc
+    const hosts = Object.values(doc.placements).filter(p => p.blueprintId === nosql.blueprintId).map(p => doc.servers[p.serverId].kind)
+    expect(hosts).toEqual(['db-nosql', 'db-nosql'])
+  })
+})
+

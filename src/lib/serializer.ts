@@ -1,6 +1,7 @@
 import type { PacketRegistry } from './nodeConfig'
 import { emptyPacketRegistry } from './nodeConfig'
 import type { WorldDoc } from './world/types'
+import { defaultProxyConfig } from './world/factories'
 
 // ─── .scalemap v3 (typed-node world model) ───────────────────────────────────
 // The v1 file-format interface and its (de)serialize functions were removed in Phase 2 Task 17
@@ -135,7 +136,10 @@ export function deserializeWorld(raw: string): ScalemapFileV3 {
   const legacyPackets = (data as { packets?: PacketRegistry }).packets
   const servers = Object.fromEntries(Object.entries(src.world.servers).map(([id, server]) =>
     [id, server.rack === undefined ? { ...server, rack: null } : server]))
-  const blueprints = Object.fromEntries(Object.entries(src.world.blueprints).map(([id, bp]) => {
+  const blueprints = Object.fromEntries(Object.entries(src.world.blueprints).map(([id, raw]) => {
+    // A hand-authored 'proxy' blueprint may omit proxyConfig — default it so the engine and the
+    // edit form always see a full config. Any other blueprint keeps its exact object reference.
+    const bp = raw.kind === 'proxy' && raw.proxyConfig == null ? { ...raw, proxyConfig: defaultProxyConfig() } : raw
     const deps = bp.dependencies ?? []
     if (!deps.some(d => d.packetTemplateId != null && d.packetMix == null)) return [id, bp]
     return [id, {

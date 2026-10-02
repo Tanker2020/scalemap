@@ -28,6 +28,8 @@ import { HardwarePlatform } from './HardwarePlatform'
 import { PacketLayer } from './PacketLayer'
 import { blockedPerSecond } from './gateStats'
 import { useFloorCamera } from '../az/useFloorCamera'
+import { placementViolation } from '../../../lib/world/placementRules'
+import { isDbServerKind } from '../../../lib/world/types'
 
 const PCB_GRID = '#101620'
 
@@ -110,7 +112,12 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
     [layout.chips],
   )
 
-  const blueprints = Object.values(doc.blueprints)
+  // Only services the appliance rule lets this server run (placementRules.ts). A database box
+  // runs only its own database, so it offers nothing to mount and the ghost chip is hidden.
+  const blueprints = server
+    ? Object.values(doc.blueprints).filter(bp => placementViolation(server, bp) === null)
+    : []
+  const isAppliance = server ? isDbServerKind(server.kind) : false
 
   return (
     <div
@@ -216,7 +223,7 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
             services within the server") — authoring only; the dock's SERVICES drawer keeps its
             own "+ mount a blueprint…" line, this is the same addPlacement dispatch surfaced on
             the board itself, in the next process-column slot. */}
-        {!running && (mountingService ? (
+        {!running && !isAppliance && (mountingService ? (
           <select
             data-no-pan aria-label="mount a blueprint" autoFocus defaultValue=""
             style={{
@@ -239,7 +246,7 @@ export function ServerBoard(props: ServerBoardProps): ReactElement {
           <button
             data-no-pan data-testid="board-add-service"
             disabled={blueprints.length === 0}
-            title={blueprints.length === 0 ? 'create a blueprint first (world scope › Blueprints)' : 'mount a blueprint on this server'}
+            title={blueprints.length === 0 ? 'no existing service can run on this server — add one from the Services drawer' : 'mount a blueprint on this server'}
             onClick={() => setMountingService(true)}
             style={{
               position: 'absolute', left: layout.ghostChip.x, top: layout.ghostChip.y,

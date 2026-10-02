@@ -8,13 +8,14 @@ import type {
   Scenario, ScenarioStep, Environment, Vpc, Subnet, RouteTable, SecurityGroup,
 } from '../../lib/world/types'
 import { planReachability, applyReachabilityPlan } from '../../lib/world/connections'
+import { canPlace, placementViolation, allowedBlueprintKinds } from '../../lib/world/placementRules'
 import { planSpread } from '../../lib/world/spread'
 import { draftWorkload, draftPorts, type ServiceDraft } from '../../lib/world/serviceDraft'
 import { getPreset } from '../../lib/world/instanceCatalog'
 import { managedDbEngine } from '../../lib/world/types'
 import { defaultDbClassId } from '../../lib/dbInstanceClasses'
 import {
-  createWorld, createRegion, createAz, createServer, createDbServer, createBlueprint, createPlacement,
+  createWorld, createRegion, createAz, createServer, createDbServer, createBlueprint, createPlacement, defaultProxyConfig,
   createPopulation, createRack, createLoadBalancer, nextWorldId, type InstancePresetLike,
   createVpc, createSubnet, createRouteTable, createInternetGateway, createNatGateway, createSecurityGroup,
 } from '../../lib/world/factories'
@@ -283,10 +284,16 @@ export const useWorldStore = create<WorldStore>((set, get) => {
     // other hosts, or edited from any surface. One mutate(): create-and-place is one action to
     // the user, and undoing it must not strand a blueprint nothing runs.
     addServiceToServer: (serverId, draft) => {
+      // The VPS door never mounts onto a database box (placementRules.ts) — refused, no records.
+      const host = get().doc.servers[serverId]
+      if (!host || placementViolation(host, { kind: draft.kind, ownerServerKind: null }) !== null) {
+        return { blueprintId: '', placementId: '' }
+      }
       const bp = createBlueprint(draft.name, Object.keys(get().doc.blueprints).length)
       bp.kind = draft.kind
       bp.workload = draft.workload ?? draftWorkload(draft.kind, draft.cost, draft.memory)
       bp.ports = draftPorts(draft)
+      if (draft.kind === 'proxy') bp.proxyConfig = defaultProxyConfig()
       const placement = createPlacement(bp.id, serverId)
 
       mutate(d => ({
@@ -359,7 +366,19 @@ export const useWorldStore = create<WorldStore>((set, get) => {
     updateBlueprint: (id, patch) => mutate(d => {
       const existing = d.blueprints[id]
       if (!existing) return d
-      return { ...d, blueprints: { ...d.blueprints, [id]: { ...existing, ...patch, id } } }
+      // Appliance rule (placementRules.ts): ownership is fixed at box creation, and a kind change
+      // that would put a database on a general host (or retype a box's own database) is dropped
+      // — along with the dbConfig that only makes sense for that kind. Other fields still apply.
+      let safe = patch
+      if ('ownerServerKind' in patch || (patch.kind !== undefined && !allowedBlueprintKinds(existing).includes(patch.kind))) {
+        const { ownerServerKind: _owner, ...rest } = patch
+        safe = rest
+        if (patch.kind !== undefined && !allowedBlueprintKinds(existing).includes(patch.kind)) {
+          const { kind: _kind, dbConfig: _db, ...kept } = rest
+          safe = kept
+        }
+      }
+      return { ...d, blueprints: { ...d.blueprints, [id]: { ...existing, ...safe, id } } }
     }),
     removeBlueprint: (id) => mutate(d => {
       const blueprints = { ...d.blueprints }
@@ -473,7 +492,10 @@ export const useWorldStore = create<WorldStore>((set, get) => {
     setNodePosition: (nodeId, pos) => mutate(d => ({ ...d, connectionLayout: { ...d.connectionLayout, [nodeId]: pos } })),
     clearConnectionLayout: () => mutate(d => ({ ...d, connectionLayout: {} })),
 
+    // Refuses (returns '') a placement the appliance rule forbids — a database on a general host,
+    // anything else on a database box, or a SQL/NoSQL engine mismatch (placementRules.ts).
     addPlacement: (blueprintId, serverId) => {
+      if (!canPlace(get().doc, blueprintId, serverId)) return ''
       const pl = createPlacement(blueprintId, serverId)
       mutate(d => ({ ...d, placements: { ...d.placements, [pl.id]: pl } }))
       return pl.id
@@ -481,6 +503,10 @@ export const useWorldStore = create<WorldStore>((set, get) => {
     updatePlacement: (id, patch) => mutate(d => {
       const existing = d.placements[id]
       if (!existing) return d
+      // Moving or re-pointing a placement re-checks the appliance rule; a forbidden move is a no-op.
+      const moved = { ...existing, ...patch }
+      if ((patch.serverId !== undefined || patch.blueprintId !== undefined)
+        && !canPlace(d, moved.blueprintId, moved.serverId)) return d
       return { ...d, placements: { ...d.placements, [id]: { ...existing, ...patch, id } } }
     }),
     removePlacement: (id) => mutate(d => {

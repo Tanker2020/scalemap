@@ -13,7 +13,7 @@
 import { useState, type CSSProperties, type ReactElement } from 'react'
 import { useWorldStore } from '../../../store/world.store'
 import {
-  defaultDraft, draftWorkload, HOSTABLE_KINDS, COST_MS, MEMORY_MB,
+  defaultDraft, draftWorkload, HOSTABLE_KINDS,
   type CostPreset, type HostableKind, type MemoryPreset, type ServiceDraft,
 } from '../../../../lib/world/serviceDraft'
 import type { WorkloadProfile } from '../../../../lib/world/types'
@@ -22,6 +22,7 @@ const KIND_LABEL: Record<HostableKind, string> = {
   api: 'API — serves requests',
   worker: 'Worker — pulls work from a queue',
   cache: 'Cache — in-memory, cheap per hit',
+  proxy: 'Reverse proxy / LB — routes each request to one upstream',
 }
 
 const COST_LABEL: Record<CostPreset, string> = { light: 'Light', medium: 'Medium', heavy: 'Heavy' }
@@ -62,6 +63,8 @@ export function AddServiceForm({ serverId, running, onDone }: AddServiceFormProp
   const [override, setOverride] = useState<WorkloadProfile | null>(null)
 
   const effectiveWorkload = override ?? draftWorkload(draft.kind, draft.cost, draft.memory)
+  // What the picked presets mean for THIS kind (a proxy's presets are far lighter than an app's).
+  const presetWorkload = draftWorkload(draft.kind, draft.cost, draft.memory)
 
   // Switching kind re-bases the whole draft (a worker has no port, a cache is memory-heavy), and
   // drops any override: the numbers you tuned were for a different shape of service.
@@ -114,6 +117,11 @@ export function AddServiceForm({ serverId, running, onDone }: AddServiceFormProp
             <option key={kind} value={kind}>{KIND_LABEL[kind]}</option>
           ))}
         </select>
+        {draft.kind === 'proxy' && (
+          <span style={{ color: 'var(--color-text-muted)' }}>
+            each request goes to ONE upstream — connect upstreams in Connections, then set weights or path rules when editing
+          </span>
+        )}
       </div>
 
       <fieldset style={{ border: 'none', margin: 0, padding: 0, ...rowGap }}>
@@ -130,7 +138,7 @@ export function AddServiceForm({ serverId, running, onDone }: AddServiceFormProp
             </label>
           ))}
         </div>
-        <span style={{ color: 'var(--color-text-muted)' }}>~{COST_MS[draft.cost]} ms CPU per request</span>
+        <span style={{ color: 'var(--color-text-muted)' }}>~{presetWorkload.cpuMsPerRequest} ms CPU per request</span>
       </fieldset>
 
       <fieldset style={{ border: 'none', margin: 0, padding: 0, ...rowGap }}>
@@ -148,7 +156,7 @@ export function AddServiceForm({ serverId, running, onDone }: AddServiceFormProp
           ))}
         </div>
         <span style={{ color: 'var(--color-text-muted)' }}>
-          + {MEMORY_MB[draft.memory].perConn} MB per connection
+          + {presetWorkload.ramPerConnMb} MB per connection
         </span>
       </fieldset>
 

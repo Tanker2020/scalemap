@@ -49,6 +49,7 @@ describe('broken-teaching (teaching world)', () => {
       'single-az-region', 'no-failover-region', 'replicas-colocated', 'deep-sync-chain',
       'unused-managed-service', 'blocked-dependency-path', 'db-port-exposed',
       'entry-unreachable', 'ram-oversubscribed', 'ttl-outlives-detection',
+      'redundant-proxy-tier', 'proxy-single-instance',
     ]) expect(ruleIds.has(expected), `expected rule ${expected}`).toBe(true)
     expect(compiled.findings.map(f => f.kind).sort()).toEqual(['blocked-path', 'stateful-without-volume'])
   })

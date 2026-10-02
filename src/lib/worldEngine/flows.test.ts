@@ -4,7 +4,7 @@ import type { FlowInput } from './flows'
 import { pathKey } from './breakers'
 import { createRng } from './rng'
 import {
-  createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
+  createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, defaultProxyConfig,
 } from '../world/factories'
 import { getPreset } from '../world/instanceCatalog'
 import { compileWorld, instanceId } from '../world/compileWorld'
@@ -1347,5 +1347,137 @@ describe('solveFlows — parked autoscale-envelope targets (FEAT-008)', () => {
     for (let i = 1; i < 4; i++) {
       expect(flows[instanceId(db.pl.id, i)]?.admittedRps ?? 0).toBe(0)
     }
+  })
+})
+
+// ─── Reverse proxy (BlueprintKind 'proxy') — one-of routing ──────────────────
+
+describe('solveFlows — reverse proxy', () => {
+  function proxyWorld() {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const azA = createAz(region.id, 'us-east-1a')
+    const azB = createAz(region.id, 'us-east-1b')
+    const sA = createServer(azA.id, getPreset('dedicated-8')!)
+    const sB = createServer(azB.id, getPreset('dedicated-8')!)
+    doc.regions[region.id] = region
+    doc.azs[azA.id] = azA; doc.azs[azB.id] = azB
+    doc.servers[sA.id] = sA; doc.servers[sB.id] = sB
+    const px = addService(doc, 'edge', sA.id, 0)
+    px.bp.kind = 'proxy'
+    px.bp.proxyConfig = defaultProxyConfig()
+    return { doc, sA, sB, px }
+  }
+  const rowsTo = (flow: { downstream: { toInstanceId?: string; rps: number; blocked: boolean }[] }, iid: string) =>
+    flow.downstream.filter(r => r.toInstanceId === iid && !r.blocked).reduce((a, r) => a + r.rps, 0)
+
+  it('routes each request to ONE upstream — two upstreams split, not duplicated', () => {
+    const { doc, sA, px } = proxyWorld()
+    const web = addService(doc, 'web', sA.id, 1)
+    const api = addService(doc, 'api', sA.id, 2)
+    px.bp.dependencies = [dep('d-web', web.bp.id), dep('d-api', api.bp.id)]
+    const { flows } = solveFlows(baseInput(doc, { [px.iid]: 100 }))
+    expect(flows[web.iid].offeredRps).toBeCloseTo(50, 9)
+    expect(flows[api.iid].offeredRps).toBeCloseTo(50, 9)
+    expect(flows[px.iid].refusedRps).toBe(0)
+  })
+
+  it('honors L4 upstream weights', () => {
+    const { doc, sA, px } = proxyWorld()
+    const blue = addService(doc, 'blue', sA.id, 1)
+    const green = addService(doc, 'green', sA.id, 2)
+    px.bp.dependencies = [dep('d-blue', blue.bp.id), dep('d-green', green.bp.id)]
+    px.bp.proxyConfig = { ...defaultProxyConfig(), upstreamWeights: { 'd-blue': 9, 'd-green': 1 } }
+    const { flows } = solveFlows(baseInput(doc, { [px.iid]: 100 }))
+    expect(flows[blue.iid].offeredRps).toBeCloseTo(90, 9)
+    expect(flows[green.iid].offeredRps).toBeCloseTo(10, 9)
+  })
+
+  it('prefers same-AZ upstream instances, and crosses AZs only when the local one is down', () => {
+    const { doc, sA, sB, px } = proxyWorld()
+    const webA = addService(doc, 'web', sA.id, 1)
+    const plB = createPlacement(webA.bp.id, sB.id); doc.placements[plB.id] = plB
+    const webB = instanceId(plB.id, 0)
+    px.bp.dependencies = [dep('d-web', webA.bp.id)]
+
+    const local = solveFlows(baseInput(doc, { [px.iid]: 100 })).flows
+    expect(rowsTo(local[px.iid], webA.iid)).toBeCloseTo(100, 9)
+    expect(rowsTo(local[px.iid], webB)).toBe(0)
+
+    const failover = solveFlows(baseInput(doc, { [px.iid]: 100 }, {
+      healthOf: (id: string): HealthState => (id === webA.iid ? 'down' : 'healthy'),
+    })).flows
+    expect(rowsTo(failover[px.iid], webB)).toBeCloseTo(100, 9)
+
+    px.bp.proxyConfig = { ...defaultProxyConfig(), preferLocalAz: false }
+    const spread = solveFlows(baseInput(doc, { [px.iid]: 100 })).flows
+    expect(rowsTo(spread[px.iid], webA.iid)).toBeCloseTo(50, 9)
+    expect(rowsTo(spread[px.iid], webB)).toBeCloseTo(50, 9)
+  })
+
+  it('L7: routes entry traffic by path and drops unmatched as structural refusal when there is no default', () => {
+    const { doc, sA, px } = proxyWorld()
+    const web = addService(doc, 'web', sA.id, 1)
+    const api = addService(doc, 'api', sA.id, 2)
+    px.bp.dependencies = [dep('d-web', web.bp.id), dep('d-api', api.bp.id)]
+    px.bp.proxyConfig = {
+      mode: 'l7', preferLocalAz: true, defaultDependencyId: 'd-web',
+      listenerRules: [{ id: 'r1', pathPattern: '/api/*', dependencyId: 'd-api' }],
+    }
+    const routed = solveFlows(baseInput(doc, { [px.iid]: 100 }, {
+      entryRouteRpsByInstance: { [px.iid]: { '/api/orders': 30, '/': 70 } },
+    })).flows
+    expect(routed[api.iid].offeredRps).toBeCloseTo(30, 9)
+    expect(routed[web.iid].offeredRps).toBeCloseTo(70, 9)
+
+    px.bp.proxyConfig = { ...px.bp.proxyConfig, defaultDependencyId: null }
+    const dropped = solveFlows(baseInput(doc, { [px.iid]: 100 }, {
+      entryRouteRpsByInstance: { [px.iid]: { '/api/orders': 30, '/': 70 } },
+    })).flows
+    expect(dropped[api.iid].offeredRps).toBeCloseTo(30, 9)
+    expect(dropped[web.iid]).toBeUndefined()
+    expect(dropped[px.iid].refusedRps).toBeCloseTo(70, 9)
+    expect(dropped[px.iid].structuralRefusedRps).toBeCloseTo(70, 9)
+  })
+
+  it('L7: traffic arriving from another service takes the default upstream', () => {
+    const { doc, sA, px } = proxyWorld()
+    const front = addService(doc, 'front', sA.id, 3)
+    const web = addService(doc, 'web', sA.id, 1)
+    const api = addService(doc, 'api', sA.id, 2)
+    front.bp.dependencies = [dep('d-px', px.bp.id)]
+    px.bp.dependencies = [dep('d-web', web.bp.id), dep('d-api', api.bp.id)]
+    px.bp.proxyConfig = {
+      mode: 'l7', preferLocalAz: true, defaultDependencyId: 'd-web',
+      listenerRules: [{ id: 'r1', pathPattern: '/api/*', dependencyId: 'd-api' }],
+    }
+    const { flows } = solveFlows(baseInput(doc, { [front.iid]: 100 }))
+    expect(flows[web.iid].offeredRps).toBeCloseTo(100, 9)
+    expect(flows[api.iid]).toBeUndefined()
+  })
+
+  it('an open breaker refuses only that upstream\'s share', () => {
+    const { doc, sA, px } = proxyWorld()
+    const web = addService(doc, 'web', sA.id, 1)
+    const api = addService(doc, 'api', sA.id, 2)
+    px.bp.dependencies = [dep('d-web', web.bp.id), dep('d-api', api.bp.id)]
+    const { flows } = solveFlows(baseInput(doc, { [px.iid]: 100 }, {
+      breakerOpen: k => k === pathKey(px.iid, 'd-api'),
+    }))
+    expect(flows[px.iid].refusedRps).toBeCloseTo(50, 9)
+    expect(flows[web.iid].offeredRps).toBeCloseTo(50, 9)
+  })
+
+  it('composes proxy latency as self time plus the weighted MEAN of its upstreams, not a sum', () => {
+    const { doc, sA, px } = proxyWorld()
+    const web = addService(doc, 'web', sA.id, 1)
+    const api = addService(doc, 'api', sA.id, 2)
+    px.bp.dependencies = [dep('d-web', web.bp.id), dep('d-api', api.bp.id)]
+    const { flows } = solveFlows(baseInput(doc, { [px.iid]: 100 }))
+    const f = flows[px.iid]
+    const webT = flows[web.iid].totalLatencyMs ?? flows[web.iid].serviceLatencyMs
+    const apiT = flows[api.iid].totalLatencyMs ?? flows[api.iid].serviceLatencyMs
+    expect(f.totalLatencyMs!).toBeLessThan(f.serviceLatencyMs + webT + apiT)
+    expect(f.totalLatencyMs!).toBeGreaterThan(f.serviceLatencyMs + Math.min(webT, apiT) - 1e-9)
   })
 })

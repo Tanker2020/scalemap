@@ -13,6 +13,9 @@ import type {
   ServiceBlueprint, ManagedService, ManagedServiceId, PlacementRole, CacheConfig,
 } from '../world/types'
 import { managedDbEngine } from '../world/types'
+import { defaultProxyConfig } from '../world/factories'
+import { proxyUpstreamIds } from '../world/proxyFindings'
+import { proxyDependencyFractions, localAzWeightOverride, type ProxyFractions } from './proxyRouting'
 import { managedCapacityRps } from '../managedCapacity'
 import { MANAGED_RESPONSE_KB } from '../cloudRegistry'
 import type { HealthState } from './types'
@@ -228,6 +231,10 @@ export interface FlowInput {
   compiled: CompiledWorld
   doc: WorldDoc
   entryDemand: Record<InstanceId, number>          // rps landed on entry instances this step (from routing)
+  // Route breakdown (route path, '' = pathless → rps) of the entry demand that landed on each L7
+  // reverse-proxy instance this step — the input to its path rules (proxyRouting.ts). Populated by
+  // index.ts ONLY for instances of an L7 'proxy' blueprint; absent ⇒ no L7 proxy entry traffic.
+  entryRouteRpsByInstance?: Record<InstanceId, Record<string, number>>
   admittedScaleByServer: Record<ServerId, number>  // from host scheduler (previous sub-step)
   latencyMultiplierByServer: Record<ServerId, number>
   // ── Queue model (audit ISSUE-013) — all three supplied together by the engine ──
@@ -535,6 +542,9 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
 
   // Candidate-path index, memoized per compiled identity (audit ISSUE-075).
   const pathsByFromDep = pathIndexFor(compiled)
+  // Proxy upstream ids per blueprint, resolved once per solve (only ever populated for 'proxy').
+  const proxyUpstreamsByBp = new Map<string, string[]>()
+  const azOfInstance = (id: InstanceId) => compiled.instances[id]?.azId
 
   const flows: Record<InstanceId, InstanceFlow> = {}
   const totals: FlowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} }
@@ -773,10 +783,34 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
     if (!bp) continue
     const byDep = pathsByFromDep.get(item.instanceId)
 
+    // Reverse proxy (BlueprintKind 'proxy'): ONE-OF routing — each dependency (upstream) gets a
+    // FRACTION of this item's admitted rps, not all of it (proxyRouting.ts). L7 path rules apply
+    // only to an item that came straight from the regional LB (parent === null), the one place a
+    // route path still exists; anything arriving from another service takes the default upstream.
+    // The unrouted remainder is a structural 503. null for every other kind ⇒ the exact pre-proxy
+    // call-per-request path below, untouched.
+    let proxyFr: ProxyFractions | null = null
+    if (bp.kind === 'proxy') {
+      let upstreams = proxyUpstreamsByBp.get(bp.id)
+      if (!upstreams) { upstreams = proxyUpstreamIds(doc.packets, bp); proxyUpstreamsByBp.set(bp.id, upstreams) }
+      proxyFr = proxyDependencyFractions(
+        bp.proxyConfig ?? defaultProxyConfig(), upstreams,
+        item.parent === null ? input.entryRouteRpsByInstance?.[item.instanceId] : undefined,
+      )
+      if (proxyFr.dropped > 0) {
+        const dropped = admitted * proxyFr.dropped
+        flow.refusedRps += dropped
+        flow.structuralRefusedRps = (flow.structuralRefusedRps ?? 0) + dropped
+      }
+    }
+    const preferLocalAz = proxyFr !== null && (bp.proxyConfig?.preferLocalAz ?? true)
+
     for (const dep of bp.dependencies) {
+      const depAdmitted = proxyFr ? admitted * (proxyFr.byDep[dep.id] ?? 0) : admitted
+      if (proxyFr && depAdmitted <= EPSILON_RPS) continue   // this upstream gets none of this item
       // Per-dependency breaker short-circuit: whole call volume refused, no rows.
       if (breakerOpen(pathKey(item.instanceId, dep.id))) {
-        flow.refusedRps += admitted
+        flow.refusedRps += depAdmitted
         continue
       }
       const candidates = byDep?.get(dep.id)
@@ -806,7 +840,12 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
       // below, so primary/replica ROUTING and managed-DB capacity can never disagree about the
       // split, and neither can disagree with what EdgeInspector displays (audit ISSUE-001).
       const depWriteFraction = input.depBytesById?.[dep.id]?.writeFraction ?? dep.writeFraction ?? 0
-      const shares = splitDependencyShares(admitted * cacheMissFraction, candidates, roleOf, targetBp, depWriteFraction, healthWeightOf)
+      // Zone-aware proxy: same-AZ upstream instances only, while any is usable. Skipped for a DB
+      // target — SQL writes must reach the primary wherever it lives.
+      const weightOf = preferLocalAz && !targetBp?.dbConfig
+        ? localAzWeightOverride(healthWeightOf, candidates, inst.azId, azOfInstance)
+        : healthWeightOf
+      const shares = splitDependencyShares(depAdmitted * cacheMissFraction, candidates, roleOf, targetBp, depWriteFraction, weightOf)
 
       // FEAT-005 (Task 11): attribute this dependency's write volume to its cluster's write rps —
       // see SolveFlowsResult.writeRpsByCluster's own comment for why the key is resolved from the
@@ -823,7 +862,7 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
           : undefined
         if (primaryInst) {
           const clusterId = `${primaryInst.blueprintId}|${primaryInst.regionId}`
-          const clusterWriteRps = admitted * cacheMissFraction * Math.min(1, Math.max(0, depWriteFraction))
+          const clusterWriteRps = depAdmitted * cacheMissFraction * Math.min(1, Math.max(0, depWriteFraction))
           writeRpsByCluster[clusterId] = (writeRpsByCluster[clusterId] ?? 0) + clusterWriteRps
         }
       }

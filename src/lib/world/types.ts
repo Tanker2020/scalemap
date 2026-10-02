@@ -275,8 +275,12 @@ export interface BlueprintDependency {
 }
 
 // What a service IS, as opposed to what it costs to run. Drives which authoring form the user
-// sees and — for the db-* kinds only — which routing semantics apply downstream.
-export type BlueprintKind = 'api' | 'worker' | 'db-sql' | 'db-nosql' | 'cache'
+// sees and — for the db-* kinds and 'proxy' — which routing semantics apply downstream.
+// 'proxy' is a self-hosted reverse proxy / load balancer (nginx, HAProxy, Envoy): unlike every
+// other kind, which calls EACH of its dependencies once per request, a proxy routes each request
+// to exactly ONE upstream (its dependencies are its upstreams). See ProxyConfig and
+// worldEngine/proxyRouting.ts.
+export type BlueprintKind = 'api' | 'worker' | 'db-sql' | 'db-nosql' | 'cache' | 'proxy'
 
 export type DbEngine = 'sql' | 'nosql'
 
@@ -312,6 +316,7 @@ export interface ServiceBlueprint {
   volumeName: string | null   // required when stateful
   dbConfig: DbConfig | null   // non-null iff kind is db-*
   cacheConfig?: CacheConfig   // cache configuration for this service
+  proxyConfig?: ProxyConfig   // meaningful only when kind === 'proxy'; serializer defaults it
   // Non-null ⇒ this blueprint is OWNED by an appliance box of that kind and was created with it;
   // the authoring UI refuses to place other services on such a box, and refuses to place this
   // blueprint on a general-purpose host. null ⇒ a free-standing service.
@@ -445,6 +450,33 @@ export interface ListenerRule {
   id: string
   pathPattern: string          // e.g. '/api/*' — glob prefix, first-match-wins (L7 only)
   targetBlueprintId: BlueprintId
+}
+
+// A self-hosted reverse proxy's routing table (BlueprintKind 'proxy'). Upstreams are the proxy
+// blueprint's own dependency edges, referenced by dependency id, so paths/firewalls/packet mixes/
+// cost all ride the existing dependency machinery. Routing is one-of: fractions across upstreams
+// sum to ≤ 1 (the remainder is a structural 503), never a full copy to every upstream.
+export interface ProxyRule {
+  id: string
+  pathPattern: string    // same glob-prefix grammar as ListenerRule (nodeConfig.routeMatchesPattern)
+  dependencyId: string   // one of the proxy blueprint's own dependencies
+}
+
+export interface ProxyConfig {
+  mode: LbMode
+  // L4: relative share per upstream (dependency id → weight). Missing ⇒ 1, so one upstream
+  // forwards everything and two split evenly; 0 drains an upstream. Ignored in L7.
+  upstreamWeights?: Record<string, number>
+  // L7: first-match over the route path of traffic the proxy receives directly from the regional
+  // LB. Route identity does not survive internal hops, so traffic arriving from another service
+  // always takes the default upstream. [] in L4.
+  listenerRules: ProxyRule[]
+  // L7: where unmatched, pathless, and internal-origin traffic goes. null ⇒ dropped (HTTP 503),
+  // counted as structural refusal — a misconfiguration, not overload.
+  defaultDependencyId: string | null
+  // Prefer upstream instances in the proxy instance's own AZ while any is healthy; cross AZs only
+  // when none is. Ignored for a DB-blueprint upstream (SQL writes must reach the primary).
+  preferLocalAz: boolean
 }
 
 export interface LoadBalancer {
@@ -631,6 +663,8 @@ export interface CompileFinding {
   kind: 'blocked-path' | 'stateful-without-volume' | 'missing-volume' | 'protocol-mismatch'
     | 'autoscale-invalid-range' | 'autoscale-count-out-of-range' | 'autoscale-invalid-target-cpu'
     | 'missing-environment'
+    | 'proxy-no-upstreams' | 'proxy-unknown-upstream' | 'proxy-event-upstream' | 'proxy-l7-no-default'
+    | 'placement-host-mismatch'
   message: string
   affected: string[]   // entity ids (instance/server/blueprint/placement ids)
 }

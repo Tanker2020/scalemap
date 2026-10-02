@@ -22,6 +22,7 @@ import { EditServiceForm } from './EditServiceForm'
 import { useWorldStore } from '../../../store/world.store'
 import { HEALTH_COLOR } from '../../server/healthColor'
 import { isDbServerKind } from '../../../../lib/world/types'
+import { placementViolation } from '../../../../lib/world/placementRules'
 import type { Placement, Server, WorldDoc, CompiledWorld, InstanceId } from '../../../../lib/world/types'
 import type { InstanceMetrics } from '../../../../lib/worldEngine/types'
 
@@ -57,7 +58,9 @@ export function ServicesDrawer({ server, doc, compiled, running, liveInstances, 
   // to author or mount another — the same rule spread's canHost() enforces on the model side.
   const isAppliance = isDbServerKind(server.kind)
   const placements = Object.values(doc.placements).filter(p => p.serverId === server.id)
-  const blueprints = Object.values(doc.blueprints)
+  // Only services the appliance rule lets this host run (placementRules.ts): never a database on
+  // a general host, never anything on a database box — so the picker can't offer a dead end.
+  const blueprints = Object.values(doc.blueprints).filter(bp => placementViolation(server, bp) === null)
 
   const step = (pl: Placement, delta: number) => {
     useWorldStore.getState().updatePlacement(pl.id, { count: Math.max(1, pl.count + delta) })
@@ -235,7 +238,7 @@ export function ServicesDrawer({ server, doc, compiled, running, liveInstances, 
         )
       })}
 
-      {mounting ? (
+      {isAppliance ? null : mounting ? (
         <select
           aria-label="mount a blueprint" autoFocus disabled={running}
           style={{

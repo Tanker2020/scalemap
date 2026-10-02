@@ -6981,3 +6981,108 @@ services on the request path (the world's zero-findings contract was satisfied s
   `api | worker | db-sql | db-nosql | cache`, so a self-hosted "lb" service is just a default-workload
   `api` that forwards via its dependency with the flow solver's health-weighted even split, no
   algorithm/L7/AZ-affinity config) and a "single-instance service on the request path" rule.
+
+## Reverse-proxy / load-balancer blueprint kind `'proxy'` (2026-10-01)
+
+Plan: `docs/superpowers/plans/2026-10-01-proxy-blueprint-kind.md`. Follows the three-tier fix
+above: a self-hosted LB used to be modellable only as a generic `api`, and the flow solver's
+call-per-request model sends a non-DB service's FULL admitted rps to EVERY dependency, so a
+"proxy" fronting two services doubled their load. `'proxy'` makes it a real reverse proxy: each
+request goes to exactly ONE upstream.
+
+- **Model (`world/types.ts`, hub).** `BlueprintKind` gains `'proxy'`; `ProxyRule`/`ProxyConfig`
+  (`mode: LbMode`, `upstreamWeights?` for L4, `listenerRules` + `defaultDependencyId` for L7,
+  `preferLocalAz`); optional `ServiceBlueprint.proxyConfig`; four new `CompileFinding` kinds.
+  A proxy's **upstreams ARE its dependency edges** (referenced by dependency id), so paths,
+  firewalls, packet mixes, wire bytes, connection profiles, NIC, and cost need no second model.
+  `factories.defaultProxyConfig()` = L4, no rules, `preferLocalAz: true`. `serializer.ts` defaults
+  a missing `proxyConfig` on a proxy blueprint and leaves every other blueprint reference-identical.
+  `.scalemap` stays v3.
+- **Single resolution points.** `worldEngine/proxyRouting.ts` (pure, rng-free):
+  `proxyDependencyFractions(cfg, upstreamIds, routeRps)` → per-upstream fractions + a `dropped`
+  503 share; `localAzWeightOverride` → zone-aware weight wrapper. `world/proxyFindings.ts`:
+  `proxyUpstreamIds` (non-event dependencies, protocol resolved exactly like `broker.ts`: mix
+  wins, authored protocol falls back) + the compile findings. The engine, analysis rules, the
+  Connections inspector and the edit form all call these — never re-derive.
+- **Engine.** `flows.ts` (hub): for a `kind === 'proxy'` instance, each dependency gets
+  `admitted × fraction` (breaker refusal, `splitDependencyShares`, and `writeRpsByCluster` all use
+  that `depAdmitted`); `dropped` feeds `refusedRps` + `structuralRefusedRps`; `preferLocalAz` wraps
+  `healthWeightOf` for non-DB targets. Non-proxy blueprints take the identical old path
+  (`depAdmitted === admitted`). L7 rules see a route breakdown ONLY for items with
+  `parent === null` (traffic straight from the regional LB) via the new optional
+  `FlowInput.entryRouteRpsByInstance`; internal-origin traffic takes the default upstream (route
+  identity doesn't survive internal hops — still parked). `index.ts` (hub): `EngineState.
+  l7ProxyBlueprintIds` (built at `start()`), and `distributeViaLb` folds per-route rps for L7 proxy
+  entry instances into `entryRouteRpsByInstance` inside its existing per-route scratch-map branch —
+  empty set ⇒ zero per-step work. Connection blending (`index.ts` row-based `addProfile`) and
+  composed latency (rps-weighted mean over rows) were already row-driven, so both became
+  proxy-correct with no change; the `DIVERGENCE GUARD` is untouched and green.
+  `worldEngine/types.ts` is NOT changed.
+- **Compile (`compileWorld.ts`, hub).** Appends `proxyFindings(doc)`: `proxy-no-upstreams`
+  (warning), `proxy-unknown-upstream` (error — a rule/default/weight naming a non-dependency),
+  `proxy-event-upstream` (error), `proxy-l7-no-default` (warning — unmatched + internal traffic
+  503s). A proxy-free doc compiles byte-identically.
+- **Analysis (`rules/structural.ts`).** `proxy-single-instance` (warning; one proxy instance in a
+  region with ≥1 upstream) and `redundant-proxy-tier` (info; a placed public proxy whose usable
+  routes all lead to ONE non-public blueprint — the regional LB already does that job).
+- **Authoring.** `serviceDraft.ts`: `HOSTABLE_KINDS` += `'proxy'` (VPS door, co-locatable — NOT an
+  appliance); `defaultDraft('proxy')` = public 443, light/small; `draftWorkload('proxy')` uses
+  `PROXY_COST_MS` {0.2, 0.5, 1.5}, `PROXY_CPU_MS_PER_KB` 0.01, `PROXY_RAM_PER_CONN_MB` 0.1, light
+  cold start. `world.store.ts addServiceToServer` stamps `defaultProxyConfig()` on a new proxy.
+  `AddServiceForm` labels the kind + a one-of hint, and its cost/RAM captions now read the
+  kind-aware `draftWorkload` instead of `COST_MS`/`MEMORY_MB` directly. New
+  `dock/drawers/ProxyConfigSection.tsx` (mounted by `EditServiceForm`; null for non-proxies): mode,
+  prefer-same-AZ, L4 weights with live % (from `proxyDependencyFractions`), L7 ordered rules
+  (route-catalog datalist) + default upstream incl. "none — 503"; edit-locked while running.
+  `BlueprintModal`: `'proxy'` kind option; preserves an existing `proxyConfig` across catalog edits.
+- **Read-only surfaces.** `ConnectionsView` EdgeInspector shows a `proxyNote` for edges leaving a
+  proxy (L4 share/weight, or L7 paths/default). `aiChat/context.ts` services digest now carries
+  `kind` and, for proxies, a `proxy` block stating the one-of semantics + rules/weights (still no
+  `LlmSettings` parameter). `llmReview.ts` unchanged — it already sends the whole `WorldDoc`.
+- **Vault.** `broken-teaching` gains a lone public L4 `edge-proxy` (on `edge-01`) in front of a
+  now-internal `web`, tripping both new rules (its ≥10-findings contract only grows). The three
+  clean worlds stay proxy-free and finding-free.
+- **Verified.** `tsc` clean; full vitest 170 files / 2334 tests green; `npm run build` OK;
+  `npm run bench` green. Live `tauri dev` smoke NOT run in this pass.
+- **Parked.** Health-check detection lag at the proxy (it reacts instantly via `healthWeightOf`),
+  least-connections/EWMA/consistent-hash selection, internal-hop L7 (route identity), per-upstream
+  retries/timeouts/rate limits, TLS passthrough vs termination modes, upstream connection reuse.
+
+## Appliance rule enforced everywhere — `world/placementRules.ts` (2026-10-01)
+
+User-reported: the "only a DB service on a DB box, SQL only on SQL" rule existed solely in
+`spread.ts`'s private `canHost()`, which only spread called. A store probe showed `addPlacement`
+accepted a SQL db on a VPS, `api` on a SQL box, SQL on a NoSQL box and vice versa, and
+`updateBlueprint` let a box's own db be retyped to the other engine — with no compile/analysis
+finding for any of it. Reachable from the UI via both unfiltered "mount a blueprint" pickers
+(`ServicesDrawer`, `ServerBoard`'s "+ service" chip) and the Blueprints catalog's kind select.
+
+- **`src/lib/world/placementRules.ts` (new, pure) — the ONE definition.**
+  `placementViolation(server, bp)` → user-facing reason or null: a db box (`db-sql`/`db-nosql`)
+  runs only a blueprint with `ownerServerKind === server.kind` AND `kind === server.kind`; a
+  general host (vps/dedicated) runs no appliance-owned blueprint and no `db-*`-kind blueprint
+  (databases only ever arrive as boxes — user decision 2026-10-01: block db kinds on a VPS).
+  `canPlace(doc, bpId, serverId)`, `allowedBlueprintKinds(bp)` (owned ⇒ locked to its box's
+  engine; free ⇒ api/worker/cache/proxy, plus its own db kind only if a legacy file already has
+  one), `isDbBlueprintKind`.
+- **Model.** `spread.ts canHost` now delegates to `placementViolation` (behavior change: a FREE
+  `db-*` blueprint no longer spreads onto a general host). `world.store.ts`: `addPlacement`
+  returns `''` and writes nothing when refused; `updatePlacement` ignores a forbidden
+  `serverId`/`blueprintId` move (other fields still apply); `addServiceToServer` refuses a db box
+  (returns empty ids); `updateBlueprint` drops a disallowed `kind` (+ its `dbConfig`) and ANY
+  `ownerServerKind` patch while applying the rest of the patch.
+- **UI.** `ServicesDrawer` and `ServerBoard` filter their mount pickers through
+  `placementViolation`; on a db box the mount control is hidden entirely (it already hid "add a
+  service"). `BlueprintModal`'s kind select lists only `allowedBlueprintKinds` and is disabled
+  (with an explainer) for a box-owned db.
+- **Compile safety net.** `compileWorld.ts` emits `placement-host-mismatch` (error, affected
+  `[placementId, blueprintId, serverId]`) for any placement violating the rule — only reachable
+  from a hand-edited/pre-rule file. The instance is STILL compiled and simulated: several engine
+  tests (`flows`/`index`/`failover`) deliberately use a free `db-sql` blueprint on a dedicated host
+  as a fixture shortcut, and dropping the instance would change behavior they don't test; the
+  error makes the problem loud instead.
+- **Tests.** New `placementRules.test.ts`; store guard suite in `world.store.test.ts` (mirrors the
+  original probe); compile finding tests; picker filtering in `ServicesDrawer.test.tsx` /
+  `ServerBoard.test.tsx`. `BlueprintModal.test.tsx` and three `ConnectionsView.test.tsx` seeds that
+  retyped a plain service to `db-sql` now use a real `addDbServer` box. Full suite 171 files /
+  2358 tests green; `tsc` clean; build OK.

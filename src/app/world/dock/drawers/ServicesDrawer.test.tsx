@@ -456,3 +456,26 @@ describe('ServicesDrawer — authoring role (Wave 5 Task 14b)', () => {
     expect(screen.getByLabelText('role')).toBeDisabled()
   })
 })
+
+describe('ServicesDrawer — appliance rule in the mount picker', () => {
+  it('a general host never offers a database box\'s service', () => {
+    const serverId = seedServer()
+    const azId = currentServer(serverId).azId
+    const apiId = useWorldStore.getState().addBlueprint('api')
+    const { blueprintId: dbId } = useWorldStore.getState().addDbServer(azId, getPreset('db-sql-small')!, 'orders-db')
+    render(<ReactiveDrawer serverId={serverId} running={false} />)
+    fireEvent.click(screen.getByTestId('mount-blueprint-ghost'))
+    const options = Array.from((screen.getByLabelText('mount a blueprint') as HTMLSelectElement).options).map(o => o.value)
+    expect(options).toContain(apiId)
+    expect(options).not.toContain(dbId)
+  })
+
+  it('a database box offers no way to mount anything', () => {
+    const serverId = seedServer()
+    const azId = currentServer(serverId).azId
+    useWorldStore.getState().addBlueprint('api')
+    const { serverId: boxId } = useWorldStore.getState().addDbServer(azId, getPreset('db-sql-small')!, 'orders-db')
+    render(<ReactiveDrawer serverId={boxId} running={false} />)
+    expect(screen.queryByTestId('mount-blueprint-ghost')).toBeNull()
+  })
+})

@@ -1,6 +1,7 @@
 // Structural analysis rules (Phase 6 D2). Pure; read doc + compiled only.
 import type { AnalysisFinding, AnalysisRule } from '../types'
 import type { ServiceInstance, WorldDoc, PlacementRole } from '../../world/types'
+import { proxyUpstreamIds } from '../../world/proxyFindings'
 
 // blueprint→blueprint edges (optionally protocol-filtered) present in the world.
 function blueprintEdges(doc: WorldDoc, protocols?: Array<'http' | 'db' | 'event' | 'stream'>): Map<string, string[]> {
@@ -450,7 +451,85 @@ const canaryFailing: AnalysisRule = {
   },
 }
 
+// Reverse proxies (BlueprintKind 'proxy'). Upstreams are resolved through the SAME helper the
+// engine uses (proxyFindings.proxyUpstreamIds), so the rules see exactly what gets routed.
+
+// One proxy instance in a region carries every request routed through it there — the textbook
+// single point of failure the old three-tier preset's lone `lb-01` was.
+const proxySingleInstance: AnalysisRule = {
+  id: 'proxy-single-instance', family: 'structural',
+  run: ({ doc, compiled }) => {
+    const out: AnalysisFinding[] = []
+    const byKey = new Map<string, ServiceInstance[]>()
+    for (const inst of Object.values(compiled.instances)) {
+      if (doc.blueprints[inst.blueprintId]?.kind !== 'proxy') continue
+      const key = `${inst.blueprintId}|${inst.regionId}`
+      byKey.set(key, [...(byKey.get(key) ?? []), inst])
+    }
+    for (const [key, insts] of byKey) {
+      if (insts.length !== 1) continue
+      const inst = insts[0]
+      const bp = doc.blueprints[inst.blueprintId]
+      if (proxyUpstreamIds(doc.packets, bp).length === 0) continue   // proxy-no-upstreams covers it
+      const rn = doc.regions[inst.regionId]?.catalogId ?? inst.regionId
+      const an = doc.azs[inst.azId]?.label ?? inst.azId
+      const sn = doc.servers[inst.serverId]?.label ?? inst.serverId
+      out.push({
+        id: `proxy-single-instance:${key}`, ruleId: 'proxy-single-instance', family: 'structural', severity: 'warning',
+        title: 'Single-instance reverse proxy',
+        why: `All traffic through ${bp.name} in ${rn} depends on one instance (${sn}, ${an}); if that server or AZ fails, every upstream behind it becomes unreachable.`,
+        fix: `Run ${bp.name} in each AZ of ${rn} (spread it from its server's Services drawer), with "prefer same-AZ upstreams" on.`,
+        affected: [bp.id, inst.serverId, inst.azId],
+      })
+    }
+    return out
+  },
+}
+
+// A public proxy whose every route leads to ONE internal service only re-does the regional LB's
+// job: the LB already spreads entry traffic across that service's instances in every AZ. The proxy
+// adds a hop and a failure point without routing anything.
+const redundantProxyTier: AnalysisRule = {
+  id: 'redundant-proxy-tier', family: 'structural',
+  run: ({ doc, compiled }) => {
+    const out: AnalysisFinding[] = []
+    const placed = new Set(Object.values(compiled.instances).map(i => i.blueprintId))
+    for (const bp of Object.values(doc.blueprints)) {
+      if (bp.kind !== 'proxy' || !placed.has(bp.id)) continue
+      if (!bp.ports.some(p => p.visibility === 'public')) continue
+      const cfg = bp.proxyConfig
+      const upstreams = new Set(proxyUpstreamIds(doc.packets, bp))
+      // The upstream edges this config can actually send traffic to.
+      const used = new Set<string>()
+      if (cfg?.mode === 'l7') {
+        for (const r of cfg.listenerRules) if (upstreams.has(r.dependencyId)) used.add(r.dependencyId)
+        if (cfg.defaultDependencyId != null && upstreams.has(cfg.defaultDependencyId)) used.add(cfg.defaultDependencyId)
+      } else {
+        for (const id of upstreams) if ((cfg?.upstreamWeights?.[id] ?? 1) > 0) used.add(id)
+      }
+      const targets = new Set<string>()
+      for (const d of bp.dependencies) {
+        if (!used.has(d.id)) continue
+        targets.add(d.target.kind === 'blueprint' ? d.target.blueprintId : `managed:${d.target.managedServiceId}`)
+      }
+      if (targets.size !== 1) continue
+      const [targetId] = [...targets]
+      const target = doc.blueprints[targetId]
+      if (!target || target.ports.some(p => p.visibility === 'public')) continue
+      out.push({
+        id: `redundant-proxy-tier:${bp.id}`, ruleId: 'redundant-proxy-tier', family: 'structural', severity: 'info',
+        title: 'Proxy duplicates the regional LB',
+        why: `${bp.name} sends every request to ${target.name}, which the regional load balancer could already balance across directly — the proxy adds a network hop and a failure point without routing anything.`,
+        fix: `Make ${target.name}'s port public and remove ${bp.name}, or give ${bp.name} L7 path rules that split traffic across several services.`,
+        affected: [bp.id, target.id],
+      })
+    }
+    return out
+  },
+}
+
 export const structuralRules: AnalysisRule[] = [
   singleAzRegion, noFailoverRegion, replicasColocated, dependencyCycle, deepSyncChain, unusedManagedService,
   danglingDependencyNoTargets, splitBrainRisk, replicationLagExceedsRpo, canaryFailing,
+  proxySingleInstance, redundantProxyTier,
 ]

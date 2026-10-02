@@ -1,19 +1,22 @@
 // The examples vault (Polish 1 D4): four complete WorldDoc builders. Pure data — imports the
-// world factories only (module-boundaries §P). Every entry's findings contract is enforced by
+// world factories (+ serviceDraft's pure workload presets) only (module-boundaries §P). Every entry's findings contract is enforced by
 // exampleWorlds.test.ts: the three clean worlds compile to ZERO compile+analysis findings; the
 // teaching world trips ≥10 analysis findings across all three families. Composition notes:
 // - Single-region worlds carry NO population: no-failover-region fires critical for any
 //   population whose region order has one entry, which would break their zero-findings contract.
 //   (Auto-baseline was removed 2026-07-15, so these worlds show no live traffic until a population
 //   is added — a deliberate trade to keep them finding-clean.)
+// - broken-teaching's `edge-proxy` is a lone public L4 proxy fronting only web — the exact shape the
+//   three-tier preset used to have — so it trips redundant-proxy-tier + proxy-single-instance.
 // - multi-region's third population is São Paulo (not Singapore): passive regions sort to the
 //   end of every routing order, so a population nearest the passive region would always trip
 //   ocean-crossing-population.
 import type { WorldDoc, Server, ServiceBlueprint, FirewallRule } from '../world/types'
 import {
   createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
-  createPopulation,
+  createPopulation, defaultProxyConfig,
 } from '../world/factories'
+import { draftWorkload } from '../world/serviceDraft'
 import { getPreset } from '../world/instanceCatalog'
 
 export interface VaultEntry {
@@ -238,8 +241,9 @@ function brokenTeaching(): WorldDoc {
   const r = region(doc, 'us-east-1')
   const aza = az(doc, r.id, 'us-east-1a')      // ONE AZ — single-az-region
 
+  const edgeS = server(doc, aza.id, 'vps-small', 'edge-01')
+  edgeS.firewall = [allowAny(443), ...edgeS.firewall]    // front door stays REACHABLE (correction #4)
   const webS = server(doc, aza.id, 'vps-medium', 'web-01')
-  webS.firewall = [allowAny(443), ...webS.firewall]      // front door stays REACHABLE (correction #4)
   const apiS = server(doc, aza.id, 'vps-medium', 'api-01')
   const dbS = server(doc, aza.id, 'vps-small', 'db-01')
   dbS.firewall = [allowAny(5432), ...dbS.firewall]       // db-port-exposed (a)
@@ -247,8 +251,15 @@ function brokenTeaching(): WorldDoc {
   cacheS.firewall = [denyAny(6379), ...cacheS.firewall]  // blocked-dependency-path
   const adminS = server(doc, aza.id, 'vps-small', 'admin-01')  // default internal-only → entry-unreachable
 
+  // A lone public L4 reverse proxy whose only upstream is web: it re-does the regional LB's job
+  // (redundant-proxy-tier) on one instance (proxy-single-instance).
+  const edge = blueprint(doc, 'edge-proxy', 2)
+  edge.kind = 'proxy'
+  edge.proxyConfig = defaultProxyConfig()
+  edge.workload = draftWorkload('proxy', 'light', 'small')
+  edge.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
   const web = blueprint(doc, 'web', 0)
-  web.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+  web.ports = [{ port: 8080, protocol: 'tcp', visibility: 'internal' }]
   const api = blueprint(doc, 'api', 1)
   api.ports = [{ port: 8080, protocol: 'tcp', visibility: 'internal' }]
   const auth = blueprint(doc, 'auth', 4)
@@ -264,6 +275,7 @@ function brokenTeaching(): WorldDoc {
   const admin = blueprint(doc, 'admin', 1)
   admin.ports = [{ port: 8443, protocol: 'tcp', visibility: 'public' }]
 
+  edge.dependencies = [dep('d-edge-web', { kind: 'blueprint', blueprintId: web.id }, 8080, 'http')]
   web.dependencies = [dep('d-web-api', { kind: 'blueprint', blueprintId: api.id }, 8080, 'http')]
   api.dependencies = [
     dep('d-api-auth', { kind: 'blueprint', blueprintId: auth.id }, 8100, 'http'),
@@ -274,6 +286,7 @@ function brokenTeaching(): WorldDoc {
   profile.dependencies = [dep('d-profile-db', { kind: 'blueprint', blueprintId: db.id }, 5432, 'db')]
   // web→api→auth→profile→db = 4 http/db hops → deep-sync-chain
 
+  place(doc, edge.id, edgeS.id)
   place(doc, web.id, webS.id)
   place(doc, api.id, apiS.id)
   place(doc, auth.id, apiS.id)
@@ -320,7 +333,7 @@ export const VAULT: VaultEntry[] = [
   {
     id: 'broken-teaching',
     name: 'Everything wrong at once',
-    blurb: 'Exposed database, single-AZ SPOF, oversubscribed RAM, TTL slower than detection. Run the analysis, then fix it.',
+    blurb: 'Exposed database, single-AZ SPOF, a redundant proxy tier, oversubscribed RAM, TTL slower than detection. Run the analysis, then fix it.',
     tags: ['teaching world', '12 findings'],
     difficulty: 'teaching',
     build: brokenTeaching,

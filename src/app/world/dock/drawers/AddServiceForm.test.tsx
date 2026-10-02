@@ -34,6 +34,19 @@ describe('AddServiceForm', () => {
 
   // A nameless service is unreadable everywhere it appears (chips, rows, the graph), so the
   // action stays inert rather than creating "Untitled".
+  it('creates a reverse proxy with a default routing config', () => {
+    const serverId = seedHost()
+    render(<AddServiceForm serverId={serverId} running={false} onDone={() => {}} />)
+    fireEvent.change(screen.getByLabelText(/service kind/i), { target: { value: 'proxy' } })
+    expect(screen.getByText(/each request goes to ONE upstream/i)).toBeInTheDocument()
+    nameIt('edge')
+    fireEvent.click(screen.getByRole('button', { name: /add service/i }))
+    const bp = Object.values(useWorldStore.getState().doc.blueprints)[0]
+    expect(bp.kind).toBe('proxy')
+    expect(bp.proxyConfig).toEqual({ mode: 'l4', listenerRules: [], defaultDependencyId: null, preferLocalAz: true })
+    expect(bp.ports).toEqual([{ port: 443, protocol: 'tcp', visibility: 'public' }])
+  })
+
   it('will not submit without a name', () => {
     const serverId = seedHost()
     render(<AddServiceForm serverId={serverId} running={false} onDone={() => {}} />)

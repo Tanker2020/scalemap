@@ -46,6 +46,24 @@ describe('buildChatDigest', () => {
     expect(parsed).toHaveProperty('limitations')
   })
 
+  it('describes a reverse proxy as one-of routing with its L7 rules, keyed by target service', () => {
+    const input = baseInput()
+    const http = (id: string, to: string) => ({ id, target: { kind: 'blueprint', blueprintId: to }, port: 8080, protocol: 'http', packetTemplateId: null })
+    ;(input.doc as unknown as { blueprints: Record<string, unknown> }).blueprints = {
+      px: {
+        id: 'px', name: 'edge', kind: 'proxy', dependencies: [http('d-web', 'web'), http('d-api', 'api')],
+        proxyConfig: { mode: 'l7', preferLocalAz: true, defaultDependencyId: 'd-web', listenerRules: [{ id: 'r', pathPattern: '/api/*', dependencyId: 'd-api' }] },
+      },
+      web: { id: 'web', name: 'web', kind: 'api', dependencies: [] },
+    }
+    const services = JSON.parse(buildChatDigest(input)).services as Record<string, unknown>[]
+    const px = services.find(x => x.id === 'px')!
+    expect(px.kind).toBe('proxy')
+    expect(px.proxy).toMatchObject({ mode: 'l7', rules: [{ path: '/api/*', upstream: 'api' }], defaultUpstream: 'web' })
+    expect(String((px.proxy as { semantics: string }).semantics)).toMatch(/exactly ONE upstream/)
+    expect(services.find(x => x.id === 'web')).not.toHaveProperty('proxy')
+  })
+
   it('includes the no-queue-depth limitation always', () => {
     const parsed = JSON.parse(buildChatDigest(baseInput()))
     expect(parsed.limitations.join(' ')).toMatch(/queue/i)

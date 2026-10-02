@@ -365,6 +365,9 @@ export interface EngineState {
   // where Array.includes' O(k) scan multiplies against the hottest loop in the engine.
   entryBlueprintIds: Set<BlueprintId>
   routePathById: Map<string, string>         // routeId → route path, for L7 listener-rule matching
+  // Blueprints of kind 'proxy' in L7 mode — the only entry instances whose per-route breakdown the
+  // flow solver needs (their path rules). Empty for nearly every world ⇒ no per-step cost.
+  l7ProxyBlueprintIds: Set<BlueprintId>
   routeBytesById: Map<string, RouteWireBytes>  // routeId → per-request wire bytes (cost + NIC)
   // routeId → connection profile (hold duration + handshake CPU), and its per-dependency sibling
   // for internal hops. Built once at start() from the frozen doc, exactly like the byte maps above.
@@ -746,6 +749,10 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     // route the demand into a per-route scratch map, then fold both rps (into `into`) and
     // byte-weighted sums (into `weightAccum`). Absent ⇒ demand routes straight into `into`, unchanged.
     weightAccum?: Record<InstanceId, EntryByteAccum>,
+    // When supplied, each L7 reverse-proxy entry instance's rps is ALSO broken down by route path
+    // ('' for the pathless default route) — the input to its path rules in the flow solver.
+    // Only folded alongside weightAccum (the per-route scratch-map branch).
+    routeAccum?: Record<InstanceId, Record<string, number>>,
   ): void => {
     const s = state!
     const lb = s.compiled.routing.lbRouting[regionId]
@@ -799,6 +806,14 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         for (const iid in target) {
           const r = (target as Record<InstanceId, number>)[iid]
           into[iid] = (into[iid] ?? 0) + r
+          if (routeAccum && s.l7ProxyBlueprintIds.size > 0) {
+            const bpId = s.compiled.instances[iid]?.blueprintId
+            if (bpId && s.l7ProxyBlueprintIds.has(bpId)) {
+              const byRoute = routeAccum[iid] ?? (routeAccum[iid] = {})
+              const key = path ?? ''
+              byRoute[key] = (byRoute[key] ?? 0) + r
+            }
+          }
           let acc = weightAccum[iid]
           if (!acc) {
             acc = {
@@ -1215,6 +1230,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     // Byte-weighted route sizes per entry instance (slice 1: packet-driven egress). Folded into
     // per-instance weighted averages after the routing loop, below.
     const entryByteAccum: Record<InstanceId, EntryByteAccum> = {}
+    // Per-route rps landed on each L7 reverse-proxy entry instance (filled by distributeViaLb only
+    // when such a proxy exists) — handed to solveFlows for the proxy's path rules.
+    const entryRouteRpsByInstance: Record<InstanceId, Record<string, number>> = {}
     // Undeliverable rps this step, keyed by the AZ that couldn't serve it (cross-zone-off
     // forfeiture, empty target group, all-down region). Folded into region health + published as
     // a metric so dropped traffic is no longer invisible.
@@ -1269,7 +1287,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         // Rows are pushed even at rps 0 (a Poisson tick can draw zero arrivals) — the routing
         // snapshot is attribution, and drain arcs / inbound lists key off row presence.
         populationRoutes.push({ populationId: pop.id, regionId, rps })
-        distributeViaLb(regionId, splitDemandByMix(rps, pop.requestMix), entryDemand, droppedByAz, entryByteAccum)
+        distributeViaLb(regionId, splitDemandByMix(rps, pop.requestMix), entryDemand, droppedByAz, entryByteAccum, entryRouteRpsByInstance)
       }
     }
     s.lastRoutingSnapshot = { populationRoutes }
@@ -1891,6 +1909,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     const { flows, totals, depthExceededInstanceIds, cycleCutEdges, writeRpsByCluster } = solveFlows({
       compiled, doc, entryDemand, admittedScaleByServer, latencyMultiplierByServer,
       extraLatencyMsByServer,
+      // Reverse-proxy L7 path rules: per-route entry rps for L7 proxy instances only (absent ⇒ {}).
+      entryRouteRpsByInstance,
       // FEAT-004 (Task 3): cache economics multiplier — see cacheMissFractionByInstance's own
       // comment just above and flows.ts's dependency loop for how it's applied.
       cacheMissFractionByInstance,
@@ -2713,6 +2733,8 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         running: true, seed: effectiveSeed, rng: createRng(effectiveSeed), clock: createClock(DEFAULT_STEP_MS), stepMs: DEFAULT_STEP_MS,
         timeScale: 1, doc, compiled, callbacks, entryBlueprintIds: new Set(entryBlueprints(doc)),
         routePathById: buildRoutePathById(doc),
+        l7ProxyBlueprintIds: new Set(Object.values(doc.blueprints)
+          .filter(bp => bp.kind === 'proxy' && bp.proxyConfig?.mode === 'l7').map(bp => bp.id)),
         routeBytesById: buildRouteBytesById(doc),
         routeConnById: buildRouteConnProfiles(doc),
         depBytesById: buildDepWireBytes(doc),

@@ -3,7 +3,7 @@
 // sent with every turn; `buildContextBlock` renders the user's opt-in attachments (full detail,
 // but still never a raw LlmSettings/API-key value and never a full instance/server map outside
 // a top-8 truncation — see the security canary tests in context.test.ts).
-import type { WorldDoc, CompiledWorld, CompileFinding } from '../world/types'
+import type { WorldDoc, CompiledWorld, CompileFinding, ServiceBlueprint } from '../world/types'
 import type { AnalysisFinding } from '../analysis/types'
 import type { MetricsBatch, EngineEvent, ReplayFrame, RenderScope } from '../worldEngine/types'
 import { dependencyIndexFor } from '../world/dependents'
@@ -57,10 +57,32 @@ function worldSummary(doc: WorldDoc): unknown {
 
 function servicesSummary(doc: WorldDoc): unknown[] {
   return Object.values(doc.blueprints).map(bp => ({
-    id: bp.id, name: bp.name,
+    id: bp.id, name: bp.name, kind: bp.kind,
     dependencies: bp.dependencies.map(d => d.target.kind === 'blueprint' ? d.target.blueprintId : d.target.managedServiceId),
     placementCount: Object.values(doc.placements).filter(p => p.blueprintId === bp.id).length,
+    // A reverse proxy's dependencies are one-of upstreams, not calls it makes on every request —
+    // say so explicitly, or the model reasons about it as fan-out like every other service.
+    ...(bp.kind === 'proxy' ? { proxy: proxyDigest(bp) } : {}),
   }))
+}
+
+function proxyDigest(bp: ServiceBlueprint): unknown {
+  const cfg = bp.proxyConfig
+  const targetOf = (depId: string): string | undefined => {
+    const d = bp.dependencies.find(x => x.id === depId)
+    return d ? (d.target.kind === 'blueprint' ? d.target.blueprintId : d.target.managedServiceId) : undefined
+  }
+  return {
+    semantics: 'reverse proxy: each request is routed to exactly ONE upstream (dependency), not all of them',
+    mode: cfg?.mode ?? 'l4',
+    preferLocalAz: cfg?.preferLocalAz ?? true,
+    ...(cfg?.mode === 'l7'
+      ? {
+          rules: cfg.listenerRules.map(r => ({ path: r.pathPattern, upstream: targetOf(r.dependencyId) })),
+          defaultUpstream: cfg.defaultDependencyId != null ? targetOf(cfg.defaultDependencyId) : null,
+        }
+      : { upstreamWeights: Object.fromEntries(bp.dependencies.map(d => [targetOf(d.id), cfg?.upstreamWeights?.[d.id] ?? 1])) }),
+  }
 }
 
 function liveStateSummary(batch: MetricsBatch | null): unknown {

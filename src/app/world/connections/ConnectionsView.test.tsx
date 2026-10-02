@@ -23,6 +23,19 @@ function seedApiDb() {
   return { apiId, dbId, dbSrv }
 }
 
+// api on a VPS + a REAL SQL database box (its own owned db-sql blueprint) — the only way a SQL
+// service exists since the appliance rule (placementRules.ts) forbids retyping a service into one.
+function seedApiSqlBox() {
+  const s = useWorldStore.getState()
+  const regionId = s.addRegion('us-east-1')
+  const azId = useWorldStore.getState().addAz(regionId, 'us-east-1a')
+  const apiSrv = useWorldStore.getState().addServer(azId, getPreset('vps-medium')!)
+  const apiId = useWorldStore.getState().addBlueprint('api')
+  useWorldStore.getState().addPlacement(apiId, apiSrv)
+  const { blueprintId: dbId } = useWorldStore.getState().addDbServer(azId, getPreset('db-sql-small')!, 'db')
+  return { apiId, dbId }
+}
+
 describe('ConnectionsView', () => {
   it('drag-connect from a service handle onto another opens a draft that dispatches connectServices', () => {
     const { apiId, dbId } = seedApiDb()
@@ -94,8 +107,7 @@ describe('ConnectionsView — EdgeInspector packet binding', () => {
   // The write-fraction control only exists when the edge points AT a db blueprint, so the
   // seed makes the target a real SQL appliance rather than the default 'api' kind.
   function seedEdge() {
-    const { apiId, dbId } = seedApiDb()
-    st().updateBlueprint(dbId, { kind: 'db-sql', dbConfig: { engine: 'sql', storageGb: 100 } })
+    const { apiId, dbId } = seedApiSqlBox()
     const depId = st().connectServices(apiId, { kind: 'blueprint', blueprintId: dbId },
       { port: 5432, protocol: 'db', autoProvision: true })
     return { apiId, dbId, depId }
@@ -160,8 +172,7 @@ describe('ConnectionsView — EdgeInspector cache-aside binding', () => {
 
   // api -> db (db-protocol edge, no cache dependency yet).
   function seedDbEdge() {
-    const { apiId, dbId } = seedApiDb()
-    st().updateBlueprint(dbId, { kind: 'db-sql', dbConfig: { engine: 'sql', storageGb: 100 } })
+    const { apiId, dbId } = seedApiSqlBox()
     const dbDepId = st().connectServices(apiId, { kind: 'blueprint', blueprintId: dbId },
       { port: 5432, protocol: 'db', autoProvision: true })
     return { apiId, dbId, dbDepId }
@@ -223,8 +234,7 @@ describe('ConnectionsView — EdgeInspector cache-aside binding', () => {
   })
 
   it('a managed-service cache target is also offered as a candidate', () => {
-    const { apiId, dbId } = seedApiDb()
-    st().updateBlueprint(dbId, { kind: 'db-sql', dbConfig: { engine: 'sql', storageGb: 100 } })
+    const { apiId, dbId } = seedApiSqlBox()
     const dbDepId = st().connectServices(apiId, { kind: 'blueprint', blueprintId: dbId },
       { port: 5432, protocol: 'db', autoProvision: true })
     const regionId = Object.keys(st().doc.regions)[0]
@@ -237,5 +247,24 @@ describe('ConnectionsView — EdgeInspector cache-aside binding', () => {
     fireEvent.click(screen.getByTestId(`conn-edge-${dbDepId}`))
     const select = screen.getByLabelText('cache-aside via') as HTMLSelectElement
     expect(Array.from(select.querySelectorAll('option')).map(o => o.value)).toContain(managedDepId)
+  })
+})
+
+describe('ConnectionsView — reverse proxy edges', () => {
+  it('the inspector says what share an L4 proxy sends down the selected edge', () => {
+    const { apiId, dbId } = seedApiDb()
+    const s = useWorldStore.getState()
+    const pxId = s.addBlueprint('edge')
+    useWorldStore.getState().updateBlueprint(pxId, {
+      kind: 'proxy',
+      proxyConfig: { mode: 'l4', upstreamWeights: { 'd-api': 3 }, listenerRules: [], defaultDependencyId: null, preferLocalAz: true },
+      dependencies: [
+        { id: 'd-api', target: { kind: 'blueprint', blueprintId: apiId }, port: 8080, protocol: 'http', packetTemplateId: null },
+        { id: 'd-db', target: { kind: 'blueprint', blueprintId: dbId }, port: 8080, protocol: 'http', packetTemplateId: null },
+      ],
+    })
+    render(<ConnectionsView open onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId('conn-edge-d-api'))
+    expect(screen.getByTestId('edge-proxy-note').textContent).toBe('proxy upstream · 75% of its traffic (L4 weight 3)')
   })
 })

@@ -13,6 +13,7 @@
 import { type CSSProperties, type ReactElement } from 'react'
 import { useWorldStore } from '../../../store/world.store'
 import type { ServiceBlueprint, WorkloadProfile } from '../../../../lib/world/types'
+import { ProxyConfigSection } from './ProxyConfigSection'
 
 const field: CSSProperties = {
   font: '10px var(--font-mono)', background: 'var(--color-node-base)',
@@ -119,6 +120,9 @@ export function EditServiceForm({ blueprintId, running, onDone }: EditServiceFor
           />
         )}
       </div>
+
+      {/* Reverse proxy only: how traffic divides among its upstreams (renders null otherwise). */}
+      <ProxyConfigSection blueprintId={blueprintId} running={running} />
 
       <button type="button" className="kit-press" style={btn} onClick={onDone}>done</button>
     </div>

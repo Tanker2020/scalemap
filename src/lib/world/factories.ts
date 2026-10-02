@@ -1,7 +1,7 @@
 import type {
   WorldDoc, Region, AvailabilityZone, Server, ServiceBlueprint, Placement,
   ServerKind, ServerSpecs, ClientPopulation, AzId, Rack, LoadBalancer, DbEngine,
-  Vpc, Subnet, RouteTable, InternetGateway, NatGateway, SecurityGroup, VpcId, SubnetId, RouteTableId, RegionId,
+  ProxyConfig, Vpc, Subnet, RouteTable, InternetGateway, NatGateway, SecurityGroup, VpcId, SubnetId, RouteTableId, RegionId,
 } from './types'
 import { RACK_CAPACITY_DEFAULT } from './rackModel'
 import { emptyPacketRegistry } from '../nodeConfig'
@@ -186,6 +186,12 @@ export function createPlacement(blueprintId: string, serverId: string): Placemen
 
 export function createPopulation(label: string, lat: number, lon: number): ClientPopulation {
   return { id: nextWorldId('pop'), label, lat, lon, peakRps: 500, diurnal: 'flat' }
+}
+
+// A self-hosted reverse proxy's starting config: L4 (every upstream weighted 1), no rules, and
+// zone-aware routing on — the nginx/Envoy behavior that makes one proxy per AZ worth running.
+export function defaultProxyConfig(): ProxyConfig {
+  return { mode: 'l4', listenerRules: [], defaultDependencyId: null, preferLocalAz: true }
 }
 
 // A regional load balancer. Defaults to an NLB (L4, cross-zone off) — the accurate NLB default,

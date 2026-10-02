@@ -5077,3 +5077,68 @@ describe('FEAT-014 (Task 9): NAT gateway byte accounting', () => {
     simB.engine.stop()
   })
 })
+
+// ─── Reverse proxy (BlueprintKind 'proxy') through the real engine ───────────
+
+describe('engine — L7 reverse proxy behind the regional LB', () => {
+  // regional L4 LB → one public L7 proxy → { api (rule /api/*), web (default) }, with a 1:3
+  // /api : / request mix. The proxy must route each class to ONE upstream by path.
+  function proxyFixture() {
+    const doc = createWorld()
+    doc.routing.policy = 'geo'
+    const r = createRegion('us-east-1')
+    const az = createAz(r.id, 'us-east-1a')
+    doc.regions[r.id] = r; doc.azs[az.id] = az
+    const s = createServer(az.id, getPreset('dedicated-8')!)
+    doc.servers[s.id] = s
+    const px = publicBlueprint('edge', 0)
+    px.kind = 'proxy'
+    const web = createBlueprint('web', 1)
+    const api = createBlueprint('api', 2)
+    const http = (id: string, to: string): BlueprintDependency =>
+      ({ id, target: { kind: 'blueprint', blueprintId: to }, port: 8080, protocol: 'http', packetTemplateId: null })
+    px.dependencies = [http('d-web', web.id), http('d-api', api.id)]
+    px.proxyConfig = {
+      mode: 'l7', preferLocalAz: true, defaultDependencyId: 'd-web',
+      listenerRules: [{ id: 'r1', pathPattern: '/api/*', dependencyId: 'd-api' }],
+    }
+    Object.assign(doc.blueprints, { [px.id]: px, [web.id]: web, [api.id]: api })
+    const plPx = createPlacement(px.id, s.id); doc.placements[plPx.id] = plPx
+    const plWeb = createPlacement(web.id, s.id); doc.placements[plWeb.id] = plWeb
+    const plApi = createPlacement(api.id, s.id); doc.placements[plApi.id] = plApi
+    const rApi = addRoute(doc.packets, { name: 'api', method: 'GET', path: '/api/data' }); doc.packets = rApi.registry
+    const rHome = addRoute(doc.packets, { name: 'home', method: 'GET', path: '/' }); doc.packets = rHome.registry
+    const pop = createPopulation('nyc', 40.7, -74.0); pop.peakRps = 200
+    pop.requestMix = [{ routeId: routeIdOf(rApi.route), weight: 1 }, { routeId: routeIdOf(rHome.route), weight: 3 }]
+    doc.populations[pop.id] = pop
+    return { doc, px, compiled: compileWorld(doc), pxInst: instanceId(plPx.id, 0), webInst: instanceId(plWeb.id, 0), apiInst: instanceId(plApi.id, 0) }
+  }
+
+  it('routes by path to one upstream each — totals equal the proxy\'s traffic, not double it', () => {
+    const f = proxyFixture()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(5)
+    const b = sim.latest()
+    const pxRps = b.instances[f.pxInst].rps
+    const webRps = b.instances[f.webInst].rps
+    const apiRps = b.instances[f.apiInst].rps
+    expect(pxRps).toBeGreaterThan(0)
+    expect(webRps / apiRps).toBeGreaterThan(2)   // ~3:1
+    expect(webRps / apiRps).toBeLessThan(4)
+    expect((webRps + apiRps) / pxRps).toBeGreaterThan(0.9)
+    expect((webRps + apiRps) / pxRps).toBeLessThan(1.1)
+    sim.engine.stop()
+  })
+
+  it('in L4 the same proxy splits by weight regardless of path', () => {
+    const f = proxyFixture()
+    f.px.proxyConfig = { mode: 'l4', preferLocalAz: true, listenerRules: [], defaultDependencyId: null }
+    const sim = drive(f.doc, compileWorld(f.doc))
+    sim.stepFor(5)
+    const b = sim.latest()
+    const ratio = b.instances[f.webInst].rps / b.instances[f.apiInst].rps
+    expect(ratio).toBeGreaterThan(0.8)
+    expect(ratio).toBeLessThan(1.25)
+    sim.engine.stop()
+  })
+})

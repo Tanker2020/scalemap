@@ -9,7 +9,7 @@ import { useWorldStore } from '../../store/world.store'
 import { useSimulationStore } from '../../store/simulation.store'
 import { useNavStore } from '../../store/nav.store'
 import {
-  createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement,
+  createWorld, createRegion, createAz, createServer, createBlueprint, createPlacement, createDbServer,
 } from '../../../lib/world/factories'
 import { getPreset } from '../../../lib/world/instanceCatalog'
 import { compileWorld } from '../../../lib/world/compileWorld'
@@ -158,7 +158,7 @@ describe('ServerBoard — "+ service" ghost chip (2026-07-12)', () => {
     const { unmount } = (() => { renderBoard(doc, server.id); return { unmount: () => {} } })()
     const ghost = screen.getByTestId('board-add-service') as HTMLButtonElement
     expect(ghost.disabled).toBe(true)
-    expect(ghost.title).toContain('create a blueprint first')
+    expect(ghost.title).toContain('no existing service can run on this server')
     unmount()
     act(() => { useSimulationStore.setState({ running: true }) })
     expect(screen.queryByTestId('board-add-service')).toBeNull()
@@ -209,5 +209,29 @@ describe('ServerBoard — parked autoscale-envelope chips (FEAT-008)', () => {
     expect(parked).toHaveLength(2)
     expect(chips.find(c => c.dataset.instance === running.id)!.dataset.parked).toBe('false')
     for (const c of parked) expect(c.textContent).toContain('parked')
+  })
+})
+
+describe('ServerBoard — appliance rule on "+ service"', () => {
+  it('offers only services this host may run, and nothing at all on a database box', () => {
+    act(() => { useSimulationStore.setState({ running: false }) })   // an earlier test leaves it running
+    let boxId = ''
+    let dbBpId = ''
+    let apiId = ''
+    const { doc, server } = seed((d, serverId) => {
+      const api = createBlueprint('api', 0); d.blueprints[api.id] = api; apiId = api.id
+      const box = createDbServer(d.servers[serverId].azId, getPreset('db-sql-small')!, 'orders-db')
+      d.servers[box.server.id] = box.server; d.blueprints[box.blueprint.id] = box.blueprint
+      d.placements[box.placement.id] = box.placement
+      boxId = box.server.id; dbBpId = box.blueprint.id
+    })
+    renderBoard(doc, server.id)
+    fireEvent.click(screen.getByTestId('board-add-service'))
+    const options = Array.from((screen.getByLabelText('mount a blueprint') as HTMLSelectElement).options).map(o => o.value)
+    expect(options).toContain(apiId)
+    expect(options).not.toContain(dbBpId)
+    document.body.innerHTML = ''
+    renderBoard(doc, boxId)
+    expect(screen.queryByTestId('board-add-service')).toBeNull()
   })
 })

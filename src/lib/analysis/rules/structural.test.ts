@@ -580,3 +580,53 @@ describe('runAnalysis ordering + id stability', () => {
     expect(a1).toEqual(a2)
   })
 })
+
+describe('structural: reverse-proxy rules', () => {
+  // regional LB → public proxy `edge` → internal `web`; caller picks how many proxy instances.
+  function proxyScenario(proxyAzs: number) {
+    const s = scenario()
+    const r = s.region('us-east-1')
+    const a1 = s.az(r.id, 'us-east-1a'); const a2 = s.az(r.id, 'us-east-1b')
+    const web = s.blueprint('web'); web.ports = [{ port: 8080, protocol: 'tcp', visibility: 'internal' }]
+    const edge = s.blueprint('edge'); edge.kind = 'proxy'
+    edge.ports = [{ port: 443, protocol: 'tcp', visibility: 'public' }]
+    edge.proxyConfig = { mode: 'l4', listenerRules: [], defaultDependencyId: null, preferLocalAz: true }
+    edge.dependencies = [dep('d-web', web.id, 'http')]
+    const sv1 = s.server(a1.id); const sv2 = s.server(a2.id)
+    s.placement(web.id, sv1.id); s.placement(web.id, sv2.id)
+    s.placement(edge.id, sv1.id)
+    if (proxyAzs > 1) s.placement(edge.id, sv2.id)
+    return { s, edge, web, sv1, a1 }
+  }
+
+  it('proxy-single-instance fires for a lone proxy instance and names its server and AZ', () => {
+    const { s, edge, sv1, a1 } = proxyScenario(1)
+    const f = ids(run(s), 'proxy-single-instance')
+    expect(f).toHaveLength(1)
+    expect(f[0].severity).toBe('warning')
+    expect(f[0].affected).toEqual([edge.id, sv1.id, a1.id])
+  })
+  it('proxy-single-instance is silent with a proxy per AZ', () => {
+    expect(ids(run(proxyScenario(2).s), 'proxy-single-instance')).toHaveLength(0)
+  })
+
+  it('redundant-proxy-tier fires when a public proxy fronts a single internal service', () => {
+    const { s, edge, web } = proxyScenario(2)
+    const f = ids(run(s), 'redundant-proxy-tier')
+    expect(f).toHaveLength(1)
+    expect(f[0].severity).toBe('info')
+    expect(f[0].affected).toEqual([edge.id, web.id])
+  })
+  it('redundant-proxy-tier is silent when the proxy really routes across services', () => {
+    const { s, edge } = proxyScenario(2)
+    const api = s.blueprint('api'); api.ports = [{ port: 8081, protocol: 'tcp', visibility: 'internal' }]
+    edge.dependencies = [...edge.dependencies, dep('d-api', api.id, 'http', 8081)]
+    edge.proxyConfig = { mode: 'l7', listenerRules: [{ id: 'r', pathPattern: '/api/*', dependencyId: 'd-api' }], defaultDependencyId: 'd-web', preferLocalAz: true }
+    expect(ids(run(s), 'redundant-proxy-tier')).toHaveLength(0)
+  })
+  it('redundant-proxy-tier treats an L7 proxy whose rules all lead to one service as redundant', () => {
+    const { s, edge } = proxyScenario(2)
+    edge.proxyConfig = { mode: 'l7', listenerRules: [{ id: 'r', pathPattern: '/api/*', dependencyId: 'd-web' }], defaultDependencyId: 'd-web', preferLocalAz: true }
+    expect(ids(run(s), 'redundant-proxy-tier')).toHaveLength(1)
+  })
+})
