@@ -7106,3 +7106,44 @@ finding for any of it. Reachable from the UI via both unfiltered "mount a bluepr
   title says "name the service first" with an inline "give the service a name to add it" line.
 - **Tests.** New `panels/BlueprintsPanel.test.tsx`; `createService` in `world.store.test.ts`; the
   name affordance in `AddServiceForm.test.tsx`. Full suite 172 files / 2364 tests green.
+
+## Header rps = client traffic from cities, not hop-inflated throughput (2026-10-02)
+
+User-reported: 500 rps from Chicago into a web → api → db world read "Handling 1,500 rps from
+1 city". `metrics.ts` rolls `AzMetrics.rps`/`RegionMetrics.rps`/`WorldMetrics.totalRps` up from
+EVERY instance, so one client request counts once per hop — correct as "work processed", wrong for
+a figure that claims to be traffic from cities.
+
+- **`app/world/ui/derived.ts` `clientIngressRps(populationRoutes, regionId?)`** (new, pure): Σ of
+  `world.populationRoutes` rps (optionally one region) — the client ingress the populations send.
+- **`dock/AtlasHeader.tsx`**: both the world headline ("Handling N rps from M cities") and the
+  region headline ("<region> · N rps") now read `clientIngressRps` instead of
+  `world.totalRps` / `regions[id].rps`.
+- **`region/SourcesColumn.tsx`**: each population's share of the internet-egress bill now divides
+  by world client ingress instead of `world.totalRps` — with an N-hop chain the old shares summed
+  to only ~1/N of the bill (its trunk total already used the population rows).
+- **Unchanged on purpose** (they mean throughput, or are engine contract): `metrics.ts` and
+  `worldEngine/types.ts` (no contract change), `signalsSeries.ts`'s `rps` series, `runSummary.ts`
+  peak rps, and the LLM review / chat replay `worldRps` — all still total processed rps.
+
+## Caller-side zone-aware routing — `ServiceBlueprint.preferLocalAz` (2026-10-02)
+
+A dependency edge splits calls evenly across ALL of the callee's healthy instances in every AZ
+(`flows.ts splitDependencyShares`) — the implicit client-side load balancing (service discovery /
+kube-proxy / sidecar) every edge carries. There was no way to keep calls in-zone except via a
+`'proxy'`'s own `preferLocalAz`. User decision (2026-10-02): put the setting on the CALLER
+(Envoy/sidecar zone-aware routing), not per edge and not on the callee.
+
+- **Model.** Optional `ServiceBlueprint.preferLocalAz?: boolean` — absent/false ⇒ the even
+  cross-AZ split (unchanged; no serializer work needed). For `kind: 'proxy'` it is ignored: the
+  proxy's `proxyConfig.preferLocalAz` IS the caller-side setting for that kind.
+- **Engine (`flows.ts`).** One caller-side flag per item: `proxyConfig.preferLocalAz` for a proxy,
+  `bp.preferLocalAz === true` otherwise, feeding the SAME `localAzWeightOverride` wrapper
+  (proxyRouting.ts) — no second implementation. Still skipped for a DB-blueprint callee (SQL
+  primary/replica routing wins). Falls back cross-AZ when no local target is usable.
+- **UI.** Checkbox "prefer same-AZ for outgoing calls" in `EditServiceForm` (non-proxy kinds;
+  writes `true`/`undefined`, never `false`) and `BlueprintModal`. `ConnectionsView`'s inspector
+  note now also says when the caller prefers same-AZ (non-DB target). `aiChat/context.ts` digest
+  carries `preferLocalAzForCalls: true` when set.
+- **Tests.** `flows.test.ts` (default even split, on ⇒ in-zone, local-down ⇒ cross-AZ, DB callee
+  ignored), `EditServiceForm`/`BlueprintModal`/`ConnectionsView` tests. 172 files / 2375 tests.

@@ -1481,3 +1481,62 @@ describe('solveFlows — reverse proxy', () => {
     expect(f.totalLatencyMs!).toBeGreaterThan(f.serviceLatencyMs + Math.min(webT, apiT) - 1e-9)
   })
 })
+
+// ─── Caller-side zone-aware routing (ServiceBlueprint.preferLocalAz) ─────────
+
+describe('solveFlows — caller preferLocalAz', () => {
+  // web in AZ-a calls api, which has one instance in AZ-a and one in AZ-b.
+  function zonedWorld() {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const azA = createAz(region.id, 'us-east-1a')
+    const azB = createAz(region.id, 'us-east-1b')
+    const sA = createServer(azA.id, getPreset('dedicated-8')!)
+    const sB = createServer(azB.id, getPreset('dedicated-8')!)
+    doc.regions[region.id] = region
+    doc.azs[azA.id] = azA; doc.azs[azB.id] = azB
+    doc.servers[sA.id] = sA; doc.servers[sB.id] = sB
+    const web = addService(doc, 'web', sA.id, 0)
+    const apiA = addService(doc, 'api', sA.id, 1)
+    const plB = createPlacement(apiA.bp.id, sB.id); doc.placements[plB.id] = plB
+    web.bp.dependencies = [dep('d-api', apiA.bp.id)]
+    return { doc, web, apiA, apiB: instanceId(plB.id, 0) }
+  }
+
+  it('default (absent) splits evenly across AZs — the unchanged client-side LB behavior', () => {
+    const { doc, web, apiA, apiB } = zonedWorld()
+    const { flows } = solveFlows(baseInput(doc, { [web.iid]: 100 }))
+    expect(flows[apiA.iid].offeredRps).toBeCloseTo(50, 9)
+    expect(flows[apiB].offeredRps).toBeCloseTo(50, 9)
+  })
+
+  it('on: keeps every call in the caller\'s AZ', () => {
+    const { doc, web, apiA, apiB } = zonedWorld()
+    web.bp.preferLocalAz = true
+    const { flows } = solveFlows(baseInput(doc, { [web.iid]: 100 }))
+    expect(flows[apiA.iid].offeredRps).toBeCloseTo(100, 9)
+    expect(flows[apiB]).toBeUndefined()
+  })
+
+  it('on: crosses AZs when the local target is down', () => {
+    const { doc, web, apiA, apiB } = zonedWorld()
+    web.bp.preferLocalAz = true
+    const { flows } = solveFlows(baseInput(doc, { [web.iid]: 100 }, {
+      healthOf: (id: string): HealthState => (id === apiA.iid ? 'down' : 'healthy'),
+    }))
+    expect(flows[apiB].offeredRps).toBeCloseTo(100, 9)
+  })
+
+  it('on: ignored for a DB callee — SQL reads/writes keep their primary/replica routing', () => {
+    const { doc, web, apiA, apiB } = zonedWorld()
+    const db = doc.blueprints[apiA.bp.id]
+    db.kind = 'db-sql'; db.dbConfig = { engine: 'sql', storageGb: 100 }
+    const plBRole = Object.values(doc.placements).find(p => instanceId(p.id, 0) === apiB)!
+    plBRole.role = 'replica'
+    web.bp.preferLocalAz = true
+    web.bp.dependencies = [{ ...dep('d-api', db.id), protocol: 'db', writeFraction: 0 }]
+    const { flows } = solveFlows(baseInput(doc, { [web.iid]: 100 }))
+    // pure reads go to the replica in AZ-b even though the caller prefers AZ-a
+    expect(flows[apiB].offeredRps).toBeCloseTo(100, 9)
+  })
+})

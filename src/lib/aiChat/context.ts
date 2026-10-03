@@ -63,6 +63,8 @@ function servicesSummary(doc: WorldDoc): unknown[] {
     // A reverse proxy's dependencies are one-of upstreams, not calls it makes on every request —
     // say so explicitly, or the model reasons about it as fan-out like every other service.
     ...(bp.kind === 'proxy' ? { proxy: proxyDigest(bp) } : {}),
+    // Caller-side zone-aware routing: its non-DB calls stay in the calling instance's AZ.
+    ...(bp.preferLocalAz ? { preferLocalAzForCalls: true } : {}),
   }))
 }
 

@@ -350,6 +350,12 @@ traffic arriving straight from the regional LB (route identity doesn't survive i
 solver, analysis rules (`proxy-single-instance`, `redundant-proxy-tier`), the Connections
 inspector, and `dock/drawers/ProxyConfigSection.tsx` all call them.
 
+**Dependency spread + caller-side zone preference (2026-10-02):** a dependency edge splits calls
+evenly across ALL of the callee's healthy instances in every AZ — implicit client-side load
+balancing, no LB entity required. A caller blueprint's optional `preferLocalAz` (a proxy uses its
+`proxyConfig.preferLocalAz` instead) keeps its non-DB calls in the calling instance's AZ while a
+local target is healthy, via the same `localAzWeightOverride`.
+
 **Appliance placement rule (2026-10-01):** `src/lib/world/placementRules.ts` is the ONE
 definition of which service may run on which server: a DB box (`db-sql`/`db-nosql`) runs only its
 own database of its own engine; a general host never runs a database (databases arrive only as

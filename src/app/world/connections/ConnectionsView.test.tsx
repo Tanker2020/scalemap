@@ -268,3 +268,16 @@ describe('ConnectionsView — reverse proxy edges', () => {
     expect(screen.getByTestId('edge-proxy-note').textContent).toBe('proxy upstream · 75% of its traffic (L4 weight 3)')
   })
 })
+
+describe('ConnectionsView — caller preferLocalAz', () => {
+  it('the inspector notes that the caller keeps calls in its own AZ', () => {
+    const { apiId, dbId } = seedApiDb()
+    useWorldStore.getState().updateBlueprint(apiId, {
+      preferLocalAz: true,
+      dependencies: [{ id: 'd-x', target: { kind: 'blueprint', blueprintId: dbId }, port: 8080, protocol: 'http', packetTemplateId: null }],
+    })
+    render(<ConnectionsView open onClose={() => {}} />)
+    fireEvent.click(screen.getByTestId('conn-edge-d-x'))
+    expect(screen.getByTestId('edge-proxy-note').textContent).toMatch(/same-AZ preferred — api calls instances in its own AZ/)
+  })
+})

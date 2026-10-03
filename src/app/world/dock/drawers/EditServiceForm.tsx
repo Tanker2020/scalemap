@@ -121,6 +121,18 @@ export function EditServiceForm({ blueprintId, running, onDone }: EditServiceFor
         )}
       </div>
 
+      {bp.kind !== 'proxy' && (
+        // Caller-side zone-aware routing (a proxy has its own, in ProxyConfigSection below).
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-muted)', ...rowGap }}
+          title="calls this service makes go to instances in its own AZ while one is healthy (not for database targets); off = spread evenly across AZs">
+          <input
+            type="checkbox" aria-label="prefer same-AZ for outgoing calls" checked={bp.preferLocalAz === true} disabled={running}
+            onChange={e => upd({ preferLocalAz: e.target.checked ? true : undefined })}
+          />
+          prefer same-AZ for outgoing calls
+        </label>
+      )}
+
       {/* Reverse proxy only: how traffic divides among its upstreams (renders null otherwise). */}
       <ProxyConfigSection blueprintId={blueprintId} running={running} />
 

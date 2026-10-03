@@ -81,6 +81,7 @@ interface BlueprintDraft {
   visibility: 'public' | 'internal'
   stateful: boolean
   volumeName: string
+  preferLocalAz: boolean
   storageGb: string
   dbEngine: DbEngine
   // FEAT-005 (Task 15): replication/RPO fields, additive on DbConfig (Task 9). replicationMode
@@ -127,6 +128,7 @@ function draftFrom(bp: ServiceBlueprint): BlueprintDraft {
     visibility: port?.visibility ?? 'internal',
     stateful: bp.stateful,
     volumeName: bp.volumeName ?? '',
+    preferLocalAz: bp.preferLocalAz === true,
     storageGb: String(bp.dbConfig?.storageGb ?? 100),
     dbEngine: bp.dbConfig?.engine ?? 'sql',
     replicationMode: bp.dbConfig?.replicationMode ?? 'async',
@@ -196,6 +198,8 @@ export function BlueprintModal({ open, editingId, onClose, onOpenConnections }: 
       ports: [{ port: portNum, protocol: 'tcp', visibility: draft.visibility }],
       stateful: draft.stateful,
       volumeName: draft.stateful ? (draft.volumeName.trim() || `${draft.name.trim()}-data`) : null,
+      // Off ⇒ undefined (the documented absent default), never a written `false`.
+      preferLocalAz: draft.preferLocalAz && draft.kind !== 'proxy' ? true : undefined,
       dbConfig: isDbKind(draft.kind)
         ? {
           engine: draft.kind === 'db-sql' ? 'sql' : 'nosql',
@@ -317,6 +321,18 @@ export function BlueprintModal({ open, editingId, onClose, onOpenConnections }: 
             </div>
           </div>
           <Explainer>public makes this an ingress target — clients can reach it through the region LB</Explainer>
+
+          {draft.kind !== 'proxy' && (
+            // A proxy sets this in its routing config (server dock → edit service).
+            <div style={rowGap}>
+              <label htmlFor="bp-prefer-local" style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-secondary)' }}>
+                <input id="bp-prefer-local" type="checkbox" aria-label="prefer same-AZ for outgoing calls"
+                  checked={draft.preferLocalAz} onChange={e => set({ preferLocalAz: e.target.checked })} />
+                prefer same-AZ for outgoing calls
+              </label>
+              <Explainer>calls this service makes go to instances in its own AZ while one is healthy (not for database targets); off = spread evenly across AZs</Explainer>
+            </div>
+          )}
 
           <SectionHeader label="▸ STATE" />
           <div style={rowGap}>

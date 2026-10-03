@@ -246,7 +246,11 @@ export function ConnectionsView({ open, onClose }: ConnectionsViewProps): ReactE
               .filter((x): x is { depId: string; label: string } => x != null)
             return (
               <EdgeInspector edge={selectedEdge} nodeById={nodeById}
-                proxyNote={fromBp && currentDep ? proxyUpstreamNote(doc.packets, fromBp, currentDep.id) : null}
+                proxyNote={fromBp && currentDep
+                  ? proxyUpstreamNote(doc.packets, fromBp, currentDep.id)
+                    // Caller-side zone preference — not applied to a DB target (see flows.ts).
+                    ?? (fromBp.preferLocalAz && !targetBp?.dbConfig ? `same-AZ preferred — ${fromBp.name} calls instances in its own AZ while one is healthy` : null)
+                  : null}
                 dbTarget={dbTarget}
                 dbEngine={targetBp?.dbConfig?.engine ?? null}
                 writeFraction={currentDep?.writeFraction ?? 0}

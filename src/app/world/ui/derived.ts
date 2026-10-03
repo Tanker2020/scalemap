@@ -116,3 +116,19 @@ export function placementEgressUsdPerHr(rps: number): number {
   const gbMonth = (bytesPerSec * SECONDS_PER_MONTH) / BYTES_PER_GB
   return egressMonthlyCost('aws', gbMonth) / HOURS_PER_MONTH
 }
+
+// Client traffic actually arriving from the authored populations (cities) — Σ of the batch's
+// per-population routes, optionally for one region. NOT `world.totalRps` / `regions[id].rps`:
+// those sum every INSTANCE's rps, so one client request is counted once per hop it crosses (a
+// web → api → db chain turns 500 rps from a city into ~1,500 "processed"). Use this wherever a
+// figure claims to be traffic "from cities"/ingress, or as the denominator of a per-population share.
+export function clientIngressRps(
+  populationRoutes: readonly { regionId: string; rps: number }[] | undefined,
+  regionId?: string,
+): number {
+  let total = 0
+  for (const r of populationRoutes ?? []) {
+    if (regionId === undefined || r.regionId === regionId) total += Math.max(0, r.rps)
+  }
+  return total
+}

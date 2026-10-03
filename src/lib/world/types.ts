@@ -317,6 +317,13 @@ export interface ServiceBlueprint {
   dbConfig: DbConfig | null   // non-null iff kind is db-*
   cacheConfig?: CacheConfig   // cache configuration for this service
   proxyConfig?: ProxyConfig   // meaningful only when kind === 'proxy'; serializer defaults it
+  // CALLER-side zone-aware routing for this service's outgoing dependency calls: while the callee
+  // has a usable instance in the CALLING instance's own AZ, send only there; cross AZs only when
+  // none is (Envoy/sidecar zone-aware routing). Absent/false ⇒ the even split across every AZ
+  // (client-side load balancing — the pre-flag behavior). Ignored for DB-blueprint callees (SQL
+  // writes must reach the primary) and for kind 'proxy', whose proxyConfig.preferLocalAz is the
+  // same setting.
+  preferLocalAz?: boolean
   // Non-null ⇒ this blueprint is OWNED by an appliance box of that kind and was created with it;
   // the authoring UI refuses to place other services on such a box, and refuses to place this
   // blueprint on a general-purpose host. null ⇒ a free-standing service.

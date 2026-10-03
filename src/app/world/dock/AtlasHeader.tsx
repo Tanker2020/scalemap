@@ -16,7 +16,7 @@ import { useSimulationStore } from '../../store/simulation.store'
 import { useCompiledWorld } from '../useCompiledWorld'
 import { useRollingNumber } from '../ui/motion'
 import { REGION_GEO } from '../../../lib/world/regionGeo'
-import { populationLanding } from '../ui/derived'
+import { populationLanding, clientIngressRps } from '../ui/derived'
 import { pinColor } from '../globe/RegionPins'
 import { scopedCost } from './scopeData'
 import type { WorldDoc } from '../../../lib/world/types'
@@ -165,7 +165,9 @@ export function AtlasHeader({ regionId }: AtlasHeaderProps): ReactElement {
   // sums server hourlyUsd regardless of `world` being null, only egress needs live bytes).
   // `useRollingNumber` is called exactly once, unconditionally, with whichever raw figure is
   // scope-relevant — a hook must never be called from inside an `if regionId === null` branch.
-  const rawRps = regionId === null ? (displayBatch?.world.totalRps ?? 0) : (displayBatch?.regions[regionId]?.rps ?? 0)
+  // CLIENT traffic from the cities, not total processed work: world.totalRps / regions[].rps sum
+  // every instance hop, so a web → api → db chain would read ~3× what the populations send.
+  const rawRps = clientIngressRps(displayBatch?.world.populationRoutes, regionId ?? undefined)
   const rolledRps = useRollingNumber(rawRps)
 
   let headline: ReactNode

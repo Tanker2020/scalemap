@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  clientIngressRps,
   rpsPerCore, hostRpsCapacity, ramAtConnections, residentRamDemandMb, ttlLagHint, diskIoWord,
   healthWord, populationLanding, frontlineCapacityRps, placementEgressUsdPerHr,
   PLACEMENT_BYTES_EACH_WAY,
@@ -169,3 +170,20 @@ describe('placementEgressUsdPerHr', () => {
     expect(at2000 / at1000).toBeCloseTo(2, 1)
   })
 })
+
+describe('clientIngressRps', () => {
+  const routes = [
+    { regionId: 'use1', rps: 500 },
+    { regionId: 'use1', rps: 100 },
+    { regionId: 'euw1', rps: 300 },
+  ]
+  it('sums the routed population traffic, world-wide or for one region', () => {
+    expect(clientIngressRps(routes)).toBe(900)
+    expect(clientIngressRps(routes, 'use1')).toBe(600)
+    expect(clientIngressRps(routes, 'aps1')).toBe(0)
+  })
+  it('is 0 with no batch', () => {
+    expect(clientIngressRps(undefined)).toBe(0)
+  })
+})
+

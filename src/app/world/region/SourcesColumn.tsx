@@ -16,6 +16,7 @@ import { useSimulationStore, selectLive } from '../../store/simulation.store'
 import { HOURS_PER_MONTH } from '../../../lib/costModelV2'
 import { REGION_GEO, greatCircleKm } from '../../../lib/world/regionGeo'
 import { dotStreamParams } from './regionData'
+import { clientIngressRps } from '../ui/derived'
 import type { RegionId } from '../../../lib/world/types'
 import './r3Styles'
 
@@ -49,7 +50,10 @@ export function SourcesColumn({ regionId, internetEgressMonthlyUsd }: SourcesCol
 
   const region = doc.regions[regionId]
   const geo = region ? REGION_GEO[region.catalogId] : undefined
-  const worldTotalRps = batch?.world.totalRps ?? 0
+  // Denominator for each population's share of the internet-egress bill: ALL client traffic world-
+  // wide (Σ population routes). Not world.totalRps, which counts every internal hop and so made
+  // the shares sum to only ~1/hops of the bill.
+  const worldTotalRps = clientIngressRps(batch?.world.populationRoutes)
 
   const rows: SourceRow[] = (batch?.world.populationRoutes ?? [])
     .filter(r => r.regionId === regionId && r.rps > 0)
@@ -57,7 +61,7 @@ export function SourcesColumn({ regionId, internetEgressMonthlyUsd }: SourcesCol
       const pop = doc.populations[r.populationId]
       const latencyMs = pop && geo ? Math.round(greatCircleKm(pop.lat, pop.lon, geo.lat, geo.lon) / POP_LATENCY_KM_PER_MS) : null
       // Schematic proportional attribution of the world's simulated internet-egress bill by
-      // this population's live share of world rps — a documented judgment call (no per-population
+      // this population's live share of world CLIENT rps — a documented judgment call (no per-population
       // byte-rate metric exists to attribute exactly), same "schematic estimate" spirit as
       // RegionView.tsx's ROW_HEIGHT_ESTIMATE.
       const egressUsdPerHr = worldTotalRps > 0 ? (internetEgressMonthlyUsd / HOURS_PER_MONTH) * (r.rps / worldTotalRps) : 0

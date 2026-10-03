@@ -180,4 +180,17 @@ describe('BlueprintModal', () => {
     expect(screen.getByText('Save')).toBeDisabled()
     expect(screen.getByText('Cancel')).not.toBeDisabled()
   })
+
+  it('authors caller-side same-AZ preference, writing nothing when off', () => {
+    const id = seedBlueprint()
+    const { unmount } = render(<BlueprintModal open={true} editingId={id} onClose={() => {}} onOpenConnections={() => {}} />)
+    fireEvent.click(screen.getByLabelText('prefer same-AZ for outgoing calls'))
+    fireEvent.click(screen.getByText('Save'))
+    expect(bp(id).preferLocalAz).toBe(true)
+    unmount()
+    render(<BlueprintModal open={true} editingId={id} onClose={() => {}} onOpenConnections={() => {}} />)
+    fireEvent.click(screen.getByLabelText('prefer same-AZ for outgoing calls'))
+    fireEvent.click(screen.getByText('Save'))
+    expect(bp(id).preferLocalAz).toBeUndefined()
+  })
 })

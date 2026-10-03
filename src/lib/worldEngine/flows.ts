@@ -803,7 +803,9 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
         flow.structuralRefusedRps = (flow.structuralRefusedRps ?? 0) + dropped
       }
     }
-    const preferLocalAz = proxyFr !== null && (bp.proxyConfig?.preferLocalAz ?? true)
+    // Caller-side zone-aware routing: a proxy's own routing config, else the blueprint's flag
+    // (absent ⇒ off ⇒ the even cross-AZ split, unchanged).
+    const preferLocalAz = proxyFr !== null ? (bp.proxyConfig?.preferLocalAz ?? true) : bp.preferLocalAz === true
 
     for (const dep of bp.dependencies) {
       const depAdmitted = proxyFr ? admitted * (proxyFr.byDep[dep.id] ?? 0) : admitted
@@ -840,8 +842,8 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
       // below, so primary/replica ROUTING and managed-DB capacity can never disagree about the
       // split, and neither can disagree with what EdgeInspector displays (audit ISSUE-001).
       const depWriteFraction = input.depBytesById?.[dep.id]?.writeFraction ?? dep.writeFraction ?? 0
-      // Zone-aware proxy: same-AZ upstream instances only, while any is usable. Skipped for a DB
-      // target — SQL writes must reach the primary wherever it lives.
+      // Zone-aware caller (proxy or preferLocalAz blueprint): same-AZ target instances only, while
+      // any is usable. Skipped for a DB target — SQL writes must reach the primary wherever it lives.
       const weightOf = preferLocalAz && !targetBp?.dbConfig
         ? localAzWeightOverride(healthWeightOf, candidates, inst.azId, azOfInstance)
         : healthWeightOf

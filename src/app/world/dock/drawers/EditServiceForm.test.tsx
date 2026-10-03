@@ -17,6 +17,23 @@ function seedService() {
 }
 
 describe('EditServiceForm', () => {
+  it('toggles caller-side same-AZ preference (absent when off)', () => {
+    const bpId = seedService()
+    render(<EditServiceForm blueprintId={bpId} running={false} onDone={() => {}} />)
+    fireEvent.click(screen.getByLabelText('prefer same-AZ for outgoing calls'))
+    expect(useWorldStore.getState().doc.blueprints[bpId].preferLocalAz).toBe(true)
+    fireEvent.click(screen.getByLabelText('prefer same-AZ for outgoing calls'))
+    expect(useWorldStore.getState().doc.blueprints[bpId].preferLocalAz).toBeUndefined()
+  })
+
+  it('a proxy has no generic toggle — its routing config owns the setting', () => {
+    const bpId = seedService()
+    useWorldStore.getState().updateBlueprint(bpId, { kind: 'proxy' })
+    render(<EditServiceForm blueprintId={bpId} running={false} onDone={() => {}} />)
+    expect(screen.queryByLabelText('prefer same-AZ for outgoing calls')).toBeNull()
+    expect(screen.getByLabelText('prefer same-AZ upstreams')).toBeInTheDocument()
+  })
+
   it('renames the service via updateBlueprint', () => {
     const bpId = seedService()
     render(<EditServiceForm blueprintId={bpId} running={false} onDone={() => {}} />)

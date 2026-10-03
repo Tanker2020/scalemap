@@ -158,12 +158,15 @@ describe('AtlasHeader — world scope (regionId=null)', () => {
 
   it('headline while running shows the handling posture with a price-colored $/hr', () => {
     seedRegion('us-east-1', 'us-east-1a')
-    const batch = runningBatch({ world: { totalRps: 250, errorRate: 0, populationRoutes: [], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 } })
+    // 250 rps arrives from the city; a 3-hop chain makes the instances process 750 in total. The
+    // headline reports the CLIENT traffic, never the hop-inflated total.
+    const batch = runningBatch({ world: { totalRps: 750, errorRate: 0, populationRoutes: [{ populationId: 'p1', regionId: 'r1', rps: 250 }], crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0 } })
     useSimulationStore.setState({ latestBatch: batch })
     render(<AtlasHeader regionId={null} />)
     const headline = screen.getByTestId('atlas-headline')
     expect(headline).toHaveTextContent(/Handling/)
     expect(headline).toHaveTextContent('250 rps')
+    expect(headline).not.toHaveTextContent('750 rps')
     const price = within(headline).getByText('$0.04/hr')
     expect(price).toHaveStyle({ color: 'var(--color-price)' })
   })
@@ -245,6 +248,22 @@ describe('AtlasHeader — region scope', () => {
     expect(headline).toHaveTextContent('us-east-1')
     expect(headline).toHaveTextContent('0 rps')
     expect(within(headline).getByText('$0.04/hr')).toHaveStyle({ color: 'var(--color-price)' })
+  })
+
+  it('the scoped rps is the client traffic routed to THIS region, not its hop-inflated total', () => {
+    const r1 = seedRegion('us-east-1', 'us-east-1a')
+    const batch = runningBatch({
+      regions: { [r1]: { regionId: r1, rps: 1500, errorRate: 0, p50Ms: 5, p90Ms: 6, healthScore: 100, health: 'healthy', inboundByPopulation: [] } },
+      world: {
+        totalRps: 1500, errorRate: 0, crossAzBytesPerSec: 0, crossRegionBytesPerSec: 0, internetEgressBytesPerSec: 0,
+        populationRoutes: [{ populationId: 'chi', regionId: r1, rps: 500 }, { populationId: 'lon', regionId: 'other', rps: 300 }],
+      },
+    })
+    useSimulationStore.setState({ latestBatch: batch })
+    render(<AtlasHeader regionId={r1} />)
+    const headline = screen.getByTestId('atlas-headline')
+    expect(headline).toHaveTextContent('500 rps')
+    expect(headline).not.toHaveTextContent('1,500 rps')
   })
 
   it('rings this region\'s dot (and no other) with the hud accent stroke', () => {
