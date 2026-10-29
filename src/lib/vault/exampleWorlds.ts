@@ -92,21 +92,7 @@ function threeTier(): WorldDoc {
   place(doc, db.id, dbR.id, 'replica')
   // No populations: a single-region world's only population would trip no-failover-region. Shows
   // no live traffic until a population is added (auto-baseline removed 2026-07-15).
-
-  // FEAT-003 Task 20 example scenario: "creeping memory leak" — a bad deploy on api-01 leaks
-  // memory, which by the time it's noticed has tipped into outright request errors (a single
-  // `activeFaults` slot per entity means the second inject-fault REPLACES the first, matching how
-  // an on-call engineer would actually see it: "leak" escalates into "erroring"), then rolled
-  // back. Demonstrates a fault changing kind mid-run and clearing — the kind of scripted, timed
-  // cascade a scenario timeline exists to reproduce deterministically.
-  doc.scenario = {
-    id: 'scn-memory-leak', label: 'Creeping memory leak — api-01', seed: 7, durationMs: 150000,
-    steps: [
-      { atMs: 5000, action: { type: 'inject-fault', scope: 'server', id: api1.id, spec: { kind: 'memory-leak', mbPerMinute: 600 } }, note: 'api-01 starts leaking memory after a bad deploy' },
-      { atMs: 60000, action: { type: 'inject-fault', scope: 'server', id: api1.id, spec: { kind: 'error-inject', errorFraction: 0.15 } }, note: 'heap pressure has tipped requests into errors' },
-      { atMs: 110000, action: { type: 'clear-fault', scope: 'server', id: api1.id }, note: 'rollback deployed — the fault clears' },
-    ],
-  }
+  // Deliberately ships with NO scenario (2026-10-05) — the starter world opens clean.
   return doc
 }
 

@@ -58,12 +58,18 @@ export function resolveRegion(
   policy: RoutingConfig,
   simMs: number,
   rng: Rng,
+  // Fail-open (Route 53 semantics): when EVERY candidate fails its health check, DNS answers with
+  // all of them rather than none — a lone overloaded region keeps receiving traffic and serves what
+  // it can instead of black-holing 100% of it. `isHardDown` names the regions that are genuinely
+  // out (manual/fault outage); only those stay excluded. Optional: absent ⇒ no fail-open (null).
+  isHardDown?: (id: RegionId) => boolean,
 ): RegionId | null {
   const cached = state.popCache.get(popId)
   if (cached && simMs < cached.expiresAtMs) return cached.regionId
 
   // "healthy" candidate == not down (see SKELETON CONCERNS #2): degraded regions still serve.
-  const candidates = orderedRegions.filter(id => healthOf(id) !== 'down')
+  let candidates = orderedRegions.filter(id => healthOf(id) !== 'down')
+  if (candidates.length === 0 && isHardDown) candidates = orderedRegions.filter(id => !isHardDown(id))
   if (candidates.length === 0) return null
 
   const chosen = policy.policy === 'weighted' ? pickWeighted(candidates, policy.weights, rng) : candidates[0]
@@ -103,7 +109,12 @@ export function runHealthChecks(
     }
     const due = counter.lastCheckMs === null || simMs - counter.lastCheckMs >= config.healthCheckIntervalMs
     if (due) {
-      if (health === 'healthy') {
+      // A probe PASSES unless the scope is down. A degraded scope (slow, CPU-saturated, erroring a
+      // minority of requests) still answers its health check — a real LB check passes on any
+      // timely 200. Counting 'degraded' as a failure made every server at/over 100% CPU fail its
+      // checks within threshold × interval and then never recover while load stayed high (the
+      // 2026-10-03 three-tier @5000 rps report: both AZs + the region stuck "down" forever).
+      if (health !== 'down') {
         counter.consecutiveSuccesses += 1
         if (counter.consecutiveSuccesses >= healthyThreshold) counter.consecutiveFailures = 0
       } else {
@@ -154,6 +165,23 @@ export interface DistributeInput {
   // canary classification and promotion state can never disagree.
   roleOf?: (id: InstanceId) => PlacementRole
   canaryWeightOf?: (id: InstanceId) => number | undefined
+  // Fail-open (AWS ALB/NLB semantics): when NO target in the group passes the observed health
+  // filter above, the LB routes to every target that isn't genuinely out instead of dropping the
+  // whole group. These are the PHYSICAL-availability views (manual/fault outages, OOM restarts,
+  // parked slots); the distribution then reruns with them. Optional: absent ⇒ no fail-open.
+  failOpen?: { healthOfScope: (id: string) => HealthState; healthOfInstance: (id: InstanceId) => HealthState }
+}
+
+// True when at least one instance of the target group sits in a not-down AZ and is itself
+// not down — i.e. the observed-health routing below has somewhere to send traffic.
+function hasRoutableTarget(input: DistributeInput): boolean {
+  for (const azId of azSplit(input.regionAzSpread, input.healthOfScope)) {
+    const byBp = input.azBlueprintTargets[azId] ?? {}
+    for (const bpId of input.targetBlueprintIds) {
+      if ((byBp[bpId] ?? []).some(iid => input.healthOfInstance(iid) !== 'down')) return true
+    }
+  }
+  return false
 }
 
 // Distributes `rps` across a target group per the regional LB's cross-zone setting. This is the
@@ -260,6 +288,10 @@ export function distributeToTargets(input: DistributeInput): void {
   }
 
   if (targetBlueprintIds.length === 0) { drop(null, rps); return }
+  if (input.failOpen && !hasRoutableTarget(input)) {
+    distributeToTargets({ ...input, ...input.failOpen, failOpen: undefined })
+    return
+  }
   const healthyAzs = azSplit(regionAzSpread, healthOfScope)
   if (healthyAzs.length === 0) { drop(null, rps); return }
 

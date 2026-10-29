@@ -725,6 +725,59 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     return s.instanceHealth.get(iid) ?? 'healthy'
   }
 
+  // PHYSICAL availability (capacity), vs healthOfInstance's OBSERVED health above. Only a real
+  // outage takes capacity away: an OOM restart, or a manual/fault 'down' on the instance's server,
+  // AZ or region. Observed health (error rate / CPU pressure / failed health checks) is a
+  // monitoring + routing signal — an overloaded box that fails its health check still has every
+  // core it had a moment ago. Feeding observed health into capacity made overload self-reinforcing
+  // and let one hot tier throttle (or, via a failed region health check, zero out) every healthy
+  // instance sharing its AZ/region.
+  const capacityHealthOfInstance = (iid: InstanceId): HealthState => {
+    const s = state!
+    if (s.oomRestartAt.has(iid)) return 'down'
+    const inst = s.compiled.instances[iid]
+    if (inst && (hasOutage(s.failover, 'server', inst.serverId) || hasOutage(s.failover, 'az', inst.azId)
+      || hasOutage(s.failover, 'region', inst.regionId))) return 'down'
+    return s.instanceHealth.get(iid) ?? 'healthy'
+  }
+
+  // Fail-open predicates for routing (DNS + regional LB): a scope is "hard down" only when a
+  // manual/fault outage took it out — never because its health check failed under load.
+  // A region whose regional LB has entry instances authored but EVERY one of them is physically out
+  // (server/AZ outage, OOM restart) can't answer a single request — the Route 53 "evaluate target
+  // health" case: an ALB with zero healthy targets fails its alias health check. Without this, an
+  // all-AZs-down region kept probing healthy (its traffic is DROPPED at the LB, so its servers
+  // see no errors) and DNS never failed its populations over (2026-10-05 two-region report). A
+  // region with no entry instances at all is NOT counted — that's a config gap, not an outage.
+  const regionEntryOut = (regionId: string): boolean => {
+    const s = state!
+    const lb = s.compiled.routing.lbRouting[regionId]
+    if (!lb) return false
+    const targetBps = new Set([...lb.defaultTargetBlueprintIds, ...lb.rules.map(r => r.targetBlueprintId)])
+    let anyEntry = false
+    for (const azId of s.compiled.routing.regionAzSpread[regionId] ?? []) {
+      const byBp = s.compiled.routing.azBlueprintTargets[azId] ?? {}
+      for (const bpId of targetBps) {
+        for (const iid of byBp[bpId] ?? []) {
+          anyEntry = true
+          if (capacityHealthOfInstance(iid) !== 'down') return false
+        }
+      }
+    }
+    return anyEntry
+  }
+  const regionHardDown = (id: string): boolean => hasOutage(state!.failover, 'region', id) || regionEntryOut(id)
+  // The health DNS resolution sees for a region: its failover health, OR down when it has no entry
+  // instance left to answer (regionEntryOut). Deliberately NOT folded into the region's failover
+  // health — that cascades onto every instance in the region (healthOfInstance = worst scope) and
+  // would mark healthy-but-starved backends 'down' (ISSUE-014's starved-vs-idle contract).
+  const dnsHealthOfRegion = (id: string): HealthState => (regionEntryOut(id) ? 'down' : healthOfScope(id))
+  const azHardDownHealth = (id: string): HealthState => (hasOutage(state!.failover, 'az', id) ? 'down' : 'healthy')
+  // Same predicate for metrics publication: an AZ/region whose health checks failed but which is
+  // NOT genuinely out and is still serving (fail-open) publishes 'degraded' + healthCheckFailing,
+  // never 'down' — "down" in every view means "not serving".
+  const scopeHardDown = (scope: 'az' | 'region', id: string): boolean => hasOutage(state!.failover, scope, id)
+
   // metrics.ts's MetricsState.lastHealth is looked up generically for instance AND
   // server/az/region scope ids (buildBatch calls it for all four). Dispatch to the right
   // resolver by id kind so server/az/region health (manual outages, hysteresis) actually
@@ -766,9 +819,13 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     // module-scope healthOfInstance itself) so failover/breaker/metrics health reporting is
     // untouched -- runningSet/draining has no bearing on whether an instance IS healthy, only on
     // whether it's currently eligible to receive NEW work.
+    const parkedOrDraining = (iid: InstanceId): boolean =>
+      s.autoscaledInstanceIds.has(iid) && (!s.runningSet(iid) || s.drainUntilByInstance.has(iid))
     const routingHealthOfInstance = (iid: InstanceId): HealthState =>
-      (s.autoscaledInstanceIds.has(iid) && (!s.runningSet(iid) || s.drainUntilByInstance.has(iid)))
-        ? 'down' : healthOfInstance(iid)
+      parkedOrDraining(iid) ? 'down' : healthOfInstance(iid)
+    // Fail-open views (see DistributeInput.failOpen): physical availability only.
+    const failOpenHealthOfInstance = (iid: InstanceId): HealthState =>
+      parkedOrDraining(iid) ? 'down' : capacityHealthOfInstance(iid)
     // Canary routing (Task 13): consult the SAME effectiveRoleResolver failover's promotion logic
     // uses (s.roleResolver, refreshed above step 3 every step) — never a second, independent role
     // check — so canary classification and promotion state can never disagree.
@@ -790,6 +847,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         azBlueprintTargets: s.compiled.routing.azBlueprintTargets,
         healthOfScope,
         healthOfInstance: routingHealthOfInstance,
+        failOpen: { healthOfScope: azHardDownHealth, healthOfInstance: failOpenHealthOfInstance },
         cursors: s.routing,
         into: target,
         droppedByAz,
@@ -1237,6 +1295,11 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     // forfeiture, empty target group, all-down region). Folded into region health + published as
     // a metric so dropped traffic is no longer invisible.
     const droppedByAz: Record<AzId, number> = {}
+    // Demand cut at the edge by Mechanism B admission control (keyed by region), and demand with no
+    // region to go to at all (every candidate genuinely down). Both were previously multiplied/
+    // skipped away without a trace — now published so every lost request is countable.
+    const shedByRegion: Record<RegionId, number> = {}
+    let unroutedRps = 0
     // Weighted policy (audit ISSUE-021): compiled regionProportions splits each population's
     // demand ~70/30 across regions like Route 53 weighted records (a population is MANY clients,
     // each resolving independently — no single-region winner, no TTL cliff). Down regions drop
@@ -1249,19 +1312,19 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       let region: RegionId | null
       let shares: { regionId: RegionId; fraction: number }[] | null = null
       if (proportions) {
-        const healthy = order.filter(id => (proportions[id] ?? 0) > 0 && healthOfScope(id) !== 'down')
+        const healthy = order.filter(id => (proportions[id] ?? 0) > 0 && dnsHealthOfRegion(id) !== 'down')
         const total = healthy.reduce((sum, id) => sum + (proportions[id] ?? 0), 0)
         if (healthy.length > 0 && total > 0) {
           shares = healthy.map(id => ({ regionId: id, fraction: (proportions[id] ?? 0) / total }))
           // "Primary" for failover events / drain arcs: the highest-share healthy region.
           region = shares.reduce((best, e) => (e.fraction > best.fraction ? e : best)).regionId
         } else {
-          region = resolveRegion(s.routing, pop.id, order, healthOfScope, doc.routing, simMs, s.rng)
+          region = resolveRegion(s.routing, pop.id, order, dnsHealthOfRegion, doc.routing, simMs, s.rng, regionHardDown)
         }
       } else {
-        region = resolveRegion(s.routing, pop.id, order, healthOfScope, doc.routing, simMs, s.rng)
+        region = resolveRegion(s.routing, pop.id, order, dnsHealthOfRegion, doc.routing, simMs, s.rng, regionHardDown)
       }
-      if (!region) continue
+      if (!region) { unroutedRps += demandByPop[pop.id]; continue }
       if (prevRegion && prevRegion !== region) {
         emit('ttl_lag_expired', 'info', `${pop.label} DNS re-resolved ${prevRegion} → ${region}`, [pop.id, prevRegion, region], simMs)
         emit('failover_started', 'warning', `${pop.label} failing over ${prevRegion} → ${region}`, [pop.id, prevRegion, region], simMs)
@@ -1284,6 +1347,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
         // state input at all). Absent overload (the common case) this is a no-op multiply by 1.
         const shed = s.regionShedFraction.get(regionId) ?? 0
         const rps = demandByPop[pop.id] * fraction * (1 - shed)
+        if (shed > 0) shedByRegion[regionId] = (shedByRegion[regionId] ?? 0) + demandByPop[pop.id] * fraction * shed
         // Rows are pushed even at rps 0 (a Poisson tick can draw zero arrivals) — the routing
         // snapshot is attribution, and drain arcs / inbound lists key off row presence.
         populationRoutes.push({ populationId: pop.id, regionId, rps })
@@ -1930,7 +1994,7 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // Packet library: per-dependency wire bytes for internal hops, so cross-AZ/cross-region
       // egress (and the managed-DB write fraction) respond to what the edge actually carries.
       depBytesById: s.depBytesById,
-      breakerOpen, healthOf: healthOfInstance, roleOf, rng: s.rng,
+      breakerOpen, healthOf: healthOfInstance, capacityHealthOf: capacityHealthOfInstance, roleOf, rng: s.rng,
       // Manual managed-service outages (node-model Phase 5.2): a downed managed service fails every
       // call to it. Read straight from the manual-outage set — managed ids aren't in the per-step
       // health recompute, so healthByScope would go stale on restore.
@@ -2221,7 +2285,9 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
       // health here — that state cascades onto every instance in the region (healthOfInstance =
       // worst scope) and would wrongly fail/throttle healthy backends when the LB config drops
       // traffic elsewhere. Dropped is surfaced in the region's DISPLAYED error/health instead
-      // (metrics.ts buildBatch), which the routing/cascade path never reads.
+      // (metrics.ts buildBatch), which the routing/cascade path never reads. (A region with no
+      // physically-available entry instance is excluded at DNS resolution instead — see
+      // dnsHealthOfRegion — for the same reason: it must not cascade onto healthy backends.)
       applyHealth('region', region.id, { errorRate: offered > MIN_HEALTH_SIGNAL_RPS ? errors / offered : 0, cpuPressure: cpu, checkFailed: checkFailedById.get(region.id) ?? false, manualDown: hasOutage(s.failover, 'region', region.id) }, simMs)
     }
     // Failback BEFORE promotion (audit ISSUE-007): a recovered authored primary reclaims its role
@@ -2332,7 +2398,27 @@ export function createWorldEngine(seed = 0x9e3779b9): WorldEngineApi & {
     }
 
     // ── 10. metrics accumulate ──
-    accumulateStep(s.metrics, flows, hostResults, vpsPublish, nicByServer, healthOfAny, simMs, managedDbRt, droppedByAz, topicRt)
+    // Requests that reached an instance and failed THERE this step (queue overflow / timeout /
+    // breaker / refused downstream call), keyed by the instance's AZ. Each failure is counted once,
+    // at the hop where it happened — disjoint from droppedByAz (never reached an instance).
+    const rejectedByAz: Record<AzId, number> = {}
+    for (const f of Object.values(flows)) {
+      const lost = f.errorRps + f.refusedRps
+      if (lost <= 0) continue
+      const azId = compiled.instances[f.instanceId]?.azId
+      if (azId) rejectedByAz[azId] = (rejectedByAz[azId] ?? 0) + lost
+    }
+    // Client traffic the regional LB actually delivered into each AZ this step (Σ entry demand on
+    // the AZ's instances) — what "rps in" means at AZ scope. AzMetrics.rps instead sums EVERY
+    // instance's throughput (entry + internal hops), ~N× the ingress for an N-tier chain.
+    const ingressByAz: Record<AzId, number> = {}
+    for (const iid in entryDemand) {
+      const rps = entryDemand[iid]
+      const azId = rps > 0 ? compiled.instances[iid]?.azId : undefined
+      if (azId) ingressByAz[azId] = (ingressByAz[azId] ?? 0) + rps
+    }
+    accumulateStep(s.metrics, flows, hostResults, vpsPublish, nicByServer, healthOfAny, simMs, managedDbRt, droppedByAz, topicRt,
+      { rejectedByAz, shedByRegion, unroutedRps, ingressByAz, stepSec, hardDown: scopeHardDown })
     // NIC settlement (audit ISSUE-002) — AFTER accumulate (which reads the per-step byte
     // counters settleNic resets). The result gates next step's admits/latency, one-step lag.
     for (const server of Object.values(doc.servers)) {

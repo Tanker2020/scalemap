@@ -170,14 +170,14 @@ describe('TrafficPanel — routing', () => {
   })
 
   it('ttl hint appears when TTL outlives detection and clears otherwise', () => {
-    useWorldStore.getState().updateRouting({ dnsTtlSec: 5, healthCheckIntervalMs: 12000, healthCheckFailureThreshold: 3 })
+    useWorldStore.getState().updateRouting({ dnsTtlSec: 60, healthCheckIntervalMs: 10000, healthCheckFailureThreshold: 3 })
     render(<TrafficPanel placeMode={false} onTogglePlaceMode={noop} selectedPopulationId={null} />)
-    expect(screen.getByText(/ttl 5s < detection 36s/)).toBeInTheDocument()
+    expect(screen.getByText(/ttl 60s > detection 35s/)).toBeInTheDocument()
     const ttl = screen.getByLabelText('dnsTtlSec')
-    fireEvent.change(ttl, { target: { value: '60' } })
+    fireEvent.change(ttl, { target: { value: '5' } })
     fireEvent.blur(ttl)
-    expect(useWorldStore.getState().doc.routing.dnsTtlSec).toBe(60)
-    expect(screen.queryByText(/< detection/)).not.toBeInTheDocument()
+    expect(useWorldStore.getState().doc.routing.dnsTtlSec).toBe(5)
+    expect(screen.queryByText(/> detection/)).not.toBeInTheDocument()   // short TTL is healthy
   })
 })
 

@@ -82,6 +82,8 @@ export function AzRow({
   const residentInstances = instancesByAzFor(compiled).get(azId) ?? []
   const instanceCount = residentInstances.length
   const metrics = batch?.azs[azId] ?? null
+  const rejectedRps = metrics?.rejectedRps ?? 0
+  const lostTotal = metrics?.lostTotal ?? 0
   const isDown = metrics?.health === 'down'
   const dbByServerId = useMemo(() => new Map(dbEndpoints.map(e => [e.serverId, e.role])), [dbEndpoints])
 
@@ -151,10 +153,26 @@ export function AzRow({
         </span>
         <span style={{ color: isDown ? 'var(--color-danger)' : 'var(--r3-hud)', fontSize: 10.5, fontVariantNumeric: 'tabular-nums' }}>
           {isDown ? (isManuallyDown ? 'outage (manual)' : 'outage') : `◂ ${inboundRps.toFixed(0)} rps`}
-          {/* Undeliverable inbound routed here (cross-zone-off forfeiture etc.) — no target
-              instance in this AZ, so a real NLB fails those connections. */}
-          {!isDown && droppedRps >= 0.5 && (
-            <span style={{ color: 'var(--color-danger)' }}> · {droppedRps.toFixed(0)} dropped</span>
+          {/* Lost requests: undeliverable inbound routed here (cross-zone-off forfeiture etc.) PLUS
+              requests that reached this AZ's services and were rejected (over capacity, timed out,
+              refused downstream). The rate is this second's; the total is cumulative for the run,
+              so a flickering per-second number can't hide how much has been lost overall. */}
+          {!isDown && droppedRps + rejectedRps >= 0.5 && (
+            <span style={{ color: 'var(--color-danger)' }} title="requests per second lost in this zone: never delivered, or rejected by an overloaded service">
+              {' · '}{(droppedRps + rejectedRps).toFixed(0)}/s dropped
+            </span>
+          )}
+          {/* Fail-open: every target is failing its health checks, so the LB keeps routing here
+              anyway — still serving, NOT an outage (the engine publishes 'degraded' + this flag). */}
+          {!isDown && metrics?.healthCheckFailing && (
+            <span style={{ color: 'var(--color-warning)' }} title="this zone is failing its health checks, but nothing healthier is available, so the load balancer keeps sending traffic here and it keeps serving what it can">
+              {' · '}failing health checks, still serving
+            </span>
+          )}
+          {lostTotal >= 1 && (
+            <span style={{ color: 'var(--color-danger)' }} title="requests lost in this zone since the simulation started">
+              {' · '}{Math.round(lostTotal).toLocaleString('en-US')} lost total
+            </span>
           )}
         </span>
         <span style={{ color: 'var(--color-text-muted)', fontSize: 9.5 }}>

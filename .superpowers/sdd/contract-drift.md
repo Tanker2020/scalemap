@@ -619,3 +619,21 @@ with this task's changes `git stash`ed — statistically identical, both comfort
 existing 3.9–7.5ms machine-load variance this file's own header documents; the 4ms soft-budget
 warning fires in both cases (ambient machine load on this box, not a regression) and the 8ms
 hard-fail assertion passes in both.
+
+## 2026-10-03 — lost-request accounting (additive-optional)
+
+`worldEngine/types.ts`: `AzMetrics.rejectedRps?`, `AzMetrics.lostTotal?`, `RegionMetrics.shedRps?`,
+`RegionMetrics.lostTotal?`, `WorldMetrics.unroutedRps?`, `WorldMetrics.lostTotal?` — all optional,
+read as `?? 0`; `buildBatch` always populates them. `rejectedRps`/`shedRps`/`unroutedRps` are EMA'd
+rps like `droppedRps`; the `lostTotal` fields are cumulative request counts since `start()`
+(integrated per step in `accumulateStep` via its new optional trailing `loss` param, unsmoothed,
+never reset per window). Non-type engine-internal changes in the same commit (no contract impact):
+`FlowInput.capacityHealthOf?` (flows.ts), `resolveRegion(..., isHardDown?)` and
+`DistributeInput.failOpen?` (routingRuntime.ts). Rationale + behavior: docs/module-boundaries.md
+"Overload fails honestly" (2026-10-03).
+Follow-up (same day, additive-optional): `AzMetrics.ingressRps?` (client traffic the regional LB
+delivered into the AZ, rps EMA — read as `ingressRps ?? rps`), `AzMetrics.healthCheckFailing?` and
+`RegionMetrics.healthCheckFailing?` (present/true when health checks fail but the scope is not
+hard-down and still serving; `health` is then published `'degraded'`, never the check-driven
+`'down'`). Semantics change worth noting for consumers: a published `'down'` AZ/region now always
+means "not serving".

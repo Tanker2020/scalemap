@@ -25,6 +25,9 @@ import type {
 } from '../world/types'
 
 const EMA_ALPHA = 0.3
+// Below this published throughput a scope is not meaningfully serving — a health-check-failed
+// scope under it reads 'down' (pulled from rotation / dead), above it 'degraded' (fail-open).
+const MIN_SERVING_RPS = 0.5
 const HEALTH_FACTOR: Record<HealthState, number> = { healthy: 1, degraded: 0.6, down: 0.15 }
 
 // What the facade publishes per server per step from T5's stepVps result (steady fields only).
@@ -79,6 +82,22 @@ export interface MetricsState {
   // window ÷ droppedSteps = mean dropped rps, EMA'd into AzMetrics.droppedRps at buildBatch.
   droppedWindow: Map<AzId, number>
   droppedSteps: number
+  // Lost-request accounting (see accumulateStep's `loss`): per-step RATES summed over the window
+  // (÷ droppedSteps = mean rps, EMA'd at buildBatch), plus CUMULATIVE request counts since the run
+  // started (rate × stepSec per step, never smoothed and never reset by buildBatch) — the
+  // per-second gauges move with each window; the totals answer "how many have we lost".
+  rejectedWindow: Map<AzId, number>
+  // Client ingress the regional LB delivered into each AZ (rps summed per step), → AzMetrics.ingressRps.
+  ingressWindow: Map<AzId, number>
+  // Latest step's "genuinely out" predicate for AZ/region scopes (manual/fault outage) — same
+  // side-channel pattern as lastHealth. Absent ⇒ nothing is hard-down-aware (published health is
+  // the raw failover health, the pre-2026-10-03 behavior).
+  lastHardDown?: (scope: 'az' | 'region', id: string) => boolean
+  shedWindow: Map<RegionId, number>
+  unroutedWindow: number
+  lostTotalByAz: Map<AzId, number>
+  shedTotalByRegion: Map<RegionId, number>
+  unroutedTotal: number
   // FEAT-005 (Task 12): rps-weighted accumulator for InstanceMetrics.staleReadFraction, keyed by
   // the TARGET (replica) instance id — built from the SAME per-row `staleReadFraction` `flows.ts`
   // attached to a DownstreamFlow row (never re-derived from raw lag/writeRps here). Every caller's
@@ -110,6 +129,13 @@ export function createMetricsState(): MetricsState {
     latencyHistory: new Map(),
     droppedWindow: new Map(),
     droppedSteps: 0,
+    rejectedWindow: new Map(),
+    ingressWindow: new Map(),
+    shedWindow: new Map(),
+    unroutedWindow: 0,
+    lostTotalByAz: new Map(),
+    shedTotalByRegion: new Map(),
+    unroutedTotal: 0,
     staleReadWindow: new Map(),
     published: new Map(),
     lastHost: {},
@@ -136,13 +162,45 @@ export function accumulateStep(
   // This step's event-broker runtime (audit ISSUE-002). Optional: absent ⇒ `topics` stays empty,
   // so existing callers/tests are unchanged.
   topicRt?: TopicRuntime,
+  // This step's remaining lost-request rates (all rps): requests that failed AT an instance, by
+  // the instance's AZ; demand shed at a region's edge by admission control; demand with no region
+  // to route to. `stepSec` integrates every loss (incl. droppedByAz) into the cumulative totals.
+  // Optional: absent ⇒ these gauges/totals stay 0, so existing callers/tests are unchanged.
+  // `ingressByAz` (client traffic the LB delivered into each AZ) and `hardDown` (manual/fault
+  // outage predicate) ride along for publication only — neither is a loss.
+  loss?: {
+    rejectedByAz: Record<AzId, number>; shedByRegion: Record<RegionId, number>; unroutedRps: number; stepSec: number
+    ingressByAz?: Record<AzId, number>; hardDown?: (scope: 'az' | 'region', id: string) => boolean
+  },
 ): void {
   state.lastTopicRuntime = topicRt ?? {}
   // Per-step drop RATES accumulate into the window; droppedSteps is the divisor for the mean.
   state.droppedSteps++
+  const stepSec = loss?.stepSec ?? 0
+  const addTotal = (azId: AzId, rps: number): void => {
+    if (stepSec > 0) state.lostTotalByAz.set(azId, (state.lostTotalByAz.get(azId) ?? 0) + rps * stepSec)
+  }
   if (droppedByAz) {
     for (const [azId, rps] of Object.entries(droppedByAz)) {
-      if (rps > 0) state.droppedWindow.set(azId, (state.droppedWindow.get(azId) ?? 0) + rps)
+      if (rps > 0) { state.droppedWindow.set(azId, (state.droppedWindow.get(azId) ?? 0) + rps); addTotal(azId, rps) }
+    }
+  }
+  if (loss) {
+    state.lastHardDown = loss.hardDown
+    for (const [azId, rps] of Object.entries(loss.ingressByAz ?? {})) {
+      if (rps > 0) state.ingressWindow.set(azId, (state.ingressWindow.get(azId) ?? 0) + rps)
+    }
+    for (const [azId, rps] of Object.entries(loss.rejectedByAz)) {
+      if (rps > 0) { state.rejectedWindow.set(azId, (state.rejectedWindow.get(azId) ?? 0) + rps); addTotal(azId, rps) }
+    }
+    for (const [regionId, rps] of Object.entries(loss.shedByRegion)) {
+      if (rps <= 0) continue
+      state.shedWindow.set(regionId, (state.shedWindow.get(regionId) ?? 0) + rps)
+      state.shedTotalByRegion.set(regionId, (state.shedTotalByRegion.get(regionId) ?? 0) + rps * stepSec)
+    }
+    if (loss.unroutedRps > 0) {
+      state.unroutedWindow += loss.unroutedRps
+      state.unroutedTotal += loss.unroutedRps * stepSec
     }
   }
   // Managed-service received traffic THIS step, summed across every caller's downstream rows
@@ -542,10 +600,20 @@ export function buildBatch(
       ? inAz.reduce((s, i) => s + instances[i.id].p90Ms * (instances[i.id].rps || 1), 0) /
         Math.max(1, inAz.reduce((s, i) => s + (instances[i.id].rps || 1), 0))
       : 0
-    const health = state.lastHealth(az.id)
+    // Failed health checks drive ROUTING (the LB pulls a failing AZ, or fails open when every AZ
+    // fails); they do not take hardware away. An AZ whose checks failed but which is not genuinely
+    // out and is still serving publishes 'degraded' + healthCheckFailing — 'down' means not serving.
+    const failoverHealth = state.lastHealth(az.id)
+    const healthCheckFailing = failoverHealth === 'down' && !!state.lastHardDown && !state.lastHardDown('az', az.id)
+      && rps >= MIN_SERVING_RPS
+    const health: HealthState = healthCheckFailing ? 'degraded' : failoverHealth
+    const ingressRps = ema(state, `az:${az.id}:ingress`,
+      (state.ingressWindow.get(az.id) ?? 0) / Math.max(1, state.droppedSteps))
     // Mean undeliverable rps for this AZ (cross-zone-off forfeiture etc.), EMA'd like rps.
     const droppedRps = ema(state, `az:${az.id}:dropped`,
       (state.droppedWindow.get(az.id) ?? 0) / Math.max(1, state.droppedSteps))
+    const rejectedRps = ema(state, `az:${az.id}:rejected`,
+      (state.rejectedWindow.get(az.id) ?? 0) / Math.max(1, state.droppedSteps))
     azs[az.id] = {
       azId: az.id,
       rps,
@@ -557,6 +625,10 @@ export function buildBatch(
       serverCount: Object.values(doc.servers).filter(s => s.azId === az.id).length,
       instanceCount: inAz.length,
       droppedRps,
+      rejectedRps,
+      lostTotal: state.lostTotalByAz.get(az.id) ?? 0,
+      ...(state.lastHardDown ? { ingressRps } : {}),
+      ...(healthCheckFailing ? { healthCheckFailing } : {}),
     }
   }
 
@@ -578,9 +650,16 @@ export function buildBatch(
     // state machine (index.ts step 9) or routing, so it can't cascade onto or throttle healthy
     // instances. The failover health is the floor: display only ever downgrades from it.
     const droppedRps = inRegion.reduce((s, a) => s + (a.droppedRps ?? 0), 0)
-    const inbound = rps + droppedRps
-    const errorRate = inbound > 0 ? (servedErrorRate * rps + droppedRps) / inbound : 0
-    const failoverHealth = state.lastHealth(region.id)
+    // Edge-shed demand never reached the LB, but each shed request is a failed client request —
+    // folded into the displayed (never the failover) error rate exactly like dropped.
+    const shedRps = ema(state, `r:${region.id}:shed`, (state.shedWindow.get(region.id) ?? 0) / Math.max(1, state.droppedSteps))
+    const inbound = rps + droppedRps + shedRps
+    const errorRate = inbound > 0 ? (servedErrorRate * rps + droppedRps + shedRps) / inbound : 0
+    // Same fail-open publication rule as the AZ loop above.
+    const rawFailoverHealth = state.lastHealth(region.id)
+    const healthCheckFailing = rawFailoverHealth === 'down' && !!state.lastHardDown && !state.lastHardDown('region', region.id)
+      && rps >= MIN_SERVING_RPS
+    const failoverHealth: HealthState = healthCheckFailing ? 'degraded' : rawFailoverHealth
     const banded: HealthState = errorRate >= 0.5 ? 'down' : errorRate >= 0.1 ? 'degraded' : 'healthy'
     const health: HealthState =
       HEALTH_FACTOR[banded] < HEALTH_FACTOR[failoverHealth] ? banded : failoverHealth
@@ -596,6 +675,9 @@ export function buildBatch(
         .filter(r => r.regionId === region.id)
         .map(r => ({ populationId: r.populationId, rps: r.rps })),
       droppedRps,
+      shedRps,
+      lostTotal: inRegion.reduce((s, a) => s + (a.lostTotal ?? 0), 0) + (state.shedTotalByRegion.get(region.id) ?? 0),
+      ...(healthCheckFailing ? { healthCheckFailing } : {}),
     }
   }
 
@@ -668,6 +750,8 @@ export function buildBatch(
     crossAzBytesPerSec: ema(state, 'w:xaz', totals.crossAzBytes),
     crossRegionBytesPerSec: ema(state, 'w:xregion', totals.crossRegionBytes),
     internetEgressBytesPerSec: ema(state, 'w:inet', totals.internetBytes),
+    unroutedRps: ema(state, 'w:unrouted', state.unroutedWindow / Math.max(1, state.droppedSteps)),
+    lostTotal: Object.values(regions).reduce((s, r) => s + (r.lostTotal ?? 0), 0) + state.unroutedTotal,
     ...(Object.keys(natGatewayBytesPerSec).length > 0 ? { natGatewayBytesPerSec } : {}),
   }
 
@@ -702,6 +786,10 @@ export function buildBatch(
   state.serverWindow.clear()
   state.managedWindow.clear()
   state.droppedWindow.clear()
+  state.rejectedWindow.clear()
+  state.ingressWindow.clear()
+  state.shedWindow.clear()
+  state.unroutedWindow = 0
   state.droppedSteps = 0
   state.staleReadWindow.clear()
 

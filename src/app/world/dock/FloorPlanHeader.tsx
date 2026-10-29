@@ -117,7 +117,9 @@ export function FloorPlanHeader({ azId }: FloorPlanHeaderProps): ReactElement {
   // FEAT-008 (Task 21, controller-added gap): fold runningByPlacement in — see scopedCost's own comment.
   const worldForCost = batch?.world ? { ...batch.world, runningByPlacement: batch.runningByPlacement } : null
   const cost = scopedCost({ kind: 'az', regionId: az?.regionId ?? '', azId }, doc, worldForCost, batch?.managedServices ?? null)
-  const rps = Math.round(batch?.azs[azId]?.rps ?? 0)
+  // "rps in" = client traffic the LB delivered into this AZ (ingressRps), not `rps` — which sums
+  // every instance's throughput incl. internal hops (~N× ingress for an N-tier chain).
+  const rps = Math.round(batch?.azs[azId]?.ingressRps ?? batch?.azs[azId]?.rps ?? 0)
 
   const selectCabinet = (rack: Rack) => {
     const lowest = rackedByRack[rack.id]?.[0]

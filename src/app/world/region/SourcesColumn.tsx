@@ -74,6 +74,8 @@ export function SourcesColumn({ regionId, internetEgressMonthlyUsd }: SourcesCol
   // the region's total instance throughput, which additionally counts internal service→service
   // hops and so would read higher than the visible sources — the mismatch this box used to show).
   const trunkTotal = rows.reduce((sum, r) => sum + r.rps, 0)
+  const regionShedRps = batch?.regions[regionId]?.shedRps ?? 0
+  const regionLostTotal = batch?.regions[regionId]?.lostTotal ?? 0
 
   const h4: CSSProperties = { fontSize: 9.5, letterSpacing: '0.13em', color: 'var(--r3-hud)', textShadow: '0 0 8px var(--r3-hud-dim)', marginBottom: 8 }
 
@@ -113,6 +115,24 @@ export function SourcesColumn({ regionId, internetEgressMonthlyUsd }: SourcesCol
         <div style={{ fontSize: 8.5, color: 'var(--color-text-muted)', marginTop: 3 }}>
           merged at the edge · dash speed = rate, here and everywhere
         </div>
+        {/* Lost-request accounting: demand the region refused at the edge because it was
+            overloaded (it never reaches the trunk above, so it would otherwise be invisible), and
+            the region's cumulative lost requests for the run (edge-shed + every AZ's dropped and
+            rejected requests). */}
+        {(regionShedRps >= 0.5 || regionLostTotal >= 1) && (
+          <div data-testid="region-loss" style={{ fontSize: 9, color: 'var(--color-danger)', marginTop: 5, fontVariantNumeric: 'tabular-nums' }}>
+            {regionShedRps >= 0.5 && (
+              <div title="requests per second turned away at the edge because the region is overloaded">
+                {Math.round(regionShedRps).toLocaleString('en-US')}/s turned away at the edge
+              </div>
+            )}
+            {regionLostTotal >= 1 && (
+              <div title="requests lost in this region since the simulation started: turned away, dropped, or rejected">
+                {Math.round(regionLostTotal).toLocaleString('en-US')} lost total
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

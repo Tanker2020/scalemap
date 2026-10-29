@@ -3,6 +3,7 @@
 import type {
   WorldDoc, CompiledWorld, RoutingConfig, ClientPopulation, ServiceBlueprint,
 } from '../../../lib/world/types'
+import { DEFAULT_HEALTH_CHECK_TIMEOUT_MS } from '../../../lib/world/types'
 import { reservedRamMb } from '../../../lib/analysis/rules/capacity'
 import { REGION_GEO, greatCircleKm } from '../../../lib/world/regionGeo'
 import { egressMonthlyCost } from '../../../lib/cloudRegistry'
@@ -28,13 +29,17 @@ export function residentRamDemandMb(serverId: string, doc: WorldDoc, compiled: C
   return reservedRamMb(serverId, doc, compiled)
 }
 
-// Mirrors ttl-outlives-detection's inequality (capacity.ts:93-108), phrased as a hint before
-// it becomes a finding: null when TTL ≥ detection window.
+// Mirrors ttl-outlives-detection's inequality (analysis/rules/capacity.ts), phrased as a hint
+// before it becomes a finding: null when TTL ≤ the detection window. Detection = interval ×
+// threshold + one probe timeout. A SHORT TTL is the healthy config — clients re-resolve promptly
+// once the failure is detected (audit ISSUE-010). This hint carried the original inverted check
+// (warning on short TTLs) until 2026-10-05.
 export function ttlLagHint(routing: RoutingConfig): string | null {
   const ttlMs = routing.dnsTtlSec * 1000
-  const detectMs = routing.healthCheckIntervalMs * routing.healthCheckFailureThreshold
-  if (ttlMs >= detectMs) return null
-  return `⚠ ttl ${routing.dnsTtlSec}s < detection ${detectMs / 1000}s — clients re-resolve before the failure is even detected`
+  const timeoutMs = routing.healthCheckTimeoutMs ?? DEFAULT_HEALTH_CHECK_TIMEOUT_MS
+  const detectMs = routing.healthCheckIntervalMs * routing.healthCheckFailureThreshold + timeoutMs
+  if (ttlMs <= detectMs) return null
+  return `⚠ ttl ${routing.dnsTtlSec}s > detection ${detectMs / 1000}s — clients keep using a failed region up to ${(ttlMs - detectMs) / 1000}s after it's detected`
 }
 
 export function diskIoWord(diskIoPerRequest: number): 'light' | 'moderate' | 'heavy' {

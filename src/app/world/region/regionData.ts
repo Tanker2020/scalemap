@@ -16,12 +16,24 @@ export interface AzShare { azId: AzId; fraction: number; rps: number; dropped: n
 // "both AZs receive the entirety, doubling" report); `dropped` is added on top per AZ. `rps` is the
 // AZ's total ROUTED inbound (delivered share + dropped), so the shares still sum to the region
 // ingress. A down AZ's delivered share is pinned to 0, but it still shows any traffic dropped at it.
+//
+// When the engine publishes `AzMetrics.ingressRps` (the client traffic the LB actually delivered
+// into each AZ, 2026-10-03), that IS the delivered share — no throughput-fraction estimate needed,
+// and an AZ the LB keeps feeding while its health checks fail (fail-open) shows its true inbound
+// instead of a pinned 0. The fraction path below remains for batches without it.
 export function azShares(regionId: RegionId, doc: WorldDoc, batch: MetricsBatch | null): AzShare[] {
   const azIds = Object.values(doc.azs).filter(a => a.regionId === regionId).map(a => a.id)
   const raw = azIds.map(azId => {
     const m = batch?.azs[azId] ?? null
-    return { azId, throughput: m?.rps ?? 0, dropped: m?.droppedRps ?? 0, down: m?.health === 'down' }
+    return { azId, throughput: m?.rps ?? 0, dropped: m?.droppedRps ?? 0, down: m?.health === 'down', ingress: m?.ingressRps }
   })
+  if (raw.length > 0 && raw.every(a => a.ingress !== undefined)) {
+    const total = raw.reduce((sum, a) => sum + (a.ingress ?? 0) + a.dropped, 0)
+    return raw.map(a => {
+      const rps = (a.ingress ?? 0) + a.dropped
+      return { azId: a.azId, down: a.down, fraction: total > 0 ? rps / total : 0, rps, dropped: a.dropped }
+    })
+  }
   const totalThroughput = raw.reduce((sum, a) => sum + (a.down ? 0 : a.throughput), 0)
   const regionIngress = (batch?.world.populationRoutes ?? [])
     .filter(r => r.regionId === regionId)

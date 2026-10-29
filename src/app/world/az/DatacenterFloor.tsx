@@ -443,7 +443,9 @@ export function DatacenterFloor() {
 
   const az = doc.azs[azId]
   const azLabel = az?.label ?? azId
-  const ingressRps = Math.round(batch?.azs[azId]?.rps ?? 0)
+  // Client traffic the LB delivered into this AZ (ingressRps) — `rps` sums every instance's
+  // throughput incl. internal hops, which read ~3× the real ingress for a 3-tier chain.
+  const ingressRps = Math.round(batch?.azs[azId]?.ingressRps ?? batch?.azs[azId]?.rps ?? 0)
 
   // Anchor points for flow traces + labels — a stable "front-center" point on each box,
   // independent of internal slat count, so an edge never has to know which server occupies

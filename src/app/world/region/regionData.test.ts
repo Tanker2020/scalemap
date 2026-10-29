@@ -45,6 +45,26 @@ function tworegionWorld() {
 }
 
 describe('azShares', () => {
+  it('uses published ingressRps directly when present (exact LB delivery, not a throughput estimate)', () => {
+    const doc = createWorld()
+    const region = createRegion('us-east-1')
+    const azA = createAz(region.id, 'us-east-1a')
+    const azB = createAz(region.id, 'us-east-1b')
+    doc.regions[region.id] = region
+    doc.azs[azA.id] = azA; doc.azs[azB.id] = azB
+    // Hop-inflated throughput (~3× for web→api→db) must NOT be what the split reads; a
+    // health-check-failing AZ the LB still feeds (fail-open, published 'degraded') shows its inbound.
+    const batch = fakeBatch(1000, {
+      [azA.id]: az({ azId: azA.id, rps: 4600, ingressRps: 2500, health: 'degraded', healthCheckFailing: true }),
+      [azB.id]: az({ azId: azB.id, rps: 4600, ingressRps: 2400, droppedRps: 100, health: 'degraded' }),
+    })
+    const shares = azShares(region.id, doc, batch)
+    expect(shares.map(s => s.rps)).toEqual([2500, 2500])
+    expect(shares.map(s => s.fraction)).toEqual([0.5, 0.5])
+    expect(shares[1].dropped).toBe(100)
+    expect(shares.every(s => !s.down)).toBe(true)
+  })
+
   it('splits the region ingress by throughput share; down AZs pinned to zero and excluded', () => {
     const doc = createWorld()
     const region = createRegion('us-east-1')

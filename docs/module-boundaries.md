@@ -343,7 +343,7 @@ never reshape.
 | `src/app/world/panels/ScenarioPanel.tsx` (Task 20, FEAT-003, new file) | The scenario-timeline AUTHORING surface (world-scope `scenario` tab, registered alongside `routes`/`traffic` in `ui.store.ts`'s `PanelTab`/`scope.ts`'s `WORLD_TABS`/`WorldPanel.tsx`'s `TAB_LABELS`+render switch). No `doc.scenario` yet ⇒ a single "+ Create scenario" button (`setScenario({..., steps: []})`); once one exists, renders a label/duration/seed header, an `<ScenarioRuler>` (exported — the same component `SimControls` could reuse, though it currently opts for a simple percentage chip instead, see below) with draggable step markers, the step list (edit `atMs`/note inline, delete), and an `AddStepForm` covering all six `ScenarioAction` variants (entity pickers scoped to the doc's actual servers/azs/regions/managedServices/populations, mirroring `PartitionsSection.tsx`'s `entityOptions` idiom but with plain `<select>`s). **Edit-lock direction is the ORDINARY one, not `ChaosControl`/`PartitionsSection`'s inverse escape-fieldset pattern** — authoring a scenario is configuration, not a live chaos action, so this file is mounted as a normal tab body inside `WorldPanel.tsx`'s ambient `<fieldset disabled={running}>` and uses plain native `<button>`/`<input>`/`<select>` throughout, no `Pressable`/escape machinery. The one non-native control — the ruler's draggable marker `<div>` — is NOT protected by the ambient fieldset (fieldset-disabling only touches form-associated elements), so its own `onMouseDown` explicitly no-ops `if (running)`. Writes exclusively through `world.store.ts`'s `setScenario`/`addScenarioStep`/`removeScenarioStep`/`updateScenarioStep` (Task 17, undo/dirty for free); never calls the engine or `simulation.store.ts` directly. `ScenarioPanel.test.tsx` (10 cases) covers the empty state, step add/delete, the running edit-lock tooltip, and the ruler's progress fill |
 | `src/app/store/simulation.store.ts` (Task 20 addition) | Gained `selectScenarioProgressMs` — a one-line selector (`s.latestBatch?.simMs ?? 0`) so `ScenarioPanel`'s ruler and `SimControls`'s progress chip don't each reach into `latestBatch.simMs` independently. **Deliberately did NOT add `runScenario()`/`stopScenario()` actions** despite earlier planning language suggesting them: `doc.scenario`'s steps are already applied engine-side purely from its presence (Task 18/19's `scenarioSteps`/`scenarioCursor` in `worldEngine/index.ts`, triggered by the EXISTING `start()`) — "running a scenario" IS running the engine, so a parallel action would just be a second name for `start()`/`stop()` with nothing store-side of its own to do |
 | `src/app/world/SimControls.tsx` (Task 20 addition) | The Simulate button now reads `doc.scenario ? 'Run scenario' : 'Simulate'` — same `onClick={() => start(doc, compiled)}`, no new action, since `start()` already applies scenario steps once `doc.scenario` is present. A `scenario NN%` chip (styled like the existing `degraded`/`warmingUp` chips) renders only while `running && doc.scenario`, reading `selectScenarioProgressMs` against `doc.scenario.durationMs`. No separate run/stop-scenario control exists — the header has exactly one start affordance and one stop affordance (`End`), scenario or not |
-| `src/lib/vault/exampleWorlds.ts` (Task 20 addition) | Three of the four vault entries now carry an authored `doc.scenario` (attached, not new vault entries — the vault's 4-entry/id-order contract in `exampleWorlds.test.ts` is unchanged): `multi-region-failover` gets "regional failure" (region down → demand-multiplier retry-storm bump → clear-fault recovery, using the world's own populations), `three-tier` gets "creeping memory leak" (a `memory-leak` fault escalating — via a SECOND `inject-fault` on the same id, which REPLACES the first in the single-fault-per-id `activeFaults` map, not stacks alongside it — into `error-inject`, then `clear-fault`), `event-driven` gets "Black Friday ramp" (three `demand-multiplier` waves). `doc.scenario` participates in neither `compileWorld` nor any analysis rule (verified by grep before attaching), so this leaves every vault entry's existing zero-findings/12-findings contract untouched |
+| `src/lib/vault/exampleWorlds.ts` (Task 20 addition) | Three of the four vault entries now carry an authored `doc.scenario` (attached, not new vault entries — the vault's 4-entry/id-order contract in `exampleWorlds.test.ts` is unchanged): `multi-region-failover` gets "regional failure" (region down → demand-multiplier retry-storm bump → clear-fault recovery, using the world's own populations), `three-tier` gets "creeping memory leak" (a `memory-leak` fault escalating — via a SECOND `inject-fault` on the same id, which REPLACES the first in the single-fault-per-id `activeFaults` map, not stacks alongside it — into `error-inject`, then `clear-fault`), `event-driven` gets "Black Friday ramp" (three `demand-multiplier` waves). **(2026-10-05: the `three-tier` memory-leak scenario was removed — the starter world now opens with no scenario; only `multi-region-failover` and `event-driven` still carry one.)** `doc.scenario` participates in neither `compileWorld` nor any analysis rule (verified by grep before attaching), so this leaves every vault entry's existing zero-findings/12-findings contract untouched |
 
 ---
 
@@ -7147,3 +7147,114 @@ kube-proxy / sidecar) every edge carries. There was no way to keep calls in-zone
   carries `preferLocalAzForCalls: true` when set.
 - **Tests.** `flows.test.ts` (default even split, on ⇒ in-zone, local-down ⇒ cross-AZ, DB callee
   ignored), `EditServiceForm`/`BlueprintModal`/`ConnectionsView` tests. 172 files / 2375 tests.
+
+## Overload fails honestly: observed health never cuts capacity + lost-request accounting (2026-10-03)
+
+User report: the vault three-tier world at 5000 rps showed every tier hovering ~1050 rps (not the
+~1500 a 5 ms/request, 8-vCPU box can serve), api/db servers reading "healthy" while their
+instances were throttled, the AZ "dropped" counter at 0 while web rejected ~half its traffic, and
+the lone region periodically failing its health check and black-holing 100% of demand.
+
+- **Capacity vs observed health (`flows.ts`, `index.ts`).** Instance health is the worst of its
+  server/AZ/region health (`healthOfInstance`), and those scope labels are DERIVED from load (error
+  rate, offered CPU pressure, failed health checks). Admission used to multiply capacity by it
+  (degraded ×0.7, down ×0) — so overload was self-reinforcing and throttled healthy tiers that
+  merely shared a degraded AZ/region. New `FlowInput.capacityHealthOf?` (optional, falls back to
+  `healthOf`'s down-ness): admission factor is now 0 only for PHYSICAL down, else 1.
+  `index.ts`'s `capacityHealthOfInstance` = OOM restart, or a manual/fault outage
+  (`hasOutage`) on the instance's server/AZ/region. `healthOf` (observed) still steers dependency
+  target WEIGHTS (`healthWeightOf`, degraded 0.7 preference) — routing, not capacity.
+- **Fail-open routing (`routingRuntime.ts`).** `resolveRegion` gained optional `isHardDown`: when
+  every candidate fails its health check, DNS answers with the not-hard-down regions (Route 53
+  semantics) instead of `null`. `DistributeInput.failOpen?` (physical-availability views): when no
+  target passes observed health, the LB reruns the distribution with them (ALB/NLB fail-open).
+  `index.ts` passes `regionHardDown` / `azHardDownHealth` / `failOpenHealthOfInstance` (which
+  still excludes parked/draining autoscale slots). A manual outage is unchanged — still dropped.
+- **Lost-request accounting (`metrics.ts`, `types.ts` additive-optional, see contract-drift.md).**
+  `accumulateStep` gained an optional trailing `loss` param: `rejectedByAz` (Σ `errorRps +
+  refusedRps` of each AZ's instances — counted once at the hop where it failed, disjoint from
+  `droppedByAz`), `shedByRegion` (Mechanism B edge admission control — previously multiplied away
+  without a trace), `unroutedRps` (no region to route to — previously `continue`d away), and
+  `stepSec`. Published: `AzMetrics.rejectedRps`/`lostTotal`, `RegionMetrics.shedRps`/`lostTotal`
+  (shed folded into the DISPLAYED region errorRate like dropped, never failover health),
+  `WorldMetrics.unroutedRps`/`lostTotal`. `*Total` fields are cumulative request counts for the run
+  (rate × stepSec per step, unsmoothed), so the 1 Hz per-second gauges' flicker can't hide totals.
+- **UI.** `region/AzRow.tsx`: "· N/s dropped" now = dropped + rejected, plus "· N lost total"
+  (shown even while the AZ is down — the old label hid all drops during an outage).
+  `region/SourcesColumn.tsx`: `region-loss` block under the trunk — "N/s turned away at the edge"
+  and the region's "N lost total".
+- **Effect (three-tier @5000).** web/api/db ≈ 1530 rps each, web rejects ≈ 38% (≈ 970 rps per
+  AZ), region keeps routing (no flap), ≈ 110k lost requests per minute counted.
+- **Tests.** `flows.test.ts` (degraded admits 100%; capacityHealthOf beats healthOf),
+  `routingRuntime.test.ts` (resolveRegion + distributeToTargets fail-open), `index.test.ts`
+  ("overloaded single-region three-tier" — real ceiling, no black-hole, totals ≈ ∫ rates, manual
+  outage still zeroes capacity and is counted), `RegionView.test.tsx` (AzRow + region-loss copy).
+  172 files / 2382 tests.
+
+### Follow-up (same day): health checks no longer fail on 'degraded'; fail-open is published honestly
+
+Second report: with default bursts, both AZs + the region failed their health checks at ~30 s and
+stayed `down` forever. The engine kept serving (fail-open above), but the published `down` made the
+region page draw a dead AZ ("outage", inbound pinned to 0, "draining →" with no healthy AZ listed),
+while the AZ page's "rps in" showed ~4600 — `AzMetrics.rps`, which sums every hop.
+
+- **`routingRuntime.ts runHealthChecks`:** a probe passes unless the scope is `down`. `degraded`
+  (any server at/over 100% CPU — permanent under overload) was counted as a failure, so overloaded
+  scopes always tripped after threshold × interval and could never recover while load stayed high.
+- **`metrics.ts` publication:** an AZ/region whose failover health is `down` but which is NOT hard-
+  down (no manual/fault outage — `index.ts scopeHardDown`, passed via `accumulateStep`'s `loss.
+  hardDown`, kept as `MetricsState.lastHardDown`) and is still serving (`rps ≥ MIN_SERVING_RPS`)
+  publishes `health: 'degraded'` + `healthCheckFailing: true`. Published `down` now always means
+  "not serving". Region display banding (≥50% failing ⇒ `down`) is unchanged.
+- **New `AzMetrics.ingressRps`** (additive-optional): Σ entry demand the LB delivered into the AZ
+  (`loss.ingressByAz`, EMA). `region/regionData.ts azShares` uses it directly when every AZ has it
+  (exact split, no throughput-fraction estimate, no pinned-0 for a fail-open AZ);
+  `dock/FloorPlanHeader.tsx` and `az/DatacenterFloor.tsx` "rps in"/"rps entering" read
+  `ingressRps ?? rps`.
+- **`region/AzRow.tsx`:** "· failing health checks, still serving" (warning colour) when
+  `healthCheckFailing`.
+- **Effect.** Three-tier @5000 (default bursts): no health-check failures over 300 s, AZs
+  `degraded`, ingress ≈ 2500/AZ. @15000: checks fail, AZs publish `degraded` + failing-checks and
+  keep serving at capacity.
+- **Known, not fixed:** at heavy overload (15000 rps) Mechanism B's shed fraction limit-cycles
+  (one-step-lagged proportional control — shed tracks last step's entry error rate), so the
+  region's routed inbound swings widely sample to sample.
+- **Tests.** `routingRuntime.test.ts` (degraded probe passes + counts toward recovery),
+  `index.test.ts` (5000 rps w/ bursts never published down, ingress ≈ 2500; 15000 rps
+  healthCheckFailing; manual outage still publishes down), `regionData.test.ts` (ingressRps split),
+  `RegionView.test.tsx` (failing-checks label, no outage/draining). 172 files / 2386 tests.
+
+## Region-scoped dependency calls + entry-out DNS failover (2026-10-05)
+
+Report: three-tier + an identical `us-west-2` copy, 500 rps from Chicago. (1) us-east web/api split
+their dependency calls evenly across BOTH regions' instances — us-west api/db served us-east's calls
+while us-west web sat idle. (2) Killing every us-east AZ (or every us-east server) never failed
+Chicago over: the LB drops that traffic, servers see zero errors, so the region's failover health
+stayed `healthy` and DNS kept resolving to it. (The region kill switch itself already worked.)
+
+- **`flows.ts regionLocalCandidates` (new, exported):** applied per dependency before
+  `splitDependencyShares` (and before the `preferLocalAz` wrapper). In-region targets only while
+  any is usable (health weight > 0); otherwise every candidate (cross-region spill). Purely remote
+  dependencies are untouched; managed targets always kept. SQL: stays local while an in-region
+  primary is usable, else in-region candidates + remote primaries (reads local, writes reach a
+  writable node). `writeRpsByCluster` now sees the filtered list, so it attributes to the local
+  cluster.
+- **`index.ts regionEntryOut` / `dnsHealthOfRegion`:** a region whose LB target blueprints have
+  instances but ALL are physically out (`capacityHealthOfInstance` — server/AZ/region outage, OOM)
+  reads `down` to DNS resolution (`resolveRegion` + the weighted-proportions filter) and counts as
+  hard-down for fail-open. Deliberately NOT fed into the region's failover health — that cascades
+  onto every instance (`healthOfInstance` = worst scope) and broke ISSUE-014's starved-vs-idle
+  contract (a starved backend must read `degraded`, not `down`). A region with no entry instances
+  at all is not counted (config gap, not outage). Failover still waits on the DNS TTL.
+- **Tests.** `flows.test.ts` (`regionLocalCandidates` ×4), `index.test.ts` (two identical regions:
+  no west traffic in steady state; AZ-kill and server-kill fail over within 45 s and return after
+  recovery). 172 files / 2393 tests.
+
+## TTL hint de-inverted — `app/world/ui/derived.ts ttlLagHint` (2026-10-05)
+
+The Traffic panel's inline `dnsTtlSec` hint still carried the ORIGINAL inverted check (warned when
+TTL < interval × threshold — "clients re-resolve before the failure is even detected"), contradicting
+the `ttl-outlives-detection` analysis rule, which audit ISSUE-010 had already corrected. It now
+mirrors the rule exactly: warns only when TTL > interval × threshold + probe timeout
+(`healthCheckTimeoutMs ?? DEFAULT_HEALTH_CHECK_TIMEOUT_MS`), naming the post-detection lag. Tests:
+`derived.test.ts`, `TrafficPanel.test.tsx`.

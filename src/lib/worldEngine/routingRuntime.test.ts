@@ -44,6 +44,32 @@ describe('distributeToTargets (regional LB distribution)', () => {
     expect(into).toEqual({ 'i-a0': 30, 'i-a1': 30, 'i-b0': 30 })
   })
 
+  it('fails open when no target passes observed health: routes to every physically-up target', () => {
+    const into: Record<string, number> = {}
+    const droppedByAz: Record<string, number> = {}
+    const down = () => 'down' as HealthState
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 90, crossZone: true,
+      regionAzSpread, azBlueprintTargets,
+      healthOfScope: down, healthOfInstance: down, cursors: createRoutingState(), into, droppedByAz,
+      failOpen: { healthOfScope: healthy, healthOfInstance: id => (id === 'i-b0' ? 'down' : 'healthy') },
+    })
+    expect(into).toEqual({ 'i-a0': 45, 'i-a1': 45 })
+    expect(droppedByAz).toEqual({})
+  })
+
+  it('does not fail open while any target passes observed health', () => {
+    const into: Record<string, number> = {}
+    distributeToTargets({
+      targetBlueprintIds: ['bp'], rps: 90, crossZone: true,
+      regionAzSpread, azBlueprintTargets,
+      healthOfScope: healthy, healthOfInstance: id => (id === 'i-b0' ? 'healthy' : 'down'),
+      cursors: createRoutingState(), into,
+      failOpen: { healthOfScope: healthy, healthOfInstance: healthy },
+    })
+    expect(into).toEqual({ 'i-b0': 90 })
+  })
+
   it('excludes down AZs from the split', () => {
     const into: Record<string, number> = {}
     const scope = (id: string) => (id === 'az2' ? 'down' : 'healthy') as HealthState
@@ -502,6 +528,20 @@ describe('resolveRegion', () => {
     expect(resolveRegion(state, 'pop-1', ['A', 'B'], healthOf, basePolicy(), 0, rng)).toBeNull()
   })
 
+  it('fails open when every region fails its health check but none is hard-down (Route 53 semantics)', () => {
+    const state = createRoutingState()
+    const rng = createRng(1)
+    const healthOf = (): HealthState => 'down'
+    // Health-check-down only: answer with the first not-hard-down region instead of black-holing.
+    expect(resolveRegion(state, 'pop-1', ['A', 'B'], healthOf, basePolicy(), 0, rng, () => false)).toBe('A')
+    // A genuinely out (manual/fault outage) region stays excluded even when failing open.
+    const state2 = createRoutingState()
+    expect(resolveRegion(state2, 'pop-1', ['A', 'B'], healthOf, basePolicy(), 0, rng, id => id === 'A')).toBe('B')
+    // Everything hard-down ⇒ still null.
+    const state3 = createRoutingState()
+    expect(resolveRegion(state3, 'pop-1', ['A', 'B'], healthOf, basePolicy(), 0, rng, () => true)).toBeNull()
+  })
+
   it('passive-last activation: only reached once every earlier region in the order is down', () => {
     const state = createRoutingState()
     const rng = createRng(1)
@@ -560,6 +600,21 @@ describe('runHealthChecks', () => {
     runHealthChecks(state, config, 4_000, [{ id: 'srv-1', health: 'healthy' }])
     const recovered = runHealthChecks(state, config, 5_000, [{ id: 'srv-1', health: 'down' }])
     expect(recovered).toEqual([{ id: 'srv-1', checkFailed: false }])   // fresh count: 1 < 2
+  })
+
+  it('a degraded probe PASSES — only a down scope fails its health check', () => {
+    const state = createRoutingState()
+    const config = basePolicy({ healthCheckIntervalMs: 1_000, healthCheckFailureThreshold: 2 })
+    let last: { id: string; checkFailed: boolean }[] = []
+    // A CPU-saturated scope probes 'degraded' indefinitely; it must never trip (it was counted as
+    // a failure, so every overloaded server failed its checks after threshold × interval).
+    for (let i = 0; i < 10; i++) last = runHealthChecks(state, config, i * 1_000, [{ id: 'srv-1', health: 'degraded' }])
+    expect(last).toEqual([{ id: 'srv-1', checkFailed: false }])
+    // …and degraded probes count as successes toward recovery from a real failure.
+    runHealthChecks(state, config, 10_000, [{ id: 'srv-1', health: 'down' }])
+    expect(runHealthChecks(state, config, 11_000, [{ id: 'srv-1', health: 'down' }])).toEqual([{ id: 'srv-1', checkFailed: true }])
+    runHealthChecks(state, config, 12_000, [{ id: 'srv-1', health: 'degraded' }])
+    expect(runHealthChecks(state, config, 13_000, [{ id: 'srv-1', health: 'degraded' }])).toEqual([{ id: 'srv-1', checkFailed: false }])
   })
 
   it('a scope alternating pass/fail ratchets to failed instead of never tripping', () => {

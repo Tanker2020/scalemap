@@ -129,6 +129,23 @@ export interface AzMetrics {
   // of vanishing. Absent on pre-existing serialized batches (there is no batch persistence) —
   // consumers default to 0.
   droppedRps?: number
+  // Additive-optional (contract-drift, 2026-10-03 lost-request accounting): requests that REACHED
+  // one of this AZ's instances and failed there — queue overflow / timeout at capacity, an open
+  // breaker, a refused downstream call — rps, EMA'd like droppedRps. Each failure is counted once,
+  // at the hop where it happened, and is disjoint from droppedRps (which never reached an instance).
+  rejectedRps?: number
+  // Additive-optional (same): CUMULATIVE requests lost in this AZ since the run started (dropped +
+  // rejected, integrated per engine step — never smoothed, never per-window). Read as `?? 0`.
+  lostTotal?: number
+  // Additive-optional (contract-drift, 2026-10-03): client traffic the regional LB actually
+  // delivered into this AZ (Σ entry demand on its instances), rps EMA — what "rps in" means at AZ
+  // scope. `rps` above sums every instance's throughput incl. internal hops (~N× ingress for an
+  // N-tier chain). Absent on test-built batches — read as `ingressRps ?? rps`.
+  ingressRps?: number
+  // Additive-optional (same): present (true) when the AZ's health checks are failing but it is NOT
+  // genuinely out and is still serving (the LB failed open) — `health` then reads 'degraded', not
+  // 'down'. 'down' means "not serving" everywhere it is published.
+  healthCheckFailing?: boolean
 }
 
 export interface RegionMetrics {
@@ -144,6 +161,17 @@ export interface RegionMetrics {
   // Additive (contract-drift): Σ of this region's AZ droppedRps — undeliverable inbound folded
   // into the region's health error rate too, so a region dropping traffic degrades. Default 0.
   droppedRps?: number
+  // Additive-optional (contract-drift, 2026-10-03): demand cut at this region's edge by overload
+  // admission control (Mechanism B) before it reached the LB, rps EMA. Folded into the displayed
+  // errorRate like droppedRps.
+  shedRps?: number
+  // Additive-optional (same): CUMULATIVE requests lost in this region since the run started —
+  // the sum of its AZs' lostTotal + its edge-shed total.
+  lostTotal?: number
+  // Additive-optional (same semantics as AzMetrics.healthCheckFailing): DNS health checks failing,
+  // region still serving (Route 53 failed open) — `health` reads 'degraded'/banded, never the
+  // check-driven 'down'.
+  healthCheckFailing?: boolean
 }
 
 export interface WorldMetrics {
@@ -160,6 +188,11 @@ export interface WorldMetrics {
   // regression floor) or omitted by an older/test-built batch -- read as
   // `batch.world.natGatewayBytesPerSec?.[natGatewayId]`. See contract-drift.md §FEAT-014.
   natGatewayBytesPerSec?: Record<string, number>
+  // Additive-optional (contract-drift, 2026-10-03): demand with no region to route to (every
+  // candidate region genuinely down), rps EMA — and the world's CUMULATIVE lost requests since the
+  // run started (the sum of regions' lostTotal + the unrouted total). Read as `?? 0`.
+  unroutedRps?: number
+  lostTotal?: number
 }
 
 // Live traffic REACHING a cloud-managed service (node-model Phase 5.1). Managed services have no

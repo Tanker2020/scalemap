@@ -15,6 +15,7 @@ import { populationDemandRps } from './demand'
 import { createRng } from './rng'
 import { effectiveHitRatio } from './cache'
 import { INSTANCE_DRAIN_MS } from './autoscale'
+import { VAULT } from '../vault/exampleWorlds'
 
 // A public-facing entry blueprint: the facade routes client demand only to blueprints that
 // expose a 'public' port (documented entry rule).
@@ -5141,4 +5142,181 @@ describe('engine — L7 reverse proxy behind the regional LB', () => {
     expect(ratio).toBeLessThan(1.25)
     sim.engine.stop()
   })
+})
+
+// 2026-10-03 user report: the vault three-tier world (one region, 2 AZs, web→api→db, every tier
+// one vps-large/dedicated-8 per AZ at 5 ms/request ≈ 1500 rps ceiling per box) driven at
+// 5000 rps. Expected: an undersized system that genuinely fails — each web box serves at its
+// real ceiling and rejects the rest — NOT (a) every tier throttled to ~70% because the AZ/region
+// health label read 'degraded', nor (b) the lone region failing its health check and
+// black-holing 100% of traffic in a flap cycle. And every lost request must be countable.
+describe('overloaded single-region three-tier (observed health never cuts capacity)', () => {
+  function overloaded() {
+    const doc = VAULT.find(e => e.id === 'three-tier')!.build()
+    delete doc.scenario
+    const pop = createPopulation('nyc', 40.7, -74.0)
+    pop.peakRps = 5000
+    pop.burstiness = 0
+    doc.populations[pop.id] = pop
+    return { doc, compiled: compileWorld(doc) }
+  }
+  const tierRps = (compiled: ReturnType<typeof compileWorld>, doc: WorldDoc, b: MetricsBatch, name: string) =>
+    Object.values(compiled.instances)
+      .filter(i => doc.blueprints[i.blueprintId].name === name)
+      .map(i => b.instances[i.id]?.rps ?? 0)
+
+  it('serves at real capacity, keeps routing to the lone region, and counts every lost request', () => {
+    const { doc, compiled } = overloaded()
+    const sim = drive(doc, compiled)
+    sim.stepFor(120)
+    const settled = sim.batches.filter(b => b.simMs >= 20_000)
+    const regionId = Object.keys(doc.regions)[0]
+    for (const b of settled) {
+      // (b) never black-holed: the lone region keeps receiving its population's demand.
+      const inbound = b.regions[regionId].inboundByPopulation.reduce((n, r) => n + r.rps, 0)
+      expect(inbound).toBeGreaterThan(2000)
+      expect(b.regions[regionId].droppedRps ?? 0).toBeLessThan(50)
+    }
+    const last = sim.latest()
+    // (a) web serves near its ~1500 rps ceiling (was ~1050 under the 0.7 degraded throttle) …
+    for (const rps of tierRps(compiled, doc, last, 'web')) expect(rps).toBeGreaterThan(1350)
+    // … and the downstream tiers carry what web admitted, without rejecting any of it themselves.
+    for (const name of ['api', 'db']) {
+      for (const rps of tierRps(compiled, doc, last, name)) expect(rps).toBeGreaterThan(1350)
+    }
+    // Lost requests: each AZ rejects ~1000 rps (≈2500 offered − ≈1500 served); totals are
+    // cumulative (monotonic) and agree with the per-second rates integrated over the run.
+    let worldPrev = 0
+    for (const b of sim.batches) {
+      expect(b.world.lostTotal ?? 0).toBeGreaterThanOrEqual(worldPrev)
+      worldPrev = b.world.lostTotal ?? 0
+    }
+    for (const azId of Object.keys(doc.azs)) {
+      expect(last.azs[azId].rejectedRps ?? 0).toBeGreaterThan(600)
+      const integrated = sim.batches.reduce((n, b) => n + (b.azs[azId].rejectedRps ?? 0) + (b.azs[azId].droppedRps ?? 0), 0)
+      const ratio = (last.azs[azId].lostTotal ?? 0) / integrated
+      expect(ratio).toBeGreaterThan(0.85)
+      expect(ratio).toBeLessThan(1.15)
+    }
+    expect(last.world.lostTotal).toBeCloseTo(last.regions[regionId].lostTotal ?? 0, 6)
+    sim.engine.stop()
+  })
+
+  // 2026-10-03 follow-up report: with default bursts, both AZs + the region failed their health
+  // checks at ~30s ('degraded' probes counted as failures) and stayed published 'down' forever —
+  // the region page drew a dead AZ ("outage", 0 inbound, "draining →" nowhere) while the AZ page
+  // showed ~4600 hop-summed rps flowing. Overloaded-but-serving must never publish 'down', and an
+  // AZ's published ingress is what its LB delivered (~2500), not the hop sum.
+  it('at 5000 rps with default bursts: never published down, ingress ≈ 2500 per AZ', () => {
+    const { doc, compiled } = overloaded()
+    Object.values(doc.populations)[0].burstiness = undefined
+    const sim = drive(doc, compiled)
+    sim.stepFor(180)
+    expect(sim.events.filter(e => e.kind === 'health_check_failed')).toEqual([])
+    const settled = sim.batches.filter(x => x.simMs >= 20_000)
+    for (const azId of Object.keys(doc.azs)) {
+      for (const b of settled) {
+        expect(b.azs[azId].health).not.toBe('down')
+        expect(b.azs[azId].ingressRps!).toBeGreaterThan(1500)   // flash-crowd bursts swing it
+        expect(b.azs[azId].rps).toBeGreaterThan(b.azs[azId].ingressRps!)   // hop sum ≠ ingress
+      }
+      const mean = settled.reduce((n, b) => n + b.azs[azId].ingressRps!, 0) / settled.length
+      expect(mean).toBeGreaterThan(2200)
+      expect(mean).toBeLessThan(2900)
+    }
+    sim.engine.stop()
+  })
+
+  it('at 15000 rps checks genuinely fail: AZs publish degraded + healthCheckFailing and keep serving', () => {
+    const { doc, compiled } = overloaded()
+    Object.values(doc.populations)[0].peakRps = 15000
+    const sim = drive(doc, compiled)
+    sim.stepFor(120)
+    expect(sim.events.some(e => e.kind === 'health_check_failed')).toBe(true)
+    const last = sim.latest()
+    for (const azId of Object.keys(doc.azs)) {
+      expect(last.azs[azId].health).toBe('degraded')
+      expect(last.azs[azId].healthCheckFailing).toBe(true)
+      expect(last.azs[azId].ingressRps!).toBeGreaterThan(1500)
+    }
+    for (const rps of tierRps(compiled, doc, last, 'web')) expect(rps).toBeGreaterThan(1350)
+    sim.engine.stop()
+  })
+
+  it('a MANUAL region outage still takes capacity away (physical down is unchanged)', () => {
+    const { doc, compiled } = overloaded()
+    const sim = drive(doc, compiled)
+    sim.stepFor(5)
+    const regionId = Object.keys(doc.regions)[0]
+    sim.engine.setOutage('region', regionId, true)
+    sim.stepFor(40)
+    const last = sim.latest()
+    for (const i of Object.values(compiled.instances)) expect(last.instances[i.id]?.rps ?? 0).toBeLessThan(1)
+    expect(last.regions[regionId].health).toBe('down')
+    expect(last.regions[regionId].healthCheckFailing).toBeUndefined()
+    // Nothing served — and the loss is counted, not silently vanished.
+    expect((last.world.lostTotal ?? 0)).toBeGreaterThan(5000 * 30)
+    sim.engine.stop()
+  })
+})
+
+// 2026-10-05 report: three-tier + an identical us-west-2 copy, 500 rps from Chicago. Two bugs —
+// (1) dependency calls spread across BOTH regions' instances, so us-west api/db served us-east
+// web's calls while us-west web sat idle; (2) killing every us-east AZ (or server) left the region
+// probing healthy (its traffic is dropped at the LB, so no server ever errors) and DNS never
+// failed Chicago over.
+describe('two identical regions: region-local calls + entry-out DNS failover', () => {
+  function twoRegionThreeTier() {
+    const doc = VAULT.find(v => v.id === 'three-tier')!.build()
+    const east = Object.values(doc.regions)[0]
+    const west = createRegion('us-west-2'); doc.regions[west.id] = west
+    const azMap: Record<string, string> = {}
+    for (const a of Object.values(doc.azs).filter(x => x.regionId === east.id)) {
+      const n = createAz(west.id, a.label.replace('us-east-1', 'us-west-2')); doc.azs[n.id] = n; azMap[a.id] = n.id
+    }
+    const srvMap: Record<string, string> = {}
+    for (const sv of Object.values(doc.servers)) {
+      const n = createServer(azMap[sv.azId], getPreset(sv.catalogId ?? 'vps-large')!)
+      Object.assign(n, structuredClone({ ...sv, id: n.id, azId: n.azId, label: `${sv.label}-w` }))
+      doc.servers[n.id] = n; srvMap[sv.id] = n.id
+    }
+    for (const pl of Object.values(doc.placements)) {
+      const n = createPlacement(pl.blueprintId, srvMap[pl.serverId]); n.role = pl.role; doc.placements[n.id] = n
+    }
+    const chi = createPopulation('Chicago', 41.88, -87.63); chi.peakRps = 500; chi.diurnal = 'flat'
+    doc.populations[chi.id] = chi
+    const compiled = compileWorld(doc)
+    const westInstances = Object.values(compiled.instances).filter(i => i.regionId === west.id).map(i => i.id)
+    return { doc, compiled, east, west, chi, westInstances }
+  }
+
+  it('keeps every dependency call inside the serving region while it is healthy', () => {
+    const f = twoRegionThreeTier()
+    const sim = drive(f.doc, f.compiled)
+    sim.stepFor(20)
+    const b = sim.latest()
+    expect(b.world.populationRoutes.find(r => r.populationId === f.chi.id)?.regionId).toBe(f.east.id)
+    for (const iid of f.westInstances) expect(b.instances[iid].rps).toBeLessThan(1)
+    sim.engine.stop()
+  })
+
+  for (const mode of ['az', 'server'] as const) {
+    it(`fails Chicago over to us-west once every us-east ${mode} is down, and back after recovery`, () => {
+      const f = twoRegionThreeTier()
+      const sim = drive(f.doc, f.compiled)
+      const routeOf = () => sim.latest().world.populationRoutes.find(r => r.populationId === f.chi.id)?.regionId
+      sim.stepFor(20)
+      const ids = mode === 'az'
+        ? Object.values(f.doc.azs).filter(a => a.regionId === f.east.id).map(a => a.id)
+        : Object.values(f.doc.servers).filter(sv => f.doc.azs[sv.azId].regionId === f.east.id).map(sv => sv.id)
+      for (const id of ids) sim.engine.setOutage(mode, id, true)
+      sim.stepFor(45)   // past the 30s DNS TTL
+      expect(routeOf()).toBe(f.west.id)
+      expect(sim.latest().regions[f.west.id].rps).toBeGreaterThan(100)
+      for (const id of ids) sim.engine.setOutage(mode, id, false)
+      sim.stepFor(90)
+      expect(routeOf()).toBe(f.east.id)
+      sim.engine.stop()
+    })
+  }
 })

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { solveFlows, BYTES_PER_REQUEST_EACH_WAY, MANAGED_SERVICE_LATENCY_MS } from './flows'
+import { solveFlows, regionLocalCandidates, BYTES_PER_REQUEST_EACH_WAY, MANAGED_SERVICE_LATENCY_MS } from './flows'
 import type { FlowInput } from './flows'
 import { pathKey } from './breakers'
 import { createRng } from './rng'
@@ -11,7 +11,7 @@ import { compileWorld, instanceId } from '../world/compileWorld'
 import { managedDbRuntime } from '../managedDbRuntime'
 import { resolveWireSize } from '../packetResolve'
 import { addPacket } from '../nodeConfig'
-import type { WorldDoc, BlueprintDependency } from '../world/types'
+import type { WorldDoc, BlueprintDependency, CompiledPath, PlacementRole, ServiceBlueprint } from '../world/types'
 import type { HealthState } from './types'
 
 // ─── Fixture helpers (real lib/world factories through a real compile) ────────
@@ -123,13 +123,32 @@ describe('solveFlows — propagation', () => {
     expect(flows[db.iid].admittedRps).toBe(25)
   })
 
-  it('a degraded instance admits 0.7x of offered', () => {
+  // Observed 'degraded' is a monitoring label derived from load, not lost hardware: it must not
+  // shave capacity (that made overload self-reinforcing and throttled healthy tiers sharing a
+  // degraded AZ/region — the 2026-10-03 three-tier @5000 rps report).
+  it('a degraded instance still admits all of its offered load', () => {
     const { doc, server } = oneServerWorld()
     const api = addService(doc, 'api', server.id, 0)
     const healthOf = (id: string): HealthState => (id === api.iid ? 'degraded' : 'healthy')
     const { flows } = solveFlows(baseInput(doc, { [api.iid]: 100 }, { healthOf }))
-    expect(flows[api.iid].admittedRps).toBeCloseTo(70, 9)
-    expect(flows[api.iid].errorRps).toBeCloseTo(30, 9)
+    expect(flows[api.iid].admittedRps).toBeCloseTo(100, 9)
+    expect(flows[api.iid].errorRps).toBeCloseTo(0, 9)
+  })
+
+  it('admission reads capacityHealthOf (physical) over healthOf (observed) when supplied', () => {
+    const { doc, server } = oneServerWorld()
+    const api = addService(doc, 'api', server.id, 0)
+    // Observed down (e.g. a failed health check under load) but physically up ⇒ full admission.
+    const observedDown = solveFlows(baseInput(doc, { [api.iid]: 100 }, {
+      healthOf: () => 'down', capacityHealthOf: () => 'healthy',
+    }))
+    expect(observedDown.flows[api.iid].admittedRps).toBeCloseTo(100, 9)
+    // Physically down (manual outage / OOM) ⇒ nothing admitted.
+    const physicallyDown = solveFlows(baseInput(doc, { [api.iid]: 100 }, {
+      healthOf: () => 'healthy', capacityHealthOf: (id: string) => (id === api.iid ? 'down' : 'healthy'),
+    }))
+    expect(physicallyDown.flows[api.iid].admittedRps).toBe(0)
+    expect(physicallyDown.flows[api.iid].errorRps).toBeCloseTo(100, 9)
   })
 
   it('a down instance zeroes its whole subtree', () => {
@@ -1538,5 +1557,36 @@ describe('solveFlows — caller preferLocalAz', () => {
     const { flows } = solveFlows(baseInput(doc, { [web.iid]: 100 }))
     // pure reads go to the replica in AZ-b even though the caller prefers AZ-a
     expect(flows[apiB].offeredRps).toBeCloseTo(100, 9)
+  })
+})
+
+// Region-scoped service discovery (2026-10-05): dependency calls stay in the caller's region while
+// it can serve, and spill cross-region only when it can't.
+describe('regionLocalCandidates', () => {
+  const p = (instanceId: string) => ({ id: `p-${instanceId}`, to: { kind: 'instance', instanceId } }) as unknown as CompiledPath
+  const regionOf = (id: string) => (id.startsWith('e') ? 'east' : 'west')
+  const all = [p('e1'), p('e2'), p('w1'), p('w2')]
+  const up = () => 1
+  const roleOf = (id: string): PlacementRole => (id.endsWith('1') ? 'primary' : 'replica')
+  const sqlBp = { dbConfig: { engine: 'sql' } } as unknown as ServiceBlueprint
+  const ids = (ps: CompiledPath[]) => ps.map(x => (x.to as { instanceId: string }).instanceId)
+
+  it('keeps a non-DB call in the caller region while a local target is usable', () => {
+    expect(ids(regionLocalCandidates(all, 'east', regionOf, undefined, roleOf, up))).toEqual(['e1', 'e2'])
+  })
+
+  it('spills to every region once no local target is usable', () => {
+    const eastDown = (id: string) => (id.startsWith('e') ? 0 : 1)
+    expect(ids(regionLocalCandidates(all, 'east', regionOf, undefined, roleOf, eastDown))).toEqual(['e1', 'e2', 'w1', 'w2'])
+  })
+
+  it('leaves a purely remote dependency untouched', () => {
+    expect(ids(regionLocalCandidates([p('w1'), p('w2')], 'east', regionOf, undefined, roleOf, up))).toEqual(['w1', 'w2'])
+  })
+
+  it('SQL: stays local with a usable local primary, else adds remote primaries only', () => {
+    expect(ids(regionLocalCandidates(all, 'east', regionOf, sqlBp, roleOf, up))).toEqual(['e1', 'e2'])
+    const e1Down = (id: string) => (id === 'e1' ? 0 : 1)
+    expect(ids(regionLocalCandidates(all, 'east', regionOf, sqlBp, roleOf, e1Down))).toEqual(['e1', 'e2', 'w1'])
   })
 })

@@ -62,6 +62,39 @@ describe('RegionView (Phase 4 flow page)', () => {
     resetSim()
   })
 
+  it('AzRow shows lost requests: rejected+dropped per second and the cumulative total', () => {
+    const { azA, azB, region } = seedRegion()
+    useSimulationStore.setState({
+      latestBatch: {
+        ...fakeBatch(60_000, {
+          [azA.id]: az({ azId: azA.id, health: 'degraded', rejectedRps: 970, droppedRps: 0, lostTotal: 54690, healthCheckFailing: true }),
+          [azB.id]: az({ azId: azB.id }),
+        }),
+        regions: {
+          [region.id]: {
+            regionId: region.id, rps: 0, errorRate: 0, p50Ms: 0, p90Ms: 0, healthScore: 50, health: 'degraded',
+            inboundByPopulation: [], shedRps: 40, lostTotal: 110228,
+          },
+        },
+      },
+    })
+    const { container } = render(<RegionView />)
+    const rowA = within(container.querySelector(`[data-az-row="${azA.id}"]`)!)
+    // Capacity rejections count as dropped (they used to be invisible here — only LB-undeliverable
+    // traffic showed), and the run's cumulative total sits beside the per-second rate.
+    expect(rowA.getByText(/970\/s dropped/)).toBeInTheDocument()
+    expect(rowA.getByText(/54,690 lost total/)).toBeInTheDocument()
+    // Fail-open: failing checks but still serving reads as a warning, never "outage"/"draining".
+    expect(rowA.getByText(/failing health checks, still serving/)).toBeInTheDocument()
+    expect(rowA.queryByText(/outage|draining/)).toBeNull()
+    const rowB = within(container.querySelector(`[data-az-row="${azB.id}"]`)!)
+    expect(rowB.queryByText(/dropped|lost total/)).toBeNull()
+    expect(rowB.queryByText(/failing health checks/)).toBeNull()
+    const loss = screen.getByTestId('region-loss')
+    expect(loss).toHaveTextContent('40/s turned away at the edge')
+    expect(loss).toHaveTextContent('110,228 lost total')
+  })
+
   it('renders one AzRow per az with ring score', () => {
     const { azA, azB } = seedRegion()
     useSimulationStore.setState({

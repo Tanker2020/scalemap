@@ -69,12 +69,13 @@ describe('ttlLagHint', () => {
     policy: 'latency' as const, weights: {}, priorityOrder: [],
     dnsTtlSec, healthCheckIntervalMs, healthCheckFailureThreshold,
   })
-  it('is null when TTL covers the detection window (factory defaults: 30s vs 10s×3)', () => {
-    expect(ttlLagHint(routing(30, 10_000, 3))).toBeNull()
+  it('is null when TTL is within the detection window (short TTL is healthy, ISSUE-010)', () => {
+    expect(ttlLagHint(routing(5, 12_000, 3))).toBeNull()
+    expect(ttlLagHint(routing(35, 10_000, 3))).toBeNull()   // 35s == 10s×3 + 5s timeout
   })
-  it('phrases the lag with both numbers when TTL is shorter than detection', () => {
-    expect(ttlLagHint(routing(5, 12_000, 3))).toBe(
-      '⚠ ttl 5s < detection 36s — clients re-resolve before the failure is even detected',
+  it('warns when TTL outlives detection (interval × threshold + probe timeout)', () => {
+    expect(ttlLagHint(routing(60, 10_000, 3))).toBe(
+      "⚠ ttl 60s > detection 35s — clients keep using a failed region up to 25s after it's detected",
     )
   })
 })

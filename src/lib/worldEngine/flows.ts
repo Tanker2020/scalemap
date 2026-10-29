@@ -1,7 +1,8 @@
 // Per-step flow solver: contribution-based BFS from entry instances across compiled paths.
 // The heart of the engine — everything downstream (host loads, metrics, particles, cost
 // bytes) reads this module's output. Spec decision 6 + skeleton T8 semantics:
-//   admitted = offered x admittedScale(server) x healthFactor (down 0 / degraded 0.7)
+//   admitted = offered x admittedScale(server) x capacityFactor (physically down 0, else 1 —
+//   observed degraded/down health steers target WEIGHTS only, never capacity)
 //   every dependency fans out the FULL admitted rps (call-per-request, like legacy),
 //   split evenly across the dependency's compiled targets — blocked ones included
 //   (the caller can't see the misconfig; attempts on blocked paths are LIVE failures)
@@ -44,7 +45,7 @@ export const BYTES_PER_REQUEST_EACH_WAY = 2048
 export const MANAGED_SERVICE_LATENCY_MS = 3
 
 const MAX_DEPTH = 8                 // hop-depth cap; demand landing at depth 8 stops there
-const DEGRADED_ADMIT_FACTOR = 0.7   // degraded instances still serve most of their load
+const DEGRADED_ADMIT_FACTOR = 0.7   // routing weight for a degraded target (callers prefer healthy ones)
 const EPSILON_RPS = 1e-9            // below this, a contribution is dead — don't propagate
 // Queue bound (audit ISSUE-013): an instance queues up to this many seconds of its own service
 // capacity; arrivals beyond it time out (errorRps). A down instance (capacity 0) has a zero
@@ -165,6 +166,48 @@ export function splitDependencyShares(
   return shares
 }
 
+// Region-scoped service discovery (2026-10-05): a dependency call stays inside the CALLER's region
+// while that region can serve it, and only spills cross-region when it can't — the Consul-DC /
+// per-region-cluster default. Before this, compiled candidates spanned every region, so a
+// two-region world sent half of each tier's calls across the continent (us-east web → us-west api)
+// even with both regions perfectly healthy.
+//
+// Returns the subset of `candidates` the split should run over (order preserved; managed targets
+// always kept — they carry their own region semantics):
+//   - no in-region instance candidate at all ⇒ every candidate (a genuinely remote dependency)
+//   - non-DB / NoSQL ⇒ the in-region candidates while ANY of them is usable, else every candidate
+//   - SQL ⇒ the in-region candidates while an in-region PRIMARY is usable; otherwise the in-region
+//     candidates plus the remote primaries, so reads stay local (replicas) and writes reach a
+//     writable node wherever it lives
+export function regionLocalCandidates(
+  candidates: CompiledPath[],
+  callerRegionId: string,
+  regionOf: (instanceId: InstanceId) => string | undefined,
+  targetBp: ServiceBlueprint | undefined,
+  roleOf: (instanceId: InstanceId) => PlacementRole,
+  weightOf: (instanceId: InstanceId) => number,
+): CompiledPath[] {
+  const isLocal = (p: CompiledPath): boolean =>
+    p.to.kind !== 'instance' || regionOf(p.to.instanceId) === callerRegionId
+  let anyLocalInstance = false
+  let anyRemote = false
+  for (const p of candidates) {
+    if (p.to.kind !== 'instance') continue
+    if (isLocal(p)) anyLocalInstance = true
+    else anyRemote = true
+  }
+  if (!anyLocalInstance || !anyRemote) return candidates
+
+  const local = candidates.filter(isLocal)
+  const usable = (p: CompiledPath): boolean => p.to.kind === 'instance' && weightOf(p.to.instanceId) > 0
+  if (targetBp?.dbConfig?.engine === 'sql') {
+    const isPrimary = (p: CompiledPath): boolean => p.to.kind === 'instance' && roleOf(p.to.instanceId) === 'primary'
+    if (local.some(p => isPrimary(p) && usable(p))) return local
+    return candidates.filter(p => isLocal(p) || isPrimary(p))
+  }
+  return local.some(usable) ? local : candidates
+}
+
 // How much of `share` rps a cloud-managed DB REFUSES because it exceeds the instance class's
 // capacity (node-model Phase 3). A managed DB has no host, so unlike a self-hosted DB its ceiling
 // is not emergent from host CPU — the chosen class carries it explicitly. Returns 0 for a non-DB
@@ -282,6 +325,14 @@ export interface FlowInput {
   effectiveCpuMsByInstance?: Record<InstanceId, number>
   breakerOpen: (pathKey: string) => boolean
   healthOf: (instanceId: InstanceId) => HealthState
+  // PHYSICAL availability for admission (capacity), as opposed to `healthOf`'s OBSERVED health,
+  // which only steers dependency target weights. Observed health is a monitoring label derived
+  // from load (error rate / CPU pressure / failed health checks); multiplying capacity by it made
+  // overload self-reinforcing (overloaded ⇒ degraded ⇒ capacity ×0.7 ⇒ more overloaded) and
+  // throttled healthy downstream tiers that merely shared a degraded AZ/region. 'down' ⇒ capacity
+  // 0; anything else ⇒ full capacity. Optional: absent ⇒ `healthOf`'s down-ness (degraded no
+  // longer throttles either way).
+  capacityHealthOf?: (instanceId: InstanceId) => HealthState
   // Manual-outage predicate for managed services (node-model Phase 5.2). A managed service can't
   // be reached through instance health (it has no instance), so its manual down-state is passed
   // directly. Optional: absent ⇒ never down (existing callers/tests unchanged).
@@ -545,6 +596,7 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
   // Proxy upstream ids per blueprint, resolved once per solve (only ever populated for 'proxy').
   const proxyUpstreamsByBp = new Map<string, string[]>()
   const azOfInstance = (id: InstanceId) => compiled.instances[id]?.azId
+  const regionOfInstance = (id: InstanceId) => compiled.instances[id]?.regionId
 
   const flows: Record<InstanceId, InstanceFlow> = {}
   const totals: FlowTotals = { crossAzBytes: 0, crossRegionBytes: 0, internetBytes: 0, managedEgressBytes: {} }
@@ -719,8 +771,7 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
     const flow = getFlow(item.instanceId)
     flow.offeredRps += item.offered
 
-    const health = healthOf(item.instanceId)
-    const healthFactor = health === 'down' ? 0 : health === 'degraded' ? DEGRADED_ADMIT_FACTOR : 1
+    const healthFactor = (input.capacityHealthOf ?? healthOf)(item.instanceId) === 'down' ? 0 : 1
     const admittedScale = admittedScaleByServer[inst.serverId] ?? 1
     let admitted: number
     if (queueMode) {
@@ -815,8 +866,8 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
         flow.refusedRps += depAdmitted
         continue
       }
-      const candidates = byDep?.get(dep.id)
-      if (!candidates || candidates.length === 0) continue   // dangling dep: compile emitted nothing
+      const allCandidates = byDep?.get(dep.id)
+      if (!allCandidates || allCandidates.length === 0) continue   // dangling dep: compile emitted nothing
       // FEAT-004 (Task 3): cache economics. Exactly one of two shapes ever applies to a given
       // dependency (a blueprint's own cacheConfig marks it AS a cache proxy — every one of ITS
       // dependencies is behind the cache; a dependency's own cacheAsideVia marks IT specifically as
@@ -842,6 +893,8 @@ export function solveFlows(input: FlowInput): SolveFlowsResult {
       // below, so primary/replica ROUTING and managed-DB capacity can never disagree about the
       // split, and neither can disagree with what EdgeInspector displays (audit ISSUE-001).
       const depWriteFraction = input.depBytesById?.[dep.id]?.writeFraction ?? dep.writeFraction ?? 0
+      // Region-scoped discovery: in-region targets only while the caller's region can serve.
+      const candidates = regionLocalCandidates(allCandidates, inst.regionId, regionOfInstance, targetBp, roleOf, healthWeightOf)
       // Zone-aware caller (proxy or preferLocalAz blueprint): same-AZ target instances only, while
       // any is usable. Skipped for a DB target — SQL writes must reach the primary wherever it lives.
       const weightOf = preferLocalAz && !targetBp?.dbConfig

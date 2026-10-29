@@ -351,8 +351,10 @@ solver, analysis rules (`proxy-single-instance`, `redundant-proxy-tier`), the Co
 inspector, and `dock/drawers/ProxyConfigSection.tsx` all call them.
 
 **Dependency spread + caller-side zone preference (2026-10-02):** a dependency edge splits calls
-evenly across ALL of the callee's healthy instances in every AZ — implicit client-side load
-balancing, no LB entity required. A caller blueprint's optional `preferLocalAz` (a proxy uses its
+evenly across ALL of the callee's healthy instances in every AZ OF THE CALLER'S REGION — implicit
+client-side load balancing, no LB entity required. Calls spill cross-region only when the caller's
+region has no usable target (`flows.ts regionLocalCandidates`, 2026-10-05; SQL writes reach a
+remote primary when the region has no usable one). A caller blueprint's optional `preferLocalAz` (a proxy uses its
 `proxyConfig.preferLocalAz` instead) keeps its non-DB calls in the calling instance's AZ while a
 local target is healthy, via the same `localAzWeightOverride`.
 
